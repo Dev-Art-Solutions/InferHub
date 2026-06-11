@@ -1,0 +1,64 @@
+# ---------------------------------------------------------------------------
+# InferHub internal build plan — task briefs for Claude Code, not part of the
+# public repository. Keep these local.
+# ---------------------------------------------------------------------------
+/plan/
+
+# ---------------------------------------------------------------------------
+# .NET / Visual Studio
+# ---------------------------------------------------------------------------
+bin/
+obj/
+out/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+[Bb]uild/
+[Bb]in/
+[Oo]bj/
+*.user
+*.userosscache
+*.suo
+*.sln.docstates
+.vs/
+.vscode/
+*.swp
+*~
+
+# Build results / packages
+*.dll
+*.exe
+*.pdb
+*.nupkg
+*.snupkg
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# Test results
+[Tt]est[Rr]esult*/
+*.trx
+*.coverage
+*.coveragexml
+coverage*.json
+coverage*.xml
+coverage*.info
+
+# Rider / JetBrains
+.idea/
+*.sln.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Secrets & local config — never commit tokens or keys
+appsettings.*.Local.json
+appsettings.Local.json
+*.local.json
+.env
+.env.*
+secrets.json
