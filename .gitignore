@@ -62,3 +62,6 @@ appsettings.Local.json
 .env
 .env.*
 secrets.json
+
+# Local node identity
+.inferhub-node-id

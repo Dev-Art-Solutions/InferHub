@@ -1,9 +1,10 @@
 namespace InferHub.Node;
 
-public class Worker(IConfiguration configuration, ILogger<Worker> logger) : BackgroundService
+public class Worker(
+    IConfiguration configuration,
+    CoordinatorConnection coordinatorConnection,
+    ILogger<Worker> logger) : BackgroundService
 {
-    private static readonly TimeSpan HeartbeatDelay = TimeSpan.FromSeconds(30);
-
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var coordinatorUrl = configuration["Coordinator:Url"] ?? "http://localhost:5080/";
@@ -16,15 +17,20 @@ public class Worker(IConfiguration configuration, ILogger<Worker> logger) : Back
             coordinatorUrl,
             ollamaEndpoint);
 
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            logger.LogDebug(
-                "Node {NodeName} heartbeat, coordinator={CoordinatorUrl}, ollama={OllamaEndpoint}",
-                nodeName,
-                coordinatorUrl,
-                ollamaEndpoint);
+        await coordinatorConnection.StartAsync(stoppingToken);
 
-            await Task.Delay(HeartbeatDelay, stoppingToken);
+        try
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken);
         }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        await coordinatorConnection.StopAsync(cancellationToken);
+        await base.StopAsync(cancellationToken);
     }
 }

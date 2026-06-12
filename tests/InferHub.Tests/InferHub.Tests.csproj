@@ -16,6 +16,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\InferHub.Coordinator\InferHub.Coordinator.csproj" />
+    <ProjectReference Include="..\..\src\InferHub.Node\InferHub.Node.csproj" />
     <ProjectReference Include="..\..\src\InferHub.Shared\InferHub.Shared.csproj" />
   </ItemGroup>
 

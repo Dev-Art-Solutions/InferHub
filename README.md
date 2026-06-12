@@ -70,7 +70,7 @@ day-by-day build briefs live in `/plan/` (kept out of version control).
 | Phase | Theme | Version |
 |------:|-------|---------|
 | 1 | Foundation & coordinator skeleton (done) | `v0.1.0` |
-| 2 | Node ↔ coordinator link | `v0.2.0` |
+| 2 | Node ↔ coordinator link (done) | `v0.2.0` |
 | 3 | Model discovery (pluggable backend) | `v0.3.0` |
 | 4 | Routing & blocking generation | `v0.4.0` |
 | 5 | End-to-end streaming | `v0.5.0` |
