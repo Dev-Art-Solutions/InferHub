@@ -21,10 +21,10 @@ app.MapGet("/health", (ILogger<Program> logger) =>
     return Results.Ok(new { status = "ok", version });
 });
 
-app.MapGet("/api/tags", (ILogger<Program> logger) =>
+app.MapGet("/api/tags", (INodeRegistry registry, ILogger<Program> logger) =>
 {
     logger.LogInformation("Model tags requested");
-    return Results.Ok(new OllamaTagsResponse(Array.Empty<ModelInfo>()));
+    return Results.Ok(new OllamaTagsResponse(registry.DistinctModels().ToArray()));
 });
 
 app.MapGet("/api/nodes", (INodeRegistry registry) =>

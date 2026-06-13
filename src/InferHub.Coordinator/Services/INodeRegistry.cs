@@ -8,9 +8,13 @@ public interface INodeRegistry
 
     bool Touch(string connectionId, Heartbeat heartbeat, DateTimeOffset now);
 
+    bool ReportModels(string connectionId, NodeModels models, DateTimeOffset now);
+
     bool Remove(string connectionId);
 
     IReadOnlyCollection<NodeSnapshot> Snapshot(DateTimeOffset now);
+
+    IReadOnlyCollection<ModelInfo> DistinctModels();
 
     IReadOnlyCollection<NodeSnapshot> EvictStale(DateTimeOffset cutoffUtc, DateTimeOffset now);
 }

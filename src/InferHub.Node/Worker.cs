@@ -1,7 +1,10 @@
+using InferHub.Node.Backends;
+
 namespace InferHub.Node;
 
 public class Worker(
     IConfiguration configuration,
+    IInferenceBackend backend,
     CoordinatorConnection coordinatorConnection,
     ILogger<Worker> logger) : BackgroundService
 {
@@ -12,9 +15,10 @@ public class Worker(
         var ollamaEndpoint = configuration["Ollama:Endpoint"] ?? "http://localhost:11434/";
 
         logger.LogInformation(
-            "Node {NodeName} starting, coordinator={CoordinatorUrl}, ollama={OllamaEndpoint}",
+            "Node {NodeName} starting, coordinator={CoordinatorUrl}, backend={BackendName}, ollama={OllamaEndpoint}",
             nodeName,
             coordinatorUrl,
+            backend.Name,
             ollamaEndpoint);
 
         await coordinatorConnection.StartAsync(stoppingToken);

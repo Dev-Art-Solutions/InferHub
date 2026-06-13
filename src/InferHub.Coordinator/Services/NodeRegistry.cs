@@ -19,7 +19,7 @@ public sealed class NodeRegistry : INodeRegistry
 
         nodes.AddOrUpdate(
             connectionId,
-            _ => new NodeRegistryEntry(normalized, now, 0),
+            _ => new NodeRegistryEntry(normalized, now, 0, Array.Empty<ModelInfo>(), null),
             (_, existing) => existing with
             {
                 Registration = normalized,
@@ -43,6 +43,28 @@ public sealed class NodeRegistry : INodeRegistry
         return true;
     }
 
+    public bool ReportModels(string connectionId, NodeModels models, DateTimeOffset now)
+    {
+        if (!nodes.TryGetValue(connectionId, out var existing))
+        {
+            return false;
+        }
+
+        var normalizedModels = (models.Models ?? Array.Empty<ModelInfo>())
+            .Where(model => !string.IsNullOrWhiteSpace(model.Name))
+            .Select(model => model with { Name = model.Name.Trim() })
+            .ToArray();
+
+        nodes[connectionId] = existing with
+        {
+            LastSeenUtc = now,
+            Models = normalizedModels,
+            ModelsRefreshedAt = models.RefreshedAt
+        };
+
+        return true;
+    }
+
     public bool Remove(string connectionId)
     {
         return nodes.TryRemove(connectionId, out _);
@@ -54,6 +76,19 @@ public sealed class NodeRegistry : INodeRegistry
             .Select(pair => ToSnapshot(pair.Key, pair.Value, now))
             .OrderBy(node => node.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(node => node.NodeId, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    public IReadOnlyCollection<ModelInfo> DistinctModels()
+    {
+        return nodes
+            .Values
+            .SelectMany(entry => entry.Models.Select(model => new { entry.Registration, model }))
+            .OrderBy(item => item.model.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Registration.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Registration.NodeId, StringComparer.OrdinalIgnoreCase)
+            .GroupBy(item => item.model.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First().model)
             .ToArray();
     }
 
@@ -89,7 +124,8 @@ public sealed class NodeRegistry : INodeRegistry
             entry.Registration.Version,
             entry.LastSeenUtc,
             ageSeconds,
-            entry.InFlight);
+            entry.InFlight,
+            entry.Models.Count);
     }
 
     private static string Normalize(string? value, string fallback)
@@ -100,5 +136,7 @@ public sealed class NodeRegistry : INodeRegistry
     private sealed record NodeRegistryEntry(
         NodeRegistration Registration,
         DateTimeOffset LastSeenUtc,
-        int InFlight);
+        int InFlight,
+        IReadOnlyList<ModelInfo> Models,
+        DateTimeOffset? ModelsRefreshedAt);
 }

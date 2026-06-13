@@ -1,4 +1,5 @@
 using System.Reflection;
+using InferHub.Node.Backends;
 using InferHub.Shared.Contracts;
 using Microsoft.AspNetCore.SignalR.Client;
 
@@ -7,9 +8,11 @@ namespace InferHub.Node;
 public sealed class CoordinatorConnection(
     IConfiguration configuration,
     INodeIdentity nodeIdentity,
+    IInferenceBackend backend,
     ILogger<CoordinatorConnection> logger) : IAsyncDisposable
 {
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan ModelRefreshInterval = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(5);
 
     private readonly SemaphoreSlim reconnectLock = new(1, 1);
@@ -17,6 +20,7 @@ public sealed class CoordinatorConnection(
     private readonly string nodeId = nodeIdentity.GetOrCreateNodeId();
     private HubConnection? connection;
     private Task? heartbeatTask;
+    private Task? modelRefreshTask;
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -35,6 +39,17 @@ public sealed class CoordinatorConnection(
             try
             {
                 await heartbeatTask.WaitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        if (modelRefreshTask is not null)
+        {
+            try
+            {
+                await modelRefreshTask.WaitAsync(cancellationToken);
             }
             catch (OperationCanceledException)
             {
@@ -121,6 +136,7 @@ public sealed class CoordinatorConnection(
                     await connection.StartAsync(cancellationToken);
                     await RegisterAsync(cancellationToken);
                     EnsureHeartbeatLoop();
+                    EnsureModelRefreshLoop();
                     logger.LogInformation("Connected to coordinator");
                     return;
                 }
@@ -155,6 +171,7 @@ public sealed class CoordinatorConnection(
             GetVersion());
 
         await connection.InvokeAsync("Register", registration, cancellationToken);
+        await ReportModelsAsync(cancellationToken);
 
         logger.LogInformation(
             "Registered node {NodeId} ({NodeName}) with coordinator",
@@ -170,6 +187,16 @@ public sealed class CoordinatorConnection(
         }
 
         heartbeatTask = Task.Run(SendHeartbeatsAsync);
+    }
+
+    private void EnsureModelRefreshLoop()
+    {
+        if (modelRefreshTask is { IsCompleted: false })
+        {
+            return;
+        }
+
+        modelRefreshTask = Task.Run(SendModelReportsAsync);
     }
 
     private async Task SendHeartbeatsAsync()
@@ -212,6 +239,53 @@ public sealed class CoordinatorConnection(
 
         var heartbeat = new Heartbeat(nodeId, DateTimeOffset.UtcNow, InFlight: 0);
         await connection.InvokeAsync("Heartbeat", heartbeat, cancellationToken);
+    }
+
+    private async Task SendModelReportsAsync()
+    {
+        using var timer = new PeriodicTimer(ModelRefreshInterval);
+
+        while (!lifetime.IsCancellationRequested)
+        {
+            try
+            {
+                await timer.WaitForNextTickAsync(lifetime.Token);
+                await ReportModelsAsync(lifetime.Token);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Model refresh failed");
+            }
+        }
+    }
+
+    private async Task ReportModelsAsync(CancellationToken cancellationToken)
+    {
+        var activeConnection = connection;
+
+        if (activeConnection is not { State: HubConnectionState.Connected })
+        {
+            return;
+        }
+
+        var models = await backend.ListModelsAsync(cancellationToken);
+
+        if (activeConnection.State is not HubConnectionState.Connected)
+        {
+            return;
+        }
+
+        var report = new NodeModels(nodeId, models, DateTimeOffset.UtcNow);
+        await activeConnection.InvokeAsync("ReportModels", report, cancellationToken);
+
+        logger.LogInformation(
+            "Reported {ModelCount} models from {BackendName} backend",
+            models.Count,
+            backend.Name);
     }
 
     private static Uri BuildHubUrl(string coordinatorUrl)

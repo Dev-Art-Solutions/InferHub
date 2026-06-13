@@ -8,4 +8,5 @@ public sealed record NodeSnapshot(
     string Version,
     DateTimeOffset LastSeenUtc,
     double AgeSeconds,
-    int InFlight);
+    int InFlight,
+    int ModelCount);

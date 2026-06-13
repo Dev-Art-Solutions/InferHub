@@ -21,6 +21,7 @@ public class NodeRegistryTests
         Assert.Equal("0.2.0", node.Version);
         Assert.Equal(now, node.LastSeenUtc);
         Assert.Equal(0, node.InFlight);
+        Assert.Equal(0, node.ModelCount);
     }
 
     [Fact]
@@ -45,6 +46,81 @@ public class NodeRegistryTests
     }
 
     [Fact]
+    public void ReportModelsUpdatesSnapshotModelCount()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("connection-1", Registration("node-1"), now);
+
+        var reported = registry.ReportModels(
+            "connection-1",
+            new NodeModels(
+                "node-1",
+                [new ModelInfo("llama3", "digest-1", 123)],
+                now.AddSeconds(1)),
+            now.AddSeconds(1));
+
+        Assert.True(reported);
+
+        var node = Assert.Single(registry.Snapshot(now.AddSeconds(1)));
+        Assert.Equal(1, node.ModelCount);
+    }
+
+    [Fact]
+    public void ReportModelsReturnsFalseForUnknownConnection()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+
+        var reported = registry.ReportModels(
+            "missing",
+            new NodeModels("node-1", [new ModelInfo("llama3", null, null)], now),
+            now);
+
+        Assert.False(reported);
+        Assert.Empty(registry.DistinctModels());
+    }
+
+    [Fact]
+    public void DistinctModelsDeDuplicatesByName()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("connection-b", Registration("node-b", "beta-node"), now);
+        registry.Upsert("connection-a", Registration("node-a", "alpha-node"), now);
+
+        registry.ReportModels(
+            "connection-b",
+            new NodeModels(
+                "node-b",
+                [
+                    new ModelInfo("qwen2", "digest-qwen", 200),
+                    new ModelInfo("llama3", "digest-beta", 300)
+                ],
+                now),
+            now);
+
+        registry.ReportModels(
+            "connection-a",
+            new NodeModels(
+                "node-a",
+                [new ModelInfo("LLAMA3", "digest-alpha", 100)],
+                now),
+            now);
+
+        var models = registry.DistinctModels().ToArray();
+
+        Assert.Collection(
+            models,
+            model =>
+            {
+                Assert.Equal("LLAMA3", model.Name);
+                Assert.Equal("digest-alpha", model.Digest);
+            },
+            model => Assert.Equal("qwen2", model.Name));
+    }
+
+    [Fact]
     public void RemoveDeletesByConnectionId()
     {
         var registry = new NodeRegistry();
@@ -55,6 +131,7 @@ public class NodeRegistryTests
 
         Assert.True(removed);
         Assert.Empty(registry.Snapshot(now));
+        Assert.Empty(registry.DistinctModels());
     }
 
     [Fact]
@@ -74,11 +151,27 @@ public class NodeRegistryTests
         Assert.Equal("fresh-node", remaining.NodeId);
     }
 
-    private static NodeRegistration Registration(string nodeId)
+    [Fact]
+    public void EvictStaleRemovesReportedModels()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("stale-connection", Registration("stale-node"), now.AddSeconds(-31));
+        registry.ReportModels(
+            "stale-connection",
+            new NodeModels("stale-node", [new ModelInfo("llama3", "digest-1", 123)], now.AddSeconds(-31)),
+            now.AddSeconds(-31));
+
+        registry.EvictStale(now.AddSeconds(-30), now);
+
+        Assert.Empty(registry.DistinctModels());
+    }
+
+    private static NodeRegistration Registration(string nodeId, string name = "local-node")
     {
         return new NodeRegistration(
             nodeId,
-            "local-node",
+            name,
             "http://localhost:11434/",
             "0.2.0");
     }

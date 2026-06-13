@@ -34,6 +34,27 @@ public sealed class NodeHub(
         return Task.CompletedTask;
     }
 
+    public Task ReportModels(NodeModels models)
+    {
+        if (!registry.ReportModels(Context.ConnectionId, models, DateTimeOffset.UtcNow))
+        {
+            logger.LogWarning(
+                "Model report received for unknown connection {ConnectionId} from node {NodeId}",
+                Context.ConnectionId,
+                models.NodeId);
+
+            return Task.CompletedTask;
+        }
+
+        logger.LogInformation(
+            "Node {NodeId} reported {ModelCount} models on connection {ConnectionId}",
+            models.NodeId,
+            models.Models.Count,
+            Context.ConnectionId);
+
+        return Task.CompletedTask;
+    }
+
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         if (registry.Remove(Context.ConnectionId))
