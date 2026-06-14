@@ -22,6 +22,7 @@ builder.Services.AddSingleton<IInferenceBackend>(services =>
     };
 });
 builder.Services.AddSingleton<OllamaBackend>();
+builder.Services.AddSingleton<InferenceExecutor>();
 builder.Services.AddSingleton<CoordinatorConnection>();
 builder.Services.AddHostedService<Worker>();
 

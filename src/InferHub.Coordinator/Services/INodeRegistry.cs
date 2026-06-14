@@ -16,5 +16,7 @@ public interface INodeRegistry
 
     IReadOnlyCollection<ModelInfo> DistinctModels();
 
+    IReadOnlyCollection<RoutableNode> FindNodesWithModel(string model);
+
     IReadOnlyCollection<NodeSnapshot> EvictStale(DateTimeOffset cutoffUtc, DateTimeOffset now);
 }

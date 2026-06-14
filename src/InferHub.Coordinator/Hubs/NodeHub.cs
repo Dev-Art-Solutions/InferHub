@@ -6,6 +6,7 @@ namespace InferHub.Coordinator.Hubs;
 
 public sealed class NodeHub(
     INodeRegistry registry,
+    IDispatcher dispatcher,
     ILogger<NodeHub> logger) : Hub
 {
     public Task Register(NodeRegistration registration)
@@ -51,6 +52,19 @@ public sealed class NodeHub(
             models.NodeId,
             models.Models.Count,
             Context.ConnectionId);
+
+        return Task.CompletedTask;
+    }
+
+    public Task JobResult(InferenceResult result)
+    {
+        if (!dispatcher.Complete(result))
+        {
+            logger.LogWarning(
+                "Node connection {ConnectionId} returned result for unknown job {JobId}",
+                Context.ConnectionId,
+                result.JobId);
+        }
 
         return Task.CompletedTask;
     }

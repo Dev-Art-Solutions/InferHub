@@ -72,15 +72,13 @@ day-by-day build briefs live in `/plan/` (kept out of version control).
 | 1 | Foundation & coordinator skeleton (done) | `v0.1.0` |
 | 2 | Node ↔ coordinator link (done) | `v0.2.0` |
 | 3 | Model discovery (pluggable backend) (done) | `v0.3.0` |
-| 4 | Routing & blocking generation | `v0.4.0` |
+| 4 | Routing & blocking generation (done) | `v0.4.0` |
 | 5 | End-to-end streaming | `v0.5.0` |
 | 6 | Authentication & security | `v0.6.0` |
 | 7 | Conversations & smart routing | `v0.7.0` |
 | 8 | Resilience, observability & 1.0 | `v1.0.0` |
 
 ## Quick start
-
-> Coming together phase by phase. Once the early phases land, the flow will be:
 
 ```bash
 # On the always-on host (no GPU needed)
@@ -91,8 +89,7 @@ dotnet run --project src/InferHub.Node
 
 # From anywhere, talk to it like Ollama
 curl http://your-coordinator:5080/api/chat \
-  -H "Authorization: Bearer <your-token>" \
-  -d '{"model":"llama3","messages":[{"role":"user","content":"Hello!"}]}'
+  -d '{"model":"llama3","messages":[{"role":"user","content":"Hello!"}],"stream":false}'
 ```
 
 ## Built with

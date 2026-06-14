@@ -9,6 +9,7 @@ public sealed class CoordinatorConnection(
     IConfiguration configuration,
     INodeIdentity nodeIdentity,
     IInferenceBackend backend,
+    InferenceExecutor inferenceExecutor,
     ILogger<CoordinatorConnection> logger) : IAsyncDisposable
 {
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(10);
@@ -21,6 +22,7 @@ public sealed class CoordinatorConnection(
     private HubConnection? connection;
     private Task? heartbeatTask;
     private Task? modelRefreshTask;
+    private int inFlight;
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -88,6 +90,8 @@ public sealed class CoordinatorConnection(
 
     private void RegisterConnectionHandlers(HubConnection hubConnection)
     {
+        hubConnection.On<InferenceJob>("RunJob", RunJobAsync);
+
         hubConnection.Reconnecting += error =>
         {
             logger.LogWarning(error, "Coordinator connection lost; reconnecting");
@@ -237,8 +241,43 @@ public sealed class CoordinatorConnection(
             return;
         }
 
-        var heartbeat = new Heartbeat(nodeId, DateTimeOffset.UtcNow, InFlight: 0);
+        var heartbeat = new Heartbeat(nodeId, DateTimeOffset.UtcNow, Volatile.Read(ref inFlight));
         await connection.InvokeAsync("Heartbeat", heartbeat, cancellationToken);
+    }
+
+    private async Task RunJobAsync(InferenceJob job)
+    {
+        var activeConnection = connection;
+
+        if (activeConnection is not { State: HubConnectionState.Connected })
+        {
+            logger.LogWarning("Received job {JobId} while not connected to coordinator", job.JobId);
+            return;
+        }
+
+        Interlocked.Increment(ref inFlight);
+
+        try
+        {
+            logger.LogInformation("Running {JobKind} job {JobId}", job.Kind, job.JobId);
+            var result = await inferenceExecutor.RunAsync(job, lifetime.Token);
+
+            if (activeConnection.State is HubConnectionState.Connected)
+            {
+                await activeConnection.InvokeAsync("JobResult", result, lifetime.Token);
+            }
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Could not return result for job {JobId}", job.JobId);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref inFlight);
+        }
     }
 
     private async Task SendModelReportsAsync()

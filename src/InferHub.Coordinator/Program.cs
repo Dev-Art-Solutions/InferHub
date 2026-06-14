@@ -1,4 +1,5 @@
 using System.Reflection;
+using InferHub.Coordinator.Endpoints;
 using InferHub.Coordinator.Hubs;
 using InferHub.Coordinator.Services;
 using InferHub.Shared.Contracts;
@@ -6,7 +7,10 @@ using InferHub.Shared.Ollama;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSignalR();
+builder.Services.Configure<DispatcherOptions>(builder.Configuration.GetSection("Dispatcher"));
 builder.Services.AddSingleton<INodeRegistry, NodeRegistry>();
+builder.Services.AddSingleton<InferHub.Coordinator.Services.IRouter, Router>();
+builder.Services.AddSingleton<IDispatcher, Dispatcher>();
 builder.Services.AddHostedService<NodeReaper>();
 
 var app = builder.Build();
@@ -31,6 +35,8 @@ app.MapGet("/api/nodes", (INodeRegistry registry) =>
 {
     return Results.Ok(registry.Snapshot(DateTimeOffset.UtcNow));
 });
+
+app.MapInferenceEndpoints();
 
 app.MapHub<NodeHub>("/hubs/node");
 

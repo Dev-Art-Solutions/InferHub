@@ -92,6 +92,25 @@ public sealed class NodeRegistry : INodeRegistry
             .ToArray();
     }
 
+    public IReadOnlyCollection<RoutableNode> FindNodesWithModel(string model)
+    {
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            return Array.Empty<RoutableNode>();
+        }
+
+        return nodes
+            .Where(pair => pair.Value.Models.Any(candidate => ModelNamesMatch(candidate.Name, model)))
+            .Select(pair => new RoutableNode(
+                pair.Key,
+                pair.Value.Registration.NodeId,
+                pair.Value.Registration.Name))
+            .OrderBy(node => node.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(node => node.NodeId, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(node => node.ConnectionId, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
     public IReadOnlyCollection<NodeSnapshot> EvictStale(DateTimeOffset cutoffUtc, DateTimeOffset now)
     {
         var evicted = new List<NodeSnapshot>();
@@ -131,6 +150,11 @@ public sealed class NodeRegistry : INodeRegistry
     private static string Normalize(string? value, string fallback)
     {
         return string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+    }
+
+    private static bool ModelNamesMatch(string candidate, string requested)
+    {
+        return string.Equals(candidate.Trim(), requested.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed record NodeRegistryEntry(
