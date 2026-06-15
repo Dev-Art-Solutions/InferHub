@@ -1,9 +1,12 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Runtime.CompilerServices;
 using InferHub.Shared.Contracts;
 using OllamaClient;
 using OllamaChatRequest = OllamaClient.Models.ChatRequest;
+using OllamaChatStreamRequest = OllamaClient.Models.ChatStreamRequest;
 using OllamaGenerateRequest = OllamaClient.Models.GenerateRequest;
+using OllamaGenerateStreamRequest = OllamaClient.Models.GenerateStreamRequest;
 
 namespace InferHub.Node.Backends;
 
@@ -51,6 +54,43 @@ public sealed class OllamaBackend(
         var request = Deserialize<OllamaChatRequest>(requestJson);
         var response = await client.SendChat(request, cancellationToken);
         return JsonSerializer.Serialize(response, JsonOptions);
+    }
+
+    public IAsyncEnumerable<string> StreamAsync(
+        string kind,
+        string requestJson,
+        CancellationToken cancellationToken)
+    {
+        return kind switch
+        {
+            "generate" => StreamGenerateAsync(requestJson, cancellationToken),
+            "chat" => StreamChatAsync(requestJson, cancellationToken),
+            _ => throw new InvalidOperationException($"Unsupported inference job kind '{kind}'.")
+        };
+    }
+
+    private async IAsyncEnumerable<string> StreamGenerateAsync(
+        string requestJson,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var request = Deserialize<OllamaGenerateStreamRequest>(requestJson);
+
+        await foreach (var chunk in client.Generate(request, cancellationToken).WithCancellation(cancellationToken))
+        {
+            yield return JsonSerializer.Serialize(chunk, JsonOptions);
+        }
+    }
+
+    private async IAsyncEnumerable<string> StreamChatAsync(
+        string requestJson,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var request = Deserialize<OllamaChatStreamRequest>(requestJson);
+
+        await foreach (var chunk in client.SendChat(request, cancellationToken).WithCancellation(cancellationToken))
+        {
+            yield return JsonSerializer.Serialize(chunk, JsonOptions);
+        }
     }
 
     private static T Deserialize<T>(string requestJson)

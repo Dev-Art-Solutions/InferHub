@@ -1,7 +1,9 @@
 using System.Text.Json;
+using System.Threading.Channels;
 using InferHub.Coordinator.Services;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.Ollama;
+using Microsoft.AspNetCore.Http.Features;
 
 namespace InferHub.Coordinator.Endpoints;
 
@@ -76,11 +78,6 @@ public static class InferenceEndpoints
             return Error(StatusCodes.Status400BadRequest, "model is required");
         }
 
-        if (stream is true)
-        {
-            return Error(StatusCodes.Status400BadRequest, "streaming is not supported in this phase; set stream to false");
-        }
-
         var node = router.Route(model);
 
         if (node is null)
@@ -92,6 +89,12 @@ public static class InferenceEndpoints
 
         try
         {
+            if (stream is not false)
+            {
+                var chunks = await dispatcher.DispatchStreamAsync(node, job, cancellationToken);
+                return new StreamingInferenceResult(chunks);
+            }
+
             var result = await dispatcher.DispatchAsync(node, job, cancellationToken);
 
             if (!result.Success)
@@ -137,5 +140,26 @@ public static class InferenceEndpoints
     private static IResult Error(int statusCode, string message)
     {
         return Results.Json(new { error = message }, statusCode: statusCode);
+    }
+
+    private sealed class StreamingInferenceResult(ChannelReader<InferenceChunk> chunks) : IResult
+    {
+        public async Task ExecuteAsync(HttpContext httpContext)
+        {
+            httpContext.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+            httpContext.Response.ContentType = "application/x-ndjson";
+
+            await foreach (var chunk in chunks.ReadAllAsync(httpContext.RequestAborted))
+            {
+                await httpContext.Response.WriteAsync(chunk.ResponseJson, httpContext.RequestAborted);
+                await httpContext.Response.WriteAsync("\n", httpContext.RequestAborted);
+                await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted);
+
+                if (chunk.Done)
+                {
+                    break;
+                }
+            }
+        }
     }
 }

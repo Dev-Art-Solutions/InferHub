@@ -69,6 +69,24 @@ public sealed class NodeHub(
         return Task.CompletedTask;
     }
 
+    public async Task StreamChunks(
+        IAsyncEnumerable<InferenceChunk> chunks,
+        CancellationToken cancellationToken)
+    {
+        // The node owns token production, so it uploads chunks to the hub as a
+        // client-to-server stream; the dispatcher exposes them through a per-job channel.
+        await foreach (var chunk in chunks.WithCancellation(cancellationToken))
+        {
+            if (!dispatcher.WriteChunk(chunk))
+            {
+                logger.LogWarning(
+                    "Node connection {ConnectionId} streamed chunk for unknown job {JobId}",
+                    Context.ConnectionId,
+                    chunk.JobId);
+            }
+        }
+    }
+
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         if (registry.Remove(Context.ConnectionId))
@@ -76,6 +94,7 @@ public sealed class NodeHub(
             logger.LogInformation("Node connection {ConnectionId} disconnected", Context.ConnectionId);
         }
 
+        dispatcher.FailForConnection(Context.ConnectionId, exception);
         await base.OnDisconnectedAsync(exception);
     }
 }

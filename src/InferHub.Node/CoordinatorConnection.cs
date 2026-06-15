@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Collections.Concurrent;
 using InferHub.Node.Backends;
 using InferHub.Shared.Contracts;
 using Microsoft.AspNetCore.SignalR.Client;
@@ -22,6 +23,7 @@ public sealed class CoordinatorConnection(
     private HubConnection? connection;
     private Task? heartbeatTask;
     private Task? modelRefreshTask;
+    private readonly ConcurrentDictionary<Guid, CancellationTokenSource> activeJobs = new();
     private int inFlight;
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -91,6 +93,8 @@ public sealed class CoordinatorConnection(
     private void RegisterConnectionHandlers(HubConnection hubConnection)
     {
         hubConnection.On<InferenceJob>("RunJob", RunJobAsync);
+        hubConnection.On<InferenceJob>("RunStreamingJob", RunStreamingJobAsync);
+        hubConnection.On<Guid>("CancelJob", CancelJob);
 
         hubConnection.Reconnecting += error =>
         {
@@ -256,15 +260,17 @@ public sealed class CoordinatorConnection(
         }
 
         Interlocked.Increment(ref inFlight);
+        using var jobCts = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
 
         try
         {
+            activeJobs[job.JobId] = jobCts;
             logger.LogInformation("Running {JobKind} job {JobId}", job.Kind, job.JobId);
-            var result = await inferenceExecutor.RunAsync(job, lifetime.Token);
+            var result = await inferenceExecutor.RunAsync(job, jobCts.Token);
 
             if (activeConnection.State is HubConnectionState.Connected)
             {
-                await activeConnection.InvokeAsync("JobResult", result, lifetime.Token);
+                await activeConnection.InvokeAsync("JobResult", result, jobCts.Token);
             }
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
@@ -276,7 +282,55 @@ public sealed class CoordinatorConnection(
         }
         finally
         {
+            activeJobs.TryRemove(job.JobId, out _);
             Interlocked.Decrement(ref inFlight);
+        }
+    }
+
+    private async Task RunStreamingJobAsync(InferenceJob job)
+    {
+        var activeConnection = connection;
+
+        if (activeConnection is not { State: HubConnectionState.Connected })
+        {
+            logger.LogWarning("Received streaming job {JobId} while not connected to coordinator", job.JobId);
+            return;
+        }
+
+        Interlocked.Increment(ref inFlight);
+        using var jobCts = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+
+        try
+        {
+            activeJobs[job.JobId] = jobCts;
+            logger.LogInformation("Running streaming {JobKind} job {JobId}", job.Kind, job.JobId);
+
+            await activeConnection.InvokeAsync(
+                "StreamChunks",
+                inferenceExecutor.StreamAsync(job, jobCts.Token),
+                jobCts.Token);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested || jobCts.IsCancellationRequested)
+        {
+            logger.LogInformation("Streaming job {JobId} was canceled", job.JobId);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Could not stream result for job {JobId}", job.JobId);
+        }
+        finally
+        {
+            activeJobs.TryRemove(job.JobId, out _);
+            Interlocked.Decrement(ref inFlight);
+        }
+    }
+
+    private void CancelJob(Guid jobId)
+    {
+        if (activeJobs.TryGetValue(jobId, out var jobCts))
+        {
+            logger.LogInformation("Canceling job {JobId} at coordinator request", jobId);
+            jobCts.Cancel();
         }
     }
 

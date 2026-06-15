@@ -11,4 +11,6 @@ public interface IInferenceBackend
     Task<string> GenerateAsync(string requestJson, CancellationToken cancellationToken);
 
     Task<string> ChatAsync(string requestJson, CancellationToken cancellationToken);
+
+    IAsyncEnumerable<string> StreamAsync(string kind, string requestJson, CancellationToken cancellationToken);
 }
