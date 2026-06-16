@@ -74,7 +74,7 @@ day-by-day build briefs live in `/plan/` (kept out of version control).
 | 3 | Model discovery (pluggable backend) (done) | `v0.3.0` |
 | 4 | Routing & blocking generation (done) | `v0.4.0` |
 | 5 | End-to-end streaming (done) | `v0.5.0` |
-| 6 | Authentication & security | `v0.6.0` |
+| 6 | Authentication & security (done) | `v0.6.0` |
 | 7 | Conversations & smart routing | `v0.7.0` |
 | 8 | Resilience, observability & 1.0 | `v1.0.0` |
 
@@ -87,10 +87,54 @@ dotnet run --project src/InferHub.Coordinator
 # On each GPU machine (with Ollama already running locally)
 dotnet run --project src/InferHub.Node
 
-# From anywhere, talk to it like Ollama
+# From anywhere, talk to it like Ollama (remote calls need a Bearer token)
 curl http://your-coordinator:5080/api/chat \
+  -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{"model":"llama3","messages":[{"role":"user","content":"Hello!"}],"stream":false}'
 ```
+
+## Authentication & configuration
+
+InferHub keeps secrets out of source. Configure them at runtime via environment variables
+or .NET user-secrets — `appsettings.json` only ships empty placeholders.
+
+**Coordinator — client API keys & node enrollment secret**
+
+```bash
+# Linux / macOS
+export Auth__ApiKeys__0="sk-client-token-1"
+export Auth__ApiKeys__1="sk-client-token-2"
+export Auth__NodeEnrollmentSecret="shared-node-secret"
+
+# Windows PowerShell
+$env:Auth__ApiKeys__0 = "sk-client-token-1"
+$env:Auth__NodeEnrollmentSecret = "shared-node-secret"
+```
+
+Or with user-secrets (development):
+
+```bash
+dotnet user-secrets --project src/InferHub.Coordinator set "Auth:ApiKeys:0" "sk-client-token-1"
+dotnet user-secrets --project src/InferHub.Coordinator set "Auth:NodeEnrollmentSecret" "shared-node-secret"
+```
+
+**Node — enrollment secret**
+
+```bash
+export Coordinator__EnrollmentSecret="shared-node-secret"
+# or
+dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecret" "shared-node-secret"
+```
+
+**Loopback policy.** By default, requests originating from `127.0.0.1` / `::1` skip the
+Bearer-token check — handy for local testing. Set `Auth__RequireAuthForLoopback=true` to
+require a token even for loopback. **Remote (non-loopback) requests always require a
+valid token**, regardless of this setting.
+
+**Open endpoints.** `/health` is unauthenticated so monitoring systems can poll it.
+
+**Production.** Always run the coordinator behind HTTPS (a reverse proxy like Caddy /
+nginx, or Kestrel TLS). Bearer tokens are sensitive — don't send them over plain HTTP.
 
 ## Built with
 

@@ -1,3 +1,4 @@
+using InferHub.Coordinator.Auth;
 using InferHub.Coordinator.Services;
 using InferHub.Shared.Contracts;
 using Microsoft.AspNetCore.SignalR;
@@ -7,8 +8,20 @@ namespace InferHub.Coordinator.Hubs;
 public sealed class NodeHub(
     INodeRegistry registry,
     IDispatcher dispatcher,
+    NodeAuthFilter nodeAuth,
     ILogger<NodeHub> logger) : Hub
 {
+    public override Task OnConnectedAsync()
+    {
+        if (!nodeAuth.IsAuthorized(Context))
+        {
+            Context.Abort();
+            throw new HubException("unauthorized node");
+        }
+
+        return base.OnConnectedAsync();
+    }
+
     public Task Register(NodeRegistration registration)
     {
         registry.Upsert(Context.ConnectionId, registration, DateTimeOffset.UtcNow);

@@ -1,5 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
+  <PropertyGroup>
+    <UserSecretsId>dotnet-InferHub.Coordinator-c2e8d05f-2b8b-4d6a-8a7b-9b1f4b5a6c7d</UserSecretsId>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\InferHub.Shared\InferHub.Shared.csproj" />
   </ItemGroup>

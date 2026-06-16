@@ -83,9 +83,22 @@ public sealed class CoordinatorConnection(
     private HubConnection BuildConnection()
     {
         var hubUrl = BuildHubUrl(configuration["Coordinator:Url"] ?? "http://localhost:5080/");
+        var enrollmentSecret = configuration["Coordinator:EnrollmentSecret"];
+
+        if (string.IsNullOrWhiteSpace(enrollmentSecret))
+        {
+            logger.LogWarning(
+                "Coordinator:EnrollmentSecret is not configured; the coordinator will refuse this node.");
+        }
 
         return new HubConnectionBuilder()
-            .WithUrl(hubUrl)
+            .WithUrl(hubUrl, options =>
+            {
+                if (!string.IsNullOrWhiteSpace(enrollmentSecret))
+                {
+                    options.Headers["X-Node-Enrollment-Secret"] = enrollmentSecret;
+                }
+            })
             .WithAutomaticReconnect()
             .Build();
     }
