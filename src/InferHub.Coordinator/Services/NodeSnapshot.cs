@@ -9,4 +9,5 @@ public sealed record NodeSnapshot(
     DateTimeOffset LastSeenUtc,
     double AgeSeconds,
     int InFlight,
+    int LocalInFlight,
     int ModelCount);

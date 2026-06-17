@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using InferHub.Coordinator.Services;
@@ -9,6 +11,8 @@ namespace InferHub.Coordinator.Endpoints;
 
 public static class InferenceEndpoints
 {
+    public const string ConversationHeader = "X-InferHub-Conversation";
+
     private const string GenerateKind = "generate";
     private const string ChatKind = "chat";
 
@@ -36,6 +40,7 @@ public static class InferenceEndpoints
             rawJson,
             request.Model,
             request.Stream,
+            conversationKey: null,
             router,
             dispatcher,
             loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Generate"),
@@ -51,12 +56,14 @@ public static class InferenceEndpoints
     {
         var rawJson = await ReadBodyAsync(httpRequest, cancellationToken);
         var request = Deserialize<ChatRequest>(rawJson);
+        var conversationKey = ResolveConversationKey(httpRequest, request);
 
         return await HandleAsync(
             ChatKind,
             rawJson,
             request.Model,
             request.Stream,
+            conversationKey,
             router,
             dispatcher,
             loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Chat"),
@@ -68,6 +75,7 @@ public static class InferenceEndpoints
         string rawJson,
         string? model,
         bool? stream,
+        string? conversationKey,
         Services.IRouter router,
         IDispatcher dispatcher,
         ILogger logger,
@@ -78,11 +86,21 @@ public static class InferenceEndpoints
             return Error(StatusCodes.Status400BadRequest, "model is required");
         }
 
-        var node = router.Route(model);
+        var node = router.Route(model, conversationKey);
 
         if (node is null)
         {
             return Error(StatusCodes.Status404NotFound, $"model '{model}' not found");
+        }
+
+        if (conversationKey is not null)
+        {
+            logger.LogInformation(
+                "Routing {Kind} for conversation {ConversationKey} to node {NodeId} ({NodeName})",
+                kind,
+                conversationKey,
+                node.NodeId,
+                node.Name);
         }
 
         var job = new InferenceJob(Guid.NewGuid(), kind, rawJson);
@@ -109,6 +127,45 @@ public static class InferenceEndpoints
             logger.LogWarning("Job {JobId} for model {Model} timed out", job.JobId, model);
             return Error(StatusCodes.Status504GatewayTimeout, "inference request timed out");
         }
+    }
+
+    private static string? ResolveConversationKey(HttpRequest httpRequest, ChatRequest request)
+    {
+        if (httpRequest.Headers.TryGetValue(ConversationHeader, out var header))
+        {
+            var value = header.ToString().Trim();
+            if (!string.IsNullOrEmpty(value))
+            {
+                return "h:" + value;
+            }
+        }
+
+        return DeriveConversationKey(request.Messages);
+    }
+
+    internal static string? DeriveConversationKey(IReadOnlyList<ChatMessage>? messages)
+    {
+        if (messages is null || messages.Count == 0)
+        {
+            return null;
+        }
+
+        var firstSystem = messages.FirstOrDefault(m => string.Equals(m.Role, "system", StringComparison.OrdinalIgnoreCase));
+        var firstUser = messages.FirstOrDefault(m => string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase));
+
+        if (firstSystem is null && firstUser is null)
+        {
+            return null;
+        }
+
+        var seed = string.Concat(
+            "system:",
+            firstSystem?.Content ?? string.Empty,
+            "\n\nuser:",
+            firstUser?.Content ?? string.Empty);
+
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(seed));
+        return "a:" + Convert.ToHexString(hash, 0, 16);
     }
 
     private static async Task<string> ReadBodyAsync(HttpRequest request, CancellationToken cancellationToken)

@@ -8,4 +8,8 @@
     <ProjectReference Include="..\InferHub.Shared\InferHub.Shared.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="InferHub.Tests" />
+  </ItemGroup>
+
 </Project>

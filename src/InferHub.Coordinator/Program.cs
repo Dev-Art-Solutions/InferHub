@@ -12,7 +12,9 @@ builder.Services.Configure<ApiKeyOptions>(builder.Configuration.GetSection(ApiKe
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<NodeAuthFilter>();
 builder.Services.Configure<DispatcherOptions>(builder.Configuration.GetSection("Dispatcher"));
+builder.Services.Configure<RouterOptions>(builder.Configuration.GetSection("Router"));
 builder.Services.AddSingleton<INodeRegistry, NodeRegistry>();
+builder.Services.AddSingleton<IConversationAffinity, ConversationAffinity>();
 builder.Services.AddSingleton<InferHub.Coordinator.Services.IRouter, Router>();
 builder.Services.AddSingleton<IDispatcher, Dispatcher>();
 builder.Services.AddHostedService<NodeReaper>();

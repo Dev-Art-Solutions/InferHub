@@ -9,6 +9,7 @@ namespace InferHub.Coordinator.Services;
 
 public sealed class Dispatcher(
     IHubContext<NodeHub> hubContext,
+    INodeRegistry registry,
     IOptions<DispatcherOptions> options,
     ILogger<Dispatcher> logger) : IDispatcher
 {
@@ -27,6 +28,8 @@ public sealed class Dispatcher(
         {
             throw new InvalidOperationException($"Job '{job.JobId}' is already pending.");
         }
+
+        registry.IncrementInFlight(node.ConnectionId);
 
         using var registration = cancellationToken.Register(
             static state =>
@@ -57,7 +60,10 @@ public sealed class Dispatcher(
         }
         finally
         {
-            pendingResults.TryRemove(job.JobId, out _);
+            if (pendingResults.TryRemove(job.JobId, out _))
+            {
+                registry.DecrementInFlight(node.ConnectionId);
+            }
         }
     }
 
@@ -86,6 +92,8 @@ public sealed class Dispatcher(
             throw new InvalidOperationException($"Job '{job.JobId}' is already pending.");
         }
 
+        registry.IncrementInFlight(node.ConnectionId);
+
         try
         {
             logger.LogInformation(
@@ -103,6 +111,7 @@ public sealed class Dispatcher(
         {
             if (pendingStreams.TryRemove(job.JobId, out var removed))
             {
+                registry.DecrementInFlight(removed.ConnectionId);
                 removed.CancellationRegistration.Dispose();
                 removed.Channel.Writer.TryComplete();
             }
@@ -119,6 +128,7 @@ public sealed class Dispatcher(
             return false;
         }
 
+        registry.DecrementInFlight(pending.ConnectionId);
         logger.LogInformation("Completed job {JobId}; success={Success}", result.JobId, result.Success);
         return pending.Completion.TrySetResult(result);
     }
@@ -135,6 +145,7 @@ public sealed class Dispatcher(
 
         if (chunk.Done && pendingStreams.TryRemove(chunk.JobId, out var completed))
         {
+            registry.DecrementInFlight(completed.ConnectionId);
             completed.CancellationRegistration.Dispose();
             completed.Channel.Writer.TryComplete();
             logger.LogInformation("Completed streaming job {JobId}", chunk.JobId);
@@ -149,6 +160,7 @@ public sealed class Dispatcher(
         {
             if (pending.ConnectionId == connectionId && pendingResults.TryRemove(jobId, out var removed))
             {
+                registry.DecrementInFlight(removed.ConnectionId);
                 removed.Completion.TrySetException(
                     exception ?? new InvalidOperationException("node disconnected before returning a result"));
             }
@@ -158,6 +170,7 @@ public sealed class Dispatcher(
         {
             if (pending.ConnectionId == connectionId && pendingStreams.TryRemove(jobId, out var removed))
             {
+                registry.DecrementInFlight(removed.ConnectionId);
                 removed.CancellationRegistration.Dispose();
                 removed.Channel.Writer.TryComplete(
                     exception ?? new InvalidOperationException("node disconnected before finishing the stream"));
@@ -175,6 +188,7 @@ public sealed class Dispatcher(
 
             if (pendingStreams.TryRemove(jobId, out var pending))
             {
+                registry.DecrementInFlight(pending.ConnectionId);
                 pending.CancellationRegistration.Dispose();
                 pending.Channel.Writer.TryComplete(new TimeoutException("inference request timed out"));
                 SendCancelJob(connectionId, jobId);
@@ -186,6 +200,7 @@ public sealed class Dispatcher(
     {
         if (pendingStreams.TryRemove(jobId, out var pending))
         {
+            registry.DecrementInFlight(pending.ConnectionId);
             pending.CancellationRegistration.Dispose();
             pending.Channel.Writer.TryComplete(exception);
             SendCancelJob(connectionId, jobId);

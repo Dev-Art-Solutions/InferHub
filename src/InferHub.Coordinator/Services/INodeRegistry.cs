@@ -18,5 +18,11 @@ public interface INodeRegistry
 
     IReadOnlyCollection<RoutableNode> FindNodesWithModel(string model);
 
+    int IncrementInFlight(string connectionId);
+
+    int DecrementInFlight(string connectionId);
+
+    int GetLocalInFlight(string connectionId);
+
     IReadOnlyCollection<NodeSnapshot> EvictStale(DateTimeOffset cutoffUtc, DateTimeOffset now);
 }

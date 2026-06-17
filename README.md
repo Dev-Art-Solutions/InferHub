@@ -75,7 +75,7 @@ day-by-day build briefs live in `/plan/` (kept out of version control).
 | 4 | Routing & blocking generation (done) | `v0.4.0` |
 | 5 | End-to-end streaming (done) | `v0.5.0` |
 | 6 | Authentication & security (done) | `v0.6.0` |
-| 7 | Conversations & smart routing | `v0.7.0` |
+| 7 | Conversations & smart routing (done) | `v0.7.0` |
 | 8 | Resilience, observability & 1.0 | `v1.0.0` |
 
 ## Quick start
@@ -135,6 +135,33 @@ valid token**, regardless of this setting.
 
 **Production.** Always run the coordinator behind HTTPS (a reverse proxy like Caddy /
 nginx, or Kestrel TLS). Bearer tokens are sensitive — don't send them over plain HTTP.
+
+## Conversations & routing
+
+InferHub stores **no conversation content**. Clients send the full message history on every
+turn, exactly like Ollama — the coordinator only decides *which node* runs the work.
+
+- **Least-busy by default.** When several nodes hold the requested model, the coordinator
+  picks the one with the lowest in-flight job count and breaks ties round-robin.
+- **Sticky conversations.** Successive turns of the same chat prefer the same node, which
+  keeps that model's KV-cache warm. Affinity expires after ~10 idle minutes.
+- **Affinity guard.** If the sticky node is far busier than the least-busy alternative,
+  the coordinator breaks affinity to avoid piling up on one machine.
+- **Graceful fallback.** If the sticky node disconnects, the next turn transparently
+  routes to another capable node and the mapping is refreshed.
+
+**Tagging a conversation.** By default the coordinator hashes the opening system/user
+message to detect a continuing thread without any client cooperation. Clients that want
+explicit control can attach a stable id to every turn:
+
+```bash
+curl http://your-coordinator:5080/api/chat \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "X-InferHub-Conversation: my-chat-7f3a" \
+  -d '{"model":"llama3","messages":[...],"stream":false}'
+```
+
+The header value is opaque — any stable string identifying the conversation works.
 
 ## Built with
 

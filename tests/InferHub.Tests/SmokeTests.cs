@@ -20,6 +20,34 @@ public class SmokeTests
     }
 
     [Fact]
+    public void ChatRequestRoundTripPreservesEntireMessageHistory()
+    {
+        const string body = """
+        {
+          "model": "llama3",
+          "messages": [
+            {"role":"system","content":"You are helpful."},
+            {"role":"user","content":"Hi!"},
+            {"role":"assistant","content":"Hello, how can I help?"},
+            {"role":"user","content":"Tell me about Sofia."}
+          ],
+          "stream": false
+        }
+        """;
+
+        var request = JsonSerializer.Deserialize<ChatRequest>(body, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.NotNull(request);
+        Assert.Equal("llama3", request!.Model);
+        Assert.NotNull(request.Messages);
+        Assert.Equal(4, request.Messages!.Count);
+        Assert.Equal("system", request.Messages[0].Role);
+        Assert.Equal("You are helpful.", request.Messages[0].Content);
+        Assert.Equal("user", request.Messages[3].Role);
+        Assert.Equal("Tell me about Sofia.", request.Messages[3].Content);
+    }
+
+    [Fact]
     public void NodeModelsSerializesExpectedContractFields()
     {
         var response = new NodeModels(

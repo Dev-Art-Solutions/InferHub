@@ -167,6 +167,63 @@ public class NodeRegistryTests
         Assert.Empty(registry.DistinctModels());
     }
 
+    [Fact]
+    public void IncrementAndDecrementInFlightTracksCoordinatorView()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("connection-1", Registration("node-1"), now);
+
+        Assert.Equal(0, registry.GetLocalInFlight("connection-1"));
+
+        Assert.Equal(1, registry.IncrementInFlight("connection-1"));
+        Assert.Equal(2, registry.IncrementInFlight("connection-1"));
+        Assert.Equal(2, registry.GetLocalInFlight("connection-1"));
+
+        Assert.Equal(1, registry.DecrementInFlight("connection-1"));
+        Assert.Equal(0, registry.DecrementInFlight("connection-1"));
+    }
+
+    [Fact]
+    public void DecrementInFlightClampsAtZero()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("connection-1", Registration("node-1"), now);
+
+        Assert.Equal(0, registry.DecrementInFlight("connection-1"));
+        Assert.Equal(0, registry.GetLocalInFlight("connection-1"));
+    }
+
+    [Fact]
+    public void RemoveClearsInFlightCounter()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("connection-1", Registration("node-1"), now);
+        registry.IncrementInFlight("connection-1");
+
+        registry.Remove("connection-1");
+
+        Assert.Equal(0, registry.GetLocalInFlight("connection-1"));
+    }
+
+    [Fact]
+    public void SnapshotIncludesBothReportedAndLocalInFlight()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("connection-1", Registration("node-1"), now);
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 7), now);
+        registry.IncrementInFlight("connection-1");
+        registry.IncrementInFlight("connection-1");
+
+        var snapshot = Assert.Single(registry.Snapshot(now));
+        Assert.Equal(7, snapshot.InFlight);
+        Assert.Equal(2, snapshot.LocalInFlight);
+    }
+
     private static NodeRegistration Registration(string nodeId, string name = "local-node")
     {
         return new NodeRegistration(

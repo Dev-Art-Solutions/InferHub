@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using InferHub.Shared.Contracts;
 
 namespace InferHub.Coordinator.Services;
@@ -6,6 +7,7 @@ namespace InferHub.Coordinator.Services;
 public sealed class NodeRegistry : INodeRegistry
 {
     private readonly ConcurrentDictionary<string, NodeRegistryEntry> nodes = new();
+    private readonly ConcurrentDictionary<string, StrongBox<int>> localInFlight = new();
 
     public void Upsert(string connectionId, NodeRegistration registration, DateTimeOffset now)
     {
@@ -25,6 +27,8 @@ public sealed class NodeRegistry : INodeRegistry
                 Registration = normalized,
                 LastSeenUtc = now
             });
+
+        localInFlight.GetOrAdd(connectionId, _ => new StrongBox<int>(0));
     }
 
     public bool Touch(string connectionId, Heartbeat heartbeat, DateTimeOffset now)
@@ -67,6 +71,7 @@ public sealed class NodeRegistry : INodeRegistry
 
     public bool Remove(string connectionId)
     {
+        localInFlight.TryRemove(connectionId, out _);
         return nodes.TryRemove(connectionId, out _);
     }
 
@@ -111,6 +116,40 @@ public sealed class NodeRegistry : INodeRegistry
             .ToArray();
     }
 
+    public int IncrementInFlight(string connectionId)
+    {
+        var box = localInFlight.GetOrAdd(connectionId, _ => new StrongBox<int>(0));
+        return Interlocked.Increment(ref box.Value);
+    }
+
+    public int DecrementInFlight(string connectionId)
+    {
+        if (!localInFlight.TryGetValue(connectionId, out var box))
+        {
+            return 0;
+        }
+
+        var value = Interlocked.Decrement(ref box.Value);
+
+        if (value < 0)
+        {
+            Interlocked.Exchange(ref box.Value, 0);
+            return 0;
+        }
+
+        return value;
+    }
+
+    public int GetLocalInFlight(string connectionId)
+    {
+        if (!localInFlight.TryGetValue(connectionId, out var box))
+        {
+            return 0;
+        }
+
+        return Math.Max(0, Volatile.Read(ref box.Value));
+    }
+
     public IReadOnlyCollection<NodeSnapshot> EvictStale(DateTimeOffset cutoffUtc, DateTimeOffset now)
     {
         var evicted = new List<NodeSnapshot>();
@@ -124,6 +163,7 @@ public sealed class NodeRegistry : INodeRegistry
 
             if (nodes.TryRemove(pair.Key, out var removed))
             {
+                localInFlight.TryRemove(pair.Key, out _);
                 evicted.Add(ToSnapshot(pair.Key, removed, now));
             }
         }
@@ -131,7 +171,7 @@ public sealed class NodeRegistry : INodeRegistry
         return evicted;
     }
 
-    private static NodeSnapshot ToSnapshot(string connectionId, NodeRegistryEntry entry, DateTimeOffset now)
+    private NodeSnapshot ToSnapshot(string connectionId, NodeRegistryEntry entry, DateTimeOffset now)
     {
         var ageSeconds = Math.Max(0, (now - entry.LastSeenUtc).TotalSeconds);
 
@@ -144,6 +184,7 @@ public sealed class NodeRegistry : INodeRegistry
             entry.LastSeenUtc,
             ageSeconds,
             entry.InFlight,
+            GetLocalInFlight(connectionId),
             entry.Models.Count);
     }
 
