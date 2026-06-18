@@ -8,6 +8,7 @@ namespace InferHub.Coordinator.Hubs;
 public sealed class NodeHub(
     INodeRegistry registry,
     IDispatcher dispatcher,
+    IConversationAffinity affinity,
     NodeAuthFilter nodeAuth,
     ILogger<NodeHub> logger) : Hub
 {
@@ -108,6 +109,7 @@ public sealed class NodeHub(
         }
 
         dispatcher.FailForConnection(Context.ConnectionId, exception);
+        affinity.ForgetConnection(Context.ConnectionId);
         await base.OnDisconnectedAsync(exception);
     }
 }

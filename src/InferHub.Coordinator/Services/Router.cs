@@ -9,9 +9,16 @@ public sealed class Router(
 {
     private int cursor;
 
-    public RoutableNode? Route(string model, string? conversationKey = null)
+    public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null)
     {
         var candidates = registry.FindNodesWithModel(model);
+
+        if (!string.IsNullOrEmpty(excludeConnectionId))
+        {
+            candidates = candidates
+                .Where(node => !string.Equals(node.ConnectionId, excludeConnectionId, StringComparison.Ordinal))
+                .ToArray();
+        }
 
         if (candidates.Count == 0)
         {

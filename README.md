@@ -63,9 +63,9 @@ of one.
 
 ## Status
 
-InferHub is being built in the open, one phase at a time. Each phase ends with a tagged
-release. The current focus and the road ahead live in the roadmap below; the detailed,
-day-by-day build briefs live in `/plan/` (kept out of version control).
+**InferHub 1.0** ships a self-hosted, Ollama-compatible inference mesh: Bearer auth,
+sticky + least-busy routing, live streaming, pre-stream failover, and a live status page
+to watch the fleet.
 
 | Phase | Theme | Version |
 |------:|-------|---------|
@@ -76,7 +76,11 @@ day-by-day build briefs live in `/plan/` (kept out of version control).
 | 5 | End-to-end streaming (done) | `v0.5.0` |
 | 6 | Authentication & security (done) | `v0.6.0` |
 | 7 | Conversations & smart routing (done) | `v0.7.0` |
-| 8 | Resilience, observability & 1.0 | `v1.0.0` |
+| 8 | Resilience, observability & 1.0 (done) | `v1.0.0` |
+
+**What's next.** 1.0 covers a single coordinator, in-memory state, and a read-only status
+page. Beyond 1.0 we may look at multi-coordinator clustering, persisted affinity, a richer
+admin surface, and additional inference backends (vLLM, llama.cpp). None of that blocks 1.0.
 
 ## Quick start
 
@@ -135,6 +139,64 @@ valid token**, regardless of this setting.
 
 **Production.** Always run the coordinator behind HTTPS (a reverse proxy like Caddy /
 nginx, or Kestrel TLS). Bearer tokens are sensitive — don't send them over plain HTTP.
+
+### All configuration keys
+
+Every coordinator setting lives in `appsettings.json` (or overridden via env vars / user
+secrets). Defaults are listed below — sensible for a single-host deployment.
+
+| Key | Default | Purpose |
+|---|---|---|
+| `Urls` | `http://localhost:5080` | Address the coordinator listens on. |
+| `NodeRegistry:TimeoutSeconds` | `30` | Heartbeat-miss window before a node is evicted and its in-flight jobs are failed. |
+| `NodeRegistry:ReaperIntervalSeconds` | `5` | How often the reaper sweeps for stale nodes. |
+| `Dispatcher:TimeoutSeconds` | `300` | Per-job wall-clock timeout (applies to streaming and blocking). |
+| `Router:AffinitySlidingMinutes` | `10` | Sticky-conversation idle expiry. |
+| `Router:AffinityLoadBreakThreshold` | `2` | Extra in-flight jobs the sticky node may have before affinity is broken in favour of a less-busy node. |
+| `Auth:ApiKeys` | `[]` | Accepted client Bearer tokens (constant-time compared). |
+| `Auth:RequireAuthForLoopback` | `false` | Force loopback callers to present a token too. |
+| `Auth:NodeEnrollmentSecret` | _(empty)_ | Shared secret nodes present when joining the hub. Empty disables enrollment. |
+
+## Status & observability
+
+A read-only status page lives at `/` (and `/status`). It auto-refreshes and shows the
+fleet — connected nodes, their reported models, live in-flight counts, eviction history,
+and failover stats.
+
+`GET /api/status` returns the same data as JSON:
+
+```json
+{
+  "coordinatorVersion": "1.0.0",
+  "nowUtc": "2026-06-18T12:00:00+00:00",
+  "uptimeSeconds": 4321.5,
+  "nodes": [ { "nodeId": "...", "name": "...", "inFlight": 0, "localInFlight": 0, "modelCount": 4, "ageSeconds": 1.2 } ],
+  "models": [ { "name": "llama3", "digest": "...", "size": 4661211808 } ],
+  "metrics": {
+    "requestsTotal": 142, "requestsInFlight": 1, "requestsCompleted": 138,
+    "requestsFailed": 3, "failoversAttempted": 2, "failoversSucceeded": 2,
+    "nodesEvicted": 1, "perNode": [ … ]
+  }
+}
+```
+
+`GET /health` stays unauthenticated for monitoring.
+
+## Resilience & failover
+
+InferHub is built to keep running while nodes come and go.
+
+- **Heartbeat eviction.** Nodes that miss heartbeats past `NodeRegistry:TimeoutSeconds`
+  are dropped from the registry; their in-flight jobs fail with a clear error and their
+  sticky-conversation mappings are cleared.
+- **Pre-stream failover.** If the chosen node drops *before* the first chunk is
+  produced, the coordinator transparently retries the request on another capable node
+  (when one exists). This applies to both blocking and streaming calls.
+- **No silent retry mid-stream.** Once chunks have started flowing, the coordinator does
+  **not** retry — the client already has partial output. Instead the stream ends with a
+  final error chunk so callers don't hang.
+- **Job timeout.** `Dispatcher:TimeoutSeconds` caps how long any one job can hold a
+  request open.
 
 ## Conversations & routing
 

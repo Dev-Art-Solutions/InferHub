@@ -58,5 +58,26 @@ public sealed class ConversationAffinity : IConversationAffinity
         }
     }
 
+    public int ForgetConnection(string connectionId)
+    {
+        if (string.IsNullOrEmpty(connectionId))
+        {
+            return 0;
+        }
+
+        var removed = 0;
+
+        foreach (var pair in map)
+        {
+            if (pair.Value.ConnectionId == connectionId
+                && map.TryRemove(new KeyValuePair<string, Entry>(pair.Key, pair.Value)))
+            {
+                removed++;
+            }
+        }
+
+        return removed;
+    }
+
     private sealed record Entry(string ConnectionId, DateTimeOffset LastUsed);
 }

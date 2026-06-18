@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.Ollama;
@@ -29,6 +30,7 @@ public static class InferenceEndpoints
         HttpRequest httpRequest,
         Services.IRouter router,
         IDispatcher dispatcher,
+        Metrics metrics,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
@@ -43,6 +45,7 @@ public static class InferenceEndpoints
             conversationKey: null,
             router,
             dispatcher,
+            metrics,
             loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Generate"),
             cancellationToken);
     }
@@ -51,6 +54,7 @@ public static class InferenceEndpoints
         HttpRequest httpRequest,
         Services.IRouter router,
         IDispatcher dispatcher,
+        Metrics metrics,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
@@ -66,6 +70,7 @@ public static class InferenceEndpoints
             conversationKey,
             router,
             dispatcher,
+            metrics,
             loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Chat"),
             cancellationToken);
     }
@@ -78,6 +83,7 @@ public static class InferenceEndpoints
         string? conversationKey,
         Services.IRouter router,
         IDispatcher dispatcher,
+        Metrics metrics,
         ILogger logger,
         CancellationToken cancellationToken)
     {
@@ -107,6 +113,51 @@ public static class InferenceEndpoints
 
         try
         {
+            return await DispatchWithFailoverAsync(
+                kind,
+                rawJson,
+                model,
+                stream,
+                conversationKey,
+                node,
+                job,
+                router,
+                dispatcher,
+                metrics,
+                logger,
+                cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            logger.LogWarning("Job {JobId} for model {Model} timed out", job.JobId, model);
+            return Error(StatusCodes.Status504GatewayTimeout, "inference request timed out");
+        }
+        catch (NodeDisconnectedException ex)
+        {
+            // We're here only if failover also failed (or was impossible). Surface a clean
+            // 502 — the caller hasn't received any content yet for either path because the
+            // streaming dispatcher only returns its reader after the first chunk arrives.
+            logger.LogWarning(ex, "Job {JobId} for model {Model} could not be dispatched", job.JobId, model);
+            return Error(StatusCodes.Status502BadGateway, "no node was able to handle the request");
+        }
+    }
+
+    private static async Task<IResult> DispatchWithFailoverAsync(
+        string kind,
+        string rawJson,
+        string model,
+        bool? stream,
+        string? conversationKey,
+        RoutableNode node,
+        InferenceJob job,
+        Services.IRouter router,
+        IDispatcher dispatcher,
+        Metrics metrics,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
             if (stream is not false)
             {
                 var chunks = await dispatcher.DispatchStreamAsync(node, job, cancellationToken);
@@ -122,10 +173,52 @@ public static class InferenceEndpoints
 
             return Results.Text(result.ResponseJson ?? "{}", "application/json");
         }
-        catch (TimeoutException)
+        catch (NodeDisconnectedException ex)
         {
-            logger.LogWarning("Job {JobId} for model {Model} timed out", job.JobId, model);
-            return Error(StatusCodes.Status504GatewayTimeout, "inference request timed out");
+            metrics.RecordFailoverAttempted();
+            logger.LogWarning(
+                "Node {NodeId} dropped before the job started — attempting failover",
+                node.NodeId);
+
+            var retryNode = router.Route(model, conversationKey, excludeConnectionId: ex.ConnectionId);
+
+            if (retryNode is null)
+            {
+                logger.LogWarning(
+                    "No alternate node available for failover of job {JobId} (model {Model})",
+                    job.JobId,
+                    model);
+                throw;
+            }
+
+            // Issue a fresh job id so the dispatcher's pending tables stay coherent.
+            var retryJob = job with { JobId = Guid.NewGuid() };
+
+            logger.LogInformation(
+                "Failing over {Kind} job {JobId} -> {NewJobId} to node {NodeId} ({NodeName})",
+                kind,
+                job.JobId,
+                retryJob.JobId,
+                retryNode.NodeId,
+                retryNode.Name);
+
+            if (stream is not false)
+            {
+                var chunks = await dispatcher.DispatchStreamAsync(retryNode, retryJob, cancellationToken);
+                metrics.RecordFailoverSucceeded();
+                return new StreamingInferenceResult(chunks);
+            }
+
+            var result = await dispatcher.DispatchAsync(retryNode, retryJob, cancellationToken);
+
+            if (!result.Success)
+            {
+                metrics.RecordFailoverSucceeded();
+                return Error(StatusCodes.Status502BadGateway, result.Error ?? "node failed to run inference");
+            }
+
+            metrics.RecordFailoverSucceeded();
+            return Results.Text(result.ResponseJson ?? "{}", "application/json");
         }
     }
 
@@ -206,16 +299,44 @@ public static class InferenceEndpoints
             httpContext.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
             httpContext.Response.ContentType = "application/x-ndjson";
 
-            await foreach (var chunk in chunks.ReadAllAsync(httpContext.RequestAborted))
+            try
             {
-                await httpContext.Response.WriteAsync(chunk.ResponseJson, httpContext.RequestAborted);
+                await foreach (var chunk in chunks.ReadAllAsync(httpContext.RequestAborted))
+                {
+                    await httpContext.Response.WriteAsync(chunk.ResponseJson, httpContext.RequestAborted);
+                    await httpContext.Response.WriteAsync("\n", httpContext.RequestAborted);
+                    await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted);
+
+                    if (chunk.Done)
+                    {
+                        break;
+                    }
+                }
+            }
+            catch (NodeDisconnectedException ex)
+            {
+                // Stream started, then the node went away — emit a final error chunk so the
+                // client doesn't hang waiting for the rest of the response.
+                await WriteErrorChunkAsync(httpContext, ex.Message);
+            }
+            catch (TimeoutException ex)
+            {
+                await WriteErrorChunkAsync(httpContext, ex.Message);
+            }
+        }
+
+        private static async Task WriteErrorChunkAsync(HttpContext httpContext, string message)
+        {
+            try
+            {
+                var payload = JsonSerializer.Serialize(new { error = message, done = true }, JsonOptions);
+                await httpContext.Response.WriteAsync(payload, httpContext.RequestAborted);
                 await httpContext.Response.WriteAsync("\n", httpContext.RequestAborted);
                 await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted);
-
-                if (chunk.Done)
-                {
-                    break;
-                }
+            }
+            catch (Exception)
+            {
+                // Client likely walked away — nothing useful to do here.
             }
         }
     }

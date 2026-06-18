@@ -7,4 +7,6 @@ public interface IConversationAffinity
     void Record(string conversationKey, string connectionId);
 
     void Forget(string conversationKey);
+
+    int ForgetConnection(string connectionId);
 }

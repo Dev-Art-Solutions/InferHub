@@ -119,6 +119,38 @@ public class RouterTests
     }
 
     [Fact]
+    public void RouteExcludesGivenConnection()
+    {
+        var registry = new NodeRegistry();
+        SeedTwoNodes(registry);
+
+        var router = NewRouter(registry, out _);
+
+        var node = router.Route("llama3", conversationKey: null, excludeConnectionId: "connection-a");
+
+        Assert.NotNull(node);
+        Assert.Equal("node-b", node!.NodeId);
+    }
+
+    [Fact]
+    public void RouteReturnsNullWhenAllCapableNodesAreExcluded()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("connection-only", Registration("node-only", "only-node"), now);
+        registry.ReportModels(
+            "connection-only",
+            new NodeModels("node-only", [new ModelInfo("llama3", "digest", 1)], now),
+            now);
+
+        var router = NewRouter(registry, out _);
+
+        var node = router.Route("llama3", conversationKey: null, excludeConnectionId: "connection-only");
+
+        Assert.Null(node);
+    }
+
+    [Fact]
     public void RouteSpreadsDistinctConversationsAcrossNodes()
     {
         var registry = new NodeRegistry();

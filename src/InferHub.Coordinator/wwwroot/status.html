@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>InferHub — status</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #161a22;
+      --panel-border: #232936;
+      --text: #e4e7ee;
+      --muted: #8b94a7;
+      --accent: #4ea1ff;
+      --ok: #4ade80;
+      --warn: #facc15;
+      --err: #f87171;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    body { background: var(--bg); color: var(--text); margin: 0; padding: 32px; line-height: 1.4; }
+    header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
+    h1 { font-size: 20px; margin: 0; letter-spacing: 0.4px; }
+    h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); margin: 0 0 12px; }
+    .meta { color: var(--muted); font-size: 13px; }
+    .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-bottom: 32px; }
+    .card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px; padding: 16px; }
+    .stat { font-size: 28px; font-weight: 600; margin: 4px 0 0; }
+    .stat-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; }
+    table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 8px; overflow: hidden; }
+    th, td { padding: 10px 12px; text-align: left; font-size: 13px; border-bottom: 1px solid var(--panel-border); }
+    th { color: var(--muted); font-weight: 500; text-transform: uppercase; font-size: 11px; letter-spacing: 0.6px; }
+    tr:last-child td { border-bottom: none; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; }
+    .pill-ok { background: rgba(74, 222, 128, 0.12); color: var(--ok); }
+    .pill-warn { background: rgba(250, 204, 21, 0.12); color: var(--warn); }
+    .pill-err { background: rgba(248, 113, 113, 0.12); color: var(--err); }
+    .empty { color: var(--muted); font-style: italic; padding: 16px; text-align: center; }
+    section { margin-bottom: 32px; }
+    code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>InferHub <span class="meta" id="version">·</span></h1>
+    <div class="meta">
+      uptime <span id="uptime">—</span> · refreshed <span id="refreshed">—</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Fleet</h2>
+    <div class="grid" id="stats"></div>
+  </section>
+
+  <section>
+    <h2>Nodes</h2>
+    <table id="nodes-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Node id</th>
+          <th>Endpoint</th>
+          <th>Version</th>
+          <th>Status</th>
+          <th>In-flight (local / reported)</th>
+          <th>Models</th>
+          <th>Last seen</th>
+        </tr>
+      </thead>
+      <tbody id="nodes"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Models</h2>
+    <table id="models-table">
+      <thead>
+        <tr><th>Name</th><th>Digest</th><th>Size</th></tr>
+      </thead>
+      <tbody id="models"></tbody>
+    </table>
+  </section>
+
+  <script>
+    const fmtSeconds = (s) => {
+      if (s == null) return "—";
+      if (s < 60) return `${s.toFixed(0)}s`;
+      const m = Math.floor(s / 60), r = Math.floor(s % 60);
+      if (m < 60) return `${m}m ${r}s`;
+      const h = Math.floor(m / 60);
+      return `${h}h ${m % 60}m`;
+    };
+
+    const fmtBytes = (b) => {
+      if (b == null) return "—";
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      let i = 0, v = Number(b);
+      while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+      return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${units[i]}`;
+    };
+
+    const statusPill = (ageSeconds) => {
+      if (ageSeconds < 15) return `<span class="pill pill-ok">online</span>`;
+      if (ageSeconds < 30) return `<span class="pill pill-warn">stale</span>`;
+      return `<span class="pill pill-err">missing</span>`;
+    };
+
+    const renderStats = (snapshot) => {
+      const cards = [
+        ["Requests total", snapshot.requestsTotal ?? 0],
+        ["In-flight", snapshot.requestsInFlight ?? 0],
+        ["Completed", snapshot.requestsCompleted ?? 0],
+        ["Failed", snapshot.requestsFailed ?? 0],
+        ["Failovers", `${snapshot.failoversSucceeded ?? 0} / ${snapshot.failoversAttempted ?? 0}`],
+        ["Nodes evicted", snapshot.nodesEvicted ?? 0],
+      ];
+      document.getElementById("stats").innerHTML = cards.map(([label, value]) =>
+        `<div class="card"><div class="stat-label">${label}</div><div class="stat">${value}</div></div>`
+      ).join("");
+    };
+
+    const renderNodes = (nodes) => {
+      const tbody = document.getElementById("nodes");
+      if (!nodes || nodes.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" class="empty">No nodes connected.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = nodes.map(n => `
+        <tr>
+          <td>${n.name}</td>
+          <td><code>${n.nodeId}</code></td>
+          <td>${n.ollamaEndpoint}</td>
+          <td>${n.version}</td>
+          <td>${statusPill(n.ageSeconds)}</td>
+          <td>${n.localInFlight} / ${n.inFlight}</td>
+          <td>${n.modelCount}</td>
+          <td>${fmtSeconds(n.ageSeconds)} ago</td>
+        </tr>
+      `).join("");
+    };
+
+    const renderModels = (models) => {
+      const tbody = document.getElementById("models");
+      if (!models || models.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="3" class="empty">No models reported yet.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = models.map(m => `
+        <tr>
+          <td><code>${m.name}</code></td>
+          <td><code>${m.digest ?? "—"}</code></td>
+          <td>${fmtBytes(m.size)}</td>
+        </tr>
+      `).join("");
+    };
+
+    const tick = async () => {
+      try {
+        const res = await fetch("/api/status", { headers: { "Accept": "application/json" } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        document.getElementById("version").textContent = `v${data.coordinatorVersion}`;
+        document.getElementById("uptime").textContent = fmtSeconds(data.uptimeSeconds);
+        document.getElementById("refreshed").textContent = new Date().toLocaleTimeString();
+        renderStats(data.metrics);
+        renderNodes(data.nodes);
+        renderModels(data.models);
+      } catch (err) {
+        document.getElementById("refreshed").textContent = `error: ${err.message}`;
+      }
+    };
+
+    tick();
+    setInterval(tick, 3000);
+  </script>
+</body>
+</html>

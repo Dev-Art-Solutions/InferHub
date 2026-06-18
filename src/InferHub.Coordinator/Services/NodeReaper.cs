@@ -1,7 +1,12 @@
+using InferHub.Coordinator.Observability;
+
 namespace InferHub.Coordinator.Services;
 
 public sealed class NodeReaper(
     INodeRegistry registry,
+    IDispatcher dispatcher,
+    IConversationAffinity affinity,
+    Metrics metrics,
     IConfiguration configuration,
     ILogger<NodeReaper> logger) : BackgroundService
 {
@@ -27,6 +32,12 @@ public sealed class NodeReaper(
                     node.NodeId,
                     node.Name,
                     node.AgeSeconds);
+
+                dispatcher.FailForConnection(
+                    node.ConnectionId,
+                    new TimeoutException($"node '{node.NodeId}' missed its heartbeat"));
+                affinity.ForgetConnection(node.ConnectionId);
+                metrics.RecordNodeEvicted();
             }
         }
     }

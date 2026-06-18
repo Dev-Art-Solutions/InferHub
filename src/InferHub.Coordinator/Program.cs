@@ -2,6 +2,7 @@ using System.Reflection;
 using InferHub.Coordinator.Auth;
 using InferHub.Coordinator.Endpoints;
 using InferHub.Coordinator.Hubs;
+using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.Ollama;
@@ -13,6 +14,7 @@ builder.Services.AddSignalR();
 builder.Services.AddSingleton<NodeAuthFilter>();
 builder.Services.Configure<DispatcherOptions>(builder.Configuration.GetSection("Dispatcher"));
 builder.Services.Configure<RouterOptions>(builder.Configuration.GetSection("Router"));
+builder.Services.AddSingleton<Metrics>();
 builder.Services.AddSingleton<INodeRegistry, NodeRegistry>();
 builder.Services.AddSingleton<IConversationAffinity, ConversationAffinity>();
 builder.Services.AddSingleton<InferHub.Coordinator.Services.IRouter, Router>();
@@ -26,6 +28,15 @@ var version = typeof(Program).Assembly
     .InformationalVersion ?? typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown";
 
 app.UseMiddleware<BearerApiKeyMiddleware>();
+
+// Status page is read-only; serve it from wwwroot/ and surface /status as an alias.
+var defaultFiles = new DefaultFilesOptions();
+defaultFiles.DefaultFileNames.Clear();
+defaultFiles.DefaultFileNames.Add("status.html");
+app.UseDefaultFiles(defaultFiles);
+app.UseStaticFiles();
+
+app.MapGet("/status", () => Results.Redirect("/status.html"));
 
 app.MapGet("/health", (ILogger<Program> logger) =>
 {
@@ -44,6 +55,7 @@ app.MapGet("/api/nodes", (INodeRegistry registry) =>
     return Results.Ok(registry.Snapshot(DateTimeOffset.UtcNow));
 });
 
+app.MapStatusEndpoint(version);
 app.MapInferenceEndpoints();
 
 app.MapHub<NodeHub>("/hubs/node");

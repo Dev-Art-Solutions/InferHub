@@ -74,6 +74,23 @@ public class ConversationAffinityTests
         Assert.Null(affinity.GetNodeFor("conv-1"));
     }
 
+    [Fact]
+    public void ForgetConnectionClearsAllMappingsForThatConnection()
+    {
+        var affinity = new ConversationAffinity(Options(slidingMinutes: 10));
+
+        affinity.Record("conv-1", "connection-a");
+        affinity.Record("conv-2", "connection-a");
+        affinity.Record("conv-3", "connection-b");
+
+        var removed = affinity.ForgetConnection("connection-a");
+
+        Assert.Equal(2, removed);
+        Assert.Null(affinity.GetNodeFor("conv-1"));
+        Assert.Null(affinity.GetNodeFor("conv-2"));
+        Assert.Equal("connection-b", affinity.GetNodeFor("conv-3"));
+    }
+
     private static IOptions<RouterOptions> Options(int slidingMinutes)
     {
         return Microsoft.Extensions.Options.Options.Create(new RouterOptions
