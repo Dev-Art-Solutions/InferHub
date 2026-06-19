@@ -1,13 +1,37 @@
 using InferHub.Node;
 using InferHub.Node.Backends;
+using InferHub.Node.Configuration;
 using Microsoft.Extensions.Options;
 using OllamaClient.Extensions;
 
 var builder = Host.CreateApplicationBuilder(args);
+
+builder.Services
+    .AddOptions<CoordinatorOptions>()
+    .Bind(builder.Configuration.GetSection(CoordinatorOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<CoordinatorOptions>, CoordinatorOptionsValidator>();
+
+builder.Services
+    .AddOptions<NodeOptions>()
+    .Bind(builder.Configuration.GetSection(NodeOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<NodeOptions>, NodeOptionsValidator>();
+
+builder.Services
+    .AddOptions<OllamaOptions>()
+    .Bind(builder.Configuration.GetSection(OllamaOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<OllamaOptions>, OllamaOptionsValidator>();
+
 builder.Services.Configure<BackendOptions>(builder.Configuration.GetSection("Backend"));
+
 builder.Services.AddOllamaClient(cfg =>
 {
-    cfg.OllamaEndpoint = builder.Configuration["Ollama:Endpoint"] ?? "http://localhost:11434/";
+    var ollamaOptions = builder.Configuration
+        .GetSection(OllamaOptions.SectionName)
+        .Get<OllamaOptions>() ?? new OllamaOptions();
+    cfg.OllamaEndpoint = ollamaOptions.Endpoint;
 });
 builder.Services.AddSingleton<INodeIdentity, FileNodeIdentity>();
 builder.Services.AddSingleton<IInferenceBackend>(services =>

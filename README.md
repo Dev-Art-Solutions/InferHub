@@ -157,6 +157,28 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Auth:RequireAuthForLoopback` | `false` | Force loopback callers to present a token too. |
 | `Auth:NodeEnrollmentSecret` | _(empty)_ | Shared secret nodes present when joining the hub. Empty disables enrollment. |
 
+### Node configuration
+
+Every node setting lives in `src/InferHub.Node/appsettings.json` and is validated at startup
+— a bad value (non-URL coordinator, negative interval, `MaxConcurrency < 1`) stops the
+process with a message naming the offending key. Env-var / user-secrets overrides work as
+usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
+
+| Key | Default | Purpose |
+|---|---|---|
+| `Coordinator:Url` | `http://localhost:5080/` | Coordinator base URL (must be absolute http/https). |
+| `Coordinator:EnrollmentSecret` | _(empty)_ | Shared secret matching the coordinator's `Auth:NodeEnrollmentSecret`. |
+| `Coordinator:HeartbeatInterval` | `00:00:10` | How often the node pings the coordinator. |
+| `Coordinator:ModelRefreshInterval` | `00:01:00` | How often the node re-reports its model list. |
+| `Coordinator:RetryDelay` | `00:00:05` | Wait between reconnect attempts. |
+| `Node:Name` | _(machine name)_ | Friendly node name shown in the status page. |
+| `Node:MaxConcurrency` | `null` | Advisory in-flight cap reported to the coordinator (null = unbounded). |
+| `Node:Labels` | `{}` | Free-form key/value pairs surfaced on `GET /api/nodes`. |
+| `Node:Models:Include` | `[]` | Whitelist of model names to advertise (empty = all). |
+| `Node:Models:Exclude` | `[]` | Names dropped before reporting. |
+| `Backend:Type` | `ollama` | Inference backend selector. |
+| `Ollama:Endpoint` | `http://localhost:11434/` | Local Ollama URL (absolute http/https). |
+
 ## Status & observability
 
 A read-only status page lives at `/` (and `/status`). It auto-refreshes and shows the

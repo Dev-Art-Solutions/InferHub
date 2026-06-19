@@ -1,21 +1,25 @@
 using System.Reflection;
 using System.Collections.Concurrent;
 using InferHub.Node.Backends;
+using InferHub.Node.Configuration;
 using InferHub.Shared.Contracts;
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.Options;
 
 namespace InferHub.Node;
 
 public sealed class CoordinatorConnection(
-    IConfiguration configuration,
+    IOptions<CoordinatorOptions> coordinatorOptions,
+    IOptions<NodeOptions> nodeOptions,
+    IOptions<OllamaOptions> ollamaOptions,
     INodeIdentity nodeIdentity,
     IInferenceBackend backend,
     InferenceExecutor inferenceExecutor,
     ILogger<CoordinatorConnection> logger) : IAsyncDisposable
 {
-    private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(10);
-    private static readonly TimeSpan ModelRefreshInterval = TimeSpan.FromSeconds(60);
-    private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(5);
+    private readonly CoordinatorOptions coordinator = coordinatorOptions.Value;
+    private readonly NodeOptions node = nodeOptions.Value;
+    private readonly OllamaOptions ollama = ollamaOptions.Value;
 
     private readonly SemaphoreSlim reconnectLock = new(1, 1);
     private readonly CancellationTokenSource lifetime = new();
@@ -82,8 +86,8 @@ public sealed class CoordinatorConnection(
 
     private HubConnection BuildConnection()
     {
-        var hubUrl = BuildHubUrl(configuration["Coordinator:Url"] ?? "http://localhost:5080/");
-        var enrollmentSecret = configuration["Coordinator:EnrollmentSecret"];
+        var hubUrl = BuildHubUrl(coordinator.Url);
+        var enrollmentSecret = coordinator.EnrollmentSecret;
 
         if (string.IsNullOrWhiteSpace(enrollmentSecret))
         {
@@ -167,8 +171,8 @@ public sealed class CoordinatorConnection(
                 }
                 catch (Exception ex)
                 {
-                    logger.LogWarning(ex, "Could not connect to coordinator; retrying in {DelaySeconds}s", RetryDelay.TotalSeconds);
-                    await Task.Delay(RetryDelay, cancellationToken);
+                    logger.LogWarning(ex, "Could not connect to coordinator; retrying in {DelaySeconds}s", coordinator.RetryDelay.TotalSeconds);
+                    await Task.Delay(coordinator.RetryDelay, cancellationToken);
                 }
             }
         }
@@ -187,9 +191,11 @@ public sealed class CoordinatorConnection(
 
         var registration = new NodeRegistration(
             nodeId,
-            configuration["Node:Name"] ?? Environment.MachineName,
-            configuration["Ollama:Endpoint"] ?? "http://localhost:11434/",
-            GetVersion());
+            node.Name,
+            ollama.Endpoint,
+            GetVersion(),
+            node.Labels.Count == 0 ? null : new Dictionary<string, string>(node.Labels),
+            node.MaxConcurrency);
 
         await connection.InvokeAsync("Register", registration, cancellationToken);
         await ReportModelsAsync(cancellationToken);
@@ -222,7 +228,7 @@ public sealed class CoordinatorConnection(
 
     private async Task SendHeartbeatsAsync()
     {
-        using var timer = new PeriodicTimer(HeartbeatInterval);
+        using var timer = new PeriodicTimer(coordinator.HeartbeatInterval);
 
         while (!lifetime.IsCancellationRequested)
         {
@@ -349,7 +355,7 @@ public sealed class CoordinatorConnection(
 
     private async Task SendModelReportsAsync()
     {
-        using var timer = new PeriodicTimer(ModelRefreshInterval);
+        using var timer = new PeriodicTimer(coordinator.ModelRefreshInterval);
 
         while (!lifetime.IsCancellationRequested)
         {
@@ -379,17 +385,19 @@ public sealed class CoordinatorConnection(
         }
 
         var models = await backend.ListModelsAsync(cancellationToken);
+        var filtered = ModelFilter.Apply(models, node.Models);
 
         if (activeConnection.State is not HubConnectionState.Connected)
         {
             return;
         }
 
-        var report = new NodeModels(nodeId, models, DateTimeOffset.UtcNow);
+        var report = new NodeModels(nodeId, filtered, DateTimeOffset.UtcNow);
         await activeConnection.InvokeAsync("ReportModels", report, cancellationToken);
 
         logger.LogInformation(
-            "Reported {ModelCount} models from {BackendName} backend",
+            "Reported {ModelCount} of {DiscoveredCount} models from {BackendName} backend",
+            filtered.Count,
             models.Count,
             backend.Name);
     }

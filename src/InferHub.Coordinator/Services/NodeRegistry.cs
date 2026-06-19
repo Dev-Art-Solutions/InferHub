@@ -16,7 +16,9 @@ public sealed class NodeRegistry : INodeRegistry
             NodeId = Normalize(registration.NodeId, "unknown"),
             Name = Normalize(registration.Name, "unnamed-node"),
             OllamaEndpoint = Normalize(registration.OllamaEndpoint, "unknown"),
-            Version = Normalize(registration.Version, "unknown")
+            Version = Normalize(registration.Version, "unknown"),
+            Labels = NormalizeLabels(registration.Labels),
+            MaxConcurrency = NormalizeMaxConcurrency(registration.MaxConcurrency)
         };
 
         nodes.AddOrUpdate(
@@ -185,12 +187,45 @@ public sealed class NodeRegistry : INodeRegistry
             ageSeconds,
             entry.InFlight,
             GetLocalInFlight(connectionId),
-            entry.Models.Count);
+            entry.Models.Count,
+            entry.Registration.Labels ?? EmptyLabels,
+            entry.Registration.MaxConcurrency);
     }
+
+    private static readonly IReadOnlyDictionary<string, string> EmptyLabels =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
     private static string Normalize(string? value, string fallback)
     {
         return string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+    }
+
+    private static IReadOnlyDictionary<string, string> NormalizeLabels(
+        IReadOnlyDictionary<string, string>? labels)
+    {
+        if (labels is null || labels.Count == 0)
+        {
+            return EmptyLabels;
+        }
+
+        var copy = new Dictionary<string, string>(labels.Count, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var pair in labels)
+        {
+            if (string.IsNullOrWhiteSpace(pair.Key))
+            {
+                continue;
+            }
+
+            copy[pair.Key.Trim()] = pair.Value ?? string.Empty;
+        }
+
+        return copy;
+    }
+
+    private static int? NormalizeMaxConcurrency(int? maxConcurrency)
+    {
+        return maxConcurrency is { } cap && cap >= 1 ? cap : null;
     }
 
     private static bool ModelNamesMatch(string candidate, string requested)

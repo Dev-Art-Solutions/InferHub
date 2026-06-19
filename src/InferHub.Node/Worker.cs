@@ -1,25 +1,31 @@
 using InferHub.Node.Backends;
+using InferHub.Node.Configuration;
+using Microsoft.Extensions.Options;
 
 namespace InferHub.Node;
 
 public class Worker(
-    IConfiguration configuration,
+    IOptions<CoordinatorOptions> coordinatorOptions,
+    IOptions<NodeOptions> nodeOptions,
+    IOptions<OllamaOptions> ollamaOptions,
     IInferenceBackend backend,
     CoordinatorConnection coordinatorConnection,
     ILogger<Worker> logger) : BackgroundService
 {
+    private readonly CoordinatorOptions coordinator = coordinatorOptions.Value;
+    private readonly NodeOptions node = nodeOptions.Value;
+    private readonly OllamaOptions ollama = ollamaOptions.Value;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var coordinatorUrl = configuration["Coordinator:Url"] ?? "http://localhost:5080/";
-        var nodeName = configuration["Node:Name"] ?? Environment.MachineName;
-        var ollamaEndpoint = configuration["Ollama:Endpoint"] ?? "http://localhost:11434/";
-
         logger.LogInformation(
-            "Node {NodeName} starting, coordinator={CoordinatorUrl}, backend={BackendName}, ollama={OllamaEndpoint}",
-            nodeName,
-            coordinatorUrl,
+            "Node {NodeName} starting, coordinator={CoordinatorUrl}, backend={BackendName}, ollama={OllamaEndpoint}, maxConcurrency={MaxConcurrency}, labels={LabelCount}",
+            node.Name,
+            coordinator.Url,
             backend.Name,
-            ollamaEndpoint);
+            ollama.Endpoint,
+            node.MaxConcurrency,
+            node.Labels.Count);
 
         await coordinatorConnection.StartAsync(stoppingToken);
 

@@ -10,4 +10,6 @@ public sealed record NodeSnapshot(
     double AgeSeconds,
     int InFlight,
     int LocalInFlight,
-    int ModelCount);
+    int ModelCount,
+    IReadOnlyDictionary<string, string> Labels,
+    int? MaxConcurrency);
