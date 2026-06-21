@@ -39,6 +39,7 @@ app.UseDefaultFiles(defaultFiles);
 app.UseStaticFiles();
 
 app.MapGet("/status", () => Results.Redirect("/status.html"));
+app.MapGet("/console", () => Results.Redirect("/console.html"));
 
 app.MapGet("/health", (ILogger<Program> logger) =>
 {
