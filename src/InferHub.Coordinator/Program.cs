@@ -19,6 +19,7 @@ builder.Services.AddSingleton<INodeRegistry, NodeRegistry>();
 builder.Services.AddSingleton<IConversationAffinity, ConversationAffinity>();
 builder.Services.AddSingleton<InferHub.Coordinator.Services.IRouter, Router>();
 builder.Services.AddSingleton<IDispatcher, Dispatcher>();
+builder.Services.AddSingleton<INodeConnectionTracker, NodeConnectionTracker>();
 builder.Services.AddHostedService<NodeReaper>();
 
 var app = builder.Build();
@@ -27,6 +28,7 @@ var version = typeof(Program).Assembly
     .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
     .InformationalVersion ?? typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown";
 
+app.UseMiddleware<AdminApiKeyMiddleware>();
 app.UseMiddleware<BearerApiKeyMiddleware>();
 
 // Status page is read-only; serve it from wwwroot/ and surface /status as an alias.
@@ -57,6 +59,7 @@ app.MapGet("/api/nodes", (INodeRegistry registry) =>
 
 app.MapStatusEndpoint(version);
 app.MapInferenceEndpoints();
+app.MapAdminEndpoints();
 
 app.MapHub<NodeHub>("/hubs/node");
 

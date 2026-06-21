@@ -23,7 +23,7 @@ public sealed class NodeRegistry : INodeRegistry
 
         nodes.AddOrUpdate(
             connectionId,
-            _ => new NodeRegistryEntry(normalized, now, 0, Array.Empty<ModelInfo>(), null),
+            _ => new NodeRegistryEntry(normalized, now, 0, Array.Empty<ModelInfo>(), null, false),
             (_, existing) => existing with
             {
                 Registration = normalized,
@@ -77,6 +77,70 @@ public sealed class NodeRegistry : INodeRegistry
         return nodes.TryRemove(connectionId, out _);
     }
 
+    public bool Cordon(string nodeId)
+    {
+        return SetCordoned(nodeId, true);
+    }
+
+    public bool Uncordon(string nodeId)
+    {
+        return SetCordoned(nodeId, false);
+    }
+
+    public string? FindConnectionIdByNodeId(string nodeId)
+    {
+        if (string.IsNullOrWhiteSpace(nodeId))
+        {
+            return null;
+        }
+
+        var trimmed = nodeId.Trim();
+
+        foreach (var pair in nodes)
+        {
+            if (string.Equals(pair.Value.Registration.NodeId, trimmed, StringComparison.OrdinalIgnoreCase))
+            {
+                return pair.Key;
+            }
+        }
+
+        return null;
+    }
+
+    private bool SetCordoned(string nodeId, bool cordoned)
+    {
+        if (string.IsNullOrWhiteSpace(nodeId))
+        {
+            return false;
+        }
+
+        var trimmed = nodeId.Trim();
+        var changed = false;
+
+        foreach (var pair in nodes)
+        {
+            if (!string.Equals(pair.Value.Registration.NodeId, trimmed, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var existing = pair.Value;
+
+            if (existing.Cordoned == cordoned)
+            {
+                changed = true;
+                continue;
+            }
+
+            if (nodes.TryUpdate(pair.Key, existing with { Cordoned = cordoned }, existing))
+            {
+                changed = true;
+            }
+        }
+
+        return changed;
+    }
+
     public IReadOnlyCollection<NodeSnapshot> Snapshot(DateTimeOffset now)
     {
         return nodes
@@ -107,7 +171,8 @@ public sealed class NodeRegistry : INodeRegistry
         }
 
         return nodes
-            .Where(pair => pair.Value.Models.Any(candidate => ModelNamesMatch(candidate.Name, model)))
+            .Where(pair => !pair.Value.Cordoned
+                && pair.Value.Models.Any(candidate => ModelNamesMatch(candidate.Name, model)))
             .Select(pair => new RoutableNode(
                 pair.Key,
                 pair.Value.Registration.NodeId,
@@ -189,7 +254,8 @@ public sealed class NodeRegistry : INodeRegistry
             GetLocalInFlight(connectionId),
             entry.Models.Count,
             entry.Registration.Labels ?? EmptyLabels,
-            entry.Registration.MaxConcurrency);
+            entry.Registration.MaxConcurrency,
+            entry.Cordoned);
     }
 
     private static readonly IReadOnlyDictionary<string, string> EmptyLabels =
@@ -238,5 +304,6 @@ public sealed class NodeRegistry : INodeRegistry
         DateTimeOffset LastSeenUtc,
         int InFlight,
         IReadOnlyList<ModelInfo> Models,
-        DateTimeOffset? ModelsRefreshedAt);
+        DateTimeOffset? ModelsRefreshedAt,
+        bool Cordoned);
 }

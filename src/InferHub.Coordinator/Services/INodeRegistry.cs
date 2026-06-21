@@ -12,6 +12,12 @@ public interface INodeRegistry
 
     bool Remove(string connectionId);
 
+    bool Cordon(string nodeId);
+
+    bool Uncordon(string nodeId);
+
+    string? FindConnectionIdByNodeId(string nodeId);
+
     IReadOnlyCollection<NodeSnapshot> Snapshot(DateTimeOffset now);
 
     IReadOnlyCollection<ModelInfo> DistinctModels();

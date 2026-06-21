@@ -224,6 +224,117 @@ public class NodeRegistryTests
         Assert.Equal(2, snapshot.LocalInFlight);
     }
 
+    [Fact]
+    public void CordonMarksNodeAsCordonedInSnapshot()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("connection-1", Registration("node-1"), now);
+
+        var cordoned = registry.Cordon("node-1");
+
+        Assert.True(cordoned);
+        var snapshot = Assert.Single(registry.Snapshot(now));
+        Assert.True(snapshot.Cordoned);
+    }
+
+    [Fact]
+    public void UncordonClearsCordonState()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("connection-1", Registration("node-1"), now);
+        registry.Cordon("node-1");
+
+        var uncordoned = registry.Uncordon("node-1");
+
+        Assert.True(uncordoned);
+        var snapshot = Assert.Single(registry.Snapshot(now));
+        Assert.False(snapshot.Cordoned);
+    }
+
+    [Fact]
+    public void CordonReturnsFalseForUnknownNode()
+    {
+        var registry = new NodeRegistry();
+
+        Assert.False(registry.Cordon("missing"));
+        Assert.False(registry.Uncordon("missing"));
+    }
+
+    [Fact]
+    public void CordonIsCaseInsensitive()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("connection-1", Registration("Node-1"), now);
+
+        Assert.True(registry.Cordon("node-1"));
+        Assert.True(Assert.Single(registry.Snapshot(now)).Cordoned);
+    }
+
+    [Fact]
+    public void CordonedNodeIsExcludedFromFindNodesWithModel()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("connection-1", Registration("node-1"), now);
+        registry.ReportModels(
+            "connection-1",
+            new NodeModels("node-1", [new ModelInfo("llama3", "digest", 1)], now),
+            now);
+
+        Assert.Single(registry.FindNodesWithModel("llama3"));
+
+        registry.Cordon("node-1");
+        Assert.Empty(registry.FindNodesWithModel("llama3"));
+
+        registry.Uncordon("node-1");
+        Assert.Single(registry.FindNodesWithModel("llama3"));
+    }
+
+    [Fact]
+    public void UpsertPreservesExistingCordonState()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("connection-1", Registration("node-1"), now);
+        registry.Cordon("node-1");
+
+        // A reconnect or re-registration shouldn't silently uncordon the node.
+        registry.Upsert("connection-1", Registration("node-1", "renamed"), now.AddSeconds(1));
+
+        var snapshot = Assert.Single(registry.Snapshot(now.AddSeconds(1)));
+        Assert.True(snapshot.Cordoned);
+    }
+
+    [Fact]
+    public void FindConnectionIdByNodeIdReturnsConnectionId()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("connection-1", Registration("node-1"), now);
+
+        Assert.Equal("connection-1", registry.FindConnectionIdByNodeId("node-1"));
+        Assert.Equal("connection-1", registry.FindConnectionIdByNodeId("NODE-1"));
+        Assert.Null(registry.FindConnectionIdByNodeId("missing"));
+    }
+
+    [Fact]
+    public void RemoveActsAsDeregister()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("connection-1", Registration("node-1"), now);
+
+        var connectionId = registry.FindConnectionIdByNodeId("node-1");
+        Assert.NotNull(connectionId);
+
+        Assert.True(registry.Remove(connectionId));
+        Assert.Empty(registry.Snapshot(now));
+        Assert.Null(registry.FindConnectionIdByNodeId("node-1"));
+    }
+
     private static NodeRegistration Registration(string nodeId, string name = "local-node")
     {
         return new NodeRegistration(

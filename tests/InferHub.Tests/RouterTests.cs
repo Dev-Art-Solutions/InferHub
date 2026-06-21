@@ -151,6 +151,56 @@ public class RouterTests
     }
 
     [Fact]
+    public void RouteSkipsCordonedNodes()
+    {
+        var registry = new NodeRegistry();
+        SeedTwoNodes(registry);
+        registry.Cordon("node-a");
+
+        var router = NewRouter(registry, out _);
+
+        var first = router.Route("llama3");
+        var second = router.Route("llama3");
+
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.Equal("node-b", first.NodeId);
+        Assert.Equal("node-b", second.NodeId);
+    }
+
+    [Fact]
+    public void RouteReturnsNullWhenAllCapableNodesAreCordoned()
+    {
+        var registry = new NodeRegistry();
+        SeedTwoNodes(registry);
+        registry.Cordon("node-a");
+        registry.Cordon("node-b");
+
+        var router = NewRouter(registry, out _);
+
+        Assert.Null(router.Route("llama3"));
+    }
+
+    [Fact]
+    public void UncordonRestoresEligibility()
+    {
+        var registry = new NodeRegistry();
+        SeedTwoNodes(registry);
+        registry.Cordon("node-a");
+        registry.Uncordon("node-a");
+
+        var router = NewRouter(registry, out _);
+
+        // Round-robin across both eligible nodes again.
+        var first = router.Route("llama3");
+        var second = router.Route("llama3");
+
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.NotEqual(first.NodeId, second.NodeId);
+    }
+
+    [Fact]
     public void RouteSpreadsDistinctConversationsAcrossNodes()
     {
         var registry = new NodeRegistry();

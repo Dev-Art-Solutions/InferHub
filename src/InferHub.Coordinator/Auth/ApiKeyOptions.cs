@@ -6,6 +6,8 @@ public sealed class ApiKeyOptions
 
     public List<string> ApiKeys { get; set; } = new();
 
+    public List<string> AdminApiKeys { get; set; } = new();
+
     public bool RequireAuthForLoopback { get; set; }
 
     public string? NodeEnrollmentSecret { get; set; }

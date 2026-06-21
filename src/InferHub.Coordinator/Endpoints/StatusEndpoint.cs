@@ -28,7 +28,8 @@ public static class StatusEndpoint
                     node.AgeSeconds,
                     node.InFlight,
                     node.LocalInFlight,
-                    node.ModelCount)).ToArray(),
+                    node.ModelCount,
+                    node.Cordoned)).ToArray(),
                 models,
                 snapshot));
         });
@@ -53,5 +54,6 @@ public static class StatusEndpoint
         double AgeSeconds,
         int InFlight,
         int LocalInFlight,
-        int ModelCount);
+        int ModelCount,
+        bool Cordoned);
 }

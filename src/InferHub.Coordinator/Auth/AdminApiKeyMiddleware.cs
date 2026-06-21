@@ -4,23 +4,18 @@ using Microsoft.Extensions.Options;
 
 namespace InferHub.Coordinator.Auth;
 
-public sealed class BearerApiKeyMiddleware(
+public sealed class AdminApiKeyMiddleware(
     RequestDelegate next,
     IOptionsMonitor<ApiKeyOptions> options,
-    ILogger<BearerApiKeyMiddleware> logger)
+    ILogger<AdminApiKeyMiddleware> logger)
 {
+    public const string AdminPathPrefix = "/api/admin";
+
     private const string BearerPrefix = "Bearer ";
 
     public async Task InvokeAsync(HttpContext context)
     {
-        if (!context.Request.Path.StartsWithSegments("/api"))
-        {
-            await next(context);
-            return;
-        }
-
-        // Admin routes have their own middleware with the admin-key scope.
-        if (context.Request.Path.StartsWithSegments(AdminApiKeyMiddleware.AdminPathPrefix))
+        if (!context.Request.Path.StartsWithSegments(AdminPathPrefix))
         {
             await next(context);
             return;
@@ -40,19 +35,19 @@ public sealed class BearerApiKeyMiddleware(
 
         if (token is null)
         {
-            await WriteUnauthorizedAsync(context, "missing bearer token");
+            await WriteUnauthorizedAsync(context, "missing admin bearer token");
             logger.LogWarning(
-                "Rejected request to {Path} from {RemoteIp}: missing bearer token",
+                "Rejected admin request to {Path} from {RemoteIp}: missing bearer token",
                 context.Request.Path,
                 remoteIp);
             return;
         }
 
-        if (!IsTokenAccepted(token, settings.ApiKeys))
+        if (!IsTokenAccepted(token, settings.AdminApiKeys))
         {
-            await WriteUnauthorizedAsync(context, "invalid bearer token");
+            await WriteUnauthorizedAsync(context, "invalid admin bearer token");
             logger.LogWarning(
-                "Rejected request to {Path} from {RemoteIp}: invalid bearer token",
+                "Rejected admin request to {Path} from {RemoteIp}: invalid bearer token",
                 context.Request.Path,
                 remoteIp);
             return;
@@ -77,9 +72,9 @@ public sealed class BearerApiKeyMiddleware(
         return string.IsNullOrEmpty(token) ? null : token;
     }
 
-    private static bool IsTokenAccepted(string presented, IReadOnlyList<string> apiKeys)
+    private static bool IsTokenAccepted(string presented, IReadOnlyList<string> adminApiKeys)
     {
-        if (apiKeys.Count == 0)
+        if (adminApiKeys.Count == 0)
         {
             return false;
         }
@@ -90,7 +85,7 @@ public sealed class BearerApiKeyMiddleware(
         Span<byte> keyHash = stackalloc byte[32];
         var accepted = false;
 
-        foreach (var key in apiKeys)
+        foreach (var key in adminApiKeys)
         {
             if (string.IsNullOrEmpty(key))
             {

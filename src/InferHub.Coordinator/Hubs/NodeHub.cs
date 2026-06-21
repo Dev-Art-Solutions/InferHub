@@ -9,6 +9,7 @@ public sealed class NodeHub(
     INodeRegistry registry,
     IDispatcher dispatcher,
     IConversationAffinity affinity,
+    INodeConnectionTracker connections,
     NodeAuthFilter nodeAuth,
     ILogger<NodeHub> logger) : Hub
 {
@@ -20,6 +21,7 @@ public sealed class NodeHub(
             throw new HubException("unauthorized node");
         }
 
+        connections.Track(Context.ConnectionId, Context);
         return base.OnConnectedAsync();
     }
 
@@ -103,6 +105,8 @@ public sealed class NodeHub(
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
+        connections.Forget(Context.ConnectionId);
+
         if (registry.Remove(Context.ConnectionId))
         {
             logger.LogInformation("Node connection {ConnectionId} disconnected", Context.ConnectionId);

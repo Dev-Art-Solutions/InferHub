@@ -12,4 +12,5 @@ public sealed record NodeSnapshot(
     int LocalInFlight,
     int ModelCount,
     IReadOnlyDictionary<string, string> Labels,
-    int? MaxConcurrency);
+    int? MaxConcurrency,
+    bool Cordoned);
