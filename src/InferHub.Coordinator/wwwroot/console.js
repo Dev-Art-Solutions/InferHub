@@ -7,9 +7,20 @@
   const rowMessages = new Map();      // nodeId -> { text, isError }
   const pendingActions = new Set();   // `${nodeId}:${action}` while a request is in flight
   const draining = new Map();         // nodeId -> { startedAt }
-  let pollHandle = null;
 
-  const POLL_MS = 3000;
+  const STATUS_POLL_MS = 5000;        // /api/status (metrics, uptime, models)
+  const NODES_POLL_MS = 3000;         // /api/admin/nodes fallback when stream is down
+  const STREAM_RECONNECT_MIN_MS = 1000;
+  const STREAM_RECONNECT_MAX_MS = 15000;
+
+  let streamAbort = null;
+  let streamReconnectDelay = STREAM_RECONNECT_MIN_MS;
+  let streamState = "connecting"; // 'connecting' | 'live' | 'polling' | 'offline'
+  let nodesPollHandle = null;
+  let statusPollHandle = null;
+
+  let latestNodes = [];
+  let latestStatus = null;
 
   // ---------------------------------------------------------------- formatting
 
@@ -28,6 +39,14 @@
     let i = 0, v = Number(b);
     while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
     return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${units[i]}`;
+  };
+
+  const fmtRelativeAge = (iso) => {
+    if (!iso) return "—";
+    const then = Date.parse(iso);
+    if (Number.isNaN(then)) return "—";
+    const sec = Math.max(0, (Date.now() - then) / 1000);
+    return `${fmtSeconds(sec)} ago`;
   };
 
   const escapeHtml = (value) => String(value ?? "")
@@ -59,6 +78,12 @@
       `<span class="label-chip">${escapeHtml(k)}=${escapeHtml(v)}</span>`).join("")}</div>`;
   };
 
+  const lastActionCell = (node) => {
+    if (!node.lastAction) return "—";
+    const by = node.lastAction.by ? ` by ${escapeHtml(node.lastAction.by)}` : "";
+    return `<div class="last-action"><strong>${escapeHtml(node.lastAction.action)}</strong>${by}<br>${escapeHtml(fmtRelativeAge(node.lastAction.atUtc))}</div>`;
+  };
+
   // ---------------------------------------------------------------- auth state
 
   const setAuthState = (state) => {
@@ -88,12 +113,48 @@
     return adminKey !== null;
   };
 
+  // ---------------------------------------------------------------- toasts
+
+  const toast = (title, body, kind) => {
+    const container = document.getElementById("toasts");
+    if (!container) return;
+    const el = document.createElement("div");
+    el.className = `toast ${kind ?? ""}`.trim();
+    const titleHtml = title ? `<div class="toast-title">${escapeHtml(title)}</div>` : "";
+    const bodyHtml = body ? `<div class="toast-body">${escapeHtml(body)}</div>` : "";
+    el.innerHTML = titleHtml + bodyHtml;
+    container.appendChild(el);
+    const dwell = kind === "err" ? 8000 : 3500;
+    setTimeout(() => {
+      el.style.transition = "opacity 0.2s";
+      el.style.opacity = "0";
+      setTimeout(() => el.remove(), 220);
+    }, dwell);
+  };
+
+  // ---------------------------------------------------------------- stream state
+
+  const setStreamState = (state) => {
+    streamState = state;
+    const el = document.getElementById("stream-state");
+    if (!el) return;
+    const labels = {
+      connecting: ["polling", "connecting…"],
+      live: ["live", "live"],
+      polling: ["polling", "polling (no stream)"],
+      offline: ["offline", "offline"]
+    };
+    const [css, label] = labels[state] ?? labels.offline;
+    el.className = `stream-pill ${css}`;
+    el.textContent = label;
+  };
+
   // ---------------------------------------------------------------- HTTP
 
-  const adminHeaders = () => {
+  const adminHeaders = (extra) => {
     const h = { "Accept": "application/json" };
     if (adminKey) h["Authorization"] = `Bearer ${adminKey}`;
-    return h;
+    return Object.assign(h, extra ?? {});
   };
 
   const fetchAdminNodes = async () => {
@@ -179,7 +240,7 @@
   const renderNodes = (nodes) => {
     const tbody = document.getElementById("nodes");
     if (!nodes || nodes.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="9" class="empty">No nodes connected.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="10" class="empty">No nodes connected.</td></tr>`;
       return;
     }
 
@@ -199,6 +260,7 @@
           <td>${max}</td>
           <td>${labelChips(n.labels)}</td>
           <td>${fmtSeconds(n.ageSeconds)} ago</td>
+          <td>${lastActionCell(n)}</td>
           <td><div class="actions">${actionButtons(n)}</div></td>
         </tr>`;
     }).join("");
@@ -229,22 +291,48 @@
     }
   };
 
+  const refreshRender = () => {
+    if (latestStatus) {
+      document.getElementById("version").textContent = `v${latestStatus.coordinatorVersion}`;
+      document.getElementById("uptime").textContent = fmtSeconds(latestStatus.uptimeSeconds);
+      renderStats(latestStatus.metrics);
+      renderModels(latestStatus.models);
+    }
+    renderNodes(latestNodes ?? []);
+  };
+
+  const applyAdminNodes = (nodes) => {
+    latestNodes = nodes;
+    evaluateDrains(latestNodes);
+    document.getElementById("refreshed").textContent = new Date().toLocaleTimeString();
+    refreshRender();
+  };
+
   const runAction = async (nodeId, action) => {
     const key = `${nodeId}:${action}`;
     if (pendingActions.has(key)) return;
     pendingActions.add(key);
 
-    setRowMessage(nodeId, `${action}…`, false);
-    refreshRender(latestNodes, latestStatus);
+    refreshRender();
 
     try {
       await callAdminAction(nodeId, action);
-      setRowMessage(nodeId, null);
+      toast(`${labelForAction(action)} succeeded`, `node ${nodeId}`, "ok");
     } catch (err) {
-      setRowMessage(nodeId, `${action} failed: ${err.message}`, true);
+      toast(`${labelForAction(action)} failed`, `${nodeId}: ${err.message}`, "err");
     } finally {
       pendingActions.delete(key);
-      await tick();
+      await pollAdminNodesNow();
+    }
+  };
+
+  const labelForAction = (action) => {
+    switch (action) {
+      case "cordon": return "Cordon";
+      case "uncordon": return "Uncordon";
+      case "drain": return "Drain";
+      case "deregister": return "Deregister";
+      default: return action;
     }
   };
 
@@ -264,18 +352,19 @@
     if (pendingActions.has(cordonKey)) return;
     pendingActions.add(cordonKey);
     draining.set(nodeId, { startedAt: Date.now() });
-    setRowMessage(nodeId, "cordoning…", false);
-    refreshRender(latestNodes, latestStatus);
+    setRowMessage(nodeId, "draining — waiting for in-flight jobs", false);
+    refreshRender();
 
     try {
       await callAdminAction(nodeId, "cordon");
-      setRowMessage(nodeId, "draining — waiting for in-flight jobs", false);
+      toast("Drain started", `node ${nodeId} is cordoned; waiting for in-flight jobs`, "ok");
     } catch (err) {
       draining.delete(nodeId);
-      setRowMessage(nodeId, `drain failed: ${err.message}`, true);
+      setRowMessage(nodeId, null);
+      toast("Drain failed", `${nodeId}: ${err.message}`, "err");
     } finally {
       pendingActions.delete(cordonKey);
-      await tick();
+      await pollAdminNodesNow();
     }
   };
 
@@ -285,59 +374,201 @@
     for (const nodeId of [...draining.keys()]) {
       const node = byId.get(nodeId);
       if (!node) {
-        // Node disappeared (deregistered elsewhere or evicted) — drain is moot.
         draining.delete(nodeId);
         setRowMessage(nodeId, null);
         continue;
       }
       if (node.cordoned && node.localInFlight === 0) {
         draining.delete(nodeId);
-        setRowMessage(nodeId, "drained — node is idle and cordoned", false);
+        setRowMessage(nodeId, null);
+        toast("Drain complete", `${nodeId} is idle and cordoned`, "ok");
       }
     }
+  };
+
+  // ---------------------------------------------------------------- streaming
+
+  const parseSseBuffer = (buffer) => {
+    const events = [];
+    let i = 0;
+    while (true) {
+      // Per the SSE spec, an event terminates with a blank line — accept LF or CRLF.
+      const sepLf = buffer.indexOf("\n\n", i);
+      const sepCrLf = buffer.indexOf("\r\n\r\n", i);
+      let sep, advance;
+      if (sepLf === -1 && sepCrLf === -1) break;
+      if (sepLf === -1) { sep = sepCrLf; advance = 4; }
+      else if (sepCrLf === -1) { sep = sepLf; advance = 2; }
+      else if (sepCrLf < sepLf) { sep = sepCrLf; advance = 4; }
+      else { sep = sepLf; advance = 2; }
+
+      const block = buffer.slice(i, sep);
+      i = sep + advance;
+
+      const ev = { event: "message", data: "" };
+      for (const rawLine of block.split(/\r?\n/)) {
+        if (!rawLine || rawLine.startsWith(":")) continue;
+        const colon = rawLine.indexOf(":");
+        const field = colon === -1 ? rawLine : rawLine.slice(0, colon);
+        let value = colon === -1 ? "" : rawLine.slice(colon + 1);
+        if (value.startsWith(" ")) value = value.slice(1);
+        if (field === "data") {
+          ev.data = ev.data ? `${ev.data}\n${value}` : value;
+        } else if (field === "event") {
+          ev.event = value;
+        }
+      }
+      if (ev.data || ev.event !== "message") {
+        events.push(ev);
+      }
+    }
+    return { events, remainder: buffer.slice(i) };
+  };
+
+  const handleStreamEvent = (event) => {
+    if (event.event !== "snapshot") return;
+    try {
+      const payload = JSON.parse(event.data);
+      if (payload && Array.isArray(payload.nodes)) {
+        applyAdminNodes(payload.nodes);
+      }
+    } catch (err) {
+      // Malformed payload — log to console and let the next event recover.
+      console.warn("admin stream: failed to parse snapshot", err);
+    }
+  };
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const streamLoop = async () => {
+    while (true) {
+      if (!adminKey) {
+        setStreamState("offline");
+        ensureNodesPolling();
+        await sleep(2000);
+        continue;
+      }
+
+      let controller;
+      try {
+        controller = new AbortController();
+        streamAbort = controller;
+        setStreamState("connecting");
+
+        const res = await fetch("/api/admin/stream", {
+          headers: adminHeaders({ "Accept": "text/event-stream" }),
+          cache: "no-store",
+          signal: controller.signal
+        });
+
+        if (res.status === 401) {
+          setStreamState("offline");
+          ensureNodesPolling();
+          const reprompted = promptForKey("Admin key required for live updates.");
+          if (!reprompted) {
+            await sleep(STREAM_RECONNECT_MAX_MS);
+          }
+          continue;
+        }
+
+        if (!res.ok || !res.body) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+
+        setStreamState("live");
+        stopNodesPolling();
+        streamReconnectDelay = STREAM_RECONNECT_MIN_MS;
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parsed = parseSseBuffer(buffer);
+          buffer = parsed.remainder;
+          for (const ev of parsed.events) {
+            handleStreamEvent(ev);
+          }
+        }
+
+        // Normal close (server ended the stream) — fall through to reconnect.
+      } catch (err) {
+        if (err && err.name === "AbortError") {
+          // User-triggered restart (e.g. key changed) — skip backoff, retry immediately.
+          streamReconnectDelay = STREAM_RECONNECT_MIN_MS;
+          if (streamAbort === controller) streamAbort = null;
+          continue;
+        }
+        // Network drop or HTTP error — drop into polling fallback and retry.
+      } finally {
+        if (streamAbort === controller) {
+          streamAbort = null;
+        }
+      }
+
+      setStreamState("polling");
+      ensureNodesPolling();
+      await sleep(streamReconnectDelay);
+      streamReconnectDelay = Math.min(streamReconnectDelay * 2, STREAM_RECONNECT_MAX_MS);
+    }
+  };
+
+  const restartStream = () => {
+    if (streamAbort) {
+      streamAbort.abort();
+      streamAbort = null;
+    }
+    streamReconnectDelay = STREAM_RECONNECT_MIN_MS;
+    // streamLoop is already running; the abort triggers a fresh iteration.
   };
 
   // ---------------------------------------------------------------- poll loop
 
-  let latestNodes = [];
-  let latestStatus = null;
-
-  const refreshRender = (nodes, status) => {
-    if (status) {
-      document.getElementById("version").textContent = `v${status.coordinatorVersion}`;
-      document.getElementById("uptime").textContent = fmtSeconds(status.uptimeSeconds);
-      renderStats(status.metrics);
-      renderModels(status.models);
-    }
-    renderNodes(nodes ?? []);
-  };
-
-  const tick = async () => {
+  const pollAdminNodesNow = async () => {
     try {
-      const [adminNodes, status] = await Promise.all([
-        fetchAdminNodes(),
-        fetchStatus()
-      ]);
-      if (adminNodes !== null) {
-        latestNodes = adminNodes;
-        evaluateDrains(latestNodes);
-      }
-      if (status) latestStatus = status;
-      document.getElementById("refreshed").textContent = new Date().toLocaleTimeString();
-      refreshRender(latestNodes, latestStatus);
+      const nodes = await fetchAdminNodes();
+      if (nodes !== null) applyAdminNodes(nodes);
     } catch (err) {
       document.getElementById("refreshed").textContent = `error: ${err.message}`;
+    }
+  };
+
+  const ensureNodesPolling = () => {
+    if (nodesPollHandle) return;
+    pollAdminNodesNow();
+    nodesPollHandle = setInterval(pollAdminNodesNow, NODES_POLL_MS);
+  };
+
+  const stopNodesPolling = () => {
+    if (nodesPollHandle) {
+      clearInterval(nodesPollHandle);
+      nodesPollHandle = null;
+    }
+  };
+
+  const pollStatusNow = async () => {
+    try {
+      const status = await fetchStatus();
+      if (status) {
+        latestStatus = status;
+        refreshRender();
+      }
+    } catch {
+      // The status page is unauthenticated; if it fails we leave the previous snapshot up.
     }
   };
 
   // ---------------------------------------------------------------- wiring
 
   document.getElementById("auth-set").addEventListener("click", () => {
-    if (promptForKey()) tick();
+    if (promptForKey()) restartStream();
   });
   document.getElementById("auth-clear").addEventListener("click", () => {
     setKey(null);
-    tick();
+    restartStream();
   });
 
   document.getElementById("nodes").addEventListener("click", (event) => {
@@ -364,6 +595,8 @@
   });
 
   setKey(null);
-  tick();
-  pollHandle = setInterval(tick, POLL_MS);
+  pollStatusNow();
+  statusPollHandle = setInterval(pollStatusNow, STATUS_POLL_MS);
+  ensureNodesPolling();
+  streamLoop();
 })();

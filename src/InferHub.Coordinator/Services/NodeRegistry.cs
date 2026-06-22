@@ -9,6 +9,10 @@ public sealed class NodeRegistry : INodeRegistry
     private readonly ConcurrentDictionary<string, NodeRegistryEntry> nodes = new();
     private readonly ConcurrentDictionary<string, StrongBox<int>> localInFlight = new();
 
+    public event Action? Changed;
+
+    private void RaiseChanged() => Changed?.Invoke();
+
     public void Upsert(string connectionId, NodeRegistration registration, DateTimeOffset now)
     {
         var normalized = registration with
@@ -31,6 +35,7 @@ public sealed class NodeRegistry : INodeRegistry
             });
 
         localInFlight.GetOrAdd(connectionId, _ => new StrongBox<int>(0));
+        RaiseChanged();
     }
 
     public bool Touch(string connectionId, Heartbeat heartbeat, DateTimeOffset now)
@@ -68,13 +73,20 @@ public sealed class NodeRegistry : INodeRegistry
             ModelsRefreshedAt = models.RefreshedAt
         };
 
+        RaiseChanged();
         return true;
     }
 
     public bool Remove(string connectionId)
     {
         localInFlight.TryRemove(connectionId, out _);
-        return nodes.TryRemove(connectionId, out _);
+        if (!nodes.TryRemove(connectionId, out _))
+        {
+            return false;
+        }
+
+        RaiseChanged();
+        return true;
     }
 
     public bool Cordon(string nodeId)
@@ -115,7 +127,8 @@ public sealed class NodeRegistry : INodeRegistry
         }
 
         var trimmed = nodeId.Trim();
-        var changed = false;
+        var matched = false;
+        var transitioned = false;
 
         foreach (var pair in nodes)
         {
@@ -128,17 +141,23 @@ public sealed class NodeRegistry : INodeRegistry
 
             if (existing.Cordoned == cordoned)
             {
-                changed = true;
+                matched = true;
                 continue;
             }
 
             if (nodes.TryUpdate(pair.Key, existing with { Cordoned = cordoned }, existing))
             {
-                changed = true;
+                matched = true;
+                transitioned = true;
             }
         }
 
-        return changed;
+        if (transitioned)
+        {
+            RaiseChanged();
+        }
+
+        return matched;
     }
 
     public IReadOnlyCollection<NodeSnapshot> Snapshot(DateTimeOffset now)
@@ -233,6 +252,11 @@ public sealed class NodeRegistry : INodeRegistry
                 localInFlight.TryRemove(pair.Key, out _);
                 evicted.Add(ToSnapshot(pair.Key, removed, now));
             }
+        }
+
+        if (evicted.Count > 0)
+        {
+            RaiseChanged();
         }
 
         return evicted;

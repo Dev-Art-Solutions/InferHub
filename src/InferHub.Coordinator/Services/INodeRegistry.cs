@@ -4,6 +4,8 @@ namespace InferHub.Coordinator.Services;
 
 public interface INodeRegistry
 {
+    event Action? Changed;
+
     void Upsert(string connectionId, NodeRegistration registration, DateTimeOffset now);
 
     bool Touch(string connectionId, Heartbeat heartbeat, DateTimeOffset now);

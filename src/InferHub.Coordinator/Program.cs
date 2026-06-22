@@ -16,6 +16,7 @@ builder.Services.Configure<DispatcherOptions>(builder.Configuration.GetSection("
 builder.Services.Configure<RouterOptions>(builder.Configuration.GetSection("Router"));
 builder.Services.AddSingleton<Metrics>();
 builder.Services.AddSingleton<INodeRegistry, NodeRegistry>();
+builder.Services.AddSingleton<IAuditLog, AuditLog>();
 builder.Services.AddSingleton<IConversationAffinity, ConversationAffinity>();
 builder.Services.AddSingleton<InferHub.Coordinator.Services.IRouter, Router>();
 builder.Services.AddSingleton<IDispatcher, Dispatcher>();

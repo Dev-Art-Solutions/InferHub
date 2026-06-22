@@ -335,6 +335,137 @@ public class NodeRegistryTests
         Assert.Null(registry.FindConnectionIdByNodeId("node-1"));
     }
 
+    [Fact]
+    public void ChangedFiresOnUpsert()
+    {
+        var registry = new NodeRegistry();
+        var count = 0;
+        registry.Changed += () => count++;
+
+        registry.Upsert("connection-1", Registration("node-1"), DateTimeOffset.UtcNow);
+
+        Assert.Equal(1, count);
+    }
+
+    [Fact]
+    public void ChangedFiresOnRemove()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("connection-1", Registration("node-1"), now);
+
+        var count = 0;
+        registry.Changed += () => count++;
+
+        var removed = registry.Remove("connection-1");
+
+        Assert.True(removed);
+        Assert.Equal(1, count);
+    }
+
+    [Fact]
+    public void ChangedDoesNotFireWhenRemoveTargetsUnknownConnection()
+    {
+        var registry = new NodeRegistry();
+        var count = 0;
+        registry.Changed += () => count++;
+
+        var removed = registry.Remove("missing");
+
+        Assert.False(removed);
+        Assert.Equal(0, count);
+    }
+
+    [Fact]
+    public void ChangedFiresOnCordonTransitionOnly()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("connection-1", Registration("node-1"), now);
+
+        var count = 0;
+        registry.Changed += () => count++;
+
+        Assert.True(registry.Cordon("node-1"));
+        Assert.Equal(1, count);
+
+        // Re-cordoning an already-cordoned node still returns true but should not re-fire.
+        Assert.True(registry.Cordon("node-1"));
+        Assert.Equal(1, count);
+
+        Assert.True(registry.Uncordon("node-1"));
+        Assert.Equal(2, count);
+    }
+
+    [Fact]
+    public void ChangedDoesNotFireOnHeartbeatTouch()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("connection-1", Registration("node-1"), now);
+
+        var count = 0;
+        registry.Changed += () => count++;
+
+        Assert.True(registry.Touch(
+            "connection-1",
+            new Heartbeat("node-1", now, InFlight: 3),
+            now.AddSeconds(1)));
+
+        Assert.Equal(0, count);
+    }
+
+    [Fact]
+    public void ChangedFiresOnReportModels()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("connection-1", Registration("node-1"), now);
+
+        var count = 0;
+        registry.Changed += () => count++;
+
+        Assert.True(registry.ReportModels(
+            "connection-1",
+            new NodeModels("node-1", [new ModelInfo("llama3", "digest", 1)], now),
+            now));
+
+        Assert.Equal(1, count);
+    }
+
+    [Fact]
+    public void ChangedFiresOnEvictStaleWhenAnyEvicted()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("stale-connection", Registration("stale-node"), now.AddSeconds(-31));
+        registry.Upsert("fresh-connection", Registration("fresh-node"), now.AddSeconds(-10));
+
+        var count = 0;
+        registry.Changed += () => count++;
+
+        var evicted = registry.EvictStale(now.AddSeconds(-30), now);
+
+        Assert.Single(evicted);
+        Assert.Equal(1, count);
+    }
+
+    [Fact]
+    public void ChangedDoesNotFireOnEvictStaleWhenNothingEvicted()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("fresh-connection", Registration("fresh-node"), now);
+
+        var count = 0;
+        registry.Changed += () => count++;
+
+        var evicted = registry.EvictStale(now.AddSeconds(-30), now);
+
+        Assert.Empty(evicted);
+        Assert.Equal(0, count);
+    }
+
     private static NodeRegistration Registration(string nodeId, string name = "local-node")
     {
         return new NodeRegistration(
