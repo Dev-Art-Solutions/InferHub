@@ -63,9 +63,10 @@ of one.
 
 ## Status
 
-**InferHub 1.0** ships a self-hosted, Ollama-compatible inference mesh: Bearer auth,
-sticky + least-busy routing, live streaming, pre-stream failover, and a live status page
-to watch the fleet.
+**InferHub 1.4** ships a self-hosted, Ollama-compatible inference mesh with a live
+management console: Bearer auth, sticky + least-busy routing, live streaming, pre-stream
+failover, typed/validated node config, an admin API (cordon / drain / deregister), and a
+browser console that updates over Server-Sent Events.
 
 | Phase | Theme | Version |
 |------:|-------|---------|
@@ -77,10 +78,13 @@ to watch the fleet.
 | 6 | Authentication & security (done) | `v0.6.0` |
 | 7 | Conversations & smart routing (done) | `v0.7.0` |
 | 8 | Resilience, observability & 1.0 (done) | `v1.0.0` |
+| 9 | Typed, validated node configuration (done) | `v1.1.0` |
+| 10 | Coordinator admin API (done) | `v1.2.0` |
+| 11 | Management console UI (done) | `v1.3.0` |
+| 12 | Live updates & console hardening (done) | `v1.4.0` |
 
-**What's next.** 1.0 covers a single coordinator, in-memory state, and a read-only status
-page. Beyond 1.0 we may look at multi-coordinator clustering, persisted affinity, a richer
-admin surface, and additional inference backends (vLLM, llama.cpp). None of that blocks 1.0.
+**What's next.** Beyond 1.4 we may look at multi-coordinator clustering, persisted
+affinity, richer audit trails, and additional inference backends (vLLM, llama.cpp).
 
 ## Quick start
 
@@ -102,16 +106,29 @@ curl http://your-coordinator:5080/api/chat \
 InferHub keeps secrets out of source. Configure them at runtime via environment variables
 or .NET user-secrets — `appsettings.json` only ships empty placeholders.
 
-**Coordinator — client API keys & node enrollment secret**
+**Three independent token sets**
+
+| Token set | Used by | Coordinator config key |
+|---|---|---|
+| Client API keys | Inference callers (`/api/generate`, `/api/chat`, `/api/tags`) | `Auth:ApiKeys` |
+| Admin API keys | The management console & `/api/admin/*` (cordon/drain/deregister) | `Auth:AdminApiKeys` |
+| Node enrollment secret | Worker nodes joining the SignalR hub | `Auth:NodeEnrollmentSecret` |
+
+Client and admin scopes are checked separately — an admin key cannot run inference
+unless it is also listed in `Auth:ApiKeys`, and vice versa.
+
+**Coordinator — client, admin & enrollment secrets**
 
 ```bash
 # Linux / macOS
 export Auth__ApiKeys__0="sk-client-token-1"
 export Auth__ApiKeys__1="sk-client-token-2"
+export Auth__AdminApiKeys__0="sk-admin-token"
 export Auth__NodeEnrollmentSecret="shared-node-secret"
 
 # Windows PowerShell
 $env:Auth__ApiKeys__0 = "sk-client-token-1"
+$env:Auth__AdminApiKeys__0 = "sk-admin-token"
 $env:Auth__NodeEnrollmentSecret = "shared-node-secret"
 ```
 
@@ -119,6 +136,7 @@ Or with user-secrets (development):
 
 ```bash
 dotnet user-secrets --project src/InferHub.Coordinator set "Auth:ApiKeys:0" "sk-client-token-1"
+dotnet user-secrets --project src/InferHub.Coordinator set "Auth:AdminApiKeys:0" "sk-admin-token"
 dotnet user-secrets --project src/InferHub.Coordinator set "Auth:NodeEnrollmentSecret" "shared-node-secret"
 ```
 
@@ -132,8 +150,9 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
 
 **Loopback policy.** By default, requests originating from `127.0.0.1` / `::1` skip the
 Bearer-token check — handy for local testing. Set `Auth__RequireAuthForLoopback=true` to
-require a token even for loopback. **Remote (non-loopback) requests always require a
-valid token**, regardless of this setting.
+require a token even for loopback. The same switch applies to both inference and admin
+routes. **Remote (non-loopback) requests always require a valid token**, regardless of
+this setting.
 
 **Open endpoints.** `/health` is unauthenticated so monitoring systems can poll it.
 
@@ -154,7 +173,8 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Router:AffinitySlidingMinutes` | `10` | Sticky-conversation idle expiry. |
 | `Router:AffinityLoadBreakThreshold` | `2` | Extra in-flight jobs the sticky node may have before affinity is broken in favour of a less-busy node. |
 | `Auth:ApiKeys` | `[]` | Accepted client Bearer tokens (constant-time compared). |
-| `Auth:RequireAuthForLoopback` | `false` | Force loopback callers to present a token too. |
+| `Auth:AdminApiKeys` | `[]` | Accepted admin Bearer tokens guarding `/api/admin/*`. Separate from `ApiKeys`. |
+| `Auth:RequireAuthForLoopback` | `false` | Force loopback callers to present a token too (applies to client and admin scopes). |
 | `Auth:NodeEnrollmentSecret` | _(empty)_ | Shared secret nodes present when joining the hub. Empty disables enrollment. |
 
 ### Node configuration
@@ -183,7 +203,8 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 
 A read-only status page lives at `/` (and `/status`). It auto-refreshes and shows the
 fleet — connected nodes, their reported models, live in-flight counts, eviction history,
-and failover stats.
+and failover stats. For fleet operations (cordon, drain, deregister) use the
+[management console](#management-console--admin-api) at `/console`.
 
 `GET /api/status` returns the same data as JSON:
 
@@ -203,6 +224,50 @@ and failover stats.
 ```
 
 `GET /health` stays unauthenticated for monitoring.
+
+## Management console & admin API
+
+A browser console at `/console` (alias for `/console.html`) lets an operator drive the
+fleet — not just watch it. It is built from the same dark-theme HTML/CSS/JS as the status
+page (no build toolchain, no React) and uses the same admin endpoints any script can call.
+
+**What you can do**
+
+- **Cordon / Uncordon** — flip a node out of (or back into) the routing pool. A cordoned
+  node finishes its in-flight jobs and refuses new ones; the router silently skips it
+  when picking candidates.
+- **Drain** — cordon, then wait for the node's local in-flight count to reach zero. The
+  console implements this client-side as cordon + poll, so the request stays fast and the
+  server never holds a long-lived connection.
+- **Deregister** — force-disconnect a node and drop it from the registry. If the worker
+  process is still running it will reconnect cleanly and re-register.
+- **Live updates** — the console subscribes to `GET /api/admin/stream`
+  (Server-Sent Events) and reflects node connect / disconnect / cordon changes in ~1s
+  without a refresh. If the stream drops it transparently falls back to polling.
+- **Last-action audit** — each row shows the most recent admin action (who, when), kept
+  in memory by the coordinator.
+
+**Admin endpoints (under `/api/admin`, scoped to `Auth:AdminApiKeys`)**
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET`  | `/api/admin/nodes` | Richer node snapshot: cordon state, labels, max-concurrency, last action. |
+| `GET`  | `/api/admin/stream` | SSE stream of fleet changes; keepalive every ~10s. |
+| `POST` | `/api/admin/nodes/{nodeId}/cordon` | Stop routing new jobs to this node. |
+| `POST` | `/api/admin/nodes/{nodeId}/uncordon` | Restore the node to the routing pool. |
+| `POST` | `/api/admin/nodes/{nodeId}/deregister` | Force-disconnect and drop the node. |
+
+Example — cordon a node from the CLI:
+
+```bash
+curl -X POST http://your-coordinator:5080/api/admin/nodes/<nodeId>/cordon \
+  -H "Authorization: Bearer YOUR_ADMIN_KEY"
+```
+
+**Admin key handling in the browser.** The console prompts for the admin key once per
+tab, keeps it in a JS variable for the session only — **never** in `localStorage` or
+`sessionStorage` — and sends it as `Authorization: Bearer …` on admin calls. A 401
+re-prompts; read-only stats keep rendering either way.
 
 ## Resilience & failover
 
