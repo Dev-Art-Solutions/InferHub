@@ -12,5 +12,7 @@ public interface IInferenceBackend
 
     Task<string> ChatAsync(string requestJson, CancellationToken cancellationToken);
 
+    Task<string> EmbedAsync(string requestJson, CancellationToken cancellationToken);
+
     IAsyncEnumerable<string> StreamAsync(string kind, string requestJson, CancellationToken cancellationToken);
 }

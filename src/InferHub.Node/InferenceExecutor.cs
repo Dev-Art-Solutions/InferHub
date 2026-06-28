@@ -19,6 +19,7 @@ public sealed class InferenceExecutor(
             {
                 "generate" => await backend.GenerateAsync(job.RequestJson, cancellationToken),
                 "chat" => await backend.ChatAsync(job.RequestJson, cancellationToken),
+                "embed" => await backend.EmbedAsync(job.RequestJson, cancellationToken),
                 _ => throw new InvalidOperationException($"Unsupported inference job kind '{job.Kind}'.")
             };
 

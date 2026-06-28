@@ -22,11 +22,13 @@ public static class VectorEndpoints
             string collection,
             VectorUpsert upsert,
             IVectorStore store,
+            IEmbeddingDispatcher embeddings,
             CancellationToken cancellationToken) =>
         {
             try
             {
-                var record = await store.UpsertAsync(collection, upsert, cancellationToken);
+                var prepared = await ResolveVectorAsync(upsert, embeddings, cancellationToken);
+                var record = await store.UpsertAsync(collection, prepared, cancellationToken);
                 return Results.Ok(record);
             }
             catch (KeyNotFoundException ex)
@@ -37,17 +39,27 @@ public static class VectorEndpoints
             {
                 return Error(StatusCodes.Status400BadRequest, ex.Message);
             }
+            catch (NoEmbeddingNodeException ex)
+            {
+                return Error(StatusCodes.Status404NotFound, ex.Message);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Error(StatusCodes.Status400BadRequest, ex.Message);
+            }
         });
 
         group.MapPost("/query", async (
             string collection,
             VectorQuery query,
             IVectorStore store,
+            IEmbeddingDispatcher embeddings,
             CancellationToken cancellationToken) =>
         {
             try
             {
-                var matches = await store.QueryAsync(collection, query, cancellationToken);
+                var prepared = await ResolveVectorAsync(query, embeddings, cancellationToken);
+                var matches = await store.QueryAsync(collection, prepared, cancellationToken);
                 return Results.Ok(new { matches });
             }
             catch (KeyNotFoundException ex)
@@ -55,6 +67,47 @@ public static class VectorEndpoints
                 return Error(StatusCodes.Status404NotFound, ex.Message);
             }
             catch (ArgumentException ex)
+            {
+                return Error(StatusCodes.Status400BadRequest, ex.Message);
+            }
+            catch (NoEmbeddingNodeException ex)
+            {
+                return Error(StatusCodes.Status404NotFound, ex.Message);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Error(StatusCodes.Status400BadRequest, ex.Message);
+            }
+        });
+
+        // Convenience RAG read: text → embed → search → matched payloads. Same body shape as
+        // /query (vector OR text + optional model + k), but the response is just the matches.
+        group.MapPost("/retrieve", async (
+            string collection,
+            VectorQuery query,
+            IVectorStore store,
+            IEmbeddingDispatcher embeddings,
+            CancellationToken cancellationToken) =>
+        {
+            try
+            {
+                var prepared = await ResolveVectorAsync(query, embeddings, cancellationToken);
+                var matches = await store.QueryAsync(collection, prepared, cancellationToken);
+                return Results.Ok(new { matches });
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return Error(StatusCodes.Status404NotFound, ex.Message);
+            }
+            catch (ArgumentException ex)
+            {
+                return Error(StatusCodes.Status400BadRequest, ex.Message);
+            }
+            catch (NoEmbeddingNodeException ex)
+            {
+                return Error(StatusCodes.Status404NotFound, ex.Message);
+            }
+            catch (InvalidOperationException ex)
             {
                 return Error(StatusCodes.Status400BadRequest, ex.Message);
             }
@@ -148,6 +201,44 @@ public static class VectorEndpoints
             audit.Record(collection, "vector.drop", ActorOf(context), DateTimeOffset.UtcNow);
             return Results.Ok(new { collection, dropped = true });
         });
+    }
+
+    private static async Task<VectorUpsert> ResolveVectorAsync(
+        VectorUpsert upsert,
+        IEmbeddingDispatcher embeddings,
+        CancellationToken cancellationToken)
+    {
+        if (upsert.Vector is { Length: > 0 })
+        {
+            return upsert;
+        }
+
+        if (string.IsNullOrWhiteSpace(upsert.Text))
+        {
+            throw new ArgumentException("either 'vector' or 'text' must be provided");
+        }
+
+        var vector = await embeddings.EmbedSingleAsync(upsert.Text, upsert.Model, cancellationToken);
+        return upsert with { Vector = vector };
+    }
+
+    private static async Task<VectorQuery> ResolveVectorAsync(
+        VectorQuery query,
+        IEmbeddingDispatcher embeddings,
+        CancellationToken cancellationToken)
+    {
+        if (query.Vector is { Length: > 0 })
+        {
+            return query;
+        }
+
+        if (string.IsNullOrWhiteSpace(query.Text))
+        {
+            throw new ArgumentException("either 'vector' or 'text' must be provided");
+        }
+
+        var vector = await embeddings.EmbedSingleAsync(query.Text, query.Model, cancellationToken);
+        return query with { Vector = vector };
     }
 
     private static IResult Error(int statusCode, string message) =>

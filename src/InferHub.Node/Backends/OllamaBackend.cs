@@ -5,6 +5,7 @@ using InferHub.Shared.Contracts;
 using OllamaClient;
 using OllamaChatRequest = OllamaClient.Models.ChatRequest;
 using OllamaChatStreamRequest = OllamaClient.Models.ChatStreamRequest;
+using OllamaEmbedRequest = OllamaClient.Models.EmbedRequest;
 using OllamaGenerateRequest = OllamaClient.Models.GenerateRequest;
 using OllamaGenerateStreamRequest = OllamaClient.Models.GenerateStreamRequest;
 
@@ -53,6 +54,13 @@ public sealed class OllamaBackend(
     {
         var request = Deserialize<OllamaChatRequest>(requestJson);
         var response = await client.SendChat(request, cancellationToken);
+        return JsonSerializer.Serialize(response, JsonOptions);
+    }
+
+    public async Task<string> EmbedAsync(string requestJson, CancellationToken cancellationToken)
+    {
+        var request = Deserialize<OllamaEmbedRequest>(requestJson);
+        var response = await client.Embed(request, cancellationToken);
         return JsonSerializer.Serialize(response, JsonOptions);
     }
 

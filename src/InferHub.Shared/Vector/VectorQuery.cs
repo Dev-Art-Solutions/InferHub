@@ -4,9 +4,11 @@ using System.Text.Json.Serialization;
 namespace InferHub.Shared.Vector;
 
 public sealed record VectorQuery(
-    [property: JsonPropertyName("vector")] float[] Vector,
+    [property: JsonPropertyName("vector")] float[]? Vector = null,
     [property: JsonPropertyName("k")] int K = 10,
-    [property: JsonPropertyName("filter")] IReadOnlyDictionary<string, string>? Filter = null);
+    [property: JsonPropertyName("filter")] IReadOnlyDictionary<string, string>? Filter = null,
+    [property: JsonPropertyName("text")] string? Text = null,
+    [property: JsonPropertyName("model")] string? Model = null);
 
 public sealed record VectorMatch(
     [property: JsonPropertyName("id")] string Id,

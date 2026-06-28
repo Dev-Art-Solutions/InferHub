@@ -97,5 +97,11 @@ public class OllamaBackendTests
         public IAsyncEnumerable<PushResponse> Push(PushStreamRequest pushRequest, CancellationToken cancellationToken) => throw new NotImplementedException();
 
         public Task<EmbeddingsResponse> GetEmbeddings(EmbeddingsRequest embeddingsRequest, CancellationToken cancellationToken) => throw new NotImplementedException();
+
+        public Task<VersionResponse> GetVersion(CancellationToken cancellationToken) => throw new NotImplementedException();
+
+        public Task<PsResponse> GetRunningModels(CancellationToken cancellationToken) => throw new NotImplementedException();
+
+        public Task<EmbedResponse> Embed(EmbedRequest embedRequest, CancellationToken cancellationToken) => throw new NotImplementedException();
     }
 }

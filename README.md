@@ -83,12 +83,14 @@ browser console that updates over Server-Sent Events.
 | 11 | Management console UI (done) | `v1.3.0` |
 | 12 | Live updates & console hardening (done) | `v1.4.0` |
 | 13 | Vector store foundation (done) | `v1.5.0` |
+| 14 | Embeddings & retrieval (done) | `v1.6.0` |
 
-**What's next.** Phases 14–18 build the rest of the RAG mesh on top of v1.5's storage
-layer: fleet embeddings, replication across nodes, self-healing, console surface, and
-finally inline retrieval on `/api/chat` and `/api/generate`. Beyond that, multi-
-coordinator clustering, persisted affinity, richer audit trails, and additional
-inference backends (vLLM, llama.cpp) remain on the table.
+**What's next.** Phases 15–18 build the rest of the RAG mesh on top of v1.6's
+text-in/vectors-out loop: replication across nodes (`v1.7.0`), self-healing
+(`v1.8.0`), console surface for collections and replicas (`v1.9.0`), and finally
+inline retrieval on `/api/chat` and `/api/generate` for the `v2.0.0` GA. Beyond
+that, multi-coordinator clustering, persisted affinity, richer audit trails, and
+additional inference backends (vLLM, llama.cpp) remain on the table.
 
 ## Quick start
 

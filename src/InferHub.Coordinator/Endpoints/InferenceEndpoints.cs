@@ -23,7 +23,99 @@ public static class InferenceEndpoints
     {
         app.MapPost("/api/generate", HandleGenerateAsync);
         app.MapPost("/api/chat", HandleChatAsync);
+        app.MapPost("/api/embed", HandleEmbedAsync);
+        app.MapPost("/api/embeddings", HandleLegacyEmbeddingsAsync);
         return app;
+    }
+
+    private static async Task<IResult> HandleEmbedAsync(
+        HttpRequest httpRequest,
+        IEmbeddingDispatcher embeddings,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Embed");
+        var rawJson = await ReadBodyAsync(httpRequest, cancellationToken);
+
+        try
+        {
+            var responseJson = await embeddings.DispatchEmbedAsync(rawJson, modelOverride: null, cancellationToken);
+            return Results.Text(responseJson, "application/json");
+        }
+        catch (NoEmbeddingNodeException ex)
+        {
+            logger.LogWarning(ex, "No embedding node available for model {Model}", ex.Model);
+            return Error(StatusCodes.Status404NotFound, ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            logger.LogWarning(ex, "Embed request failed");
+            return Error(StatusCodes.Status400BadRequest, ex.Message);
+        }
+        catch (NodeDisconnectedException ex)
+        {
+            logger.LogWarning(ex, "Embedding node disconnected mid-flight");
+            return Error(StatusCodes.Status502BadGateway, ex.Message);
+        }
+    }
+
+    private static async Task<IResult> HandleLegacyEmbeddingsAsync(
+        HttpRequest httpRequest,
+        IEmbeddingDispatcher embeddings,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.LegacyEmbeddings");
+        var rawJson = await ReadBodyAsync(httpRequest, cancellationToken);
+
+        var legacy = Deserialize<EmbeddingsRequest>(rawJson);
+        if (string.IsNullOrWhiteSpace(legacy.Model))
+        {
+            return Error(StatusCodes.Status400BadRequest, "model is required");
+        }
+        if (string.IsNullOrWhiteSpace(legacy.Prompt))
+        {
+            return Error(StatusCodes.Status400BadRequest, "prompt is required");
+        }
+
+        // Translate the legacy single-string body to the modern batch shape so the
+        // node-side path stays unified (one job kind, one backend method).
+        var modern = new EmbedRequest
+        {
+            Model = legacy.Model,
+            Input = JsonSerializer.SerializeToElement(legacy.Prompt),
+            KeepAlive = legacy.KeepAlive
+        };
+        var modernJson = JsonSerializer.Serialize(modern, JsonOptions);
+
+        try
+        {
+            var responseJson = await embeddings.DispatchEmbedAsync(modernJson, modelOverride: legacy.Model, cancellationToken);
+            var modernResponse = JsonSerializer.Deserialize<EmbedResponse>(responseJson, JsonOptions);
+
+            if (modernResponse is null || modernResponse.Embeddings.Count == 0)
+            {
+                return Error(StatusCodes.Status502BadGateway, "embed response had no vectors");
+            }
+
+            var legacyResponse = new EmbeddingsResponse { Embedding = modernResponse.Embeddings[0] };
+            return Results.Json(legacyResponse, JsonOptions);
+        }
+        catch (NoEmbeddingNodeException ex)
+        {
+            logger.LogWarning(ex, "No embedding node available for model {Model}", ex.Model);
+            return Error(StatusCodes.Status404NotFound, ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            logger.LogWarning(ex, "Legacy embeddings request failed");
+            return Error(StatusCodes.Status400BadRequest, ex.Message);
+        }
+        catch (NodeDisconnectedException ex)
+        {
+            logger.LogWarning(ex, "Embedding node disconnected mid-flight");
+            return Error(StatusCodes.Status502BadGateway, ex.Message);
+        }
     }
 
     private static async Task<IResult> HandleGenerateAsync(

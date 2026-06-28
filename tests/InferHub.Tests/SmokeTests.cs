@@ -68,6 +68,42 @@ public class SmokeTests
     }
 
     [Fact]
+    public void VectorUpsertAcceptsTextInsteadOfVector()
+    {
+        const string body = """
+        {
+          "id": "doc-1",
+          "text": "InferHub adds a memory.",
+          "model": "nomic-embed-text"
+        }
+        """;
+
+        var request = JsonSerializer.Deserialize<VectorUpsert>(body, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.NotNull(request);
+        Assert.Equal("doc-1", request!.Id);
+        Assert.Null(request.Vector);
+        Assert.Equal("InferHub adds a memory.", request.Text);
+        Assert.Equal("nomic-embed-text", request.Model);
+    }
+
+    [Fact]
+    public void EmbedRequestSerializesAsOllamaShape()
+    {
+        var request = new EmbedRequest
+        {
+            Model = "nomic-embed-text",
+            Input = JsonSerializer.SerializeToElement("hello")
+        };
+
+        var json = JsonSerializer.Serialize(request);
+
+        Assert.Contains("\"model\":\"nomic-embed-text\"", json);
+        Assert.Contains("\"input\":\"hello\"", json);
+        Assert.DoesNotContain("\"truncate\"", json);
+    }
+
+    [Fact]
     public void VectorUpsertDeserializesFromMinimalBody()
     {
         const string body = """
@@ -81,7 +117,8 @@ public class SmokeTests
 
         Assert.NotNull(request);
         Assert.Equal("doc-1", request!.Id);
-        Assert.Equal(3, request.Vector.Length);
+        Assert.NotNull(request.Vector);
+        Assert.Equal(3, request.Vector!.Length);
         Assert.Null(request.Metadata);
         Assert.Null(request.Payload);
     }

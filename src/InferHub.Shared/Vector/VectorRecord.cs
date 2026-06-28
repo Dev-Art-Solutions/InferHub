@@ -13,6 +13,8 @@ public sealed record VectorRecord(
 
 public sealed record VectorUpsert(
     [property: JsonPropertyName("id")] string Id,
-    [property: JsonPropertyName("vector")] float[] Vector,
+    [property: JsonPropertyName("vector")] float[]? Vector = null,
     [property: JsonPropertyName("payload")] JsonElement? Payload = null,
-    [property: JsonPropertyName("metadata")] IReadOnlyDictionary<string, string>? Metadata = null);
+    [property: JsonPropertyName("metadata")] IReadOnlyDictionary<string, string>? Metadata = null,
+    [property: JsonPropertyName("text")] string? Text = null,
+    [property: JsonPropertyName("model")] string? Model = null);

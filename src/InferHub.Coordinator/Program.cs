@@ -23,6 +23,7 @@ builder.Services.AddSingleton<IConversationAffinity, ConversationAffinity>();
 builder.Services.AddSingleton<InferHub.Coordinator.Services.IRouter, Router>();
 builder.Services.AddSingleton<IDispatcher, Dispatcher>();
 builder.Services.AddSingleton<INodeConnectionTracker, NodeConnectionTracker>();
+builder.Services.AddSingleton<IEmbeddingDispatcher, EmbeddingDispatcher>();
 builder.Services.AddHostedService<NodeReaper>();
 
 builder.Services.Configure<VectorStoreOptions>(builder.Configuration.GetSection(VectorStoreOptions.SectionName));
