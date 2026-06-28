@@ -82,9 +82,13 @@ browser console that updates over Server-Sent Events.
 | 10 | Coordinator admin API (done) | `v1.2.0` |
 | 11 | Management console UI (done) | `v1.3.0` |
 | 12 | Live updates & console hardening (done) | `v1.4.0` |
+| 13 | Vector store foundation (done) | `v1.5.0` |
 
-**What's next.** Beyond 1.4 we may look at multi-coordinator clustering, persisted
-affinity, richer audit trails, and additional inference backends (vLLM, llama.cpp).
+**What's next.** Phases 14–18 build the rest of the RAG mesh on top of v1.5's storage
+layer: fleet embeddings, replication across nodes, self-healing, console surface, and
+finally inline retrieval on `/api/chat` and `/api/generate`. Beyond that, multi-
+coordinator clustering, persisted affinity, richer audit trails, and additional
+inference backends (vLLM, llama.cpp) remain on the table.
 
 ## Quick start
 

@@ -4,8 +4,10 @@ using InferHub.Coordinator.Endpoints;
 using InferHub.Coordinator.Hubs;
 using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
+using InferHub.Coordinator.Vector;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.Ollama;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -22,6 +24,16 @@ builder.Services.AddSingleton<InferHub.Coordinator.Services.IRouter, Router>();
 builder.Services.AddSingleton<IDispatcher, Dispatcher>();
 builder.Services.AddSingleton<INodeConnectionTracker, NodeConnectionTracker>();
 builder.Services.AddHostedService<NodeReaper>();
+
+builder.Services.Configure<VectorStoreOptions>(builder.Configuration.GetSection(VectorStoreOptions.SectionName));
+builder.Services.AddSingleton<IValidateOptions<VectorStoreOptions>, VectorStoreOptionsValidator>();
+builder.Services.AddOptions<VectorStoreOptions>().ValidateOnStart();
+var vectorStoreEnabled = builder.Configuration.GetSection(VectorStoreOptions.SectionName)
+    .GetValue<bool>(nameof(VectorStoreOptions.Enabled));
+if (vectorStoreEnabled)
+{
+    builder.Services.AddSingleton<IVectorStore, LocalVectorStore>();
+}
 
 var app = builder.Build();
 
@@ -62,6 +74,11 @@ app.MapGet("/api/nodes", (INodeRegistry registry) =>
 app.MapStatusEndpoint(version);
 app.MapInferenceEndpoints();
 app.MapAdminEndpoints();
+
+if (vectorStoreEnabled)
+{
+    app.MapVectorEndpoints();
+}
 
 app.MapHub<NodeHub>("/hubs/node");
 

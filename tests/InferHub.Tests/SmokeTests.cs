@@ -1,6 +1,7 @@
 using System.Text.Json;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.Ollama;
+using InferHub.Shared.Vector;
 
 namespace InferHub.Tests;
 
@@ -45,6 +46,44 @@ public class SmokeTests
         Assert.Equal("You are helpful.", request.Messages[0].Content);
         Assert.Equal("user", request.Messages[3].Role);
         Assert.Equal("Tell me about Sofia.", request.Messages[3].Content);
+    }
+
+    [Fact]
+    public void VectorRecordSerializesAsCamelCase()
+    {
+        var record = new VectorRecord(
+            "doc-1",
+            [0.1f, 0.2f],
+            Payload: null,
+            Metadata: new Dictionary<string, string> { ["tag"] = "alpha" },
+            SeqNo: 42,
+            TimestampUtc: DateTimeOffset.Parse("2026-06-28T00:00:00Z"));
+
+        var json = JsonSerializer.Serialize(record);
+
+        Assert.Contains("\"id\":\"doc-1\"", json);
+        Assert.Contains("\"vector\":[", json);
+        Assert.Contains("\"metadata\":{\"tag\":\"alpha\"}", json);
+        Assert.Contains("\"seqNo\":42", json);
+    }
+
+    [Fact]
+    public void VectorUpsertDeserializesFromMinimalBody()
+    {
+        const string body = """
+        {
+          "id": "doc-1",
+          "vector": [0.1, 0.2, 0.3]
+        }
+        """;
+
+        var request = JsonSerializer.Deserialize<VectorUpsert>(body, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.NotNull(request);
+        Assert.Equal("doc-1", request!.Id);
+        Assert.Equal(3, request.Vector.Length);
+        Assert.Null(request.Metadata);
+        Assert.Null(request.Payload);
     }
 
     [Fact]
