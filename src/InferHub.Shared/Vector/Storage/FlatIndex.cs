@@ -1,9 +1,8 @@
 using System.Text.Json;
-using InferHub.Shared.Vector;
 
-namespace InferHub.Coordinator.Vector;
+namespace InferHub.Shared.Vector.Storage;
 
-internal sealed class FlatIndex
+public sealed class FlatIndex
 {
     private readonly int _dimension;
     private readonly DistanceMetric _metric;
@@ -18,6 +17,10 @@ internal sealed class FlatIndex
 
     public int Count => _entries.Count;
 
+    public int Dimension => _dimension;
+
+    public DistanceMetric Metric => _metric;
+
     public void Upsert(VectorRecord record)
     {
         if (record.Vector.Length != _dimension)
@@ -26,8 +29,6 @@ internal sealed class FlatIndex
         }
 
         var original = (float[])record.Vector.Clone();
-        // For cosine we cache a unit vector so queries collapse to a dot product; the
-        // original stays put so snapshots remain the operator-visible source of truth.
         var indexed = _metric == DistanceMetric.Cosine ? Normalise(original) : original;
 
         _entries[record.Id] = new Entry(record.Id, original, indexed, record.Payload, record.Metadata, record.SeqNo, record.TimestampUtc);

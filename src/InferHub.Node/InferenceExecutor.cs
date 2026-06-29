@@ -1,12 +1,15 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using InferHub.Node.Backends;
+using InferHub.Node.Vector;
 using InferHub.Shared.Contracts;
+using InferHub.Shared.Vector.Replication;
 
 namespace InferHub.Node;
 
 public sealed class InferenceExecutor(
     IInferenceBackend backend,
+    ReplicaStore replicas,
     ILogger<InferenceExecutor> logger)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -20,6 +23,7 @@ public sealed class InferenceExecutor(
                 "generate" => await backend.GenerateAsync(job.RequestJson, cancellationToken),
                 "chat" => await backend.ChatAsync(job.RequestJson, cancellationToken),
                 "embed" => await backend.EmbedAsync(job.RequestJson, cancellationToken),
+                "vector-query" => RunVectorQuery(job.RequestJson),
                 _ => throw new InvalidOperationException($"Unsupported inference job kind '{job.Kind}'.")
             };
 
@@ -108,6 +112,17 @@ public sealed class InferenceExecutor(
             logger.LogWarning("Streaming {JobKind} job {JobId} ended without a done chunk", job.Kind, job.JobId);
             yield return new InferenceChunk(job.JobId, SerializeDone(), true);
         }
+    }
+
+    private string RunVectorQuery(string requestJson)
+    {
+        var request = JsonSerializer.Deserialize<VectorQueryRequest>(requestJson, JsonOptions)
+            ?? throw new InvalidOperationException("vector-query request was empty");
+
+        var matches = replicas.Query(request)
+            ?? throw new InvalidOperationException($"no local replica for collection '{request.Collection}'");
+
+        return JsonSerializer.Serialize(new VectorQueryResponse(matches), JsonOptions);
     }
 
     private static string SerializeError(string message)

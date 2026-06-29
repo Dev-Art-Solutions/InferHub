@@ -33,7 +33,12 @@ var vectorStoreEnabled = builder.Configuration.GetSection(VectorStoreOptions.Sec
     .GetValue<bool>(nameof(VectorStoreOptions.Enabled));
 if (vectorStoreEnabled)
 {
-    builder.Services.AddSingleton<IVectorStore, LocalVectorStore>();
+    builder.Services.AddSingleton<LocalVectorStore>();
+    builder.Services.AddSingleton<IVectorStore>(sp => sp.GetRequiredService<LocalVectorStore>());
+    builder.Services.AddSingleton<ReplicaRegistry>();
+    builder.Services.AddSingleton<ReplicationCoordinator>();
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<ReplicationCoordinator>());
+    builder.Services.AddSingleton<IVectorQueryRouter, VectorQueryRouter>();
 }
 
 var app = builder.Build();

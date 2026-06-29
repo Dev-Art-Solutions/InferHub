@@ -1,20 +1,38 @@
 using System.Runtime.CompilerServices;
 using InferHub.Node;
 using InferHub.Node.Backends;
+using InferHub.Node.Configuration;
+using InferHub.Node.Vector;
 using InferHub.Shared.Contracts;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace InferHub.Tests;
 
-public class InferenceExecutorTests
+public class InferenceExecutorTests : IDisposable
 {
+    private readonly string _replicaDir = Path.Combine(Path.GetTempPath(), "inferhub-ie-" + Guid.NewGuid().ToString("N"));
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_replicaDir)) Directory.Delete(_replicaDir, recursive: true);
+    }
+
+    private InferenceExecutor BuildExecutor(IInferenceBackend backend)
+    {
+        var replicas = new ReplicaStore(
+            Options.Create(new VectorReplicaOptions { ReplicaDirectory = _replicaDir }),
+            NullLogger<ReplicaStore>.Instance);
+        return new InferenceExecutor(backend, replicas, NullLogger<InferenceExecutor>.Instance);
+    }
+
     [Fact]
     public async Task StreamAsyncWrapsBackendChunksAndMarksDone()
     {
         var backend = new FakeBackend(
             """{"response":"hel","done":false}""",
             """{"response":"lo","done":true}""");
-        var executor = new InferenceExecutor(backend, NullLogger<InferenceExecutor>.Instance);
+        var executor = BuildExecutor(backend);
         var job = new InferenceJob(Guid.NewGuid(), "generate", "{}");
 
         var chunks = new List<InferenceChunk>();
@@ -43,7 +61,7 @@ public class InferenceExecutorTests
     public async Task RunAsyncRoutesEmbedKindToBackendEmbed()
     {
         var backend = new RecordingBackend(embedResponse: """{"model":"nomic","embeddings":[[0.1,0.2]]}""");
-        var executor = new InferenceExecutor(backend, NullLogger<InferenceExecutor>.Instance);
+        var executor = BuildExecutor(backend);
         var job = new InferenceJob(Guid.NewGuid(), "embed", """{"model":"nomic","input":"hi"}""");
 
         var result = await executor.RunAsync(job, CancellationToken.None);
@@ -54,10 +72,37 @@ public class InferenceExecutorTests
     }
 
     [Fact]
+    public async Task RunAsyncVectorQueryDispatchesToReplicaStore()
+    {
+        var replicas = new ReplicaStore(
+            Options.Create(new VectorReplicaOptions { ReplicaDirectory = _replicaDir }),
+            NullLogger<ReplicaStore>.Instance);
+        replicas.Apply(new InferHub.Shared.Vector.Replication.VectorReplicaAssignment(
+            "docs",
+            Dimension: 2,
+            Distance: "cosine",
+            Records: new[]
+            {
+                new InferHub.Shared.Vector.VectorRecord("a", [1f, 0f], null, null, 1, DateTimeOffset.UtcNow),
+                new InferHub.Shared.Vector.VectorRecord("b", [0f, 1f], null, null, 2, DateTimeOffset.UtcNow)
+            },
+            LastSeq: 2));
+
+        var executor = new InferenceExecutor(new RecordingBackend(), replicas, NullLogger<InferenceExecutor>.Instance);
+        var requestJson = """{"collection":"docs","vector":[1.0,0.0],"k":1}""";
+        var job = new InferenceJob(Guid.NewGuid(), "vector-query", requestJson);
+
+        var result = await executor.RunAsync(job, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Contains("\"id\":\"a\"", result.ResponseJson);
+    }
+
+    [Fact]
     public async Task StreamAsyncEmitsFinalDoneChunkWhenBackendEndsEarly()
     {
         var backend = new FakeBackend("""{"response":"hello","done":false}""");
-        var executor = new InferenceExecutor(backend, NullLogger<InferenceExecutor>.Instance);
+        var executor = BuildExecutor(backend);
         var job = new InferenceJob(Guid.NewGuid(), "generate", "{}");
 
         var chunks = new List<InferenceChunk>();

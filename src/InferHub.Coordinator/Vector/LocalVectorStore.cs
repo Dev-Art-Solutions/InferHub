@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using InferHub.Shared.Vector;
+using InferHub.Shared.Vector.Storage;
 using Microsoft.Extensions.Options;
 
 namespace InferHub.Coordinator.Vector;
@@ -14,6 +15,11 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
     private readonly DistanceMetric _defaultDistance;
     private readonly int _snapshotEveryOps;
     private readonly ILogger<LocalVectorStore> _logger;
+
+    public event Action<CollectionInfo>? CollectionCreated;
+    public event Action<string>? CollectionDropped;
+    public event Action<string, VectorRecord>? RecordUpserted;
+    public event Action<string, string, long, DateTimeOffset>? RecordDeleted;
 
     public LocalVectorStore(IOptions<VectorStoreOptions> options, ILogger<LocalVectorStore> logger)
     {
@@ -82,6 +88,7 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
 
         var requested = distance is null ? _defaultDistance : ParseOrThrow(distance);
 
+        CollectionInfo info;
         lock (_lifecycleLock)
         {
             if (_collections.ContainsKey(name))
@@ -93,13 +100,16 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
             var index = new FlatIndex(dimension, requested);
             var entry = new CollectionEntry(raw, index, requested, lastSeq: 0);
             _collections[name] = entry;
-
-            return Task.FromResult(ToInfo(entry));
+            info = ToInfo(entry);
         }
+
+        CollectionCreated?.Invoke(info);
+        return Task.FromResult(info);
     }
 
     public Task<bool> DropCollectionAsync(string name, CancellationToken cancellationToken = default)
     {
+        bool dropped;
         lock (_lifecycleLock)
         {
             if (!_collections.TryRemove(name, out var entry))
@@ -108,8 +118,15 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
             }
 
             entry.Raw.Drop();
-            return Task.FromResult(true);
+            dropped = true;
         }
+
+        if (dropped)
+        {
+            CollectionDropped?.Invoke(name);
+        }
+
+        return Task.FromResult(dropped);
     }
 
     public Task<IReadOnlyList<CollectionInfo>> ListCollectionsAsync(CancellationToken cancellationToken = default)
@@ -147,6 +164,7 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
             MaybeSnapshot(entry);
         }
 
+        RecordUpserted?.Invoke(collection, record);
         return Task.FromResult(record);
     }
 
@@ -162,6 +180,8 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
     public Task<bool> DeleteAsync(string collection, string id, CancellationToken cancellationToken = default)
     {
         var entry = RequireCollection(collection);
+        long seq;
+        DateTimeOffset ts;
         lock (entry.WriteLock)
         {
             if (!entry.Index.Delete(id))
@@ -169,13 +189,16 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
                 return Task.FromResult(false);
             }
 
-            var seq = ++entry.LastSeq;
-            entry.Raw.AppendDelete(id, seq, DateTimeOffset.UtcNow);
+            seq = ++entry.LastSeq;
+            ts = DateTimeOffset.UtcNow;
+            entry.Raw.AppendDelete(id, seq, ts);
             entry.OpsSinceSnapshot++;
 
             MaybeSnapshot(entry);
-            return Task.FromResult(true);
         }
+
+        RecordDeleted?.Invoke(collection, id, seq, ts);
+        return Task.FromResult(true);
     }
 
     public Task<IReadOnlyList<VectorMatch>> QueryAsync(string collection, VectorQuery query, CancellationToken cancellationToken = default)
@@ -188,12 +211,47 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
             throw new ArgumentException($"query vector length {query.Vector.Length} does not match collection dimension {entry.Raw.Dimension}", nameof(query));
         }
 
-        // Reads do not mutate; snapshot the matches under the lock to avoid a concurrent
-        // upsert tearing the result mid-flight.
         lock (entry.WriteLock)
         {
             var matches = entry.Index.Query(query.Vector, query.K, query.Filter);
             return Task.FromResult(matches);
+        }
+    }
+
+    public ReplicaSnapshot? SnapshotForReplica(string collection)
+    {
+        if (!_collections.TryGetValue(collection, out var entry))
+        {
+            return null;
+        }
+
+        lock (entry.WriteLock)
+        {
+            var records = entry.Index.EnumerateLive().ToArray();
+            return new ReplicaSnapshot(entry.Raw.Name, entry.Raw.Dimension, entry.Metric.ToWireString(), records, entry.LastSeq);
+        }
+    }
+
+    /// <summary>
+    /// Capture a replica snapshot for <paramref name="collection"/> while holding the
+    /// collection's write lock. <paramref name="pin"/> runs under the same lock, so any
+    /// caller-side registration (e.g. adding a holder to <see cref="ReplicaRegistry"/>)
+    /// happens before the lock releases. After <paramref name="pin"/> returns, subsequent
+    /// upserts are guaranteed to fan-out to the newly registered holder.
+    /// </summary>
+    public ReplicaSnapshot? SnapshotAndPin(string collection, Action pin)
+    {
+        if (!_collections.TryGetValue(collection, out var entry))
+        {
+            return null;
+        }
+
+        lock (entry.WriteLock)
+        {
+            var records = entry.Index.EnumerateLive().ToArray();
+            var snapshot = new ReplicaSnapshot(entry.Raw.Name, entry.Raw.Dimension, entry.Metric.ToWireString(), records, entry.LastSeq);
+            pin();
+            return snapshot;
         }
     }
 
@@ -209,8 +267,6 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
     {
         if (entry.OpsSinceSnapshot < _snapshotEveryOps) return;
 
-        // Compact: walk the in-memory index to capture current live records, then ask the
-        // raw store to fold them into a fresh snapshot and truncate the ops tail.
         var live = SnapshotLiveRecords(entry);
         entry.Raw.WriteSnapshot(live, entry.LastSeq);
         entry.OpsSinceSnapshot = 0;
@@ -219,8 +275,6 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
     private static List<VectorRecord> SnapshotLiveRecords(CollectionEntry entry)
     {
         var list = new List<VectorRecord>(entry.Index.Count);
-        // FlatIndex exposes Get by id but not enumeration, so we iterate over IDs known
-        // via replay state. Easiest path: a small extra method on FlatIndex.
         foreach (var record in entry.Index.EnumerateLive())
         {
             list.Add(record);
@@ -276,3 +330,10 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
         public object WriteLock { get; } = new();
     }
 }
+
+public sealed record ReplicaSnapshot(
+    string Collection,
+    int Dimension,
+    string Distance,
+    IReadOnlyList<VectorRecord> Records,
+    long LastSeq);

@@ -1,5 +1,5 @@
-using InferHub.Coordinator.Vector;
 using InferHub.Shared.Vector;
+using InferHub.Shared.Vector.Storage;
 
 namespace InferHub.Tests.Vector;
 

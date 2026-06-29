@@ -1,11 +1,10 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using InferHub.Shared.Vector;
 
-namespace InferHub.Coordinator.Vector;
+namespace InferHub.Shared.Vector.Storage;
 
-internal sealed class RawCollection
+public sealed class RawCollection
 {
     private const string MetaFileName = "meta.json";
     private const string SnapshotFileName = "snapshot.jsonl";
@@ -37,10 +36,12 @@ internal sealed class RawCollection
 
     public string Distance { get; }
 
+    public string Directory => _directory;
+
     public static RawCollection Create(string root, string name, int dimension, string distance)
     {
         var directory = Path.Combine(root, name);
-        Directory.CreateDirectory(directory);
+        System.IO.Directory.CreateDirectory(directory);
 
         var meta = new CollectionMeta(name, dimension, distance);
         File.WriteAllText(Path.Combine(directory, MetaFileName), JsonSerializer.Serialize(meta, JsonOptions));
@@ -68,9 +69,9 @@ internal sealed class RawCollection
         lock (_writeLock)
         {
             CloseOpsStream();
-            if (Directory.Exists(_directory))
+            if (System.IO.Directory.Exists(_directory))
             {
-                Directory.Delete(_directory, recursive: true);
+                System.IO.Directory.Delete(_directory, recursive: true);
             }
         }
     }
@@ -111,8 +112,6 @@ internal sealed class RawCollection
         {
             foreach (var op in ReadOps(opsPath))
             {
-                // Ops file may still contain records that were folded into the snapshot
-                // if a crash happened between snapshot rename and ops truncate.
                 if (op.SeqNo > snapshotSeq)
                 {
                     yield return op;
@@ -226,7 +225,7 @@ internal sealed class RawCollection
         [property: JsonPropertyName("distance")] string Distance);
 }
 
-internal sealed record RawOp(
+public sealed record RawOp(
     [property: JsonPropertyName("op")] string Op,
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("vector")] float[]? Vector,

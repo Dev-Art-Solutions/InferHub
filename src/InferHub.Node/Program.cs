@@ -1,6 +1,7 @@
 using InferHub.Node;
 using InferHub.Node.Backends;
 using InferHub.Node.Configuration;
+using InferHub.Node.Vector;
 using Microsoft.Extensions.Options;
 using OllamaClient.Extensions;
 
@@ -25,6 +26,11 @@ builder.Services
 builder.Services.AddSingleton<IValidateOptions<OllamaOptions>, OllamaOptionsValidator>();
 
 builder.Services.Configure<BackendOptions>(builder.Configuration.GetSection("Backend"));
+
+builder.Services
+    .AddOptions<VectorReplicaOptions>()
+    .Bind(builder.Configuration.GetSection(VectorReplicaOptions.SectionName));
+builder.Services.AddSingleton<ReplicaStore>();
 
 builder.Services.AddOllamaClient(cfg =>
 {

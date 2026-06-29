@@ -2,7 +2,9 @@ using System.Reflection;
 using System.Collections.Concurrent;
 using InferHub.Node.Backends;
 using InferHub.Node.Configuration;
+using InferHub.Node.Vector;
 using InferHub.Shared.Contracts;
+using InferHub.Shared.Vector.Replication;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Options;
 
@@ -15,6 +17,7 @@ public sealed class CoordinatorConnection(
     INodeIdentity nodeIdentity,
     IInferenceBackend backend,
     InferenceExecutor inferenceExecutor,
+    ReplicaStore replicaStore,
     ILogger<CoordinatorConnection> logger) : IAsyncDisposable
 {
     private readonly CoordinatorOptions coordinator = coordinatorOptions.Value;
@@ -112,6 +115,9 @@ public sealed class CoordinatorConnection(
         hubConnection.On<InferenceJob>("RunJob", RunJobAsync);
         hubConnection.On<InferenceJob>("RunStreamingJob", RunStreamingJobAsync);
         hubConnection.On<Guid>("CancelJob", CancelJob);
+        hubConnection.On<VectorReplicaAssignment>("AssignVectorReplica", OnAssignVectorReplica);
+        hubConnection.On<VectorReplicaOp>("ApplyVectorOp", OnApplyVectorOp);
+        hubConnection.On<string>("DropVectorReplica", OnDropVectorReplica);
 
         hubConnection.Reconnecting += error =>
         {
@@ -189,13 +195,15 @@ public sealed class CoordinatorConnection(
             throw new InvalidOperationException("Coordinator connection has not been built.");
         }
 
+        var inventory = replicaStore.Inventory();
         var registration = new NodeRegistration(
             nodeId,
             node.Name,
             ollama.Endpoint,
             GetVersion(),
             node.Labels.Count == 0 ? null : new Dictionary<string, string>(node.Labels),
-            node.MaxConcurrency);
+            node.MaxConcurrency,
+            inventory.Count == 0 ? null : inventory);
 
         await connection.InvokeAsync("Register", registration, cancellationToken);
         await ReportModelsAsync(cancellationToken);
@@ -350,6 +358,42 @@ public sealed class CoordinatorConnection(
         {
             logger.LogInformation("Canceling job {JobId} at coordinator request", jobId);
             jobCts.Cancel();
+        }
+    }
+
+    private void OnAssignVectorReplica(VectorReplicaAssignment assignment)
+    {
+        try
+        {
+            replicaStore.Apply(assignment);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to apply replica assignment for '{Collection}'", assignment.Collection);
+        }
+    }
+
+    private void OnApplyVectorOp(VectorReplicaOp op)
+    {
+        try
+        {
+            replicaStore.Apply(op);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to apply vector op for '{Collection}'", op.Collection);
+        }
+    }
+
+    private void OnDropVectorReplica(string collection)
+    {
+        try
+        {
+            replicaStore.Drop(collection);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to drop replica '{Collection}'", collection);
         }
     }
 

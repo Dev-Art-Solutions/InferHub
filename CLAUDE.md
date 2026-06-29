@@ -93,10 +93,13 @@ as load-bearing:
    one exception is the vector store introduced in phase 13: when
    `VectorStore:Enabled` is `true`, vector records persist to `VectorStore:DataDirectory`
    as a plain raw store (append-only ops log + periodic compacted snapshots), and the
-   in-memory index is rebuilt from it on startup. Everything else stays in-memory; if
-   you find yourself adding a database or a new on-disk format outside the vector
-   store's directory, stop and rethink. The default is `Enabled=false`, so deployments
-   that don't opt in keep the original no-persistence contract unchanged.
+   in-memory index is rebuilt from it on startup. **Phase 15 extends the same shape to
+   nodes**: when assigned a replica, a node persists it under `Vector:ReplicaDirectory`
+   so a restart does not require a full re-push. Node replicas are derived and
+   disposable — the hub's raw store stays authoritative. Everything else stays in-memory;
+   if you find yourself adding a database or a new on-disk format outside those two
+   directories, stop and rethink. The default is `Enabled=false`, so deployments that
+   don't opt in keep the original no-persistence contract unchanged.
 5. **No new heavy dependencies.** The dependency surface today is minimal (ASP.NET Core,
    SignalR, OllamaClient on the node, xunit for tests). Add packages reluctantly.
 6. **The API mimics Ollama.** Request/response DTOs in `InferHub.Shared/Ollama/` track

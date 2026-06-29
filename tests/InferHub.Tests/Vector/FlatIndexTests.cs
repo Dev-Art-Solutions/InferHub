@@ -1,5 +1,5 @@
-using InferHub.Coordinator.Vector;
 using InferHub.Shared.Vector;
+using InferHub.Shared.Vector.Storage;
 
 namespace InferHub.Tests.Vector;
 
@@ -83,7 +83,7 @@ public class FlatIndexTests
     {
         var index = new FlatIndex(3, DistanceMetric.Cosine);
 
-        Assert.Throws<ArgumentException>(() => index.Upsert(Record("bad", [1f, 0f])));
+        Assert.Throws<ArgumentException>(() => { index.Upsert(Record("bad", [1f, 0f])); });
     }
 
     [Fact]
@@ -92,7 +92,7 @@ public class FlatIndexTests
         var index = new FlatIndex(3, DistanceMetric.Cosine);
         index.Upsert(Record("a", [1f, 0f, 0f]));
 
-        Assert.Throws<ArgumentException>(() => index.Query([1f, 0f], k: 1, filter: null));
+        Assert.Throws<ArgumentException>(() => { index.Query([1f, 0f], k: 1, filter: null); });
     }
 
     [Fact]

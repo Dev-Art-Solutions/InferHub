@@ -1,5 +1,6 @@
 using InferHub.Coordinator.Auth;
 using InferHub.Coordinator.Services;
+using InferHub.Coordinator.Vector;
 using InferHub.Shared.Contracts;
 using Microsoft.AspNetCore.SignalR;
 
@@ -11,6 +12,7 @@ public sealed class NodeHub(
     IConversationAffinity affinity,
     INodeConnectionTracker connections,
     NodeAuthFilter nodeAuth,
+    IServiceProvider services,
     ILogger<NodeHub> logger) : Hub
 {
     public override Task OnConnectedAsync()
@@ -27,6 +29,12 @@ public sealed class NodeHub(
 
     public Task Register(NodeRegistration registration)
     {
+        // Recognise any on-disk replicas the node reports BEFORE the registry fires its
+        // Changed event, so the placement loop sees the existing holder and doesn't
+        // schedule a full re-push for a replica the node already has on disk.
+        var replication = services.GetService(typeof(ReplicationCoordinator)) as ReplicationCoordinator;
+        replication?.ApplyInventory(Context.ConnectionId, registration.Replicas);
+
         registry.Upsert(Context.ConnectionId, registration, DateTimeOffset.UtcNow);
 
         logger.LogInformation(

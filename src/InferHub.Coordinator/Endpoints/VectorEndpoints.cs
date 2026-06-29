@@ -54,12 +54,13 @@ public static class VectorEndpoints
             VectorQuery query,
             IVectorStore store,
             IEmbeddingDispatcher embeddings,
+            IVectorQueryRouter queryRouter,
             CancellationToken cancellationToken) =>
         {
             try
             {
                 var prepared = await ResolveVectorAsync(query, embeddings, cancellationToken);
-                var matches = await store.QueryAsync(collection, prepared, cancellationToken);
+                var matches = await RouteQueryAsync(collection, prepared, store, queryRouter, cancellationToken);
                 return Results.Ok(new { matches });
             }
             catch (KeyNotFoundException ex)
@@ -87,12 +88,13 @@ public static class VectorEndpoints
             VectorQuery query,
             IVectorStore store,
             IEmbeddingDispatcher embeddings,
+            IVectorQueryRouter queryRouter,
             CancellationToken cancellationToken) =>
         {
             try
             {
                 var prepared = await ResolveVectorAsync(query, embeddings, cancellationToken);
-                var matches = await store.QueryAsync(collection, prepared, cancellationToken);
+                var matches = await RouteQueryAsync(collection, prepared, store, queryRouter, cancellationToken);
                 return Results.Ok(new { matches });
             }
             catch (KeyNotFoundException ex)
@@ -156,10 +158,18 @@ public static class VectorEndpoints
     {
         var group = app.MapGroup("/api/admin/vector/collections");
 
-        group.MapGet("/", async (IVectorStore store, CancellationToken cancellationToken) =>
+        group.MapGet("/", async (
+            IVectorStore store,
+            ReplicaRegistry replicas,
+            INodeRegistry nodes,
+            Microsoft.Extensions.Options.IOptions<VectorStoreOptions> options,
+            CancellationToken cancellationToken) =>
         {
             var collections = await store.ListCollectionsAsync(cancellationToken);
-            return Results.Ok(new { collections });
+            var placement = collections
+                .Select(c => BuildPlacement(c.Name, replicas, nodes, options.Value.ReplicationFactor))
+                .ToArray();
+            return Results.Ok(new { collections, placement });
         });
 
         group.MapPost("/", async (
@@ -203,6 +213,20 @@ public static class VectorEndpoints
         });
     }
 
+    private static async Task<IReadOnlyList<VectorMatch>> RouteQueryAsync(
+        string collection,
+        VectorQuery prepared,
+        IVectorStore store,
+        IVectorQueryRouter queryRouter,
+        CancellationToken cancellationToken)
+    {
+        // Prefer a node replica when available; the hub-local index is the floor and
+        // takes over silently when no replica answers (zero nodes, transient failure, etc.).
+        var matches = await queryRouter.TryQueryOnNodeAsync(collection, prepared, cancellationToken);
+        if (matches is not null) return matches;
+        return await store.QueryAsync(collection, prepared, cancellationToken);
+    }
+
     private static async Task<VectorUpsert> ResolveVectorAsync(
         VectorUpsert upsert,
         IEmbeddingDispatcher embeddings,
@@ -239,6 +263,22 @@ public static class VectorEndpoints
 
         var vector = await embeddings.EmbedSingleAsync(query.Text, query.Model, cancellationToken);
         return query with { Vector = vector };
+    }
+
+    private static CollectionPlacement BuildPlacement(
+        string collection,
+        ReplicaRegistry replicas,
+        INodeRegistry nodes,
+        int targetReplicas)
+    {
+        var holders = replicas.Holders(collection);
+        var connected = nodes.Snapshot(DateTimeOffset.UtcNow);
+        var holderNodeIds = connected
+            .Where(n => holders.Contains(n.ConnectionId))
+            .Select(n => n.NodeId)
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .ToArray();
+        return new CollectionPlacement(collection, targetReplicas, holderNodeIds.Length, holderNodeIds);
     }
 
     private static IResult Error(int statusCode, string message) =>

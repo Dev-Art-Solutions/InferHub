@@ -1,3 +1,4 @@
+using InferHub.Shared.Vector.Storage;
 using Microsoft.Extensions.Options;
 
 namespace InferHub.Coordinator.Vector;

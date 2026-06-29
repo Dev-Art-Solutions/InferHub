@@ -2,6 +2,7 @@ using System.Text.Json;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.Ollama;
 using InferHub.Shared.Vector;
+using InferHub.Shared.Vector.Replication;
 
 namespace InferHub.Tests;
 
@@ -121,6 +122,40 @@ public class SmokeTests
         Assert.Equal(3, request.Vector!.Length);
         Assert.Null(request.Metadata);
         Assert.Null(request.Payload);
+    }
+
+    [Fact]
+    public void VectorReplicaAssignmentSerializesAsCamelCase()
+    {
+        var assignment = new VectorReplicaAssignment(
+            "docs",
+            Dimension: 2,
+            Distance: "cosine",
+            Records: new[]
+            {
+                new VectorRecord("a", [1f, 0f], null, null, 1, DateTimeOffset.Parse("2026-06-28T00:00:00Z"))
+            },
+            LastSeq: 1);
+
+        var json = JsonSerializer.Serialize(assignment);
+
+        Assert.Contains("\"collection\":\"docs\"", json);
+        Assert.Contains("\"dimension\":2", json);
+        Assert.Contains("\"records\":[", json);
+        Assert.Contains("\"lastSeq\":1", json);
+    }
+
+    [Fact]
+    public void CollectionPlacementSerializesAsCamelCase()
+    {
+        var placement = new CollectionPlacement("docs", TargetReplicas: 2, LiveReplicas: 1, ReplicaNodes: new[] { "node-a" });
+
+        var json = JsonSerializer.Serialize(placement);
+
+        Assert.Contains("\"collection\":\"docs\"", json);
+        Assert.Contains("\"targetReplicas\":2", json);
+        Assert.Contains("\"liveReplicas\":1", json);
+        Assert.Contains("\"replicaNodes\":[\"node-a\"]", json);
     }
 
     [Fact]

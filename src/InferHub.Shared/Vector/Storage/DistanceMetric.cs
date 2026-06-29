@@ -1,13 +1,13 @@
-namespace InferHub.Coordinator.Vector;
+namespace InferHub.Shared.Vector.Storage;
 
-internal enum DistanceMetric
+public enum DistanceMetric
 {
     Cosine,
     Dot,
     L2
 }
 
-internal static class DistanceMetricExtensions
+public static class DistanceMetricExtensions
 {
     public const string Cosine = "cosine";
     public const string Dot = "dot";
