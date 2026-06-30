@@ -39,6 +39,8 @@ if (vectorStoreEnabled)
     builder.Services.AddSingleton<ReplicationCoordinator>();
     builder.Services.AddHostedService(sp => sp.GetRequiredService<ReplicationCoordinator>());
     builder.Services.AddSingleton<IVectorQueryRouter, VectorQueryRouter>();
+    builder.Services.AddSingleton<HealingService>();
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<HealingService>());
 }
 
 var app = builder.Build();

@@ -46,7 +46,8 @@ public sealed class ReplicationCoordinator : IHostedService, IDisposable
         _store.CollectionDropped += OnCollectionDropped;
         _store.RecordUpserted += OnRecordUpserted;
         _store.RecordDeleted += OnRecordDeleted;
-        _registry.Changed += OnFleetChanged;
+        // Fleet-change driven re-placement is owned by HealingService (phase 16); the
+        // coordinator owns the primitives (seed, fan-out, drop) it calls.
         return Task.CompletedTask;
     }
 
@@ -56,7 +57,6 @@ public sealed class ReplicationCoordinator : IHostedService, IDisposable
         _store.CollectionDropped -= OnCollectionDropped;
         _store.RecordUpserted -= OnRecordUpserted;
         _store.RecordDeleted -= OnRecordDeleted;
-        _registry.Changed -= OnFleetChanged;
         return Task.CompletedTask;
     }
 
@@ -143,27 +143,6 @@ public sealed class ReplicationCoordinator : IHostedService, IDisposable
     {
         var op = new VectorReplicaOp(collection, "delete", id, null, null, null, seq, ts);
         await FanOutAsync(collection, op);
-    }
-
-    private async void OnFleetChanged()
-    {
-        try
-        {
-            await RecomputeAllPlacementsAsync(CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to recompute replica placement");
-        }
-    }
-
-    private async Task RecomputeAllPlacementsAsync(CancellationToken cancellationToken)
-    {
-        var collections = await _store.ListCollectionsAsync(cancellationToken);
-        foreach (var info in collections)
-        {
-            await PlaceForCollectionAsync(info.Name, cancellationToken);
-        }
     }
 
     private async Task PlaceForCollectionAsync(string collection, CancellationToken cancellationToken)

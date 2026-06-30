@@ -13,6 +13,9 @@ public sealed class Metrics
     private long failoversAttempted;
     private long failoversSucceeded;
     private long nodesEvicted;
+    private long vectorReplicasHealed;
+    private long vectorRebuildsFromRaw;
+    private long vectorUnderReplicated;
 
     private readonly ConcurrentDictionary<string, NodeCounter> perNode = new(StringComparer.OrdinalIgnoreCase);
 
@@ -56,6 +59,12 @@ public sealed class Metrics
 
     public void RecordNodeEvicted() => Interlocked.Increment(ref nodesEvicted);
 
+    public void RecordVectorReplicaHealed() => Interlocked.Increment(ref vectorReplicasHealed);
+
+    public void RecordVectorRebuildFromRaw() => Interlocked.Increment(ref vectorRebuildsFromRaw);
+
+    public void SetVectorUnderReplicated(long count) => Interlocked.Exchange(ref vectorUnderReplicated, Math.Max(0, count));
+
     public MetricsSnapshot Snapshot(DateTimeOffset now)
     {
         var perNodeSnapshot = perNode
@@ -77,6 +86,9 @@ public sealed class Metrics
             Interlocked.Read(ref failoversAttempted),
             Interlocked.Read(ref failoversSucceeded),
             Interlocked.Read(ref nodesEvicted),
+            Interlocked.Read(ref vectorReplicasHealed),
+            Interlocked.Read(ref vectorRebuildsFromRaw),
+            Interlocked.Read(ref vectorUnderReplicated),
             perNodeSnapshot);
     }
 
@@ -114,6 +126,9 @@ public sealed record MetricsSnapshot(
     long FailoversAttempted,
     long FailoversSucceeded,
     long NodesEvicted,
+    long VectorReplicasHealed,
+    long VectorRebuildsFromRaw,
+    long VectorUnderReplicated,
     IReadOnlyList<NodeMetricsSnapshot> PerNode);
 
 public sealed record NodeMetricsSnapshot(

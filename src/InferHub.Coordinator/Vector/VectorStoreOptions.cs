@@ -20,6 +20,17 @@ public sealed class VectorStoreOptions
     public int SnapshotEveryOps { get; set; } = 5000;
 
     public RetrievalOptions Retrieval { get; set; } = new();
+
+    public HealingOptions Healing { get; set; } = new();
+}
+
+public sealed class HealingOptions
+{
+    /// <summary>Debounce window for fleet-change events; collapses bursts into a single heal pass.</summary>
+    public int DebounceMilliseconds { get; set; } = 750;
+
+    /// <summary>Idle interval at which the under-replicated gauge is refreshed even when nothing changes.</summary>
+    public int IdleSweepSeconds { get; set; } = 15;
 }
 
 public sealed class RetrievalOptions
@@ -86,6 +97,23 @@ public sealed class VectorStoreOptionsValidator : IValidateOptions<VectorStoreOp
             if (options.Retrieval.OnMissing is not "error" and not "passthrough")
             {
                 failures.Add($"{VectorStoreOptions.SectionName}:Retrieval:{nameof(RetrievalOptions.OnMissing)} must be 'error' or 'passthrough' (got '{options.Retrieval.OnMissing}').");
+            }
+        }
+
+        if (options.Healing is null)
+        {
+            failures.Add($"{VectorStoreOptions.SectionName}:{nameof(VectorStoreOptions.Healing)} must not be null.");
+        }
+        else
+        {
+            if (options.Healing.DebounceMilliseconds < 50)
+            {
+                failures.Add($"{VectorStoreOptions.SectionName}:Healing:{nameof(HealingOptions.DebounceMilliseconds)} must be >= 50 (got {options.Healing.DebounceMilliseconds}).");
+            }
+
+            if (options.Healing.IdleSweepSeconds < 1)
+            {
+                failures.Add($"{VectorStoreOptions.SectionName}:Healing:{nameof(HealingOptions.IdleSweepSeconds)} must be >= 1 (got {options.Healing.IdleSweepSeconds}).");
             }
         }
 

@@ -211,6 +211,27 @@ public static class VectorEndpoints
             audit.Record(collection, "vector.drop", ActorOf(context), DateTimeOffset.UtcNow);
             return Results.Ok(new { collection, dropped = true });
         });
+
+        // Force a heal-to-target re-push from the raw store. Useful when an operator
+        // wants to confirm replica integrity or proactively re-seed after a fleet event.
+        group.MapPost("/{collection}/rebuild", async (
+            string collection,
+            HttpContext context,
+            HealingService healing,
+            IAuditLog audit,
+            CancellationToken cancellationToken) =>
+        {
+            try
+            {
+                await healing.RebuildAsync(collection, cancellationToken);
+                audit.Record(collection, "vector.rebuild", ActorOf(context), DateTimeOffset.UtcNow);
+                return Results.Ok(new { collection, rebuilt = true });
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return Error(StatusCodes.Status404NotFound, ex.Message);
+            }
+        });
     }
 
     private static async Task<IReadOnlyList<VectorMatch>> RouteQueryAsync(
