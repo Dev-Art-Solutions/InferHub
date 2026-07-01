@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
 using InferHub.Coordinator.Vector;
 using InferHub.Shared.Vector;
@@ -55,12 +57,13 @@ public static class VectorEndpoints
             IVectorStore store,
             IEmbeddingDispatcher embeddings,
             IVectorQueryRouter queryRouter,
+            Metrics metrics,
             CancellationToken cancellationToken) =>
         {
             try
             {
                 var prepared = await ResolveVectorAsync(query, embeddings, cancellationToken);
-                var matches = await RouteQueryAsync(collection, prepared, store, queryRouter, cancellationToken);
+                var matches = await RouteQueryAsync(collection, prepared, store, queryRouter, metrics, cancellationToken);
                 return Results.Ok(new { matches });
             }
             catch (KeyNotFoundException ex)
@@ -89,12 +92,13 @@ public static class VectorEndpoints
             IVectorStore store,
             IEmbeddingDispatcher embeddings,
             IVectorQueryRouter queryRouter,
+            Metrics metrics,
             CancellationToken cancellationToken) =>
         {
             try
             {
                 var prepared = await ResolveVectorAsync(query, embeddings, cancellationToken);
-                var matches = await RouteQueryAsync(collection, prepared, store, queryRouter, cancellationToken);
+                var matches = await RouteQueryAsync(collection, prepared, store, queryRouter, metrics, cancellationToken);
                 return Results.Ok(new { matches });
             }
             catch (KeyNotFoundException ex)
@@ -172,6 +176,39 @@ public static class VectorEndpoints
             return Results.Ok(new { collections, placement });
         });
 
+        // Per-collection detail: everything the console needs to draw one row and its
+        // replica health at a glance — no need to cross-reference /api/status.
+        group.MapGet("/{collection}", async (
+            string collection,
+            IVectorStore store,
+            ReplicaRegistry replicas,
+            INodeRegistry nodes,
+            Metrics metrics,
+            Microsoft.Extensions.Options.IOptions<VectorStoreOptions> options,
+            CancellationToken cancellationToken) =>
+        {
+            var info = await store.GetCollectionAsync(collection, cancellationToken);
+            if (info is null)
+            {
+                return Error(StatusCodes.Status404NotFound, $"collection '{collection}' not found");
+            }
+
+            var placement = BuildPlacement(info.Name, replicas, nodes, options.Value.ReplicationFactor);
+            var connected = nodes.Snapshot(DateTimeOffset.UtcNow);
+            var eligibleCount = connected.Count(n => !n.Cordoned);
+            var desired = Math.Min(options.Value.ReplicationFactor, eligibleCount);
+            var underReplicated = placement.LiveReplicas < desired;
+            var stats = metrics.GetVectorCollectionSnapshot(info.Name);
+
+            return Results.Ok(new
+            {
+                collection = info,
+                placement,
+                underReplicated,
+                stats
+            });
+        });
+
         group.MapPost("/", async (
             CreateCollectionRequest request,
             HttpContext context,
@@ -239,13 +276,22 @@ public static class VectorEndpoints
         VectorQuery prepared,
         IVectorStore store,
         IVectorQueryRouter queryRouter,
+        Metrics metrics,
         CancellationToken cancellationToken)
     {
         // Prefer a node replica when available; the hub-local index is the floor and
         // takes over silently when no replica answers (zero nodes, transient failure, etc.).
-        var matches = await queryRouter.TryQueryOnNodeAsync(collection, prepared, cancellationToken);
-        if (matches is not null) return matches;
-        return await store.QueryAsync(collection, prepared, cancellationToken);
+        var started = Stopwatch.GetTimestamp();
+        try
+        {
+            var matches = await queryRouter.TryQueryOnNodeAsync(collection, prepared, cancellationToken);
+            if (matches is not null) return matches;
+            return await store.QueryAsync(collection, prepared, cancellationToken);
+        }
+        finally
+        {
+            metrics.RecordVectorQuery(collection, Stopwatch.GetElapsedTime(started));
+        }
     }
 
     private static async Task<VectorUpsert> ResolveVectorAsync(

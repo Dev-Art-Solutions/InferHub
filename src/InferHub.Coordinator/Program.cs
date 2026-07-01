@@ -33,6 +33,7 @@ var vectorStoreEnabled = builder.Configuration.GetSection(VectorStoreOptions.Sec
     .GetValue<bool>(nameof(VectorStoreOptions.Enabled));
 if (vectorStoreEnabled)
 {
+    builder.Services.AddSingleton<VectorEvents>();
     builder.Services.AddSingleton<LocalVectorStore>();
     builder.Services.AddSingleton<IVectorStore>(sp => sp.GetRequiredService<LocalVectorStore>());
     builder.Services.AddSingleton<ReplicaRegistry>();

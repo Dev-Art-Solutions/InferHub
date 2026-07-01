@@ -22,6 +22,7 @@ public sealed class HealingService : IHostedService, IDisposable
     private readonly ReplicationCoordinator _replication;
     private readonly IOptions<VectorStoreOptions> _options;
     private readonly Metrics _metrics;
+    private readonly VectorEvents? _events;
     private readonly ILogger<HealingService> _logger;
 
     private readonly TimeSpan _debounce;
@@ -41,7 +42,8 @@ public sealed class HealingService : IHostedService, IDisposable
         ReplicationCoordinator replication,
         IOptions<VectorStoreOptions> options,
         Metrics metrics,
-        ILogger<HealingService> logger)
+        ILogger<HealingService> logger,
+        VectorEvents? events = null)
     {
         _store = store;
         _registry = registry;
@@ -49,6 +51,7 @@ public sealed class HealingService : IHostedService, IDisposable
         _replication = replication;
         _options = options;
         _metrics = metrics;
+        _events = events;
         _logger = logger;
 
         _debounce = TimeSpan.FromMilliseconds(Math.Max(50, options.Value.Healing.DebounceMilliseconds));
@@ -103,9 +106,21 @@ public sealed class HealingService : IHostedService, IDisposable
         if (info is null) throw new KeyNotFoundException($"collection '{collection}' does not exist");
 
         _metrics.RecordVectorRebuildFromRaw();
+        _events?.Publish("vector.heal.started", collection, new Dictionary<string, object?>
+        {
+            ["reason"] = "rebuild"
+        });
         _logger.LogInformation("Rebuilding replicas for '{Collection}' on demand", collection);
+        var before = _replicas.Holders(collection).Count;
         await _replication.RecomputeAsync(collection, cancellationToken);
+        var after = _replicas.Holders(collection).Count;
         UpdateUnderReplicatedGauge();
+        _events?.Publish("vector.heal.completed", collection, new Dictionary<string, object?>
+        {
+            ["reason"] = "rebuild",
+            ["before"] = before,
+            ["after"] = after
+        });
     }
 
     private void OnFleetChanged() => ScheduleHeal();
@@ -214,6 +229,7 @@ public sealed class HealingService : IHostedService, IDisposable
                         desired,
                         eligibleCount);
 
+                    var reason = liveCount == 0 && eligibleCount > 0 ? "last-holder-down" : "under-target";
                     if (liveCount == 0 && eligibleCount > 0)
                     {
                         // Last node holder dropped (or never assigned): the hub-local
@@ -224,6 +240,13 @@ public sealed class HealingService : IHostedService, IDisposable
                         _metrics.RecordVectorRebuildFromRaw();
                     }
 
+                    _events?.Publish("vector.heal.started", info.Name, new Dictionary<string, object?>
+                    {
+                        ["reason"] = reason,
+                        ["live"] = liveCount,
+                        ["desired"] = desired
+                    });
+
                     var beforeHolders = _replicas.Holders(info.Name).Count;
                     await _replication.RecomputeAsync(info.Name, cancellationToken).ConfigureAwait(false);
                     var afterHolders = _replicas.Holders(info.Name).Count;
@@ -233,6 +256,13 @@ public sealed class HealingService : IHostedService, IDisposable
                     {
                         _metrics.RecordVectorReplicaHealed();
                     }
+
+                    _events?.Publish("vector.heal.completed", info.Name, new Dictionary<string, object?>
+                    {
+                        ["reason"] = reason,
+                        ["before"] = beforeHolders,
+                        ["after"] = afterHolders
+                    });
                 }
                 else if (liveCount > target)
                 {

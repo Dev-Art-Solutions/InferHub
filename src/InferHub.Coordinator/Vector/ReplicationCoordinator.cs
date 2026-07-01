@@ -1,4 +1,5 @@
 using InferHub.Coordinator.Hubs;
+using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
 using InferHub.Shared.Vector;
 using InferHub.Shared.Vector.Replication;
@@ -21,6 +22,7 @@ public sealed class ReplicationCoordinator : IHostedService, IDisposable
     private readonly ReplicaRegistry _replicas;
     private readonly IHubContext<NodeHub> _hub;
     private readonly IOptions<VectorStoreOptions> _options;
+    private readonly VectorEvents? _events;
     private readonly ILogger<ReplicationCoordinator> _logger;
     private readonly SemaphoreSlim _placementGate = new(1, 1);
 
@@ -30,13 +32,15 @@ public sealed class ReplicationCoordinator : IHostedService, IDisposable
         ReplicaRegistry replicas,
         IHubContext<NodeHub> hub,
         IOptions<VectorStoreOptions> options,
-        ILogger<ReplicationCoordinator> logger)
+        ILogger<ReplicationCoordinator> logger,
+        VectorEvents? events = null)
     {
         _store = store;
         _registry = registry;
         _replicas = replicas;
         _hub = hub;
         _options = options;
+        _events = events;
         _logger = logger;
     }
 
@@ -108,6 +112,11 @@ public sealed class ReplicationCoordinator : IHostedService, IDisposable
     {
         try
         {
+            _events?.Publish("vector.collection.created", info.Name, new Dictionary<string, object?>
+            {
+                ["dimension"] = info.Dimension,
+                ["distance"] = info.Distance
+            });
             await PlaceForCollectionAsync(info.Name, CancellationToken.None);
         }
         catch (Exception ex)
@@ -126,6 +135,7 @@ public sealed class ReplicationCoordinator : IHostedService, IDisposable
             {
                 await SendAsync(connectionId, "DropVectorReplica", collection);
             }
+            _events?.Publish("vector.collection.dropped", collection);
         }
         catch (Exception ex)
         {
@@ -168,6 +178,10 @@ public sealed class ReplicationCoordinator : IHostedService, IDisposable
                 if (_replicas.Remove(collection, stale))
                 {
                     _logger.LogInformation("Forgot stale replica of '{Collection}' on {ConnectionId}", collection, stale);
+                    _events?.Publish("vector.replica.lost", collection, new Dictionary<string, object?>
+                    {
+                        ["connectionId"] = stale
+                    });
                 }
             }
 
@@ -183,6 +197,11 @@ public sealed class ReplicationCoordinator : IHostedService, IDisposable
                     _replicas.Remove(collection, holder);
                     await SendAsync(holder, "DropVectorReplica", collection);
                     _logger.LogInformation("Released replica of '{Collection}' on {ConnectionId}", collection, holder);
+                    _events?.Publish("vector.replica.lost", collection, new Dictionary<string, object?>
+                    {
+                        ["connectionId"] = holder,
+                        ["reason"] = "released"
+                    });
                 }
             }
 
@@ -211,6 +230,15 @@ public sealed class ReplicationCoordinator : IHostedService, IDisposable
                     snapshot.Records.Count,
                     snapshot.LastSeq,
                     holder);
+
+                var nodeId = ordered.FirstOrDefault(c => c.ConnectionId == holder)?.NodeId ?? holder;
+                _events?.Publish("vector.replica.assigned", collection, new Dictionary<string, object?>
+                {
+                    ["connectionId"] = holder,
+                    ["nodeId"] = nodeId,
+                    ["records"] = snapshot.Records.Count,
+                    ["lastSeq"] = snapshot.LastSeq
+                });
             }
         }
         finally

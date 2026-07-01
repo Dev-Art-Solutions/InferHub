@@ -89,6 +89,22 @@
     .toast.err { border-left-color: var(--err); }
     .toast .toast-title { font-weight: 600; margin-bottom: 2px; }
     .toast .toast-body { color: var(--muted); font-size: 12px; word-break: break-word; }
+    .vector-feed { padding: 8px 0; max-height: 260px; overflow-y: auto; }
+    .vector-feed .empty { padding: 12px; }
+    .feed-row {
+      padding: 8px 14px; font-size: 12px; border-bottom: 1px solid var(--panel-border);
+      display: grid; grid-template-columns: 88px 160px 1fr; gap: 12px; align-items: baseline;
+    }
+    .feed-row:last-child { border-bottom: none; }
+    .feed-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .feed-kind { font-weight: 600; }
+    .feed-kind.ok { color: var(--ok); }
+    .feed-kind.warn { color: var(--warn); }
+    .feed-kind.err { color: var(--err); }
+    .feed-body { color: var(--text); word-break: break-word; }
+    .feed-body code { background: rgba(255,255,255,0.06); }
+    .replica-list { display: flex; flex-wrap: wrap; gap: 4px; max-width: 260px; }
+    .replica-chip { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(78, 161, 255, 0.12); color: var(--accent); white-space: nowrap; }
     @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
     @media (max-width: 720px) {
       body { padding: 16px; }
@@ -158,6 +174,33 @@
         </thead>
         <tbody id="models"></tbody>
       </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Vector collections</h2>
+    <div class="table-wrap">
+      <table id="collections-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Dimension</th>
+            <th>Distance</th>
+            <th>Records</th>
+            <th>Replicas</th>
+            <th>Placement</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="collections"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Vector activity</h2>
+    <div class="table-wrap">
+      <div id="vector-feed" class="vector-feed"></div>
     </div>
   </section>
 

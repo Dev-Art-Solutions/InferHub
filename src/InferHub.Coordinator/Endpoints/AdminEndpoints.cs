@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Threading.Channels;
+using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
 using Microsoft.AspNetCore.Http;
 
@@ -99,21 +100,36 @@ public static class AdminEndpoints
         CancellationToken cancellationToken)
     {
         var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin.Stream");
+        var vectorEvents = context.RequestServices.GetService<VectorEvents>();
 
         context.Response.Headers.ContentType = "text/event-stream";
         context.Response.Headers.CacheControl = "no-cache, no-store";
         context.Response.Headers["X-Accel-Buffering"] = "no";
         await context.Response.Body.FlushAsync(cancellationToken);
 
-        var signal = Channel.CreateBounded<byte>(new BoundedChannelOptions(1)
+        // signal: 0 = snapshot due (fleet change), 1 = vector event ready.
+        var signal = Channel.CreateBounded<byte>(new BoundedChannelOptions(4)
         {
-            FullMode = BoundedChannelFullMode.DropWrite,
+            FullMode = BoundedChannelFullMode.DropOldest,
             SingleReader = true,
             SingleWriter = false
         });
 
-        void OnChanged() => signal.Writer.TryWrite(1);
+        var vectorQueue = Channel.CreateBounded<VectorEvent>(new BoundedChannelOptions(64)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = true,
+            SingleWriter = false
+        });
+
+        void OnChanged() => signal.Writer.TryWrite(0);
+        void OnVector(VectorEvent ev)
+        {
+            if (vectorQueue.Writer.TryWrite(ev)) signal.Writer.TryWrite(1);
+        }
+
         registry.Changed += OnChanged;
+        IDisposable? vectorSub = vectorEvents?.Subscribe(OnVector);
 
         try
         {
@@ -129,12 +145,25 @@ public static class AdminEndpoints
                 try
                 {
                     await signal.Reader.ReadAsync(timeoutCts.Token);
-                    while (signal.Reader.TryRead(out _)) { }
-                    await WriteSnapshotAsync(context.Response, registry, audit, cancellationToken);
+                    var needSnapshot = false;
+                    while (signal.Reader.TryRead(out var kind))
+                    {
+                        if (kind == 0) needSnapshot = true;
+                    }
+                    // Drain any queued vector events first — order-preserving within the queue.
+                    while (vectorQueue.Reader.TryRead(out var ev))
+                    {
+                        await WriteVectorEventAsync(context.Response, ev, cancellationToken);
+                    }
+                    // A fleet change (or the very first wake) always warrants a fresh snapshot.
+                    if (needSnapshot)
+                    {
+                        await WriteSnapshotAsync(context.Response, registry, audit, cancellationToken);
+                    }
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
-                    // Idle keepalive — also pushes fresh ages and in-flight counts to the client.
+                    // Idle keepalive — refresh ages/in-flight counts even when nothing happened.
                     await WriteSnapshotAsync(context.Response, registry, audit, cancellationToken);
                 }
             }
@@ -150,6 +179,7 @@ public static class AdminEndpoints
         finally
         {
             registry.Changed -= OnChanged;
+            vectorSub?.Dispose();
         }
     }
 
@@ -162,6 +192,24 @@ public static class AdminEndpoints
         var nodes = BuildAdminNodes(registry, audit);
         var payload = JsonSerializer.Serialize(new { nodes }, StreamJsonOptions);
         await response.WriteAsync("event: snapshot\n", cancellationToken);
+        await response.WriteAsync($"data: {payload}\n\n", cancellationToken);
+        await response.Body.FlushAsync(cancellationToken);
+    }
+
+    private static async Task WriteVectorEventAsync(
+        HttpResponse response,
+        VectorEvent ev,
+        CancellationToken cancellationToken)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            sequence = ev.Sequence,
+            kind = ev.Kind,
+            collection = ev.Collection,
+            atUtc = ev.AtUtc,
+            data = ev.Data
+        }, StreamJsonOptions);
+        await response.WriteAsync($"event: {ev.Kind}\n", cancellationToken);
         await response.WriteAsync($"data: {payload}\n\n", cancellationToken);
         await response.Body.FlushAsync(cancellationToken);
     }

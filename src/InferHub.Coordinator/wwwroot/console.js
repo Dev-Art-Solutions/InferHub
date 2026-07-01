@@ -21,6 +21,10 @@
 
   let latestNodes = [];
   let latestStatus = null;
+  let collectionsPollHandle = null;
+
+  const VECTOR_FEED_MAX = 40;
+  const vectorFeed = [];    // newest first
 
   // ---------------------------------------------------------------- formatting
 
@@ -281,6 +285,89 @@
     `).join("");
   };
 
+  const renderCollections = (vector) => {
+    const tbody = document.getElementById("collections");
+    if (!tbody) return;
+    const items = vector?.collections ?? [];
+    if (items.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="7" class="empty">Vector store disabled or no collections yet.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = items.map(c => {
+      const replicaText = `${c.liveReplicas} / ${c.targetReplicas}`;
+      const pill = c.underReplicated
+        ? `<span class="pill pill-warn">under-replicated</span>`
+        : `<span class="pill pill-ok">at target</span>`;
+      const chips = (c.replicaNodes && c.replicaNodes.length > 0)
+        ? `<div class="replica-list">${c.replicaNodes.map(n =>
+            `<span class="replica-chip">${escapeHtml(n)}</span>`).join("")}</div>`
+        : `<span class="empty" style="padding:0">— hub-local only</span>`;
+      const safeName = encodeURIComponent(c.name);
+      return `
+        <tr>
+          <td><code>${escapeHtml(c.name)}</code></td>
+          <td>${c.dimension}</td>
+          <td>${escapeHtml(c.distance)}</td>
+          <td>${c.recordCount}</td>
+          <td>${replicaText} ${pill}</td>
+          <td>${chips}</td>
+          <td><div class="actions">
+            <button data-vaction="rebuild" data-collection="${safeName}">Rebuild</button>
+          </div></td>
+        </tr>`;
+    }).join("");
+  };
+
+  const kindClass = (kind) => {
+    if (kind === "vector.replica.lost" || kind === "vector.heal.started") return "warn";
+    if (kind === "vector.collection.dropped") return "err";
+    return "ok";
+  };
+
+  const summarizeVectorEvent = (ev) => {
+    const collection = ev.collection ? `<code>${escapeHtml(ev.collection)}</code>` : "";
+    const d = ev.data ?? {};
+    switch (ev.kind) {
+      case "vector.collection.created":
+        return `${collection} created (dim=${d.dimension ?? "?"}, ${escapeHtml(d.distance ?? "?")})`;
+      case "vector.collection.dropped":
+        return `${collection} dropped`;
+      case "vector.replica.assigned":
+        return `${collection} replica assigned to <code>${escapeHtml(d.nodeId ?? d.connectionId ?? "?")}</code> · ${d.records ?? 0} records`;
+      case "vector.replica.lost":
+        return `${collection} replica lost on <code>${escapeHtml(d.connectionId ?? "?")}</code>${d.reason ? ` (${escapeHtml(d.reason)})` : ""}`;
+      case "vector.heal.started":
+        return `${collection} heal started · reason=${escapeHtml(d.reason ?? "under-target")}`;
+      case "vector.heal.completed":
+        return `${collection} heal complete · ${d.before ?? 0}→${d.after ?? 0} replicas`;
+      default:
+        return `${collection} ${escapeHtml(ev.kind)}`;
+    }
+  };
+
+  const renderVectorFeed = () => {
+    const el = document.getElementById("vector-feed");
+    if (!el) return;
+    if (vectorFeed.length === 0) {
+      el.innerHTML = `<div class="empty">No vector activity yet.</div>`;
+      return;
+    }
+    el.innerHTML = vectorFeed.map(ev => `
+      <div class="feed-row">
+        <span class="feed-time">${escapeHtml(new Date(ev.atUtc).toLocaleTimeString())}</span>
+        <span class="feed-kind ${kindClass(ev.kind)}">${escapeHtml(ev.kind.replace(/^vector\./, ""))}</span>
+        <span class="feed-body">${summarizeVectorEvent(ev)}</span>
+      </div>
+    `).join("");
+  };
+
+  const pushVectorEvent = (ev) => {
+    vectorFeed.unshift(ev);
+    if (vectorFeed.length > VECTOR_FEED_MAX) vectorFeed.length = VECTOR_FEED_MAX;
+    renderVectorFeed();
+  };
+
   // ---------------------------------------------------------------- actions
 
   const setRowMessage = (nodeId, text, isError) => {
@@ -297,8 +384,10 @@
       document.getElementById("uptime").textContent = fmtSeconds(latestStatus.uptimeSeconds);
       renderStats(latestStatus.metrics);
       renderModels(latestStatus.models);
+      renderCollections(latestStatus.vector);
     }
     renderNodes(latestNodes ?? []);
+    renderVectorFeed();
   };
 
   const applyAdminNodes = (nodes) => {
@@ -426,15 +515,30 @@
   };
 
   const handleStreamEvent = (event) => {
-    if (event.event !== "snapshot") return;
-    try {
-      const payload = JSON.parse(event.data);
-      if (payload && Array.isArray(payload.nodes)) {
-        applyAdminNodes(payload.nodes);
+    if (event.event === "snapshot") {
+      try {
+        const payload = JSON.parse(event.data);
+        if (payload && Array.isArray(payload.nodes)) {
+          applyAdminNodes(payload.nodes);
+        }
+      } catch (err) {
+        // Malformed payload — log to console and let the next event recover.
+        console.warn("admin stream: failed to parse snapshot", err);
       }
-    } catch (err) {
-      // Malformed payload — log to console and let the next event recover.
-      console.warn("admin stream: failed to parse snapshot", err);
+      return;
+    }
+
+    if (event.event && event.event.startsWith("vector.")) {
+      try {
+        const payload = JSON.parse(event.data);
+        pushVectorEvent(payload);
+        // Any vector-lifecycle event may change collection counts/placement — pull
+        // a fresh status snapshot so the collections table stays honest without
+        // waiting for the next 5s status poll.
+        pollStatusNow();
+      } catch (err) {
+        console.warn("admin stream: failed to parse vector event", err);
+      }
     }
   };
 
@@ -570,6 +674,41 @@
     setKey(null);
     restartStream();
   });
+
+  const rebuildCollection = async (collection) => {
+    if (!adminKey && !promptForKey("Admin key required for this action.")) return;
+    if (!window.confirm(`Rebuild replicas of "${collection}" from the raw store?`)) return;
+    try {
+      const res = await fetch(`/api/admin/vector/collections/${encodeURIComponent(collection)}/rebuild`, {
+        method: "POST",
+        headers: adminHeaders()
+      });
+      if (res.status === 401) {
+        promptForKey("Admin key rejected.");
+        return;
+      }
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try { const body = await res.json(); if (body?.error) detail = body.error; } catch { }
+        throw new Error(detail);
+      }
+      toast("Rebuild started", `collection ${collection}`, "ok");
+      pollStatusNow();
+    } catch (err) {
+      toast("Rebuild failed", `${collection}: ${err.message}`, "err");
+    }
+  };
+
+  const collectionsBody = document.getElementById("collections");
+  if (collectionsBody) {
+    collectionsBody.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-vaction]");
+      if (!button) return;
+      const collection = decodeURIComponent(button.dataset.collection);
+      const action = button.dataset.vaction;
+      if (action === "rebuild") rebuildCollection(collection);
+    });
+  }
 
   document.getElementById("nodes").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-action]");

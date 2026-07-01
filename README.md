@@ -63,10 +63,10 @@ of one.
 
 ## Status
 
-**InferHub 1.4** ships a self-hosted, Ollama-compatible inference mesh with a live
-management console: Bearer auth, sticky + least-busy routing, live streaming, pre-stream
-failover, typed/validated node config, an admin API (cordon / drain / deregister), and a
-browser console that updates over Server-Sent Events.
+**InferHub 1.9** completes the vector-mesh operator surface: on top of the self-healing
+replication landed in v1.8, the console now shows collections, replica placement, and
+under-replication at a glance, and the admin SSE stream carries live vector lifecycle
+events (created / dropped / assigned / lost / heal.started / heal.completed).
 
 | Phase | Theme | Version |
 |------:|-------|---------|
@@ -86,12 +86,11 @@ browser console that updates over Server-Sent Events.
 | 14 | Embeddings & retrieval (done) | `v1.6.0` |
 | 15 | Replication across nodes (done) | `v1.7.0` |
 | 16 | Durability & self-healing (done) | `v1.8.0` |
+| 17 | Console & observability (done) | `v1.9.0` |
 
-**What's next.** Phases 17–18 finish the RAG mesh on top of v1.8's self-healing
-replicas: a console surface for collections, replica health and live healing
-events (`v1.9.0`), and finally inline retrieval on `/api/chat` and `/api/generate`
-for the `v2.0.0` GA. Beyond that, multi-coordinator clustering, persisted
-affinity, richer audit trails, and additional inference backends (vLLM,
+**What's next.** Phase 18 finishes the RAG mesh: inline retrieval on `/api/chat` and
+`/api/generate` for the `v2.0.0` GA. Beyond that, multi-coordinator clustering,
+persisted affinity, richer audit trails, and additional inference backends (vLLM,
 llama.cpp) remain on the table.
 
 ## Quick start
@@ -206,6 +205,96 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `Node:Models:Exclude` | `[]` | Names dropped before reporting. |
 | `Backend:Type` | `ollama` | Inference backend selector. |
 | `Ollama:Endpoint` | `http://localhost:11434/` | Local Ollama URL (absolute http/https). |
+
+## Vector store
+
+InferHub ships with a **local vector store** built into the coordinator. It's embedded,
+file-backed, and off by default — flip `VectorStore:Enabled` to turn it on. Two layers:
+
+- **Raw store** — an append-only op log (upserts + tombstones) plus periodic compacted
+  snapshots, one directory per collection under `VectorStore:DataDirectory`. Plain files
+  an operator can copy. This is the **source of truth**.
+- **Index** — a queryable structure built from the raw store. In-memory on the hub;
+  replicated to node holders (see below). Rebuildable at any time from the raw store.
+
+**Replication & self-healing.** When more than one node is online, each collection is
+replicated across `VectorStore:ReplicationFactor` holders (capped at the connected node
+count). The coordinator pushes the initial snapshot and forwards subsequent ops over the
+existing SignalR link. If a holder drops, the healing loop re-pushes from the raw store to
+restore the factor; if the **last** holder drops, the hub-local index keeps answering
+reads and the next eligible node is seeded from raw. Node replicas are derived and
+disposable — the hub's raw store is the durability anchor.
+
+**Where work happens.** Coordinator orchestrates (owns the raw store, places replicas,
+routes queries, heals); nodes compute (embedding + generation on the GPU). Vector search
+runs hub-local by default, or on a node replica when one exists.
+
+**Data-plane endpoints** (client scope, `Auth:ApiKeys`):
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/vector/{collection}/upsert` | Upsert a record. Accepts a raw `vector` or a `text` field (embedded on a node). |
+| `POST` | `/api/vector/{collection}/query` | Top-k search. Same body shape as upsert — raw `vector` or `text`. |
+| `POST` | `/api/vector/{collection}/retrieve` | Convenience RAG read (text → embed → search → matches). |
+| `GET`  | `/api/vector/{collection}/{id}` | Fetch a single record. |
+| `DELETE` | `/api/vector/{collection}/{id}` | Tombstone a record. |
+| `POST` | `/api/embed` (+ `/api/embeddings`) | Drop-in Ollama-shaped embeddings endpoint (independent of the store). |
+
+**Admin-plane endpoints** (admin scope, `Auth:AdminApiKeys`, audited):
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET`  | `/api/admin/vector/collections` | List collections + placement (holders per collection). |
+| `GET`  | `/api/admin/vector/collections/{collection}` | Detail: collection info, placement, under-replicated flag, per-collection query stats. |
+| `POST` | `/api/admin/vector/collections` | Create a collection (`{ "name", "dimension", "distance"? }`). |
+| `DELETE` | `/api/admin/vector/collections/{collection}` | Drop a collection. |
+| `POST` | `/api/admin/vector/collections/{collection}/rebuild` | Force a heal pass — re-push from the raw store to restore the factor. |
+
+**Live events.** `GET /api/admin/stream` (the same SSE stream used by the console) now
+carries vector lifecycle events alongside node snapshots: `vector.collection.created`,
+`vector.collection.dropped`, `vector.replica.assigned`, `vector.replica.lost`,
+`vector.heal.started`, `vector.heal.completed`. Each event carries a monotonic
+`sequence` and a `data` blob (holder connection id, node id, reason, before/after counts,
+etc.). The management console renders these in the "Vector activity" feed.
+
+**Status JSON.** `GET /api/status` grows a `vector` block when the store is enabled —
+per-collection record count, dimension, distance, target vs live replicas, holder node
+ids, and an `underReplicated` flag. Metrics gains
+`vectorReplicasHealed` / `vectorRebuildsFromRaw` / `vectorUnderReplicated` counters plus
+`perCollection` query stats (`queries`, `queryLatencyAvgMs`).
+
+### Vector configuration
+
+Coordinator keys (all under `VectorStore:`):
+
+| Key | Default | Purpose |
+|---|---|---|
+| `VectorStore:Enabled` | `false` | Master switch. Off = no persisted state, old contract. |
+| `VectorStore:DataDirectory` | `./data/vectors` | Raw store + snapshots on the coordinator. |
+| `VectorStore:Distance` | `cosine` | Default similarity metric (`cosine` \| `dot` \| `l2`). |
+| `VectorStore:ReplicationFactor` | `2` | Target node replicas per collection (capped at connected node count). |
+| `VectorStore:DefaultEmbeddingModel` | `nomic-embed-text` | Model used when a text upsert/query omits one. |
+| `VectorStore:SnapshotEveryOps` | `5000` | Ops appended before a compacted snapshot is written. |
+| `VectorStore:Retrieval:DefaultK` | `4` | Top-k when a request opts into retrieval. (Phase 18.) |
+| `VectorStore:Retrieval:MaxRecords` | `8` | Hard cap on injected records per request. (Phase 18.) |
+| `VectorStore:Retrieval:OnMissing` | `error` | `error` \| `passthrough` when retrieval can't run. (Phase 18.) |
+| `VectorStore:Healing:DebounceMilliseconds` | `750` | Debounce for fleet-change-driven heal passes. |
+| `VectorStore:Healing:IdleSweepSeconds` | `15` | Idle interval refreshing the under-replicated gauge. |
+
+Node keys (all under `Vector:`, only used when the node holds a replica):
+
+| Key | Default | Purpose |
+|---|---|---|
+| `Vector:ReplicaDirectory` | `./data/vector-replicas` | Where a node persists assigned replicas so a restart doesn't require a full re-push. |
+
+**Scaling note.** The default index is a flat (exact) cosine/dot/l2 search — small,
+zero-dependency, correct. If a dataset outgrows flat exact, the `IVectorStore` seam is
+where an approximate-nearest-neighbour (HNSW-style) strategy would plug in — a conscious
+dependency decision, not smuggled in.
+
+**Multi-coordinator note.** The always-on hub is the single durability anchor by design
+today. Cross-hub raw-store replication is future work and belongs to the "multi-coordinator
+clustering" track called out below.
 
 ## Status & observability
 

@@ -18,6 +18,7 @@ public sealed class Metrics
     private long vectorUnderReplicated;
 
     private readonly ConcurrentDictionary<string, NodeCounter> perNode = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, VectorCollectionCounter> perCollection = new(StringComparer.OrdinalIgnoreCase);
 
     public void RecordRequestStart(string nodeId)
     {
@@ -65,6 +66,26 @@ public sealed class Metrics
 
     public void SetVectorUnderReplicated(long count) => Interlocked.Exchange(ref vectorUnderReplicated, Math.Max(0, count));
 
+    public void RecordVectorQuery(string collection, TimeSpan elapsed)
+    {
+        var counter = perCollection.GetOrAdd(collection, _ => new VectorCollectionCounter());
+        Interlocked.Increment(ref counter.Queries);
+        var micros = (long)Math.Round(elapsed.TotalMilliseconds * 1000.0);
+        Interlocked.Add(ref counter.QueryLatencyMicrosTotal, Math.Max(0, micros));
+    }
+
+    public VectorCollectionMetricsSnapshot GetVectorCollectionSnapshot(string collection)
+    {
+        if (!perCollection.TryGetValue(collection, out var counter))
+        {
+            return new VectorCollectionMetricsSnapshot(collection, 0, 0);
+        }
+        var queries = Interlocked.Read(ref counter.Queries);
+        var micros = Interlocked.Read(ref counter.QueryLatencyMicrosTotal);
+        var avgMs = queries == 0 ? 0.0 : micros / (double)queries / 1000.0;
+        return new VectorCollectionMetricsSnapshot(collection, queries, avgMs);
+    }
+
     public MetricsSnapshot Snapshot(DateTimeOffset now)
     {
         var perNodeSnapshot = perNode
@@ -75,6 +96,17 @@ public sealed class Metrics
                 Interlocked.Read(ref pair.Value.Completed),
                 Interlocked.Read(ref pair.Value.Failed)))
             .OrderBy(snapshot => snapshot.NodeId, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var perCollectionSnapshot = perCollection
+            .Select(pair =>
+            {
+                var queries = Interlocked.Read(ref pair.Value.Queries);
+                var micros = Interlocked.Read(ref pair.Value.QueryLatencyMicrosTotal);
+                var avgMs = queries == 0 ? 0.0 : micros / (double)queries / 1000.0;
+                return new VectorCollectionMetricsSnapshot(pair.Key, queries, avgMs);
+            })
+            .OrderBy(snapshot => snapshot.Collection, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
         return new MetricsSnapshot(
@@ -89,7 +121,8 @@ public sealed class Metrics
             Interlocked.Read(ref vectorReplicasHealed),
             Interlocked.Read(ref vectorRebuildsFromRaw),
             Interlocked.Read(ref vectorUnderReplicated),
-            perNodeSnapshot);
+            perNodeSnapshot,
+            perCollectionSnapshot);
     }
 
     private void DecrementInFlight()
@@ -115,6 +148,12 @@ public sealed class Metrics
         public long Completed;
         public long Failed;
     }
+
+    private sealed class VectorCollectionCounter
+    {
+        public long Queries;
+        public long QueryLatencyMicrosTotal;
+    }
 }
 
 public sealed record MetricsSnapshot(
@@ -129,7 +168,8 @@ public sealed record MetricsSnapshot(
     long VectorReplicasHealed,
     long VectorRebuildsFromRaw,
     long VectorUnderReplicated,
-    IReadOnlyList<NodeMetricsSnapshot> PerNode);
+    IReadOnlyList<NodeMetricsSnapshot> PerNode,
+    IReadOnlyList<VectorCollectionMetricsSnapshot> PerCollection);
 
 public sealed record NodeMetricsSnapshot(
     string NodeId,
@@ -137,3 +177,8 @@ public sealed record NodeMetricsSnapshot(
     long RequestsInFlight,
     long RequestsCompleted,
     long RequestsFailed);
+
+public sealed record VectorCollectionMetricsSnapshot(
+    string Collection,
+    long Queries,
+    double QueryLatencyAvgMs);
