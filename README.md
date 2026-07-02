@@ -63,10 +63,13 @@ of one.
 
 ## Status
 
-**InferHub 1.9** completes the vector-mesh operator surface: on top of the self-healing
-replication landed in v1.8, the console now shows collections, replica placement, and
-under-replication at a glance, and the admin SSE stream carries live vector lifecycle
-events (created / dropped / assigned / lost / heal.started / heal.completed).
+**InferHub 2.0** closes the RAG mesh: models can now use the vector store inline.
+Add `X-InferHub-Retrieve: <collection>` to a normal `/api/chat` or `/api/generate`
+call and the coordinator embeds the query on a node, searches the collection (node
+replica if available, hub-local otherwise), assembles an augmented prompt, and
+dispatches the generation to a node — grounded answers with orchestration on the
+hub and compute on the fleet. Retrieval is opt-in per request; a call without the
+header behaves exactly like v1.x.
 
 | Phase | Theme | Version |
 |------:|-------|---------|
@@ -87,11 +90,11 @@ events (created / dropped / assigned / lost / heal.started / heal.completed).
 | 15 | Replication across nodes (done) | `v1.7.0` |
 | 16 | Durability & self-healing (done) | `v1.8.0` |
 | 17 | Console & observability (done) | `v1.9.0` |
+| 18 | Retrieval-augmented inference (done) | `v2.0.0` |
 
-**What's next.** Phase 18 finishes the RAG mesh: inline retrieval on `/api/chat` and
-`/api/generate` for the `v2.0.0` GA. Beyond that, multi-coordinator clustering,
-persisted affinity, richer audit trails, and additional inference backends (vLLM,
-llama.cpp) remain on the table.
+**What's next.** With the vector / RAG mesh track wrapped, multi-coordinator
+clustering, persisted affinity, richer audit trails, and additional inference
+backends (vLLM, llama.cpp) remain on the table.
 
 ## Quick start
 
@@ -263,6 +266,50 @@ ids, and an `underReplicated` flag. Metrics gains
 `vectorReplicasHealed` / `vectorRebuildsFromRaw` / `vectorUnderReplicated` counters plus
 `perCollection` query stats (`queries`, `queryLatencyAvgMs`).
 
+### Retrieval-augmented inference
+
+`/api/chat` and `/api/generate` accept optional headers that opt a normal request
+into retrieval. Without a header the request is byte-for-byte unchanged — same body,
+same routing, same streaming contract.
+
+| Header | Purpose |
+|---|---|
+| `X-InferHub-Retrieve` | Collection name to retrieve from. Presence enables RAG. |
+| `X-InferHub-Retrieve-K` | Top-k override (clamped to `VectorStore:Retrieval:MaxRecords`). |
+| `X-InferHub-Retrieve-Model` | Embedding model override (defaults to `VectorStore:DefaultEmbeddingModel`). |
+
+The coordinator extracts the query text (last user message for chat; `prompt` for
+generate), dispatches an embed job to a node, searches the collection (node replica
+if available, hub-local otherwise), assembles an augmented prompt via
+`VectorStore:Retrieval:Template` (the literal `{context}` placeholder is replaced by
+the retrieved records rendered as `[id] text` — text is drawn from `payload.text`,
+then `payload.content`, then the raw payload), and dispatches the generation to a
+node. The response is Ollama-shaped and unaltered; the retrieved source ids come
+back as a JSON array in `X-InferHub-Sources`.
+
+**Where work happens.** Only orchestration and hub-local search live on the
+coordinator. Embedding and generation are both dispatched to nodes — the mesh does
+the heavy compute, exactly as with a bare `/api/chat` call. Rule #7 stays intact:
+the augmented request body is assembled in-flight and forgotten.
+
+**Failover.** Pre-stream failover still covers the generation job. A failed embed
+or search surfaces via `VectorStore:Retrieval:OnMissing`: `error` returns
+`424 Failed Dependency` with a message; `passthrough` runs the original request
+unchanged and omits the sources header.
+
+Example — a chat call grounded in the `docs` collection:
+
+```bash
+curl http://your-coordinator:5080/api/chat \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "X-InferHub-Retrieve: docs" \
+  -H "X-InferHub-Retrieve-K: 4" \
+  -d '{"model":"llama3","messages":[{"role":"user","content":"What is InferHub?"}],"stream":false}'
+```
+
+**Not yet.** Re-ranking, multi-collection fusion, query rewriting, and
+tool-calling-style retrieval are separate tracks — future work.
+
 ### Vector configuration
 
 Coordinator keys (all under `VectorStore:`):
@@ -275,9 +322,10 @@ Coordinator keys (all under `VectorStore:`):
 | `VectorStore:ReplicationFactor` | `2` | Target node replicas per collection (capped at connected node count). |
 | `VectorStore:DefaultEmbeddingModel` | `nomic-embed-text` | Model used when a text upsert/query omits one. |
 | `VectorStore:SnapshotEveryOps` | `5000` | Ops appended before a compacted snapshot is written. |
-| `VectorStore:Retrieval:DefaultK` | `4` | Top-k when a request opts into retrieval. (Phase 18.) |
-| `VectorStore:Retrieval:MaxRecords` | `8` | Hard cap on injected records per request. (Phase 18.) |
-| `VectorStore:Retrieval:OnMissing` | `error` | `error` \| `passthrough` when retrieval can't run. (Phase 18.) |
+| `VectorStore:Retrieval:DefaultK` | `4` | Top-k when a request opts into retrieval. |
+| `VectorStore:Retrieval:MaxRecords` | `8` | Hard cap on injected records per request. |
+| `VectorStore:Retrieval:OnMissing` | `error` | `error` \| `passthrough` when retrieval can't run. |
+| `VectorStore:Retrieval:Template` | _(see below)_ | Prompt template applied to retrieved context; must contain `{context}`. |
 | `VectorStore:Healing:DebounceMilliseconds` | `750` | Debounce for fleet-change-driven heal passes. |
 | `VectorStore:Healing:IdleSweepSeconds` | `15` | Idle interval refreshing the under-replicated gauge. |
 

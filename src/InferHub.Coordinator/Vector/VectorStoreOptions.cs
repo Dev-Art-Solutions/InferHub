@@ -35,11 +35,22 @@ public sealed class HealingOptions
 
 public sealed class RetrievalOptions
 {
+    public const string DefaultTemplate =
+        "Use the following context to answer the user's question. " +
+        "If the answer is not in the context, say so.\n\n{context}";
+
     public int DefaultK { get; set; } = 4;
 
     public int MaxRecords { get; set; } = 8;
 
     public string OnMissing { get; set; } = "error";
+
+    /// <summary>
+    /// Prompt template applied when retrieval is triggered. The literal token
+    /// <c>{context}</c> is replaced by the concatenated retrieved records
+    /// (each rendered as <c>[id] text</c>, one per line).
+    /// </summary>
+    public string Template { get; set; } = DefaultTemplate;
 }
 
 public sealed class VectorStoreOptionsValidator : IValidateOptions<VectorStoreOptions>
@@ -97,6 +108,15 @@ public sealed class VectorStoreOptionsValidator : IValidateOptions<VectorStoreOp
             if (options.Retrieval.OnMissing is not "error" and not "passthrough")
             {
                 failures.Add($"{VectorStoreOptions.SectionName}:Retrieval:{nameof(RetrievalOptions.OnMissing)} must be 'error' or 'passthrough' (got '{options.Retrieval.OnMissing}').");
+            }
+
+            if (string.IsNullOrWhiteSpace(options.Retrieval.Template))
+            {
+                failures.Add($"{VectorStoreOptions.SectionName}:Retrieval:{nameof(RetrievalOptions.Template)} must be set.");
+            }
+            else if (!options.Retrieval.Template.Contains("{context}", StringComparison.Ordinal))
+            {
+                failures.Add($"{VectorStoreOptions.SectionName}:Retrieval:{nameof(RetrievalOptions.Template)} must contain the literal '{{context}}' placeholder.");
             }
         }
 

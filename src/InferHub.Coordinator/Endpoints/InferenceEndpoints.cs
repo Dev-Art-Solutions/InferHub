@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
+using InferHub.Coordinator.Vector;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.Ollama;
 using Microsoft.AspNetCore.Http.Features;
@@ -13,6 +14,10 @@ namespace InferHub.Coordinator.Endpoints;
 public static class InferenceEndpoints
 {
     public const string ConversationHeader = "X-InferHub-Conversation";
+    public const string RetrieveHeader = "X-InferHub-Retrieve";
+    public const string RetrieveKHeader = "X-InferHub-Retrieve-K";
+    public const string RetrieveModelHeader = "X-InferHub-Retrieve-Model";
+    public const string SourcesHeader = "X-InferHub-Sources";
 
     private const string GenerateKind = "generate";
     private const string ChatKind = "chat";
@@ -119,15 +124,35 @@ public static class InferenceEndpoints
     }
 
     private static async Task<IResult> HandleGenerateAsync(
-        HttpRequest httpRequest,
+        HttpContext httpContext,
         Services.IRouter router,
         IDispatcher dispatcher,
         Metrics metrics,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
+        var httpRequest = httpContext.Request;
         var rawJson = await ReadBodyAsync(httpRequest, cancellationToken);
         var request = Deserialize<GenerateRequest>(rawJson);
+        var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Generate");
+
+        try
+        {
+            (rawJson, var sources) = await ApplyRetrievalAsync(
+                httpContext,
+                rawJson,
+                retrieval => ApplyGenerateRetrievalAsync(httpContext, rawJson, request, retrieval, cancellationToken),
+                cancellationToken);
+            if (sources is not null)
+            {
+                httpContext.Response.Headers[SourcesHeader] = sources;
+            }
+        }
+        catch (RetrievalUnavailableException ex)
+        {
+            logger.LogWarning(ex, "Retrieval unavailable for generate request");
+            return Error(StatusCodes.Status424FailedDependency, ex.Message);
+        }
 
         return await HandleAsync(
             GenerateKind,
@@ -138,21 +163,41 @@ public static class InferenceEndpoints
             router,
             dispatcher,
             metrics,
-            loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Generate"),
+            logger,
             cancellationToken);
     }
 
     private static async Task<IResult> HandleChatAsync(
-        HttpRequest httpRequest,
+        HttpContext httpContext,
         Services.IRouter router,
         IDispatcher dispatcher,
         Metrics metrics,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
+        var httpRequest = httpContext.Request;
         var rawJson = await ReadBodyAsync(httpRequest, cancellationToken);
         var request = Deserialize<ChatRequest>(rawJson);
         var conversationKey = ResolveConversationKey(httpRequest, request);
+        var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Chat");
+
+        try
+        {
+            (rawJson, var sources) = await ApplyRetrievalAsync(
+                httpContext,
+                rawJson,
+                retrieval => ApplyChatRetrievalAsync(httpContext, rawJson, request, retrieval, cancellationToken),
+                cancellationToken);
+            if (sources is not null)
+            {
+                httpContext.Response.Headers[SourcesHeader] = sources;
+            }
+        }
+        catch (RetrievalUnavailableException ex)
+        {
+            logger.LogWarning(ex, "Retrieval unavailable for chat request");
+            return Error(StatusCodes.Status424FailedDependency, ex.Message);
+        }
 
         return await HandleAsync(
             ChatKind,
@@ -163,8 +208,89 @@ public static class InferenceEndpoints
             router,
             dispatcher,
             metrics,
-            loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Chat"),
+            logger,
             cancellationToken);
+    }
+
+    private static Task<RetrievalOutcome> ApplyChatRetrievalAsync(
+        HttpContext httpContext,
+        string rawJson,
+        ChatRequest request,
+        RetrievalRequest retrieval,
+        CancellationToken cancellationToken)
+    {
+        var pipeline = httpContext.RequestServices.GetService<RetrievalPipeline>()
+            ?? throw new RetrievalUnavailableException("vector store is disabled; retrieval header cannot be honoured");
+        return pipeline.AugmentChatAsync(rawJson, request, retrieval, cancellationToken);
+    }
+
+    private static Task<RetrievalOutcome> ApplyGenerateRetrievalAsync(
+        HttpContext httpContext,
+        string rawJson,
+        GenerateRequest request,
+        RetrievalRequest retrieval,
+        CancellationToken cancellationToken)
+    {
+        var pipeline = httpContext.RequestServices.GetService<RetrievalPipeline>()
+            ?? throw new RetrievalUnavailableException("vector store is disabled; retrieval header cannot be honoured");
+        return pipeline.AugmentGenerateAsync(rawJson, request, retrieval, cancellationToken);
+    }
+
+    private static async Task<(string RawJson, string? Sources)> ApplyRetrievalAsync(
+        HttpContext httpContext,
+        string rawJson,
+        Func<RetrievalRequest, Task<RetrievalOutcome>> augment,
+        CancellationToken cancellationToken)
+    {
+        if (!TryReadRetrievalHeader(httpContext.Request, out var retrieval))
+        {
+            return (rawJson, Sources: null);
+        }
+
+        var outcome = await augment(retrieval);
+        if (!outcome.WasAugmented)
+        {
+            return (rawJson, Sources: null);
+        }
+
+        var sources = JsonSerializer.Serialize(outcome.SourceIds, JsonOptions);
+        return (outcome.RawJson, Sources: sources);
+    }
+
+    private static bool TryReadRetrievalHeader(HttpRequest request, out RetrievalRequest retrieval)
+    {
+        retrieval = default!;
+        if (!request.Headers.TryGetValue(RetrieveHeader, out var raw))
+        {
+            return false;
+        }
+
+        var collection = raw.ToString().Trim();
+        if (string.IsNullOrEmpty(collection))
+        {
+            return false;
+        }
+
+        int? k = null;
+        if (request.Headers.TryGetValue(RetrieveKHeader, out var rawK)
+            && int.TryParse(rawK.ToString(), out var parsedK)
+            && parsedK > 0)
+        {
+            k = parsedK;
+        }
+
+        string? model = null;
+        if (request.Headers.TryGetValue(RetrieveModelHeader, out var rawModel))
+        {
+            var value = rawModel.ToString().Trim();
+            if (!string.IsNullOrEmpty(value))
+            {
+                model = value;
+            }
+        }
+
+        retrieval = new RetrievalRequest(collection, k, model);
+        return true;
     }
 
     private static async Task<IResult> HandleAsync(

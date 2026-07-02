@@ -106,7 +106,10 @@ as load-bearing:
    what real Ollama clients send. Do not invent custom fields when Ollama already has one.
 7. **Conversations carry no content on the coordinator.** Clients re-send full history
    each turn; the coordinator stores only routing affinity keyed by either the
-   `X-InferHub-Conversation` header or a hash of the opening message.
+   `X-InferHub-Conversation` header or a hash of the opening message. **Phase 18
+   inline retrieval preserves this**: the augmented request body is assembled
+   in-flight inside the retrieval pipeline and forwarded to the node — nothing about
+   the message or the retrieved context is retained on the coordinator.
 
 ## Auth model (three independent token sets)
 
