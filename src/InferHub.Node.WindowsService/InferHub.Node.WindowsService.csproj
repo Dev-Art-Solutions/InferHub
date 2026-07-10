@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>InferHub.Node.Service</AssemblyName>
+    <RootNamespace>InferHub.Node.WindowsService</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- We reference InferHub.Node purely as a library of DI registrations (its shared
+         AddInferHubNode composition root); its own apphost is unused. Allow a
+         self-contained publish to reference the framework-dependent node exe. -->
+    <ValidateExecutableReferencesMatchSelfContained>false</ValidateExecutableReferencesMatchSelfContained>
+  </PropertyGroup>
+
+  <!-- Operator-friendly single-file default, applied only when a RID is supplied
+       (`dotnet publish -c Release -r win-x64`). A plain `dotnet build` of the solution
+       sets no RID, so the host stays framework-dependent and can reference the
+       non-self-contained node exe — the matrix build (incl. Linux CI) stays green. -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.8" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\InferHub.Node\InferHub.Node.csproj" />
+  </ItemGroup>
+
+  <!-- InferHub.Node is referenced only as a library (its AddInferHubNode composition
+       root), but because it is an executable project it leaks its own apphost and host
+       config into this host's publish output: its appsettings.json collides with ours
+       (NETSDK1152), and InferHub.Node.exe / .deps.json / .runtimeconfig.json are dead
+       clutter next to the real InferHub.Node.Service.exe. Strip them so publish yields a
+       clean single-file host. The trailing backslash keeps the appsettings match from
+       hitting the InferHub.Node.WindowsService folder. -->
+  <Target Name="RemoveTransitiveNodeHostFiles" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+        Condition="'%(ResolvedFileToPublish.RelativePath)' == 'appsettings.json' and $([System.String]::Copy('%(ResolvedFileToPublish.FullPath)').Contains('\InferHub.Node\'))" />
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+        Condition="'%(ResolvedFileToPublish.RelativePath)' == 'InferHub.Node.exe' or
+                   '%(ResolvedFileToPublish.RelativePath)' == 'InferHub.Node.deps.json' or
+                   '%(ResolvedFileToPublish.RelativePath)' == 'InferHub.Node.runtimeconfig.json'" />
+    </ItemGroup>
+  </Target>
+
+</Project>

@@ -202,12 +202,44 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `Coordinator:ModelRefreshInterval` | `00:01:00` | How often the node re-reports its model list. |
 | `Coordinator:RetryDelay` | `00:00:05` | Wait between reconnect attempts. |
 | `Node:Name` | _(machine name)_ | Friendly node name shown in the status page. |
+| `Node:DataDirectory` | `null` | Directory for writable node state (the `.inferhub-node-id` file). `null` = next to the executable (content root). Set to e.g. `C:\ProgramData\InferHub\Node` when running as a Windows service under a least-privilege account. |
 | `Node:MaxConcurrency` | `null` | Advisory in-flight cap reported to the coordinator (null = unbounded). |
 | `Node:Labels` | `{}` | Free-form key/value pairs surfaced on `GET /api/nodes`. |
 | `Node:Models:Include` | `[]` | Whitelist of model names to advertise (empty = all). |
 | `Node:Models:Exclude` | `[]` | Names dropped before reporting. |
 | `Backend:Type` | `ollama` | Inference backend selector. |
 | `Ollama:Endpoint` | `http://localhost:11434/` | Local Ollama URL (absolute http/https). |
+
+### Running a node as a Windows service
+
+For an always-on GPU box, run the node as a native Windows service — auto-start on boot,
+restart-on-failure recovery, and logging to the Windows Event Log. The service host
+(`src/InferHub.Node.WindowsService`) is a thin wrapper that composes the exact same node
+services through the shared `AddInferHubNode` root, so it behaves identically to
+`dotnet run --project src/InferHub.Node`; only the packaging differs. Dev/console and
+Linux node paths are unchanged.
+
+```powershell
+# 1. Publish a self-contained single-file host (no .NET runtime needed on the box)
+dotnet publish src/InferHub.Node.WindowsService -c Release -r win-x64
+
+# 2. Copy the publish output to C:\Program Files\InferHub\Node, then set the coordinator
+#    URL in appsettings.json and the enrollment secret as a machine env var
+[Environment]::SetEnvironmentVariable('Coordinator__EnrollmentSecret','shared-node-secret','Machine')
+
+# 3. Install + start the service (run elevated)
+./deploy/windows/install-service.ps1 `
+  -BinaryPath "C:\Program Files\InferHub\Node\InferHub.Node.Service.exe" -DelayedStart
+```
+
+The install script configures automatic (or delayed-auto) start, restart-on-failure
+recovery, and a writable data directory (`Node:DataDirectory`, default
+`C:\ProgramData\InferHub\Node`) so the node identity file survives under a least-privilege
+account. Full runbook — including update/uninstall and virtual-account setup — is in
+[deploy/windows/README.md](deploy/windows/README.md).
+
+> The Linux equivalent is the same host pattern with `builder.Services.AddSystemd()` and a
+> `.service` unit file — same composition root, different lifetime integration.
 
 ## Vector store
 

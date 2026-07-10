@@ -1,3 +1,6 @@
+using InferHub.Node.Configuration;
+using Microsoft.Extensions.Options;
+
 namespace InferHub.Node;
 
 public interface INodeIdentity
@@ -7,13 +10,19 @@ public interface INodeIdentity
 
 public sealed class FileNodeIdentity(
     IHostEnvironment environment,
+    IOptions<NodeOptions> options,
     ILogger<FileNodeIdentity> logger) : INodeIdentity
 {
     public const string FileName = ".inferhub-node-id";
 
     public string GetOrCreateNodeId()
     {
-        var path = Path.Combine(environment.ContentRootPath, FileName);
+        var baseDirectory = string.IsNullOrWhiteSpace(options.Value.DataDirectory)
+            ? environment.ContentRootPath
+            : options.Value.DataDirectory;
+
+        Directory.CreateDirectory(baseDirectory);
+        var path = Path.Combine(baseDirectory, FileName);
 
         if (File.Exists(path))
         {

@@ -1,7 +1,9 @@
 using InferHub.Node;
+using InferHub.Node.Configuration;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace InferHub.Tests;
 
@@ -48,15 +50,33 @@ public class NodeIdentityTests : IDisposable
         Assert.NotEqual("not-a-guid", File.ReadAllText(Path.Combine(tempDirectory, FileNodeIdentity.FileName)));
     }
 
+    [Fact]
+    public void DataDirectoryOverrideRelocatesIdentityFile()
+    {
+        var overrideDir = Path.Combine(tempDirectory, "state", "override");
+        var identity = CreateIdentity(new NodeOptions { DataDirectory = overrideDir });
+
+        var nodeId = identity.GetOrCreateNodeId();
+
+        Assert.True(Guid.TryParse(nodeId, out _));
+        Assert.Equal(nodeId, File.ReadAllText(Path.Combine(overrideDir, FileNodeIdentity.FileName)));
+        Assert.False(File.Exists(Path.Combine(tempDirectory, FileNodeIdentity.FileName)));
+
+        // A restart with the same override reuses the id.
+        var second = CreateIdentity(new NodeOptions { DataDirectory = overrideDir }).GetOrCreateNodeId();
+        Assert.Equal(nodeId, second);
+    }
+
     public void Dispose()
     {
         Directory.Delete(tempDirectory, recursive: true);
     }
 
-    private FileNodeIdentity CreateIdentity()
+    private FileNodeIdentity CreateIdentity(NodeOptions? options = null)
     {
         return new FileNodeIdentity(
             new TestHostEnvironment(tempDirectory),
+            Options.Create(options ?? new NodeOptions()),
             NullLogger<FileNodeIdentity>.Instance);
     }
 

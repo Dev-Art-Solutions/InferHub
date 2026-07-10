@@ -17,6 +17,7 @@ src/
   InferHub.Shared/        Contracts + Ollama DTOs shared by coordinator and node.
   InferHub.Coordinator/   ASP.NET Core web app (Sdk.Web). HTTP + SignalR hub + routing.
   InferHub.Node/          Worker service (Sdk.Worker). SignalR client + backend driver.
+  InferHub.Node.WindowsService/  Windows-service host. References InferHub.Node, adds AddWindowsService + install scripts.
 tests/
   InferHub.Tests/         xUnit. References all three projects.
 plan/                     Phase build-briefs. Not shipped; lives in repo for context.
@@ -64,9 +65,16 @@ into `appsettings.json`.
 
 ## Node anatomy
 
-- [Program.cs](src/InferHub.Node/Program.cs) binds three typed options sections
-  (`Coordinator`, `Node`, `Ollama`) with `ValidateOnStart`; a bad value fails the host
-  with the offending key name. Backend selection is a `switch` on `Backend:Type`.
+- [NodeHostBuilderExtensions.cs](src/InferHub.Node/NodeHostBuilderExtensions.cs) —
+  `AddInferHubNode(this IHostApplicationBuilder)` is the **shared composition root**. Both
+  the console host ([InferHub.Node/Program.cs](src/InferHub.Node/Program.cs)) and the
+  Windows-service host ([InferHub.Node.WindowsService/Program.cs](src/InferHub.Node.WindowsService/Program.cs))
+  wire their services through it, so the two hosts can never drift. New node DI
+  registrations go here, not in either `Program.cs`.
+- [Program.cs](src/InferHub.Node/Program.cs) is a two-liner over `AddInferHubNode`. The
+  extension binds three typed options sections (`Coordinator`, `Node`, `Ollama`) with
+  `ValidateOnStart`; a bad value fails the host with the offending key name. Backend
+  selection is a `switch` on `Backend:Type`.
 - [Configuration/](src/InferHub.Node/Configuration/) holds the options classes,
   validators, and the model-filter helper.
 - [Backends/](src/InferHub.Node/Backends/) — `IInferenceBackend` abstraction; the
