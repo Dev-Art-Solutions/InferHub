@@ -118,7 +118,7 @@ as load-bearing:
 4. **No persisted state, *except* the vector store.** Registry, affinity, audit log, and
    metrics are all in-memory; a coordinator restart still resets the fleet view. The
    one exception is the vector store, which now has **two providers** selected by
-   `VectorStore:Provider` (`local` default, `postgres` since phase 19):
+   `VectorStore:Provider` (`local` default, `postgres` since phase 20):
    - **`local`** — the phase-13 shape. Vector records persist to `VectorStore:DataDirectory`
      as a plain raw store (append-only ops log + periodic compacted snapshots), the in-memory
      index is rebuilt from it on startup, and (phase 15) assigned node replicas persist under
@@ -134,7 +134,7 @@ as load-bearing:
    stop and rethink. The default is `Enabled=false`, so deployments that don't opt in keep the
    original no-persistence contract unchanged.
 5. **No new heavy dependencies.** The dependency surface is deliberately minimal (ASP.NET Core,
-   SignalR, OllamaClient on the node, xunit for tests). The one recorded exception is phase 19's
+   SignalR, OllamaClient on the node, xunit for tests). The one recorded exception is phase 20's
    **`Npgsql` + `Pgvector`**, which back the `postgres` vector provider: coordinator-only (never
    in `InferHub.Shared` or `InferHub.Node`), and no connection is opened unless
    `VectorStore:Enabled=true` **and** `VectorStore:Provider=postgres`. That was a conscious,

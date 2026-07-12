@@ -91,7 +91,8 @@ header behaves exactly like v1.x.
 | 16 | Durability & self-healing (done) | `v1.8.0` |
 | 17 | Console & observability (done) | `v1.9.0` |
 | 18 | Retrieval-augmented inference (done) | `v2.0.0` |
-| 19 | PostgreSQL + pgvector connector (done) | `v2.2.0` |
+| 19 | Windows-service deployment (done) | `v2.1.0` |
+| 20 | PostgreSQL + pgvector connector (done) | `v2.2.0` |
 
 **What's next.** With the `IVectorStore` seam now proven by a second implementation, the
 next candidates are additional vector backends (Qdrant, SQL Server vector) and a migration

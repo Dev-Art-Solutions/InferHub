@@ -69,4 +69,4 @@ command between providers.
 3. Blog post (`blog.devart.solutions`, slug
    `inferhub-postgres-pgvector-connector`) — default to draft, confirm visibility
    with Iliya before publishing.
-4. Facebook + X posts (draft copy in the phase-19 plan).
+4. Facebook + X posts (draft copy in the phase-20 plan).
