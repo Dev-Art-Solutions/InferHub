@@ -126,7 +126,7 @@ public class VectorStoreOptionsValidatorTests
         Assert.Contains(result.Failures!, m => m.Contains(nameof(RetrievalOptions.OnMissing)));
     }
 
-    // --- Provider / Postgres (phase 19) ---
+    // --- Provider / Postgres (phase 20) ---
 
     [Fact]
     public void LocalProviderWithNoPostgresSectionPasses()
