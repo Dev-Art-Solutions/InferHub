@@ -57,15 +57,29 @@ public static class StatusEndpoint
         if (store is null || replicas is null || options is null) return null;
 
         var collections = store.ListCollectionsAsync().GetAwaiter().GetResult();
-        return BuildVectorBlock(collections, replicas, nodes, options.Value.ReplicationFactor);
+        return BuildVectorBlock(collections, replicas, nodes, options.Value.ReplicationFactor, options.Value.Provider);
     }
 
     internal static VectorStatusBlock BuildVectorBlock(
         IReadOnlyList<CollectionInfo> collections,
         ReplicaRegistry replicas,
         IReadOnlyCollection<NodeSnapshot> nodes,
-        int replicationFactor)
+        int replicationFactor,
+        string provider = VectorStoreProviderExtensions.Local)
     {
+        // Under postgres there is no node replication: placement is zeroed for every collection
+        // so the replica formula can't false-flag under-replication against zero holders.
+        var isPostgres = VectorStoreProviderExtensions.IsPostgres(provider);
+        var wire = isPostgres ? VectorStoreProviderExtensions.Postgres : VectorStoreProviderExtensions.Local;
+
+        if (isPostgres)
+        {
+            var postgresItems = collections.Select(c => new VectorStatusCollection(
+                c.Name, c.Dimension, c.Distance, c.RecordCount,
+                TargetReplicas: 0, LiveReplicas: 0, ReplicaNodes: Array.Empty<string>(), UnderReplicated: false)).ToArray();
+            return new VectorStatusBlock(wire, postgresItems);
+        }
+
         var target = Math.Max(1, replicationFactor);
         var connectionToNodeId = nodes.ToDictionary(n => n.ConnectionId, n => n.NodeId, StringComparer.Ordinal);
         var eligibleCount = nodes.Count(n => !n.Cordoned);
@@ -90,7 +104,7 @@ public static class StatusEndpoint
                 holderNodeIds.Length < desired);
         }).ToArray();
 
-        return new VectorStatusBlock(items);
+        return new VectorStatusBlock(wire, items);
     }
 
     private sealed record StatusResponse(
@@ -115,6 +129,7 @@ public static class StatusEndpoint
         bool Cordoned);
 
     internal sealed record VectorStatusBlock(
+        string Provider,
         IReadOnlyList<VectorStatusCollection> Collections);
 
     internal sealed record VectorStatusCollection(

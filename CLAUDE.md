@@ -63,6 +63,25 @@ into `appsettings.json`.
   `console.html` + `console.js` (admin). **Build-free**: plain HTML/CSS/JS, no Node/React
   toolchain. If you reach for a bundler, stop and rethink.
 
+### Vector providers
+
+`IVectorStore` ([Vector/IVectorStore.cs](src/InferHub.Coordinator/Vector/IVectorStore.cs)) is
+the seam; two implementations sit behind it, selected by `VectorStore:Provider` and wired in
+[Vector/VectorStoreServiceCollectionExtensions.cs](src/InferHub.Coordinator/Vector/VectorStoreServiceCollectionExtensions.cs)
+(the single composition root — `Program.cs` and the DI-shape test both go through it):
+
+- **`LocalVectorStore`** — raw store on disk + in-memory `FlatIndex`, replicated to nodes.
+- **`PostgresVectorStore`** ([Vector/Postgres/](src/InferHub.Coordinator/Vector/Postgres/)) —
+  table-per-collection over pgvector; publishes the two lifecycle events itself and returns the
+  same score sign-conventions as `FlatIndex` (see `PostgresSchema.ScoreExpression`).
+
+Hard rule: **`ReplicationCoordinator` and `HealingService` bind to `LocalVectorStore`
+concretely** (they subscribe to its `CollectionCreated` / `RecordUpserted` events). Do **not**
+widen them to `IVectorStore` — that would drag replication concerns into the interface. Under
+`postgres` they are simply not registered; `VectorCompositionTests` fails if anyone re-couples
+them. That's why `PostgresVectorStore` publishes `vector.collection.created` / `.dropped`
+itself, and why `NullVectorQueryRouter` replaces the node-serving router.
+
 ## Node anatomy
 
 - [NodeHostBuilderExtensions.cs](src/InferHub.Node/NodeHostBuilderExtensions.cs) —
@@ -98,18 +117,28 @@ as load-bearing:
    `console.html` is intentional.
 4. **No persisted state, *except* the vector store.** Registry, affinity, audit log, and
    metrics are all in-memory; a coordinator restart still resets the fleet view. The
-   one exception is the vector store introduced in phase 13: when
-   `VectorStore:Enabled` is `true`, vector records persist to `VectorStore:DataDirectory`
-   as a plain raw store (append-only ops log + periodic compacted snapshots), and the
-   in-memory index is rebuilt from it on startup. **Phase 15 extends the same shape to
-   nodes**: when assigned a replica, a node persists it under `Vector:ReplicaDirectory`
-   so a restart does not require a full re-push. Node replicas are derived and
-   disposable — the hub's raw store stays authoritative. Everything else stays in-memory;
-   if you find yourself adding a database or a new on-disk format outside those two
-   directories, stop and rethink. The default is `Enabled=false`, so deployments that
-   don't opt in keep the original no-persistence contract unchanged.
-5. **No new heavy dependencies.** The dependency surface today is minimal (ASP.NET Core,
-   SignalR, OllamaClient on the node, xunit for tests). Add packages reluctantly.
+   one exception is the vector store, which now has **two providers** selected by
+   `VectorStore:Provider` (`local` default, `postgres` since phase 19):
+   - **`local`** — the phase-13 shape. Vector records persist to `VectorStore:DataDirectory`
+     as a plain raw store (append-only ops log + periodic compacted snapshots), the in-memory
+     index is rebuilt from it on startup, and (phase 15) assigned node replicas persist under
+     `Vector:ReplicaDirectory`. The hub's raw store is authoritative; node replicas are derived.
+   - **`postgres`** — an **external** durable store (PostgreSQL + pgvector). The coordinator
+     holds **no** vector state on disk, and **node replication / self-healing are deliberately
+     off** because Postgres is already the source of truth. Pushing a second derived copy onto
+     the fleet would be a second write path and a second truth.
+
+   The invariant that survives both: **one source of truth per deployment, and node replicas
+   are only ever derived from it — never a second authority.** Everything else stays in-memory;
+   if you find yourself adding a database or on-disk format outside those directories/providers,
+   stop and rethink. The default is `Enabled=false`, so deployments that don't opt in keep the
+   original no-persistence contract unchanged.
+5. **No new heavy dependencies.** The dependency surface is deliberately minimal (ASP.NET Core,
+   SignalR, OllamaClient on the node, xunit for tests). The one recorded exception is phase 19's
+   **`Npgsql` + `Pgvector`**, which back the `postgres` vector provider: coordinator-only (never
+   in `InferHub.Shared` or `InferHub.Node`), and no connection is opened unless
+   `VectorStore:Enabled=true` **and** `VectorStore:Provider=postgres`. That was a conscious,
+   provider-scoped decision — the rule still holds for everything else. Add packages reluctantly.
 6. **The API mimics Ollama.** Request/response DTOs in `InferHub.Shared/Ollama/` track
    what real Ollama clients send. Do not invent custom fields when Ollama already has one.
 7. **Conversations carry no content on the coordinator.** Clients re-send full history

@@ -104,6 +104,42 @@ public class StatusVectorBlockTests : IDisposable
         Assert.Equal(new[] { "node-a", "node-b" }, docs.ReplicaNodes);
     }
 
+    [Fact]
+    public async Task PostgresProviderZeroesPlacementAndNeverFlagsUnderReplicated()
+    {
+        await _store.CreateCollectionAsync("docs", dimension: 2, distance: "cosine");
+        await _store.UpsertAsync("docs", new VectorUpsert("a", [1f, 0f]));
+
+        var replicas = new ReplicaRegistry();
+        // Two nodes online but postgres owns durability — the replica formula must not run.
+        var nodes = new[]
+        {
+            NewNodeSnapshot("conn-a", "node-a"),
+            NewNodeSnapshot("conn-b", "node-b")
+        };
+
+        var collections = await _store.ListCollectionsAsync();
+        var block = StatusEndpoint.BuildVectorBlock(collections, replicas, nodes, replicationFactor: 2, provider: "postgres");
+
+        Assert.Equal("postgres", block.Provider);
+        var docs = Assert.Single(block.Collections);
+        Assert.Equal(0, docs.TargetReplicas);
+        Assert.Equal(0, docs.LiveReplicas);
+        Assert.Empty(docs.ReplicaNodes);
+        Assert.False(docs.UnderReplicated);
+    }
+
+    [Fact]
+    public async Task LocalProviderBlockCarriesLocalProviderTag()
+    {
+        await _store.CreateCollectionAsync("docs", dimension: 2, distance: "cosine");
+        var collections = await _store.ListCollectionsAsync();
+
+        var block = StatusEndpoint.BuildVectorBlock(collections, new ReplicaRegistry(), Array.Empty<NodeSnapshot>(), replicationFactor: 2);
+
+        Assert.Equal("local", block.Provider);
+    }
+
     private static NodeSnapshot NewNodeSnapshot(string connectionId, string nodeId)
     {
         return new NodeSnapshot(

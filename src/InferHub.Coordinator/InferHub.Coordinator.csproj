@@ -8,6 +8,17 @@
     <ProjectReference Include="..\InferHub.Shared\InferHub.Shared.csproj" />
   </ItemGroup>
 
+  <!--
+    Phase 19: PostgreSQL + pgvector vector-store provider. A deliberate, provider-scoped
+    exception to design rule 5 ("no new heavy dependencies") — see CLAUDE.md. Coordinator-only;
+    no connection is opened unless VectorStore:Enabled=true and VectorStore:Provider=postgres.
+    Pgvector depends on Npgsql, but both are referenced so the versions are pinned and visible.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="9.0.5" />
+    <PackageReference Include="Pgvector" Version="0.3.2" />
+  </ItemGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="InferHub.Tests" />
   </ItemGroup>

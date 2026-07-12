@@ -91,10 +91,12 @@ header behaves exactly like v1.x.
 | 16 | Durability & self-healing (done) | `v1.8.0` |
 | 17 | Console & observability (done) | `v1.9.0` |
 | 18 | Retrieval-augmented inference (done) | `v2.0.0` |
+| 19 | PostgreSQL + pgvector connector (done) | `v2.2.0` |
 
-**What's next.** With the vector / RAG mesh track wrapped, multi-coordinator
-clustering, persisted affinity, richer audit trails, and additional inference
-backends (vLLM, llama.cpp) remain on the table.
+**What's next.** With the `IVectorStore` seam now proven by a second implementation, the
+next candidates are additional vector backends (Qdrant, SQL Server vector) and a migration
+command between providers. Beyond storage, multi-coordinator clustering, persisted affinity,
+richer audit trails, and additional inference backends (vLLM, llama.cpp) remain on the table.
 
 ## Quick start
 
@@ -243,8 +245,21 @@ account. Full runbook — including update/uninstall and virtual-account setup �
 
 ## Vector store
 
-InferHub ships with a **local vector store** built into the coordinator. It's embedded,
-file-backed, and off by default — flip `VectorStore:Enabled` to turn it on. Two layers:
+InferHub's vector store is **provider-backed** and off by default — flip
+`VectorStore:Enabled` to turn it on, and pick a backend with `VectorStore:Provider`:
+
+- **`local`** (default) — embedded and file-backed in the coordinator, replicated to the GPU
+  fleet and self-healing. Zero external services; plain-file backups.
+- **`postgres`** (v2.2+) — an external **PostgreSQL + pgvector** database: HNSW-indexed ANN
+  search, real transactions, ordinary database backups, and shared access from other apps.
+  See [PostgreSQL + pgvector](#postgresql--pgvector-v22) below.
+
+Every endpoint, header, and client call is identical across providers. Embeddings and inline
+retrieval always run on the fleet — only the storage engine changes.
+
+### Local provider
+
+The local store is embedded and file-backed. Two layers:
 
 - **Raw store** — an append-only op log (upserts + tombstones) plus periodic compacted
   snapshots, one directory per collection under `VectorStore:DataDirectory`. Plain files
@@ -283,7 +298,7 @@ runs hub-local by default, or on a node replica when one exists.
 | `GET`  | `/api/admin/vector/collections/{collection}` | Detail: collection info, placement, under-replicated flag, per-collection query stats. |
 | `POST` | `/api/admin/vector/collections` | Create a collection (`{ "name", "dimension", "distance"? }`). |
 | `DELETE` | `/api/admin/vector/collections/{collection}` | Drop a collection. |
-| `POST` | `/api/admin/vector/collections/{collection}/rebuild` | Force a heal pass — re-push from the raw store to restore the factor. |
+| `POST` | `/api/admin/vector/collections/{collection}/rebuild` | Force a heal pass — re-push from the raw store to restore the factor. Returns `409` under the postgres provider (nothing to re-push). |
 
 **Live events.** `GET /api/admin/stream` (the same SSE stream used by the console) now
 carries vector lifecycle events alongside node snapshots: `vector.collection.created`,
@@ -292,11 +307,66 @@ carries vector lifecycle events alongside node snapshots: `vector.collection.cre
 `sequence` and a `data` blob (holder connection id, node id, reason, before/after counts,
 etc.). The management console renders these in the "Vector activity" feed.
 
-**Status JSON.** `GET /api/status` grows a `vector` block when the store is enabled —
-per-collection record count, dimension, distance, target vs live replicas, holder node
-ids, and an `underReplicated` flag. Metrics gains
+**Status JSON.** `GET /api/status` grows a `vector` block when the store is enabled — a
+`provider` tag (`local` \| `postgres`) plus per-collection record count, dimension, distance,
+target vs live replicas, holder node ids, and an `underReplicated` flag. Metrics gains
 `vectorReplicasHealed` / `vectorRebuildsFromRaw` / `vectorUnderReplicated` counters plus
-`perCollection` query stats (`queries`, `queryLatencyAvgMs`).
+`perCollection` query stats (`queries`, `queryLatencyAvgMs`). Under postgres the replica
+fields are zeroed and the three heal/replica counters stay flat — there are no node replicas
+to count.
+
+### PostgreSQL + pgvector (v2.2+)
+
+Set `VectorStore:Provider` to `postgres` and point the coordinator at a PostgreSQL that has
+the [pgvector](https://github.com/pgvector/pgvector) extension. **Pick it when** you already
+run Postgres, you want ANN search + transactions + ordinary backups + other apps reading the
+same table, or the dataset has outgrown flat-exact search. **Stay local when** you want zero
+external services, plain-file backups, and search replicas living on the GPU fleet.
+
+**Schema.** One registry table (`{schema}.collections`) plus one table per collection,
+`{schema}.{prefix}{collection}`, with `id text`, `embedding vector(N)`, `payload jsonb`,
+`metadata jsonb`, `seq_no bigint`, `updated_at`. A pgvector ANN index (HNSW by default) is
+built per the collection's distance metric, and a GIN index backs metadata filters. Score
+sign-conventions match the local provider exactly (`cosine`/`dot` higher-is-better,
+`l2` lower-is-better), so clients see identical rankings and numbers.
+
+**Honest trade-offs.** Postgres owns durability, so under this provider:
+
+- **no node replication, no self-healing, no node-served vector reads** — search runs in
+  Postgres, and the coordinator holds no vector state on disk;
+- the **rebuild** admin endpoint returns `409` (nothing to re-push);
+- the `vectorReplicasHealed` / `vectorRebuildsFromRaw` / `vectorUnderReplicated` metrics stay
+  at zero, and the status `vector` block zeroes the replica fields;
+- pgvector's ANN index tops out at **2000 dimensions** — above that, the collection still
+  works but falls back to exact scan (logged at creation).
+
+The mesh is intact: **embeddings and inline retrieval still run on the GPU nodes** — only the
+storage engine changed.
+
+**No migration path yet.** Switching providers on a populated deployment means re-ingesting;
+there is no built-in copy between `local` and `postgres`. Don't flip the switch expecting your
+data to follow.
+
+**Walk-through** (compose stack in [`deploy/postgres/`](deploy/postgres/docker-compose.yml)):
+
+```bash
+# 1. A Postgres with pgvector
+docker compose -f deploy/postgres/docker-compose.yml up -d
+
+# 2. Point the coordinator at it (env, not appsettings.json) and enable postgres
+export VectorStore__Enabled=true
+export VectorStore__Provider=postgres
+export VectorStore__Postgres__ConnectionString="Host=localhost;Database=inferhub;Username=inferhub;Password=inferhub"
+dotnet run --project src/InferHub.Coordinator
+
+# 3. Same API as ever — create, upsert, query
+curl -X POST http://localhost:5080/api/admin/vector/collections \
+  -d '{"name":"docs","dimension":3,"distance":"cosine"}'
+curl -X POST http://localhost:5080/api/vector/docs/upsert \
+  -d '{"id":"a","vector":[1,0,0],"metadata":{"lang":"en"}}'
+curl -X POST http://localhost:5080/api/vector/docs/query \
+  -d '{"vector":[1,0,0],"k":3}'
+```
 
 ### Retrieval-augmented inference
 
@@ -349,9 +419,10 @@ Coordinator keys (all under `VectorStore:`):
 | Key | Default | Purpose |
 |---|---|---|
 | `VectorStore:Enabled` | `false` | Master switch. Off = no persisted state, old contract. |
-| `VectorStore:DataDirectory` | `./data/vectors` | Raw store + snapshots on the coordinator. |
+| `VectorStore:Provider` | `local` | Backend: `local` (file-backed, replicated) \| `postgres` (external pgvector). **(v2.2+)** |
+| `VectorStore:DataDirectory` | `./data/vectors` | Raw store + snapshots on the coordinator. Local provider only. |
 | `VectorStore:Distance` | `cosine` | Default similarity metric (`cosine` \| `dot` \| `l2`). |
-| `VectorStore:ReplicationFactor` | `2` | Target node replicas per collection (capped at connected node count). |
+| `VectorStore:ReplicationFactor` | `2` | Target node replicas per collection (capped at connected node count). Local provider only. |
 | `VectorStore:DefaultEmbeddingModel` | `nomic-embed-text` | Model used when a text upsert/query omits one. |
 | `VectorStore:SnapshotEveryOps` | `5000` | Ops appended before a compacted snapshot is written. |
 | `VectorStore:Retrieval:DefaultK` | `4` | Top-k when a request opts into retrieval. |
@@ -361,16 +432,33 @@ Coordinator keys (all under `VectorStore:`):
 | `VectorStore:Healing:DebounceMilliseconds` | `750` | Debounce for fleet-change-driven heal passes. |
 | `VectorStore:Healing:IdleSweepSeconds` | `15` | Idle interval refreshing the under-replicated gauge. |
 
-Node keys (all under `Vector:`, only used when the node holds a replica):
+Postgres provider keys (all under `VectorStore:Postgres:`, used only when `Provider=postgres`) **(v2.2+)**:
+
+| Key | Default | Purpose |
+|---|---|---|
+| `VectorStore:Postgres:ConnectionString` | _(empty)_ | Npgsql connection string. **Required.** Set via env (`VectorStore__Postgres__ConnectionString`) or user-secrets — never commit it. |
+| `VectorStore:Postgres:Schema` | `inferhub` | Schema holding the registry and per-collection tables (`^[a-z_][a-z0-9_]*$`). |
+| `VectorStore:Postgres:TablePrefix` | `vec_` | Prefix for per-collection tables (`^[a-z_][a-z0-9_]*$`). |
+| `VectorStore:Postgres:AutoCreateExtension` | `true` | Run `CREATE EXTENSION IF NOT EXISTS vector` at startup. Set `false` if a DBA pre-installed it. |
+| `VectorStore:Postgres:AutoCreateSchema` | `true` | Run `CREATE SCHEMA IF NOT EXISTS` at startup. |
+| `VectorStore:Postgres:Index` | `hnsw` | ANN index: `hnsw` \| `ivfflat` \| `none` (exact scan). |
+| `VectorStore:Postgres:HnswM` | `16` | HNSW `m` build parameter. |
+| `VectorStore:Postgres:HnswEfConstruction` | `64` | HNSW `ef_construction` build parameter. |
+| `VectorStore:Postgres:EfSearch` | `40` | Per-query `hnsw.ef_search` (higher = better recall, slower). |
+| `VectorStore:Postgres:CommandTimeoutSeconds` | `30` | Npgsql command timeout. |
+| `VectorStore:Postgres:MaxPoolSize` | `20` | Max pool size, applied if the connection string doesn't set one. |
+
+Node keys (all under `Vector:`, only used when the node holds a replica — local provider):
 
 | Key | Default | Purpose |
 |---|---|---|
 | `Vector:ReplicaDirectory` | `./data/vector-replicas` | Where a node persists assigned replicas so a restart doesn't require a full re-push. |
 
-**Scaling note.** The default index is a flat (exact) cosine/dot/l2 search — small,
-zero-dependency, correct. If a dataset outgrows flat exact, the `IVectorStore` seam is
-where an approximate-nearest-neighbour (HNSW-style) strategy would plug in — a conscious
-dependency decision, not smuggled in.
+**Scaling note.** The local index is a flat (exact) cosine/dot/l2 search — small,
+zero-dependency, correct. When a dataset outgrows flat exact, the `IVectorStore` seam is where
+an approximate-nearest-neighbour strategy plugs in — and as of v2.2 that seam is **proven by a
+second implementation**: the `postgres` provider serves HNSW-indexed ANN search from pgvector.
+The dependency was a conscious, provider-scoped decision, not smuggled in.
 
 **Multi-coordinator note.** The always-on hub is the single durability anchor by design
 today. Cross-hub raw-store replication is future work and belongs to the "multi-coordinator

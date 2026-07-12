@@ -125,4 +125,135 @@ public class VectorStoreOptionsValidatorTests
         Assert.True(result.Failed);
         Assert.Contains(result.Failures!, m => m.Contains(nameof(RetrievalOptions.OnMissing)));
     }
+
+    // --- Provider / Postgres (phase 19) ---
+
+    [Fact]
+    public void LocalProviderWithNoPostgresSectionPasses()
+    {
+        var validator = new VectorStoreOptionsValidator();
+        var options = new VectorStoreOptions { Enabled = true, Provider = "local" };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Succeeded, string.Join("; ", result.Failures ?? Array.Empty<string>()));
+    }
+
+    [Fact]
+    public void UnknownProviderIsRejected()
+    {
+        var validator = new VectorStoreOptionsValidator();
+        var options = new VectorStoreOptions { Enabled = true, Provider = "sqlite" };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, m => m.Contains(nameof(VectorStoreOptions.Provider)));
+    }
+
+    [Fact]
+    public void ValidPostgresConfigPasses()
+    {
+        var validator = new VectorStoreOptionsValidator();
+        var options = new VectorStoreOptions
+        {
+            Enabled = true,
+            Provider = "postgres",
+            DataDirectory = "", // inert under postgres — must not fail
+            Postgres = new PostgresStoreOptions
+            {
+                ConnectionString = "Host=localhost;Database=inferhub;Username=x;Password=y"
+            }
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Succeeded, string.Join("; ", result.Failures ?? Array.Empty<string>()));
+    }
+
+    [Fact]
+    public void PostgresRequiresConnectionString()
+    {
+        var result = ValidatePostgres(pg => pg.ConnectionString = "");
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, m => m.Contains(nameof(PostgresStoreOptions.ConnectionString)));
+    }
+
+    [Theory]
+    [InlineData("1bad")]
+    [InlineData("Bad")]
+    [InlineData("has-dash")]
+    public void PostgresRejectsInvalidSchemaIdentifier(string schema)
+    {
+        var result = ValidatePostgres(pg => pg.Schema = schema);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, m => m.Contains(nameof(PostgresStoreOptions.Schema)));
+    }
+
+    [Fact]
+    public void PostgresRejectsInvalidTablePrefix()
+    {
+        var result = ValidatePostgres(pg => pg.TablePrefix = "Vec-");
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, m => m.Contains(nameof(PostgresStoreOptions.TablePrefix)));
+    }
+
+    [Fact]
+    public void PostgresRejectsUnknownIndexKind()
+    {
+        var result = ValidatePostgres(pg => pg.Index = "annoy");
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, m => m.Contains(nameof(PostgresStoreOptions.Index)));
+    }
+
+    [Fact]
+    public void PostgresRejectsHnswMBelowTwo()
+    {
+        var result = ValidatePostgres(pg => pg.HnswM = 1);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, m => m.Contains(nameof(PostgresStoreOptions.HnswM)));
+    }
+
+    [Fact]
+    public void PostgresRejectsEfConstructionBelowM()
+    {
+        var result = ValidatePostgres(pg => { pg.HnswM = 32; pg.HnswEfConstruction = 16; });
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, m => m.Contains(nameof(PostgresStoreOptions.HnswEfConstruction)));
+    }
+
+    [Fact]
+    public void PostgresRejectsEfSearchBelowOne()
+    {
+        var result = ValidatePostgres(pg => pg.EfSearch = 0);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, m => m.Contains(nameof(PostgresStoreOptions.EfSearch)));
+    }
+
+    [Fact]
+    public void PostgresRejectsCommandTimeoutBelowOne()
+    {
+        var result = ValidatePostgres(pg => pg.CommandTimeoutSeconds = 0);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, m => m.Contains(nameof(PostgresStoreOptions.CommandTimeoutSeconds)));
+    }
+
+    private static Microsoft.Extensions.Options.ValidateOptionsResult ValidatePostgres(Action<PostgresStoreOptions> tweak)
+    {
+        var pg = new PostgresStoreOptions
+        {
+            ConnectionString = "Host=localhost;Database=inferhub;Username=x;Password=y"
+        };
+        tweak(pg);
+        var options = new VectorStoreOptions { Enabled = true, Provider = "postgres", Postgres = pg };
+        return new VectorStoreOptionsValidator().Validate(null, options);
+    }
 }

@@ -288,6 +288,16 @@
   const renderCollections = (vector) => {
     const tbody = document.getElementById("collections");
     if (!tbody) return;
+
+    const provider = vector?.provider ?? "local";
+    const isPostgres = provider === "postgres";
+    const badge = document.getElementById("vector-provider");
+    if (badge) {
+      badge.style.display = vector ? "" : "none";
+      badge.textContent = provider;
+      badge.className = "pill " + (isPostgres ? "pill-ok" : "");
+    }
+
     const items = vector?.collections ?? [];
     if (items.length === 0) {
       tbody.innerHTML = `<tr><td colspan="7" class="empty">Vector store disabled or no collections yet.</td></tr>`;
@@ -295,25 +305,33 @@
     }
 
     tbody.innerHTML = items.map(c => {
-      const replicaText = `${c.liveReplicas} / ${c.targetReplicas}`;
-      const pill = c.underReplicated
-        ? `<span class="pill pill-warn">under-replicated</span>`
-        : `<span class="pill pill-ok">at target</span>`;
-      const chips = (c.replicaNodes && c.replicaNodes.length > 0)
-        ? `<div class="replica-list">${c.replicaNodes.map(n =>
-            `<span class="replica-chip">${escapeHtml(n)}</span>`).join("")}</div>`
-        : `<span class="empty" style="padding:0">— hub-local only</span>`;
+      // Postgres owns durability and has no node replicas — replica/placement columns and the
+      // Rebuild action don't apply, so we show em-dashes and disable the button with a reason.
+      const replicaCell = isPostgres
+        ? `<span class="empty" style="padding:0">—</span>`
+        : `${c.liveReplicas} / ${c.targetReplicas} ${c.underReplicated
+            ? `<span class="pill pill-warn">under-replicated</span>`
+            : `<span class="pill pill-ok">at target</span>`}`;
+      const chips = isPostgres
+        ? `<span class="empty" style="padding:0">— Postgres-backed</span>`
+        : (c.replicaNodes && c.replicaNodes.length > 0)
+          ? `<div class="replica-list">${c.replicaNodes.map(n =>
+              `<span class="replica-chip">${escapeHtml(n)}</span>`).join("")}</div>`
+          : `<span class="empty" style="padding:0">— hub-local only</span>`;
       const safeName = encodeURIComponent(c.name);
+      const rebuildBtn = isPostgres
+        ? `<button data-vaction="rebuild" data-collection="${safeName}" disabled title="Not applicable when VectorStore:Provider=postgres — Postgres owns durability">Rebuild</button>`
+        : `<button data-vaction="rebuild" data-collection="${safeName}">Rebuild</button>`;
       return `
         <tr>
           <td><code>${escapeHtml(c.name)}</code></td>
           <td>${c.dimension}</td>
           <td>${escapeHtml(c.distance)}</td>
           <td>${c.recordCount}</td>
-          <td>${replicaText} ${pill}</td>
+          <td>${replicaCell}</td>
           <td>${chips}</td>
           <td><div class="actions">
-            <button data-vaction="rebuild" data-collection="${safeName}">Rebuild</button>
+            ${rebuildBtn}
           </div></td>
         </tr>`;
     }).join("");

@@ -9,10 +9,10 @@ namespace InferHub.Coordinator.Endpoints;
 
 public static class VectorEndpoints
 {
-    public static IEndpointRouteBuilder MapVectorEndpoints(this IEndpointRouteBuilder app)
+    public static IEndpointRouteBuilder MapVectorEndpoints(this IEndpointRouteBuilder app, bool supportsReplication = true)
     {
         MapDataPlane(app);
-        MapAdminPlane(app);
+        MapAdminPlane(app, supportsReplication);
         return app;
     }
 
@@ -158,7 +158,7 @@ public static class VectorEndpoints
         });
     }
 
-    private static void MapAdminPlane(IEndpointRouteBuilder app)
+    private static void MapAdminPlane(IEndpointRouteBuilder app, bool supportsReplication)
     {
         var group = app.MapGroup("/api/admin/vector/collections");
 
@@ -170,8 +170,11 @@ public static class VectorEndpoints
             CancellationToken cancellationToken) =>
         {
             var collections = await store.ListCollectionsAsync(cancellationToken);
+            var isPostgres = VectorStoreProviderExtensions.IsPostgres(options.Value.Provider);
             var placement = collections
-                .Select(c => BuildPlacement(c.Name, replicas, nodes, options.Value.ReplicationFactor))
+                .Select(c => isPostgres
+                    ? ZeroPlacement(c.Name)
+                    : BuildPlacement(c.Name, replicas, nodes, options.Value.ReplicationFactor))
                 .ToArray();
             return Results.Ok(new { collections, placement });
         });
@@ -193,11 +196,22 @@ public static class VectorEndpoints
                 return Error(StatusCodes.Status404NotFound, $"collection '{collection}' not found");
             }
 
-            var placement = BuildPlacement(info.Name, replicas, nodes, options.Value.ReplicationFactor);
-            var connected = nodes.Snapshot(DateTimeOffset.UtcNow);
-            var eligibleCount = connected.Count(n => !n.Cordoned);
-            var desired = Math.Min(options.Value.ReplicationFactor, eligibleCount);
-            var underReplicated = placement.LiveReplicas < desired;
+            var isPostgres = VectorStoreProviderExtensions.IsPostgres(options.Value.Provider);
+            CollectionPlacement placement;
+            bool underReplicated;
+            if (isPostgres)
+            {
+                placement = ZeroPlacement(info.Name);
+                underReplicated = false;
+            }
+            else
+            {
+                placement = BuildPlacement(info.Name, replicas, nodes, options.Value.ReplicationFactor);
+                var connected = nodes.Snapshot(DateTimeOffset.UtcNow);
+                var eligibleCount = connected.Count(n => !n.Cordoned);
+                var desired = Math.Min(options.Value.ReplicationFactor, eligibleCount);
+                underReplicated = placement.LiveReplicas < desired;
+            }
             var stats = metrics.GetVectorCollectionSnapshot(info.Name);
 
             return Results.Ok(new
@@ -249,26 +263,37 @@ public static class VectorEndpoints
             return Results.Ok(new { collection, dropped = true });
         });
 
-        // Force a heal-to-target re-push from the raw store. Useful when an operator
-        // wants to confirm replica integrity or proactively re-seed after a fleet event.
-        group.MapPost("/{collection}/rebuild", async (
-            string collection,
-            HttpContext context,
-            HealingService healing,
-            IAuditLog audit,
-            CancellationToken cancellationToken) =>
+        if (supportsReplication)
         {
-            try
+            // Force a heal-to-target re-push from the raw store. Useful when an operator
+            // wants to confirm replica integrity or proactively re-seed after a fleet event.
+            group.MapPost("/{collection}/rebuild", async (
+                string collection,
+                HttpContext context,
+                HealingService healing,
+                IAuditLog audit,
+                CancellationToken cancellationToken) =>
             {
-                await healing.RebuildAsync(collection, cancellationToken);
-                audit.Record(collection, "vector.rebuild", ActorOf(context), DateTimeOffset.UtcNow);
-                return Results.Ok(new { collection, rebuilt = true });
-            }
-            catch (KeyNotFoundException ex)
-            {
-                return Error(StatusCodes.Status404NotFound, ex.Message);
-            }
-        });
+                try
+                {
+                    await healing.RebuildAsync(collection, cancellationToken);
+                    audit.Record(collection, "vector.rebuild", ActorOf(context), DateTimeOffset.UtcNow);
+                    return Results.Ok(new { collection, rebuilt = true });
+                }
+                catch (KeyNotFoundException ex)
+                {
+                    return Error(StatusCodes.Status404NotFound, ex.Message);
+                }
+            });
+        }
+        else
+        {
+            // Under postgres there is no HealingService and nothing to re-push. A route that
+            // vanished would 404 and look like a bug; a 409 with a reason is honest.
+            group.MapPost("/{collection}/rebuild", (string collection) =>
+                Error(StatusCodes.Status409Conflict,
+                    "rebuild is not applicable when VectorStore:Provider=postgres — Postgres owns durability"));
+        }
     }
 
     private static async Task<IReadOnlyList<VectorMatch>> RouteQueryAsync(
@@ -347,6 +372,10 @@ public static class VectorEndpoints
             .ToArray();
         return new CollectionPlacement(collection, targetReplicas, holderNodeIds.Length, holderNodeIds);
     }
+
+    // Under postgres there are no node replicas; placement is uniformly zeroed.
+    private static CollectionPlacement ZeroPlacement(string collection) =>
+        new(collection, 0, 0, Array.Empty<string>());
 
     private static IResult Error(int statusCode, string message) =>
         Results.Json(new { error = message }, statusCode: statusCode);

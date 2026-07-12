@@ -1,0 +1,27 @@
+# Local Postgres + pgvector for InferHub's gated vector-store integration tests.
+#
+#   docker compose -f deploy/postgres/docker-compose.yml up -d
+#   $env:INFERHUB_TEST_POSTGRES = "Host=localhost;Port=5432;Database=inferhub;Username=inferhub;Password=inferhub"
+#   dotnet test tests/InferHub.Tests
+#
+# Without INFERHUB_TEST_POSTGRES set, those integration tests skip (visibly) and the rest of
+# the suite runs unchanged.
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: inferhub
+      POSTGRES_PASSWORD: inferhub
+      POSTGRES_DB: inferhub
+    ports:
+      - "5432:5432"
+    volumes:
+      - inferhub_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inferhub -d inferhub"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  inferhub_pgdata:

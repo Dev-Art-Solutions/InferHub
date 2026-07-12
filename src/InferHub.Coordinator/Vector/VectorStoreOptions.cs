@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using InferHub.Shared.Vector.Storage;
 using Microsoft.Extensions.Options;
 
@@ -8,6 +9,9 @@ public sealed class VectorStoreOptions
     public const string SectionName = "VectorStore";
 
     public bool Enabled { get; set; } = false;
+
+    /// <summary>Storage backend for the vector store: <c>local</c> (default) or <c>postgres</c>. Case-insensitive.</summary>
+    public string Provider { get; set; } = VectorStoreProviderExtensions.Local;
 
     public string DataDirectory { get; set; } = "./data/vectors";
 
@@ -22,6 +26,49 @@ public sealed class VectorStoreOptions
     public RetrievalOptions Retrieval { get; set; } = new();
 
     public HealingOptions Healing { get; set; } = new();
+
+    public PostgresStoreOptions Postgres { get; set; } = new();
+}
+
+/// <summary>
+/// PostgreSQL + pgvector provider settings. Inert unless <see cref="VectorStoreOptions.Provider"/>
+/// is <c>postgres</c>. Never commit <see cref="ConnectionString"/> to appsettings.json — set it
+/// via env (<c>VectorStore__Postgres__ConnectionString</c>) or user-secrets.
+/// </summary>
+public sealed class PostgresStoreOptions
+{
+    /// <summary>Npgsql connection string. Required when the provider is postgres.</summary>
+    public string ConnectionString { get; set; } = "";
+
+    /// <summary>Schema holding the per-collection tables and the registry table.</summary>
+    public string Schema { get; set; } = "inferhub";
+
+    /// <summary>Prefix for per-collection tables.</summary>
+    public string TablePrefix { get; set; } = "vec_";
+
+    /// <summary>Run <c>CREATE EXTENSION IF NOT EXISTS vector</c> at startup.</summary>
+    public bool AutoCreateExtension { get; set; } = true;
+
+    /// <summary>Run <c>CREATE SCHEMA IF NOT EXISTS</c> at startup.</summary>
+    public bool AutoCreateSchema { get; set; } = true;
+
+    /// <summary>ANN index kind: <c>hnsw</c> | <c>ivfflat</c> | <c>none</c> (exact scan).</summary>
+    public string Index { get; set; } = "hnsw";
+
+    /// <summary>HNSW <c>m</c> build parameter.</summary>
+    public int HnswM { get; set; } = 16;
+
+    /// <summary>HNSW <c>ef_construction</c> build parameter.</summary>
+    public int HnswEfConstruction { get; set; } = 64;
+
+    /// <summary>Per-query <c>hnsw.ef_search</c>. Higher = better recall, slower.</summary>
+    public int EfSearch { get; set; } = 40;
+
+    /// <summary>Npgsql command timeout, in seconds.</summary>
+    public int CommandTimeoutSeconds { get; set; } = 30;
+
+    /// <summary>Max pool size, passed to the data source builder if the connection string omits it.</summary>
+    public int MaxPoolSize { get; set; } = 20;
 }
 
 public sealed class HealingOptions
@@ -53,8 +100,11 @@ public sealed class RetrievalOptions
     public string Template { get; set; } = DefaultTemplate;
 }
 
-public sealed class VectorStoreOptionsValidator : IValidateOptions<VectorStoreOptions>
+public sealed partial class VectorStoreOptionsValidator : IValidateOptions<VectorStoreOptions>
 {
+    [GeneratedRegex("^[a-z_][a-z0-9_]*$")]
+    private static partial Regex SqlIdentifierRegex();
+
     public ValidateOptionsResult Validate(string? name, VectorStoreOptions options)
     {
         if (!options.Enabled)
@@ -64,9 +114,23 @@ public sealed class VectorStoreOptionsValidator : IValidateOptions<VectorStoreOp
 
         var failures = new List<string>();
 
-        if (string.IsNullOrWhiteSpace(options.DataDirectory))
+        var isPostgres = VectorStoreProviderExtensions.TryParse(options.Provider, out var provider)
+            && provider == VectorStoreProvider.Postgres;
+
+        if (!VectorStoreProviderExtensions.TryParse(options.Provider, out _))
         {
-            failures.Add($"{VectorStoreOptions.SectionName}:{nameof(VectorStoreOptions.DataDirectory)} must be set when {VectorStoreOptions.SectionName}:{nameof(VectorStoreOptions.Enabled)} is true.");
+            failures.Add($"{VectorStoreOptions.SectionName}:{nameof(VectorStoreOptions.Provider)} must be one of 'local', 'postgres' (got '{options.Provider}').");
+        }
+
+        // DataDirectory only backs the local provider; postgres owns its own durability.
+        if (!isPostgres && string.IsNullOrWhiteSpace(options.DataDirectory))
+        {
+            failures.Add($"{VectorStoreOptions.SectionName}:{nameof(VectorStoreOptions.DataDirectory)} must be set when {VectorStoreOptions.SectionName}:{nameof(VectorStoreOptions.Enabled)} is true and Provider=local.");
+        }
+
+        if (isPostgres)
+        {
+            ValidatePostgres(options.Postgres, failures);
         }
 
         if (!DistanceMetricExtensions.TryParse(options.Distance, out _))
@@ -140,5 +204,50 @@ public sealed class VectorStoreOptionsValidator : IValidateOptions<VectorStoreOp
         return failures.Count == 0
             ? ValidateOptionsResult.Success
             : ValidateOptionsResult.Fail(failures);
+    }
+
+    private static void ValidatePostgres(PostgresStoreOptions pg, List<string> failures)
+    {
+        const string prefix = VectorStoreOptions.SectionName + ":Postgres:";
+
+        if (string.IsNullOrWhiteSpace(pg.ConnectionString))
+        {
+            failures.Add($"{prefix}{nameof(PostgresStoreOptions.ConnectionString)} must be set when Provider=postgres (set it via env or user-secrets, never appsettings.json).");
+        }
+
+        if (string.IsNullOrEmpty(pg.Schema) || !SqlIdentifierRegex().IsMatch(pg.Schema))
+        {
+            failures.Add($"{prefix}{nameof(PostgresStoreOptions.Schema)} must match ^[a-z_][a-z0-9_]*$ (got '{pg.Schema}').");
+        }
+
+        if (string.IsNullOrEmpty(pg.TablePrefix) || !SqlIdentifierRegex().IsMatch(pg.TablePrefix))
+        {
+            failures.Add($"{prefix}{nameof(PostgresStoreOptions.TablePrefix)} must match ^[a-z_][a-z0-9_]*$ (got '{pg.TablePrefix}').");
+        }
+
+        if (pg.Index is not ("hnsw" or "ivfflat" or "none"))
+        {
+            failures.Add($"{prefix}{nameof(PostgresStoreOptions.Index)} must be one of 'hnsw', 'ivfflat', 'none' (got '{pg.Index}').");
+        }
+
+        if (pg.HnswM < 2)
+        {
+            failures.Add($"{prefix}{nameof(PostgresStoreOptions.HnswM)} must be >= 2 (got {pg.HnswM}).");
+        }
+
+        if (pg.HnswEfConstruction < pg.HnswM)
+        {
+            failures.Add($"{prefix}{nameof(PostgresStoreOptions.HnswEfConstruction)} must be >= HnswM ({pg.HnswM}, got {pg.HnswEfConstruction}).");
+        }
+
+        if (pg.EfSearch < 1)
+        {
+            failures.Add($"{prefix}{nameof(PostgresStoreOptions.EfSearch)} must be >= 1 (got {pg.EfSearch}).");
+        }
+
+        if (pg.CommandTimeoutSeconds < 1)
+        {
+            failures.Add($"{prefix}{nameof(PostgresStoreOptions.CommandTimeoutSeconds)} must be >= 1 (got {pg.CommandTimeoutSeconds}).");
+        }
     }
 }

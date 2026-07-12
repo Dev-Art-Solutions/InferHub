@@ -26,24 +26,13 @@ builder.Services.AddSingleton<INodeConnectionTracker, NodeConnectionTracker>();
 builder.Services.AddSingleton<IEmbeddingDispatcher, EmbeddingDispatcher>();
 builder.Services.AddHostedService<NodeReaper>();
 
-builder.Services.Configure<VectorStoreOptions>(builder.Configuration.GetSection(VectorStoreOptions.SectionName));
-builder.Services.AddSingleton<IValidateOptions<VectorStoreOptions>, VectorStoreOptionsValidator>();
-builder.Services.AddOptions<VectorStoreOptions>().ValidateOnStart();
-var vectorStoreEnabled = builder.Configuration.GetSection(VectorStoreOptions.SectionName)
-    .GetValue<bool>(nameof(VectorStoreOptions.Enabled));
-if (vectorStoreEnabled)
-{
-    builder.Services.AddSingleton<VectorEvents>();
-    builder.Services.AddSingleton<LocalVectorStore>();
-    builder.Services.AddSingleton<IVectorStore>(sp => sp.GetRequiredService<LocalVectorStore>());
-    builder.Services.AddSingleton<ReplicaRegistry>();
-    builder.Services.AddSingleton<ReplicationCoordinator>();
-    builder.Services.AddHostedService(sp => sp.GetRequiredService<ReplicationCoordinator>());
-    builder.Services.AddSingleton<IVectorQueryRouter, VectorQueryRouter>();
-    builder.Services.AddSingleton<HealingService>();
-    builder.Services.AddHostedService(sp => sp.GetRequiredService<HealingService>());
-    builder.Services.AddSingleton<RetrievalPipeline>();
-}
+builder.Services.AddInferHubVectorStore(builder.Configuration);
+var vectorSection = builder.Configuration.GetSection(VectorStoreOptions.SectionName);
+var vectorStoreEnabled = vectorSection.GetValue<bool>(nameof(VectorStoreOptions.Enabled));
+var vectorProvider = vectorSection.GetValue<string>(nameof(VectorStoreOptions.Provider)) ?? VectorStoreProviderExtensions.Local;
+// Replication / self-healing / node-served reads only exist under the local provider; postgres
+// owns its own durability, so the rebuild endpoint is not applicable there.
+var vectorSupportsReplication = vectorStoreEnabled && !VectorStoreProviderExtensions.IsPostgres(vectorProvider);
 
 var app = builder.Build();
 
@@ -87,7 +76,7 @@ app.MapAdminEndpoints();
 
 if (vectorStoreEnabled)
 {
-    app.MapVectorEndpoints();
+    app.MapVectorEndpoints(vectorSupportsReplication);
 }
 
 app.MapHub<NodeHub>("/hubs/node");
