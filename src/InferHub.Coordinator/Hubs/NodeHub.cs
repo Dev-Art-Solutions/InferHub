@@ -93,13 +93,17 @@ public sealed class NodeHub(
         return Task.CompletedTask;
     }
 
-    public async Task StreamChunks(
-        IAsyncEnumerable<InferenceChunk> chunks,
-        CancellationToken cancellationToken)
+    // Do NOT add a CancellationToken parameter here. SignalR only treats a CancellationToken
+    // as a synthetic (server-supplied) argument on methods that *return* a stream. This one
+    // returns Task — it is a client-to-server upload — so the token would be counted as a
+    // real argument the caller must send, and every invocation would die in the binder with
+    // "Invocation provides 0 argument(s) but target expects 1", leaving the stream unbound
+    // and the client hanging. Context.ConnectionAborted is the right token regardless.
+    public async Task StreamChunks(IAsyncEnumerable<InferenceChunk> chunks)
     {
         // The node owns token production, so it uploads chunks to the hub as a
         // client-to-server stream; the dispatcher exposes them through a per-job channel.
-        await foreach (var chunk in chunks.WithCancellation(cancellationToken))
+        await foreach (var chunk in chunks.WithCancellation(Context.ConnectionAborted))
         {
             if (!dispatcher.WriteChunk(chunk))
             {

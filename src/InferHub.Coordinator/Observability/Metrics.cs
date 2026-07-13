@@ -13,6 +13,7 @@ public sealed class Metrics
     private long failoversAttempted;
     private long failoversSucceeded;
     private long nodesEvicted;
+    private long openAiRequestsTotal;
     private long vectorReplicasHealed;
     private long vectorRebuildsFromRaw;
     private long vectorUnderReplicated;
@@ -59,6 +60,10 @@ public sealed class Metrics
     public void RecordFailoverSucceeded() => Interlocked.Increment(ref failoversSucceeded);
 
     public void RecordNodeEvicted() => Interlocked.Increment(ref nodesEvicted);
+
+    // How much of the traffic arrives over the OpenAI dialect. One number — the per-node and
+    // per-collection trees already exist and a third would be a metrics system, not a metric.
+    public void RecordOpenAiRequest() => Interlocked.Increment(ref openAiRequestsTotal);
 
     public void RecordVectorReplicaHealed() => Interlocked.Increment(ref vectorReplicasHealed);
 
@@ -118,6 +123,7 @@ public sealed class Metrics
             Interlocked.Read(ref failoversAttempted),
             Interlocked.Read(ref failoversSucceeded),
             Interlocked.Read(ref nodesEvicted),
+            Interlocked.Read(ref openAiRequestsTotal),
             Interlocked.Read(ref vectorReplicasHealed),
             Interlocked.Read(ref vectorRebuildsFromRaw),
             Interlocked.Read(ref vectorUnderReplicated),
@@ -165,6 +171,7 @@ public sealed record MetricsSnapshot(
     long FailoversAttempted,
     long FailoversSucceeded,
     long NodesEvicted,
+    long OpenAiRequestsTotal,
     long VectorReplicasHealed,
     long VectorRebuildsFromRaw,
     long VectorUnderReplicated,

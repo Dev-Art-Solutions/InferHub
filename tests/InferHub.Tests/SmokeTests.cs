@@ -1,4 +1,5 @@
 using System.Text.Json;
+using InferHub.Coordinator.OpenAi;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.Ollama;
 using InferHub.Shared.Vector;
@@ -156,6 +157,33 @@ public class SmokeTests
         Assert.Contains("\"targetReplicas\":2", json);
         Assert.Contains("\"liveReplicas\":1", json);
         Assert.Contains("\"replicaNodes\":[\"node-a\"]", json);
+    }
+
+    [Fact]
+    public void OpenAiModelListSerializesTheOpenAiShape()
+    {
+        var list = new ModelList([new OpenAiModel("llama3", 1700000000, "inferhub")]);
+
+        var json = JsonSerializer.Serialize(list, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.Contains("\"object\":\"list\"", json);
+        Assert.Contains("\"id\":\"llama3\"", json);
+        Assert.Contains("\"object\":\"model\"", json);
+        Assert.Contains("\"owned_by\":\"inferhub\"", json);
+    }
+
+    [Fact]
+    public void OpenAiErrorEnvelopeNestsTheErrorBody()
+    {
+        var envelope = OpenAiErrorEnvelope.Create("n > 1 is not supported", OpenAiErrorTypes.InvalidRequest, param: "n");
+
+        var json = JsonSerializer.Serialize(envelope, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var error = JsonDocument.Parse(json).RootElement.GetProperty("error");
+
+        Assert.Equal("n > 1 is not supported", error.GetProperty("message").GetString());
+        Assert.Equal("invalid_request_error", error.GetProperty("type").GetString());
+        Assert.Equal("n", error.GetProperty("param").GetString());
+        Assert.Equal(JsonValueKind.Null, error.GetProperty("code").ValueKind);
     }
 
     [Fact]

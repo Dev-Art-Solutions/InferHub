@@ -1,0 +1,15 @@
+**/bin/
+**/obj/
+.git/
+.github/
+.claude/
+.vs/
+.idea/
+data/
+plan/
+deploy/
+tests/
+**/*.user
+**/*.suo
+**/appsettings.Development.json
+**/Properties/launchSettings.json

@@ -1,3 +1,4 @@
+using InferHub.Coordinator.Services;
 using InferHub.Node.Configuration;
 
 namespace InferHub.Tests;
@@ -124,5 +125,27 @@ public class NodeOptionsValidationTests
 
         Assert.True(result.Failed);
         Assert.Contains(result.Failures!, message => message.Contains(nameof(OllamaOptions.Endpoint)));
+    }
+
+    [Fact]
+    public void OllamaRequestTimeoutOutlastsTheCoordinatorsDispatcherTimeout()
+    {
+        // HttpClient's own default is 100s. Left unset, the node would abandon a slow cold
+        // load three minutes before the coordinator (Dispatcher:TimeoutSeconds = 300) was
+        // willing to, and the caller would see a 502 that looked like a node failure.
+        var defaultDispatcherTimeout = TimeSpan.FromSeconds(new DispatcherOptions().TimeoutSeconds);
+
+        Assert.True(new OllamaOptions().RequestTimeout >= defaultDispatcherTimeout);
+    }
+
+    [Fact]
+    public void OllamaOptionsValidatorRejectsNonPositiveRequestTimeout()
+    {
+        var options = new OllamaOptions { RequestTimeout = TimeSpan.Zero };
+
+        var result = new OllamaOptionsValidator().Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, message => message.Contains(nameof(OllamaOptions.RequestTimeout)));
     }
 }

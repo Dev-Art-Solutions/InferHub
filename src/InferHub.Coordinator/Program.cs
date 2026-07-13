@@ -3,6 +3,7 @@ using InferHub.Coordinator.Auth;
 using InferHub.Coordinator.Endpoints;
 using InferHub.Coordinator.Hubs;
 using InferHub.Coordinator.Observability;
+using InferHub.Coordinator.OpenAi;
 using InferHub.Coordinator.Services;
 using InferHub.Coordinator.Vector;
 using InferHub.Shared.Contracts;
@@ -72,6 +73,7 @@ app.MapGet("/api/nodes", (INodeRegistry registry) =>
 
 app.MapStatusEndpoint(version);
 app.MapInferenceEndpoints();
+app.MapOpenAiEndpoints();
 app.MapAdminEndpoints();
 
 if (vectorStoreEnabled)

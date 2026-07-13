@@ -1,0 +1,74 @@
+# InferHub — coordinator + one node.
+#
+#   cp deploy/docker/.env.example deploy/docker/.env    # then fill in the three keys
+#   docker compose -f deploy/docker/docker-compose.yml up -d
+#
+# Run it from the repo root: the build context is "." (both images need InferHub.Shared).
+#
+# ⚠ There is no loopback exemption in here. Requests from your host arrive over the bridge
+#   network with a non-loopback source address, so INFERHUB_API_KEY is mandatory — see the
+#   README in this directory.
+
+name: inferhub
+
+services:
+  coordinator:
+    build:
+      context: ../..
+      dockerfile: src/InferHub.Coordinator/Dockerfile
+    image: ghcr.io/dev-art-solutions/inferhub-coordinator:latest
+    restart: unless-stopped
+    ports:
+      - "${INFERHUB_PORT:-5080}:8080"
+    environment:
+      # Config keys use __ as the section separator; list entries are indexed.
+      Auth__ApiKeys__0: "${INFERHUB_API_KEY:?set INFERHUB_API_KEY in deploy/docker/.env}"
+      Auth__AdminApiKeys__0: "${INFERHUB_ADMIN_KEY:?set INFERHUB_ADMIN_KEY in deploy/docker/.env}"
+      Auth__NodeEnrollmentSecret: "${INFERHUB_NODE_SECRET:?set INFERHUB_NODE_SECRET in deploy/docker/.env}"
+
+      # Optional durable vector store; the named volume below is what makes it survive a
+      # `docker compose down`. Leave Enabled=false and it writes nothing.
+      VectorStore__Enabled: "${INFERHUB_VECTORS_ENABLED:-false}"
+      VectorStore__Provider: "local"
+      VectorStore__DataDirectory: "/data/vectors"
+      VectorStore__DefaultEmbeddingModel: "${INFERHUB_EMBED_MODEL:-nomic-embed-text}"
+    volumes:
+      - coordinator_vectors:/data/vectors
+    networks:
+      - inferhub
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  node:
+    build:
+      context: ../..
+      dockerfile: src/InferHub.Node/Dockerfile
+    image: ghcr.io/dev-art-solutions/inferhub-node:latest
+    restart: unless-stopped
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    environment:
+      Coordinator__Url: "http://coordinator:8080/"
+      Coordinator__EnrollmentSecret: "${INFERHUB_NODE_SECRET:?set INFERHUB_NODE_SECRET in deploy/docker/.env}"
+      Node__Name: "${INFERHUB_NODE_NAME:-docker-node}"
+
+      # This node reaches Ollama on the *host*. host.docker.internal works on Docker Desktop;
+      # on plain Linux use http://172.17.0.1:11434/ (see .env.example).
+      Ollama__Endpoint: "${OLLAMA_ENDPOINT:-http://host.docker.internal:11434/}"
+    extra_hosts:
+      # Makes host.docker.internal resolve on Linux too, where it isn't built in.
+      - "host.docker.internal:host-gateway"
+    networks:
+      - inferhub
+
+networks:
+  inferhub:
+    driver: bridge
+
+volumes:
+  coordinator_vectors:

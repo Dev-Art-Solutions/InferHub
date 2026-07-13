@@ -63,13 +63,13 @@ of one.
 
 ## Status
 
-**InferHub 2.0** closes the RAG mesh: models can now use the vector store inline.
-Add `X-InferHub-Retrieve: <collection>` to a normal `/api/chat` or `/api/generate`
-call and the coordinator embeds the query on a node, searches the collection (node
-replica if available, hub-local otherwise), assembles an augmented prompt, and
-dispatches the generation to a node — grounded answers with orchestration on the
-hub and compute on the fleet. Retrieval is opt-in per request; a call without the
-header behaves exactly like v1.x.
+**InferHub 2.3** makes the mesh reachable from the tools you already use. The coordinator
+now serves an **OpenAI-compatible API** at `/v1` alongside the Ollama endpoints it always
+had — point any OpenAI SDK, LangChain app, or IDE plugin at your coordinator's base URL and
+it works, with the same least-busy routing, sticky conversation affinity, pre-stream
+failover, and inline retrieval running underneath. The translation lives entirely at the
+edge; the nodes never learn the second dialect. And there is finally a
+**`docker compose up`**.
 
 | Phase | Theme | Version |
 |------:|-------|---------|
@@ -93,13 +93,32 @@ header behaves exactly like v1.x.
 | 18 | Retrieval-augmented inference (done) | `v2.0.0` |
 | 19 | Windows-service deployment (done) | `v2.1.0` |
 | 20 | PostgreSQL + pgvector connector (done) | `v2.2.0` |
+| 21 | OpenAI-compatible API & Docker distribution (done) | `v2.3.0` |
 
-**What's next.** With the `IVectorStore` seam now proven by a second implementation, the
-next candidates are additional vector backends (Qdrant, SQL Server vector) and a migration
-command between providers. Beyond storage, multi-coordinator clustering, persisted affinity,
-richer audit trails, and additional inference backends (vLLM, llama.cpp) remain on the table.
+**What's next.** The obvious gap in retrieval is the ingestion side: a vector store you have
+to fill by hand is only half a RAG system, so documents-in / chunks-and-embeddings-out plus
+hybrid search are the leading candidates. After that: streaming `tool_calls` deltas (mapped
+in blocking mode today, not yet streamed), quotas and per-key usage accounting, and a
+cloud-burst fallback backend for when the fleet is saturated. Multi-coordinator clustering,
+persisted affinity, and further inference backends (vLLM, llama.cpp) remain on the table.
 
 ## Quick start
+
+### Docker (recommended)
+
+```bash
+cp deploy/docker/.env.example deploy/docker/.env    # set three keys
+docker compose -f deploy/docker/docker-compose.yml up -d
+```
+
+> **In Docker there is no loopback exemption.** Requests from your host arrive over the
+> bridge network, not loopback, so the API keys are mandatory — unlike the from-source path
+> below. See [deploy/docker/README.md](deploy/docker/README.md).
+
+Images are published to GHCR for `linux/amd64` and `linux/arm64`:
+`ghcr.io/dev-art-solutions/inferhub-coordinator` and `.../inferhub-node`.
+
+### From source
 
 ```bash
 # On the always-on host (no GPU needed)
@@ -113,6 +132,55 @@ curl http://your-coordinator:5080/api/chat \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{"model":"llama3","messages":[{"role":"user","content":"Hello!"}],"stream":false}'
 ```
+
+## OpenAI-compatible API
+
+Everything else in this ecosystem speaks the OpenAI wire format and exposes exactly one knob
+for pointing somewhere new: a base URL. Set it to your coordinator's `/v1`.
+
+| Endpoint | Notes |
+|---|---|
+| `POST /v1/chat/completions` | Blocking and SSE streaming. Maps to the `chat` job kind. |
+| `POST /v1/completions` | Legacy text completion. Maps to `generate`. |
+| `POST /v1/embeddings` | `float` and `base64` encodings (the Python SDK asks for base64 by default). |
+| `GET /v1/models`, `GET /v1/models/{id}` | The models your nodes advertise. |
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://your-coordinator:5080/v1", api_key="YOUR_API_KEY")
+
+stream = client.chat.completions.create(
+    model="llama3",
+    messages=[{"role": "user", "content": "Explain NAT traversal in two sentences."}],
+    stream=True,
+)
+for chunk in stream:
+    print(chunk.choices[0].delta.content or "", end="")
+```
+
+Retrieval comes along for free — OpenAI clients let you set default headers, so a grounded
+answer over your own collection is a two-line change to an existing app:
+
+```python
+client = OpenAI(
+    base_url="http://your-coordinator:5080/v1",
+    api_key="YOUR_API_KEY",
+    default_headers={"X-InferHub-Retrieve": "my-collection"},
+)
+```
+
+**Where the translation is lossy — stated plainly rather than papered over:**
+
+- `n > 1` is **rejected** with a `400`, not quietly served once.
+- Tool calls are mapped in **blocking mode only**. Streaming `tool_calls` deltas are not
+  implemented yet, and we don't pretend otherwise.
+- `logprobs`, `logit_bias` and `user` are **accepted and ignored** (logged at debug).
+- Image / multimodal content parts are **rejected**, not silently dropped — a model should
+  never answer confidently about an image it was never sent.
+
+Errors on `/v1/*` use the OpenAI envelope (`{"error": {"message", "type", "param", "code"}}`),
+because an SDK reads `error.message` and would otherwise surface a useless "unknown error".
 
 ## Authentication & configuration
 
@@ -212,6 +280,7 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `Node:Models:Exclude` | `[]` | Names dropped before reporting. |
 | `Backend:Type` | `ollama` | Inference backend selector. |
 | `Ollama:Endpoint` | `http://localhost:11434/` | Local Ollama URL (absolute http/https). |
+| `Ollama:RequestTimeout` | `00:05:00` | Timeout for a single Ollama call. Matches the coordinator's `Dispatcher:TimeoutSeconds`; raise it for very large models whose cold load is slow. |
 
 ### Running a node as a Windows service
 
@@ -243,6 +312,33 @@ account. Full runbook — including update/uninstall and virtual-account setup �
 
 > The Linux equivalent is the same host pattern with `builder.Services.AddSystemd()` and a
 > `.service` unit file — same composition root, different lifetime integration.
+
+## Docker
+
+```bash
+cp deploy/docker/.env.example deploy/docker/.env    # set three keys
+docker compose -f deploy/docker/docker-compose.yml up -d
+```
+
+Published images, built for `linux/amd64` and `linux/arm64` on every `v*` tag, running as a
+non-root `app` user:
+
+```
+ghcr.io/dev-art-solutions/inferhub-coordinator:2.3.0   (also :2.3, :latest)
+ghcr.io/dev-art-solutions/inferhub-node:2.3.0
+```
+
+> **⚠ In Docker there is no loopback exemption.** InferHub skips authentication for loopback
+> callers, which is why the from-source quickstart lets you `curl localhost` with no key.
+> Inside Docker your requests are *not* loopback — they arrive over the bridge network from
+> outside the container — so the compose stack **requires real API keys**. That is the safer
+> default and we left it alone, but it surprises people coming from bare metal.
+
+The GPU nodes usually want to stay off Docker: they live next to a local Ollama and the node
+process is happier native there (that's what the Windows-service host is for). A
+containerized coordinator with native nodes dialing out to it is the shape most deployments
+end up in. A Postgres overlay (`deploy/docker/compose.postgres.yml`) swaps the vector store
+to pgvector. Full runbook: [deploy/docker/README.md](deploy/docker/README.md).
 
 ## Vector store
 
