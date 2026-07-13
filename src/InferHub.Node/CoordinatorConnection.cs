@@ -13,7 +13,6 @@ namespace InferHub.Node;
 public sealed class CoordinatorConnection(
     IOptions<CoordinatorOptions> coordinatorOptions,
     IOptions<NodeOptions> nodeOptions,
-    IOptions<OllamaOptions> ollamaOptions,
     INodeIdentity nodeIdentity,
     IInferenceBackend backend,
     InferenceExecutor inferenceExecutor,
@@ -22,7 +21,6 @@ public sealed class CoordinatorConnection(
 {
     private readonly CoordinatorOptions coordinator = coordinatorOptions.Value;
     private readonly NodeOptions node = nodeOptions.Value;
-    private readonly OllamaOptions ollama = ollamaOptions.Value;
 
     private readonly SemaphoreSlim reconnectLock = new(1, 1);
     private readonly CancellationTokenSource lifetime = new();
@@ -199,7 +197,7 @@ public sealed class CoordinatorConnection(
         var registration = new NodeRegistration(
             nodeId,
             node.Name,
-            ollama.Endpoint,
+            backend.Endpoint,
             GetVersion(),
             node.Labels.Count == 0 ? null : new Dictionary<string, string>(node.Labels),
             node.MaxConcurrency,

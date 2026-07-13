@@ -13,6 +13,7 @@ public static class StatusEndpoint
         app.MapGet("/api/status", (
             INodeRegistry registry,
             Metrics metrics,
+            Microsoft.Extensions.Options.IOptions<FallbackOptions> fallback,
             IServiceProvider services) =>
         {
             var now = DateTimeOffset.UtcNow;
@@ -38,11 +39,26 @@ public static class StatusEndpoint
                     node.Cordoned)).ToArray(),
                 models,
                 snapshot,
-                vectorBlock));
+                vectorBlock,
+                BuildFallbackBlock(fallback.Value, snapshot)));
         });
 
         return app;
     }
+
+    /// <summary>
+    /// Cloud burst is visible whether or not it is on: a deployment that has never bursted still
+    /// reports <c>enabled: false</c>, so "is this thing sending my prompts anywhere?" is a
+    /// question the status page answers rather than one you have to go and read the config for.
+    /// </summary>
+    internal static FallbackStatusBlock BuildFallbackBlock(FallbackOptions options, MetricsSnapshot metrics)
+        => new(
+            options.Enabled && !string.IsNullOrWhiteSpace(options.BaseUrl),
+            options.NormalizedTrigger(),
+            options.ModelMap.Keys.OrderBy(model => model, StringComparer.OrdinalIgnoreCase).ToArray(),
+            metrics.FallbackDispatched,
+            metrics.LastFallbackModel,
+            metrics.LastFallbackAtUtc);
 
     // Returns null when the vector store is disabled — matches the phase-13 contract that
     // Enabled=false is byte-for-byte unchanged for existing status consumers who never
@@ -114,7 +130,16 @@ public static class StatusEndpoint
         IReadOnlyList<StatusNode> Nodes,
         IReadOnlyCollection<ModelInfo> Models,
         MetricsSnapshot Metrics,
-        VectorStatusBlock? Vector);
+        VectorStatusBlock? Vector,
+        FallbackStatusBlock Fallback);
+
+    internal sealed record FallbackStatusBlock(
+        bool Enabled,
+        string Trigger,
+        IReadOnlyList<string> MappedModels,
+        long Dispatched,
+        string? LastModel,
+        DateTimeOffset? LastAtUtc);
 
     private sealed record StatusNode(
         string NodeId,

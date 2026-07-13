@@ -14,9 +14,13 @@ public sealed class Metrics
     private long failoversSucceeded;
     private long nodesEvicted;
     private long openAiRequestsTotal;
+    private long fallbackDispatched;
     private long vectorReplicasHealed;
     private long vectorRebuildsFromRaw;
     private long vectorUnderReplicated;
+
+    private volatile string? lastFallbackModel;
+    private long lastFallbackAtTicks;
 
     private readonly ConcurrentDictionary<string, NodeCounter> perNode = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, VectorCollectionCounter> perCollection = new(StringComparer.OrdinalIgnoreCase);
@@ -64,6 +68,18 @@ public sealed class Metrics
     // How much of the traffic arrives over the OpenAI dialect. One number — the per-node and
     // per-collection trees already exist and a third would be a metrics system, not a metric.
     public void RecordOpenAiRequest() => Interlocked.Increment(ref openAiRequestsTotal);
+
+    /// <summary>
+    /// A request left the fleet. The model name is recorded; the prompt and the answer are not,
+    /// and never will be (rule 7). This counter is the thing that makes cloud burst visible
+    /// rather than quiet, so it is surfaced on /api/status and the status page.
+    /// </summary>
+    public void RecordFallbackDispatched(string model)
+    {
+        Interlocked.Increment(ref fallbackDispatched);
+        lastFallbackModel = model;
+        Interlocked.Exchange(ref lastFallbackAtTicks, DateTimeOffset.UtcNow.UtcTicks);
+    }
 
     public void RecordVectorReplicaHealed() => Interlocked.Increment(ref vectorReplicasHealed);
 
@@ -114,6 +130,8 @@ public sealed class Metrics
             .OrderBy(snapshot => snapshot.Collection, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
+        var lastFallbackTicks = Interlocked.Read(ref lastFallbackAtTicks);
+
         return new MetricsSnapshot(
             (now - StartedAtUtc).TotalSeconds,
             Interlocked.Read(ref requestsTotal),
@@ -124,6 +142,9 @@ public sealed class Metrics
             Interlocked.Read(ref failoversSucceeded),
             Interlocked.Read(ref nodesEvicted),
             Interlocked.Read(ref openAiRequestsTotal),
+            Interlocked.Read(ref fallbackDispatched),
+            lastFallbackModel,
+            lastFallbackTicks == 0 ? null : new DateTimeOffset(lastFallbackTicks, TimeSpan.Zero),
             Interlocked.Read(ref vectorReplicasHealed),
             Interlocked.Read(ref vectorRebuildsFromRaw),
             Interlocked.Read(ref vectorUnderReplicated),
@@ -172,6 +193,9 @@ public sealed record MetricsSnapshot(
     long FailoversSucceeded,
     long NodesEvicted,
     long OpenAiRequestsTotal,
+    long FallbackDispatched,
+    string? LastFallbackModel,
+    DateTimeOffset? LastFallbackAtUtc,
     long VectorReplicasHealed,
     long VectorRebuildsFromRaw,
     long VectorUnderReplicated,

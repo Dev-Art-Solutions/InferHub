@@ -63,13 +63,17 @@ of one.
 
 ## Status
 
-**InferHub 2.3** makes the mesh reachable from the tools you already use. The coordinator
-now serves an **OpenAI-compatible API** at `/v1` alongside the Ollama endpoints it always
-had — point any OpenAI SDK, LangChain app, or IDE plugin at your coordinator's base URL and
-it works, with the same least-busy routing, sticky conversation affinity, pre-stream
-failover, and inline retrieval running underneath. The translation lives entirely at the
-edge; the nodes never learn the second dialect. And there is finally a
-**`docker compose up`**.
+**InferHub 2.4** teaches the mesh to speak the OpenAI format *upstream*, not just to its
+clients. A node is no longer synonymous with Ollama: set `Backend:Type=openai` and it drives
+**vLLM** — continuous batching, the difference between one GPU serving four users and one
+serving forty — or llama.cpp's server, LM Studio, TGI, or a hosted provider. One backend
+implementation covers all of them, because they all landed on the same dialect.
+
+The other half is the failure nobody plans for: the GPU box is switched off. A coordinator
+with no capable node has returned a flat `404` since 1.0; it can now **cloud burst** to a
+configured upstream instead. Off by default, mapped models only, tagged in the response,
+counted on the status page, and never stored — see [Cloud burst](#cloud-burst-v24) for why
+each of those is non-negotiable.
 
 | Phase | Theme | Version |
 |------:|-------|---------|
@@ -94,13 +98,14 @@ edge; the nodes never learn the second dialect. And there is finally a
 | 19 | Windows-service deployment (done) | `v2.1.0` |
 | 20 | PostgreSQL + pgvector connector (done) | `v2.2.0` |
 | 21 | OpenAI-compatible API & Docker distribution (done) | `v2.3.0` |
+| 22 | OpenAI-compatible node backend & cloud burst (done) | `v2.4.0` |
 
 **What's next.** The obvious gap in retrieval is the ingestion side: a vector store you have
-to fill by hand is only half a RAG system, so documents-in / chunks-and-embeddings-out plus
-hybrid search are the leading candidates. After that: streaming `tool_calls` deltas (mapped
-in blocking mode today, not yet streamed), quotas and per-key usage accounting, and a
-cloud-burst fallback backend for when the fleet is saturated. Multi-coordinator clustering,
-persisted affinity, and further inference backends (vLLM, llama.cpp) remain on the table.
+to fill by hand is only half a RAG system, so documents-in / chunks-and-embeddings-out is
+next, followed by hybrid search and reranking with an evaluation harness to prove they
+actually helped. After that: quotas and per-key usage accounting, and fleet-wide remote model
+management. Streaming `tool_calls` deltas (mapped in blocking mode today, not yet streamed),
+multi-coordinator clustering and persisted affinity remain on the table.
 
 ## Quick start
 
@@ -182,6 +187,85 @@ client = OpenAI(
 Errors on `/v1/*` use the OpenAI envelope (`{"error": {"message", "type", "param", "code"}}`),
 because an SDK reads `error.message` and would otherwise surface a useless "unknown error".
 
+## Inference backends
+
+A node runs one inference backend behind the `IInferenceBackend` seam. The coordinator does
+not know or care which — it hands the node an Ollama-shaped job and gets an Ollama-shaped
+response back, whatever ran it.
+
+| `Backend:Type` | Drives | Notes |
+|---|---|---|
+| `ollama` (default) | Ollama | One machine, one model at a time, minimal ceremony. |
+| `openai` | **vLLM**, **llama.cpp server**, **LM Studio**, **TGI**, hosted providers | Anything speaking the OpenAI wire format. |
+
+`openai` is one implementation covering all of them, because they all converged on the same
+dialect. For anyone serving more than a couple of users off one GPU, vLLM's continuous
+batching is the reason this exists.
+
+```jsonc
+// src/InferHub.Node/appsettings.json
+{
+  "Backend": { "Type": "openai" },
+  "OpenAi": {
+    "BaseUrl": "http://localhost:8000/v1",     // required; the node refuses to start without it
+    "TimeoutSeconds": 300,
+    "Models": {
+      "Include": [ "meta-llama/Llama-3.1-8B-Instruct" ]
+    }
+  }
+}
+```
+
+Set `OpenAi:ApiKey` through the environment (`OpenAi__ApiKey`) or user-secrets — never in
+`appsettings.json`.
+
+> **Against a hosted provider, `Models:Include` is effectively mandatory.** A hosted catalogue
+> is hundreds of models the node cannot actually serve; report them all and the coordinator
+> will happily route anything to it. vLLM and llama.cpp report only what they are serving, so
+> there the allowlist is optional.
+
+`Digest` and `SizeBytes` come back `null` — an OpenAI-compatible server reports a model name
+and nothing else, and inventing values would be worse than admitting it. `/api/tags` and the
+console render nulls as `—`.
+
+### Cloud burst (v2.4+)
+
+When the router finds no node for a model, the coordinator can forward the request to a
+configured OpenAI-compatible upstream instead of returning `404`. A GPU box that is switched
+off becomes degradation rather than an outage.
+
+```jsonc
+// src/InferHub.Coordinator/appsettings.json
+{
+  "Fallback": {
+    "Enabled": true,
+    "BaseUrl": "https://api.openai.com/v1",
+    "Trigger": "no-node",                      // or "no-node-or-saturated"
+    "ModelMap": { "llama3": "gpt-4o-mini" },   // ← the map is the consent
+    "AllowedModels": []                        // empty = every mapped model
+  }
+}
+```
+
+> **⚠️ This feature can send a user's prompt to a third party.** Doing that by surprise, because
+> someone's desktop was asleep, is a betrayal rather than a feature — so it is fenced in on
+> purpose:
+>
+> - **Off by default.** `Fallback:Enabled` is `false`; an upgrade changes nothing.
+> - **Mapped models only.** A model absent from `ModelMap` is never sent upstream, ever. There
+>   is no wildcard.
+> - **Always tagged.** Every fallback response carries `X-InferHub-Served-By: fallback`;
+>   node-served responses carry `node`. Check the header, not your assumptions.
+> - **Always counted.** `/api/status` and the status page report cloud burst *and its counter*
+>   whether it is on or off, so "is this thing sending my prompts anywhere?" is answerable
+>   without reading a config file.
+> - **Never stored.** The coordinator forwards in flight and streams straight through. It
+>   retains neither the prompt nor the answer — the same rule that has governed conversations
+>   since 0.7.
+
+Set `Fallback:ApiKey` via `Fallback__ApiKey` or user-secrets. With fallback disabled, a request
+for a model no node holds returns exactly the `404` it always has.
+
 ## Authentication & configuration
 
 InferHub keeps secrets out of source. Configure them at runtime via environment variables
@@ -257,6 +341,13 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Auth:AdminApiKeys` | `[]` | Accepted admin Bearer tokens guarding `/api/admin/*`. Separate from `ApiKeys`. |
 | `Auth:RequireAuthForLoopback` | `false` | Force loopback callers to present a token too (applies to client and admin scopes). |
 | `Auth:NodeEnrollmentSecret` | _(empty)_ | Shared secret nodes present when joining the hub. Empty disables enrollment. |
+| `Fallback:Enabled` | `false` | Cloud burst. See the warning in [Cloud burst](#cloud-burst-v24) before turning this on. |
+| `Fallback:BaseUrl` | _(empty)_ | OpenAI-compatible upstream to burst to. |
+| `Fallback:ApiKey` | _(empty)_ | Bearer token for the upstream. Env / user-secrets only. |
+| `Fallback:Trigger` | `no-node` | `no-node`, or `no-node-or-saturated` to also burst when every capable node is at its declared `MaxConcurrency`. |
+| `Fallback:ModelMap` | `{}` | Local model name → upstream model name. **Only mapped models are ever sent upstream.** |
+| `Fallback:AllowedModels` | `[]` | Narrower allowlist within the map. Empty = every mapped model. |
+| `Fallback:TimeoutSeconds` | `300` | Per-request timeout against the upstream. |
 
 ### Node configuration
 
@@ -278,9 +369,14 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `Node:Labels` | `{}` | Free-form key/value pairs surfaced on `GET /api/nodes`. |
 | `Node:Models:Include` | `[]` | Whitelist of model names to advertise (empty = all). |
 | `Node:Models:Exclude` | `[]` | Names dropped before reporting. |
-| `Backend:Type` | `ollama` | Inference backend selector. |
-| `Ollama:Endpoint` | `http://localhost:11434/` | Local Ollama URL (absolute http/https). |
+| `Backend:Type` | `ollama` | Inference backend selector: `ollama` or `openai`. See [Inference backends](#inference-backends). |
+| `Ollama:Endpoint` | `http://localhost:11434/` | Local Ollama URL (absolute http/https). Used when `Backend:Type=ollama`. |
 | `Ollama:RequestTimeout` | `00:05:00` | Timeout for a single Ollama call. Matches the coordinator's `Dispatcher:TimeoutSeconds`; raise it for very large models whose cold load is slow. |
+| `OpenAi:BaseUrl` | _(empty)_ | Upstream OpenAI-compatible server, e.g. `http://localhost:8000/v1`. **Required when `Backend:Type=openai`** — the node refuses to start without it rather than booting and 500ing on every job. |
+| `OpenAi:ApiKey` | _(empty)_ | Bearer token for the upstream. Env (`OpenAi__ApiKey`) or user-secrets only. |
+| `OpenAi:TimeoutSeconds` | `300` | Timeout for a single upstream call. Same reasoning as `Ollama:RequestTimeout`. |
+| `OpenAi:Models:Include` | `[]` | Allowlist of upstream models to advertise. Effectively mandatory against a hosted provider. |
+| `OpenAi:Models:Exclude` | `[]` | Names dropped before reporting. |
 
 ### Running a node as a Windows service
 

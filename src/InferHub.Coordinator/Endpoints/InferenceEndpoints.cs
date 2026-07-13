@@ -127,6 +127,7 @@ public static class InferenceEndpoints
         HttpContext httpContext,
         Services.IRouter router,
         IDispatcher dispatcher,
+        IFallbackDispatcher fallback,
         Metrics metrics,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
@@ -155,6 +156,7 @@ public static class InferenceEndpoints
         }
 
         return await HandleAsync(
+            httpContext,
             GenerateKind,
             rawJson,
             request.Model,
@@ -162,6 +164,7 @@ public static class InferenceEndpoints
             conversationKey: null,
             router,
             dispatcher,
+            fallback,
             metrics,
             logger,
             cancellationToken);
@@ -171,6 +174,7 @@ public static class InferenceEndpoints
         HttpContext httpContext,
         Services.IRouter router,
         IDispatcher dispatcher,
+        IFallbackDispatcher fallback,
         Metrics metrics,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
@@ -200,6 +204,7 @@ public static class InferenceEndpoints
         }
 
         return await HandleAsync(
+            httpContext,
             ChatKind,
             rawJson,
             request.Model,
@@ -207,6 +212,7 @@ public static class InferenceEndpoints
             conversationKey,
             router,
             dispatcher,
+            fallback,
             metrics,
             logger,
             cancellationToken);
@@ -295,9 +301,10 @@ public static class InferenceEndpoints
         return true;
     }
 
-    // Routing and failover live in InferenceCore; this method only renders the outcome in
-    // the Ollama dialect. Keep it that way — the OpenAI surface shares the same core.
+    // Routing, failover and cloud burst live in InferenceCore; this method only renders the
+    // outcome in the Ollama dialect. Keep it that way — the OpenAI surface shares the same core.
     private static async Task<IResult> HandleAsync(
+        HttpContext httpContext,
         string kind,
         string rawJson,
         string? model,
@@ -305,6 +312,7 @@ public static class InferenceEndpoints
         string? conversationKey,
         Services.IRouter router,
         IDispatcher dispatcher,
+        IFallbackDispatcher fallback,
         Metrics metrics,
         ILogger logger,
         CancellationToken cancellationToken)
@@ -317,6 +325,7 @@ public static class InferenceEndpoints
             conversationKey,
             router,
             dispatcher,
+            fallback,
             metrics,
             logger,
             cancellationToken);
@@ -325,6 +334,9 @@ public static class InferenceEndpoints
         {
             return Error(outcome.ErrorStatus!.Value, outcome.ErrorMessage!);
         }
+
+        // Who answered. A request that left the fleet says so, on every response, always.
+        httpContext.Response.Headers[InferenceCore.ServedByHeader] = outcome.ServedBy;
 
         if (outcome.Stream is { } chunks)
         {

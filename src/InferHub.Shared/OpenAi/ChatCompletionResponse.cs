@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace InferHub.Coordinator.OpenAi;
+namespace InferHub.Shared.OpenAi;
 
 public sealed record ChatCompletionResponse(
     [property: JsonPropertyName("id")] string Id,

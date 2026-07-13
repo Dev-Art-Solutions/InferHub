@@ -105,7 +105,7 @@
       return `<span class="pill pill-err">missing</span>`;
     };
 
-    const renderStats = (snapshot) => {
+    const renderStats = (snapshot, fallback) => {
       const cards = [
         ["Requests total", snapshot.requestsTotal ?? 0],
         ["In-flight", snapshot.requestsInFlight ?? 0],
@@ -114,6 +114,16 @@
         ["Failovers", `${snapshot.failoversSucceeded ?? 0} / ${snapshot.failoversAttempted ?? 0}`],
         ["Nodes evicted", snapshot.nodesEvicted ?? 0],
       ];
+
+      // Cloud burst is shown whether or not it is on: "off" is the answer to a question the
+      // operator should never have to open a config file to ask.
+      if (fallback) {
+        const dispatched = fallback.dispatched ?? 0;
+        cards.push(fallback.enabled
+          ? ["Cloud burst", `${dispatched} dispatched`]
+          : ["Cloud burst", "off"]);
+      }
+
       document.getElementById("stats").innerHTML = cards.map(([label, value]) =>
         `<div class="card"><div class="stat-label">${label}</div><div class="stat">${value}</div></div>`
       ).join("");
@@ -162,7 +172,7 @@
         document.getElementById("version").textContent = `v${data.coordinatorVersion}`;
         document.getElementById("uptime").textContent = fmtSeconds(data.uptimeSeconds);
         document.getElementById("refreshed").textContent = new Date().toLocaleTimeString();
-        renderStats(data.metrics);
+        renderStats(data.metrics, data.fallback);
         renderNodes(data.nodes);
         renderModels(data.models);
       } catch (err) {

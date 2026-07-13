@@ -13,6 +13,10 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <!-- Phase 22 moved the OpenAI DTOs and shape mappers from InferHub.Coordinator.OpenAi to
+         InferHub.Shared.OpenAi so the node can drive them upstream. Importing the new namespace
+         globally kept that refactor honest: not one test file changed. -->
+    <Using Include="InferHub.Shared.OpenAi" />
   </ItemGroup>
 
   <ItemGroup>

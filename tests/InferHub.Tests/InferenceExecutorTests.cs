@@ -121,6 +121,8 @@ public class InferenceExecutorTests : IDisposable
     {
         public string Name => "recording";
 
+        public string Endpoint => "http://localhost/recording";
+
         public string? LastEmbedRequest { get; private set; }
 
         public Task<IReadOnlyList<ModelInfo>> ListModelsAsync(CancellationToken cancellationToken)
@@ -143,6 +145,8 @@ public class InferenceExecutorTests : IDisposable
     private sealed class FakeBackend(params string[] chunks) : IInferenceBackend
     {
         public string Name => "fake";
+
+        public string Endpoint => "http://localhost/fake";
 
         public Task<IReadOnlyList<ModelInfo>> ListModelsAsync(CancellationToken cancellationToken)
         {

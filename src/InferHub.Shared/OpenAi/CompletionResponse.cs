@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace InferHub.Coordinator.OpenAi;
+namespace InferHub.Shared.OpenAi;
 
 /// <summary>
 /// Legacy completions use one shape for both streamed and blocking responses — unlike chat,

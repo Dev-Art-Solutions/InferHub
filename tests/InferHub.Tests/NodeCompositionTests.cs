@@ -49,4 +49,51 @@ public class NodeCompositionTests
         Assert.Equal("test-node", host.Services.GetRequiredService<IOptions<NodeOptions>>().Value.Name);
         Assert.Equal("http://localhost:11434/", host.Services.GetRequiredService<IOptions<OllamaOptions>>().Value.Endpoint);
     }
+
+    [Fact]
+    public void BackendTypeSelectsTheImplementation()
+    {
+        Assert.IsType<OllamaBackend>(ResolveBackend(backendType: null));
+        Assert.IsType<OllamaBackend>(ResolveBackend("ollama"));
+        Assert.IsType<OpenAiBackend>(ResolveBackend("openai"));
+
+        // The switch is case- and whitespace-tolerant; a config file with "OpenAI" is not a
+        // reason to fail to boot.
+        Assert.IsType<OpenAiBackend>(ResolveBackend(" OpenAI "));
+    }
+
+    [Fact]
+    public void AnUnknownBackendTypeFailsLoudly()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => ResolveBackend("tgi-native"));
+
+        Assert.Contains("tgi-native", ex.Message);
+    }
+
+    [Fact]
+    public void TheOpenAiBackendReportsItsUpstreamRatherThanTheOllamaEndpoint()
+    {
+        var backend = ResolveBackend("openai", baseUrl: "http://localhost:8000/v1");
+
+        Assert.Equal("http://localhost:8000/v1", backend.Endpoint);
+    }
+
+    private static IInferenceBackend ResolveBackend(string? backendType, string? baseUrl = "http://localhost:8000/v1")
+    {
+        var builder = Host.CreateApplicationBuilder();
+
+        var settings = new Dictionary<string, string?>
+        {
+            ["Coordinator:Url"] = "http://localhost:5080/",
+            ["Ollama:Endpoint"] = "http://localhost:11434/",
+            ["Backend:Type"] = backendType,
+            ["OpenAi:BaseUrl"] = baseUrl,
+        };
+
+        builder.Configuration.AddInMemoryCollection(settings);
+        builder.AddInferHubNode();
+
+        using var host = builder.Build();
+        return host.Services.GetRequiredService<IInferenceBackend>();
+    }
 }

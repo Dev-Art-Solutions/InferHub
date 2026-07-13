@@ -2,13 +2,13 @@ using System.Buffers.Binary;
 using System.Text.Json;
 using InferHub.Shared.Ollama;
 
-namespace InferHub.Coordinator.OpenAi;
+namespace InferHub.Shared.OpenAi;
 
 /// <summary>
 /// Ollama response → OpenAI response. The completion id is minted once per request and
 /// reused across every chunk of a stream, which is what clients key their reassembly on.
 /// </summary>
-internal static class ResponseTranslator
+public static class ResponseTranslator
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 

@@ -4,6 +4,7 @@ using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
 using InferHub.Coordinator.Vector;
 using InferHub.Shared.Ollama;
+using InferHub.Shared.OpenAi;
 
 namespace InferHub.Coordinator.OpenAi;
 
@@ -33,6 +34,7 @@ public static class OpenAiEndpoints
         HttpContext httpContext,
         Services.IRouter router,
         IDispatcher dispatcher,
+        IFallbackDispatcher fallback,
         Metrics metrics,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
@@ -93,6 +95,7 @@ public static class OpenAiEndpoints
             conversationKey,
             router,
             dispatcher,
+            fallback,
             metrics,
             logger,
             cancellationToken);
@@ -101,6 +104,8 @@ public static class OpenAiEndpoints
         {
             return DispatchError(outcome);
         }
+
+        httpContext.Response.Headers[InferenceCore.ServedByHeader] = outcome.ServedBy;
 
         var id = ResponseTranslator.NewCompletionId();
         var created = ResponseTranslator.UnixNow();
@@ -132,6 +137,7 @@ public static class OpenAiEndpoints
         HttpContext httpContext,
         Services.IRouter router,
         IDispatcher dispatcher,
+        IFallbackDispatcher fallback,
         Metrics metrics,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
@@ -164,6 +170,7 @@ public static class OpenAiEndpoints
             conversationKey: null,
             router,
             dispatcher,
+            fallback,
             metrics,
             logger,
             cancellationToken);
@@ -172,6 +179,8 @@ public static class OpenAiEndpoints
         {
             return DispatchError(outcome);
         }
+
+        httpContext.Response.Headers[InferenceCore.ServedByHeader] = outcome.ServedBy;
 
         var id = ResponseTranslator.NewLegacyCompletionId();
         var created = ResponseTranslator.UnixNow();

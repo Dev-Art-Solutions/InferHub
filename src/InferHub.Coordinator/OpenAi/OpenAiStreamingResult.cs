@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using InferHub.Coordinator.Services;
 using InferHub.Shared.Contracts;
+using InferHub.Shared.OpenAi;
 using Microsoft.AspNetCore.Http.Features;
 
 namespace InferHub.Coordinator.OpenAi;

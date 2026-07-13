@@ -1,7 +1,9 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Runtime.CompilerServices;
+using InferHub.Node.Configuration;
 using InferHub.Shared.Contracts;
+using Microsoft.Extensions.Options;
 using OllamaClient;
 using OllamaChatRequest = OllamaClient.Models.ChatRequest;
 using OllamaChatStreamRequest = OllamaClient.Models.ChatStreamRequest;
@@ -13,6 +15,7 @@ namespace InferHub.Node.Backends;
 
 public sealed class OllamaBackend(
     IOllamaHttpClient client,
+    IOptions<OllamaOptions> options,
     ILogger<OllamaBackend> logger) : IInferenceBackend
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -21,6 +24,8 @@ public sealed class OllamaBackend(
     };
 
     public string Name => "ollama";
+
+    public string Endpoint => options.Value.Endpoint;
 
     public async Task<IReadOnlyList<ModelInfo>> ListModelsAsync(CancellationToken cancellationToken)
     {

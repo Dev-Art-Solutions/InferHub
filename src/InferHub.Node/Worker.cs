@@ -7,23 +7,21 @@ namespace InferHub.Node;
 public class Worker(
     IOptions<CoordinatorOptions> coordinatorOptions,
     IOptions<NodeOptions> nodeOptions,
-    IOptions<OllamaOptions> ollamaOptions,
     IInferenceBackend backend,
     CoordinatorConnection coordinatorConnection,
     ILogger<Worker> logger) : BackgroundService
 {
     private readonly CoordinatorOptions coordinator = coordinatorOptions.Value;
     private readonly NodeOptions node = nodeOptions.Value;
-    private readonly OllamaOptions ollama = ollamaOptions.Value;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         logger.LogInformation(
-            "Node {NodeName} starting, coordinator={CoordinatorUrl}, backend={BackendName}, ollama={OllamaEndpoint}, maxConcurrency={MaxConcurrency}, labels={LabelCount}",
+            "Node {NodeName} starting, coordinator={CoordinatorUrl}, backend={BackendName}, endpoint={BackendEndpoint}, maxConcurrency={MaxConcurrency}, labels={LabelCount}",
             node.Name,
             coordinator.Url,
             backend.Name,
-            ollama.Endpoint,
+            backend.Endpoint,
             node.MaxConcurrency,
             node.Labels.Count);
 

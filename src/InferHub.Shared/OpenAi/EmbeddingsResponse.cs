@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace InferHub.Coordinator.OpenAi;
+namespace InferHub.Shared.OpenAi;
 
 public sealed record OpenAiEmbeddingsResponse(
     [property: JsonPropertyName("model")] string Model,

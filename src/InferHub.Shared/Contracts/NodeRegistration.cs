@@ -3,6 +3,10 @@ namespace InferHub.Shared.Contracts;
 public sealed record NodeRegistration(
     string NodeId,
     string Name,
+    /// Since phase 22 this is the *backend's* endpoint, whatever the backend is — an
+    /// OpenAI-backed node reports its upstream BaseUrl here. The name is kept because it is a
+    /// SignalR payload field and a /api/status field, and renaming it would break both a
+    /// mixed-version fleet and every existing status consumer for a cosmetic gain.
     string OllamaEndpoint,
     string Version,
     IReadOnlyDictionary<string, string>? Labels = null,
