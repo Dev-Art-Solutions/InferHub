@@ -9,11 +9,17 @@ public sealed class BearerApiKeyMiddleware(
     IOptionsMonitor<ApiKeyOptions> options,
     ILogger<BearerApiKeyMiddleware> logger)
 {
+    public const string OpenAiPathPrefix = "/v1";
+
+    private const string OllamaPathPrefix = "/api";
     private const string BearerPrefix = "Bearer ";
 
     public async Task InvokeAsync(HttpContext context)
     {
-        if (!context.Request.Path.StartsWithSegments("/api"))
+        // Both client-facing dialects are guarded by the same inference-key scope. A new
+        // surface that isn't listed here ships unauthenticated — add the prefix, not a
+        // second middleware.
+        if (!IsGuardedPath(context.Request.Path))
         {
             await next(context);
             return;
@@ -59,6 +65,12 @@ public sealed class BearerApiKeyMiddleware(
         }
 
         await next(context);
+    }
+
+    private static bool IsGuardedPath(PathString path)
+    {
+        return path.StartsWithSegments(OllamaPathPrefix)
+            || path.StartsWithSegments(OpenAiPathPrefix);
     }
 
     private static string? ExtractBearerToken(string? authorizationHeader)
@@ -112,6 +124,24 @@ public sealed class BearerApiKeyMiddleware(
     {
         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
         context.Response.Headers.WWWAuthenticate = "Bearer";
+
+        // Each surface rejects in its own dialect — an OpenAI SDK parses error.error.message
+        // and will surface a useless "unknown error" against the Ollama envelope.
+        if (context.Request.Path.StartsWithSegments(OpenAiPathPrefix))
+        {
+            await context.Response.WriteAsJsonAsync(new
+            {
+                error = new
+                {
+                    message,
+                    type = "invalid_request_error",
+                    param = (string?)null,
+                    code = "invalid_api_key"
+                }
+            });
+            return;
+        }
+
         await context.Response.WriteAsJsonAsync(new { error = message });
     }
 }

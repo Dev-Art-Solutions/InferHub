@@ -1,0 +1,39 @@
+# Overlay: swap the coordinator's vector store from the local file-backed provider to an
+# external PostgreSQL + pgvector. Apply it *after* the base file — later files win:
+#
+#   docker compose -f deploy/docker/docker-compose.yml \
+#                  -f deploy/docker/compose.postgres.yml up -d
+#
+# Under `postgres`, Postgres is the single source of truth: the coordinator keeps no vector
+# state on disk, and node replication / self-healing are deliberately not registered. Pushing
+# a second derived copy onto the fleet would be a second write path and a second truth.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-inferhub}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/docker/.env}"
+      POSTGRES_DB: "${POSTGRES_DB:-inferhub}"
+    volumes:
+      - inferhub_pgdata:/var/lib/postgresql/data
+    networks:
+      - inferhub
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-inferhub} -d ${POSTGRES_DB:-inferhub}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  coordinator:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      VectorStore__Enabled: "true"
+      VectorStore__Provider: "postgres"
+      VectorStore__Postgres__ConnectionString: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-inferhub};Username=${POSTGRES_USER:-inferhub};Password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/docker/.env}"
+
+volumes:
+  inferhub_pgdata:

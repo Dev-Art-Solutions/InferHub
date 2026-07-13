@@ -83,6 +83,12 @@ public sealed class OllamaOptionsValidator : IValidateOptions<OllamaOptions>
                 $"{OllamaOptions.SectionName}:{nameof(OllamaOptions.Endpoint)} must be an absolute http(s) URL (got '{options.Endpoint}').");
         }
 
+        if (options.RequestTimeout <= TimeSpan.Zero)
+        {
+            return ValidateOptionsResult.Fail(
+                $"{OllamaOptions.SectionName}:{nameof(OllamaOptions.RequestTimeout)} must be greater than zero (got '{options.RequestTimeout}').");
+        }
+
         return ValidateOptionsResult.Success;
     }
 }

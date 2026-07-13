@@ -2,6 +2,7 @@ using InferHub.Node.Backends;
 using InferHub.Node.Configuration;
 using InferHub.Node.Vector;
 using Microsoft.Extensions.Options;
+using OllamaClient;
 using OllamaClient.Extensions;
 
 namespace InferHub.Node;
@@ -40,12 +41,21 @@ public static class NodeHostBuilderExtensions
             .Bind(builder.Configuration.GetSection(VectorReplicaOptions.SectionName));
         builder.Services.AddSingleton<ReplicaStore>();
 
+        var ollamaOptions = builder.Configuration
+            .GetSection(OllamaOptions.SectionName)
+            .Get<OllamaOptions>() ?? new OllamaOptions();
+
         builder.Services.AddOllamaClient(cfg =>
         {
-            var ollamaOptions = builder.Configuration
-                .GetSection(OllamaOptions.SectionName)
-                .Get<OllamaOptions>() ?? new OllamaOptions();
             cfg.OllamaEndpoint = ollamaOptions.Endpoint;
+        });
+
+        // OllamaClient resolves a *named* HttpClient, so its timeout is ours to set — and it
+        // has to be, or inference inherits HttpClient's 100s default and a cold large model
+        // gets cancelled long before the coordinator's 300s dispatcher timeout would fire.
+        builder.Services.AddHttpClient(nameof(OllamaHttpClient), http =>
+        {
+            http.Timeout = ollamaOptions.RequestTimeout;
         });
         builder.Services.AddSingleton<INodeIdentity, FileNodeIdentity>();
         builder.Services.AddSingleton<IInferenceBackend>(services =>

@@ -1,0 +1,37 @@
+# Build context is the repo root — the node needs InferHub.Shared and the root
+# Directory.Build.props:
+#
+#   docker build -f src/InferHub.Node/Dockerfile -t inferhub-node .
+#
+# No EXPOSE and no healthcheck port: the node never accepts a connection. It dials out to
+# the coordinator over SignalR and out to a local Ollama, which is the whole point — a GPU
+# box behind NAT needs no inbound rule.
+#
+# Reaching Ollama on the *host* from inside this container:
+#   Docker Desktop (Windows/macOS):  Ollama__Endpoint=http://host.docker.internal:11434/
+#   Plain Linux:                     Ollama__Endpoint=http://172.17.0.1:11434/
+#                                    (the docker0 bridge gateway; `ip addr show docker0` to confirm)
+#
+# In practice most GPU nodes are better off *not* containerized — see deploy/docker/README.md.
+
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+ARG TARGETARCH
+WORKDIR /src
+
+COPY Directory.Build.props nuget.config ./
+COPY src/InferHub.Shared/InferHub.Shared.csproj  src/InferHub.Shared/
+COPY src/InferHub.Node/InferHub.Node.csproj      src/InferHub.Node/
+RUN dotnet restore src/InferHub.Node/InferHub.Node.csproj -a "$TARGETARCH"
+
+COPY src/InferHub.Shared/ src/InferHub.Shared/
+COPY src/InferHub.Node/   src/InferHub.Node/
+RUN dotnet publish src/InferHub.Node/InferHub.Node.csproj \
+        -c Release -a "$TARGETARCH" --no-restore -o /app
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
+WORKDIR /app
+COPY --from=build /app .
+
+USER app
+
+ENTRYPOINT ["dotnet", "InferHub.Node.dll"]

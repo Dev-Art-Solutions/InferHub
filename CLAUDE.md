@@ -20,6 +20,11 @@ src/
   InferHub.Node.WindowsService/  Windows-service host. References InferHub.Node, adds AddWindowsService + install scripts.
 tests/
   InferHub.Tests/         xUnit. References all three projects.
+deploy/
+  docker/                 Compose stack (coordinator + node), Postgres overlay, runbook.
+  postgres/               Postgres+pgvector for the gated integration tests.
+  windows/                Node-as-a-Windows-service install scripts.
+.github/workflows/        CI: build+test and docker image build on PRs; GHCR publish on v* tags.
 plan/                     Phase build-briefs. Not shipped; lives in repo for context.
 ```
 
@@ -51,6 +56,13 @@ into `appsettings.json`.
 - [Endpoints/](src/InferHub.Coordinator/Endpoints/) — minimal-API handlers. Three groups:
   inference (`/api/generate`, `/api/chat`), status (`/api/status`, `/api/tags`,
   `/api/nodes`), admin (`/api/admin/*` including the SSE `/api/admin/stream`).
+  [InferenceCore.cs](src/InferHub.Coordinator/Endpoints/InferenceCore.cs) holds routing +
+  pre-stream failover + metrics, and is shared by **both** client dialects; the endpoint
+  files only format its outcome (see D3).
+- [OpenAi/](src/InferHub.Coordinator/OpenAi/) — the OpenAI-compatible edge (phase 21):
+  `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`. DTOs,
+  `RequestTranslator` (OpenAI → Ollama body), `ResponseTranslator` (Ollama → OpenAI), and
+  `OpenAiStreamingResult` (SSE). Coordinator-only by design — see D1.
 - [Services/](src/InferHub.Coordinator/Services/) — `INodeRegistry` (the source of
   truth for connected nodes; raises `Changed` events the SSE stream listens to),
   `IRouter` (least-busy + sticky affinity, skips cordoned nodes), `IDispatcher` (job
@@ -59,6 +71,18 @@ into `appsettings.json`.
   disconnect).
 - [Hubs/NodeHub.cs](src/InferHub.Coordinator/Hubs/NodeHub.cs) — node-side SignalR
   surface: `Register`, `Heartbeat`, `ReportModels`, `JobResult`, `StreamChunks`.
+
+  > **`StreamChunks` must never declare a `CancellationToken` parameter.** SignalR only
+  > treats a `CancellationToken` as a synthetic (server-supplied) argument on hub methods
+  > that *return* a stream. `StreamChunks` returns `Task` — it is a **client-to-server**
+  > upload — so a token parameter is counted as a real argument the caller must send. The
+  > client sends none (the `IAsyncEnumerable` travels as a stream, not an argument), the
+  > binder throws `Invocation provides 0 argument(s) but target expects 1`, the stream never
+  > binds, and **every `stream: true` request hangs forever on both the Ollama and OpenAI
+  > surfaces.** This shipped broken for several releases because every test stubbed
+  > `IDispatcher` and none crossed the wire. Use `Context.ConnectionAborted` instead.
+  > [NodeHubStreamingTests](tests/InferHub.Tests/NodeHubStreamingTests.cs) now guards this
+  > with a real Kestrel host and a real `HubConnection` — keep it that way.
 - [wwwroot/](src/InferHub.Coordinator/wwwroot/) — static `status.html` (read-only) and
   `console.html` + `console.js` (admin). **Build-free**: plain HTML/CSS/JS, no Node/React
   toolchain. If you reach for a bundler, stop and rethink.
@@ -139,14 +163,50 @@ as load-bearing:
    in `InferHub.Shared` or `InferHub.Node`), and no connection is opened unless
    `VectorStore:Enabled=true` **and** `VectorStore:Provider=postgres`. That was a conscious,
    provider-scoped decision — the rule still holds for everything else. Add packages reluctantly.
-6. **The API mimics Ollama.** Request/response DTOs in `InferHub.Shared/Ollama/` track
-   what real Ollama clients send. Do not invent custom fields when Ollama already has one.
+6. **The API mimics Ollama — on the node-facing contract.** Request/response DTOs in
+   `InferHub.Shared/Ollama/` track what real Ollama clients send. Do not invent custom
+   fields when Ollama already has one. Since phase 21 the *client-facing* edge has two
+   dialects; the rule is scoped correctly by D1 below, not weakened.
 7. **Conversations carry no content on the coordinator.** Clients re-send full history
    each turn; the coordinator stores only routing affinity keyed by either the
    `X-InferHub-Conversation` header or a hash of the opening message. **Phase 18
    inline retrieval preserves this**: the augmented request body is assembled
    in-flight inside the retrieval pipeline and forwarded to the node — nothing about
    the message or the retrieved context is retained on the coordinator.
+
+### Phase 21 (OpenAI surface + Docker) — also load-bearing
+
+**D1 — OpenAI DTOs live at the edge, coordinator-only.** Everything OpenAI-shaped stays in
+`InferHub.Coordinator/OpenAi/`. Nothing OpenAI-shaped enters `InferHub.Shared` or
+`InferHub.Node`; the node protocol remains Ollama-shaped job kinds (`chat`, `generate`,
+embed) carrying raw Ollama JSON. The nodes do not know the second dialect exists.
+
+**D2 — The auth guard is prefix-based, and `/v1` is not `/api`.** `BearerApiKeyMiddleware`
+guards a list of prefixes (`/api`, `/v1`), keeps the `/api/admin` carve-out for
+`AdminApiKeyMiddleware`, and shares one loopback exemption. **Adding a client-facing route
+under a new prefix without adding it here ships an unauthenticated inference API.**
+`OpenAiAuthTests` fails if `/v1` ever becomes reachable without a key.
+
+**D3 — One dispatch path, two formatters.** Routing, pre-stream failover and metrics live
+once, in `InferenceCore`. Both surfaces call it and format the outcome in their own dialect
+(NDJSON vs SSE). Do not copy failover logic into an endpoint — two copies is how failover
+quietly rots.
+
+**D5 — In a container, host traffic is not loopback.** `Auth:RequireAuthForLoopback=false`
+exempts loopback callers, but requests from the host reach a container over the bridge
+network with a non-loopback source address. **API keys are mandatory in the compose stack**,
+unlike the bare-metal quickstart. This is correct, and it surprises people — the runbook
+says so out loud.
+
+**D6 — `ASPNETCORE_URLS` does not work here; set `Urls`.** `appsettings.json` pins
+`"Urls": "http://localhost:5080"`, and that layer *overrides* the `ASPNETCORE_`-prefixed
+provider (which loads into host config first). A container honouring `ASPNETCORE_URLS` would
+bind loopback and answer nobody. The images set the config key directly
+(`ENV Urls=http://+:8080`), which is layered after `appsettings.json` and actually wins.
+Verified at runtime, not assumed.
+
+**Rule 5 survived.** Phase 21 added **zero** new dependencies: `System.Text.Json` does the
+translation and the SSE framing is written by hand, exactly as the NDJSON framing is.
 
 ## Auth model (three independent token sets)
 

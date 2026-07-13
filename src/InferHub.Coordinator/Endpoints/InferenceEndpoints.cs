@@ -257,7 +257,9 @@ public static class InferenceEndpoints
         return (outcome.RawJson, Sources: sources);
     }
 
-    private static bool TryReadRetrievalHeader(HttpRequest request, out RetrievalRequest retrieval)
+    // internal: the OpenAI surface honours the same retrieval headers, and a second parser
+    // would be a second set of defaults to keep in sync.
+    internal static bool TryReadRetrievalHeader(HttpRequest request, out RetrievalRequest retrieval)
     {
         retrieval = default!;
         if (!request.Headers.TryGetValue(RetrieveHeader, out var raw))
@@ -293,6 +295,8 @@ public static class InferenceEndpoints
         return true;
     }
 
+    // Routing and failover live in InferenceCore; this method only renders the outcome in
+    // the Ollama dialect. Keep it that way — the OpenAI surface shares the same core.
     private static async Task<IResult> HandleAsync(
         string kind,
         string rawJson,
@@ -305,142 +309,32 @@ public static class InferenceEndpoints
         ILogger logger,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(model))
+        var outcome = await InferenceCore.DispatchAsync(
+            kind,
+            rawJson,
+            model,
+            stream,
+            conversationKey,
+            router,
+            dispatcher,
+            metrics,
+            logger,
+            cancellationToken);
+
+        if (outcome.IsError)
         {
-            return Error(StatusCodes.Status400BadRequest, "model is required");
+            return Error(outcome.ErrorStatus!.Value, outcome.ErrorMessage!);
         }
 
-        var node = router.Route(model, conversationKey);
-
-        if (node is null)
+        if (outcome.Stream is { } chunks)
         {
-            return Error(StatusCodes.Status404NotFound, $"model '{model}' not found");
+            return new StreamingInferenceResult(chunks);
         }
 
-        if (conversationKey is not null)
-        {
-            logger.LogInformation(
-                "Routing {Kind} for conversation {ConversationKey} to node {NodeId} ({NodeName})",
-                kind,
-                conversationKey,
-                node.NodeId,
-                node.Name);
-        }
-
-        var job = new InferenceJob(Guid.NewGuid(), kind, rawJson);
-
-        try
-        {
-            return await DispatchWithFailoverAsync(
-                kind,
-                rawJson,
-                model,
-                stream,
-                conversationKey,
-                node,
-                job,
-                router,
-                dispatcher,
-                metrics,
-                logger,
-                cancellationToken);
-        }
-        catch (TimeoutException)
-        {
-            logger.LogWarning("Job {JobId} for model {Model} timed out", job.JobId, model);
-            return Error(StatusCodes.Status504GatewayTimeout, "inference request timed out");
-        }
-        catch (NodeDisconnectedException ex)
-        {
-            // We're here only if failover also failed (or was impossible). Surface a clean
-            // 502 — the caller hasn't received any content yet for either path because the
-            // streaming dispatcher only returns its reader after the first chunk arrives.
-            logger.LogWarning(ex, "Job {JobId} for model {Model} could not be dispatched", job.JobId, model);
-            return Error(StatusCodes.Status502BadGateway, "no node was able to handle the request");
-        }
+        return Results.Text(outcome.ResponseJson ?? "{}", "application/json");
     }
 
-    private static async Task<IResult> DispatchWithFailoverAsync(
-        string kind,
-        string rawJson,
-        string model,
-        bool? stream,
-        string? conversationKey,
-        RoutableNode node,
-        InferenceJob job,
-        Services.IRouter router,
-        IDispatcher dispatcher,
-        Metrics metrics,
-        ILogger logger,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            if (stream is not false)
-            {
-                var chunks = await dispatcher.DispatchStreamAsync(node, job, cancellationToken);
-                return new StreamingInferenceResult(chunks);
-            }
-
-            var result = await dispatcher.DispatchAsync(node, job, cancellationToken);
-
-            if (!result.Success)
-            {
-                return Error(StatusCodes.Status502BadGateway, result.Error ?? "node failed to run inference");
-            }
-
-            return Results.Text(result.ResponseJson ?? "{}", "application/json");
-        }
-        catch (NodeDisconnectedException ex)
-        {
-            metrics.RecordFailoverAttempted();
-            logger.LogWarning(
-                "Node {NodeId} dropped before the job started — attempting failover",
-                node.NodeId);
-
-            var retryNode = router.Route(model, conversationKey, excludeConnectionId: ex.ConnectionId);
-
-            if (retryNode is null)
-            {
-                logger.LogWarning(
-                    "No alternate node available for failover of job {JobId} (model {Model})",
-                    job.JobId,
-                    model);
-                throw;
-            }
-
-            // Issue a fresh job id so the dispatcher's pending tables stay coherent.
-            var retryJob = job with { JobId = Guid.NewGuid() };
-
-            logger.LogInformation(
-                "Failing over {Kind} job {JobId} -> {NewJobId} to node {NodeId} ({NodeName})",
-                kind,
-                job.JobId,
-                retryJob.JobId,
-                retryNode.NodeId,
-                retryNode.Name);
-
-            if (stream is not false)
-            {
-                var chunks = await dispatcher.DispatchStreamAsync(retryNode, retryJob, cancellationToken);
-                metrics.RecordFailoverSucceeded();
-                return new StreamingInferenceResult(chunks);
-            }
-
-            var result = await dispatcher.DispatchAsync(retryNode, retryJob, cancellationToken);
-
-            if (!result.Success)
-            {
-                metrics.RecordFailoverSucceeded();
-                return Error(StatusCodes.Status502BadGateway, result.Error ?? "node failed to run inference");
-            }
-
-            metrics.RecordFailoverSucceeded();
-            return Results.Text(result.ResponseJson ?? "{}", "application/json");
-        }
-    }
-
-    private static string? ResolveConversationKey(HttpRequest httpRequest, ChatRequest request)
+    internal static string? ResolveConversationKey(HttpRequest httpRequest, ChatRequest request)
     {
         if (httpRequest.Headers.TryGetValue(ConversationHeader, out var header))
         {

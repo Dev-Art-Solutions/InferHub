@@ -5,7 +5,13 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="OllamaClient" Version="2.0.0" />
+    <!--
+      2.0.1 fixes an Int32 overflow on prompt_eval_duration: Ollama reports durations in
+      nanoseconds, the field was typed int?, and anything past ~2.1s of prompt evaluation
+      (i.e. every cold model) failed to deserialize and turned a good answer into a 502.
+      Do not go back to 2.0.0.
+    -->
+    <PackageReference Include="OllamaClient" Version="2.0.1" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.8" />
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.8" />
   </ItemGroup>
