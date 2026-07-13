@@ -1,5 +1,7 @@
 using InferHub.Coordinator.Services;
+using InferHub.Node.Backends;
 using InferHub.Node.Configuration;
+using Microsoft.Extensions.Options;
 
 namespace InferHub.Tests;
 
@@ -107,6 +109,62 @@ public class NodeOptionsValidationTests
 
         Assert.True(result.Succeeded);
     }
+
+    // ---- OpenAI backend ---------------------------------------------------------------
+
+    [Fact]
+    public void OpenAiBackendWithoutABaseUrlFailsStartup()
+    {
+        // A node that boots and then 500s on every job is worse than one that refuses to boot
+        // and names the missing key.
+        var result = OpenAiValidator(BackendOptions.OpenAi).Validate(null, new OpenAiBackendOptions());
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, message => message.Contains(nameof(OpenAiBackendOptions.BaseUrl)));
+    }
+
+    [Fact]
+    public void OpenAiBackendRejectsARelativeBaseUrl()
+    {
+        var options = new OpenAiBackendOptions { BaseUrl = "/v1" };
+
+        var result = OpenAiValidator(BackendOptions.OpenAi).Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, message => message.Contains(nameof(OpenAiBackendOptions.BaseUrl)));
+    }
+
+    [Fact]
+    public void OpenAiBackendAcceptsAnAbsoluteBaseUrl()
+    {
+        var options = new OpenAiBackendOptions { BaseUrl = "http://localhost:8000/v1" };
+
+        Assert.True(OpenAiValidator(BackendOptions.OpenAi).Validate(null, options).Succeeded);
+    }
+
+    [Fact]
+    public void AnOllamaNodeIsNotAskedForAnOpenAiBaseUrl()
+    {
+        // The OpenAi section is irrelevant unless Backend:Type says otherwise. Validating it
+        // unconditionally would break every existing node's startup.
+        var result = OpenAiValidator(BackendOptions.Ollama).Validate(null, new OpenAiBackendOptions());
+
+        Assert.True(result.Succeeded);
+    }
+
+    [Fact]
+    public void OpenAiRequestTimeoutOutlastsTheCoordinatorsDispatcherTimeout()
+    {
+        // Same trap as OllamaOptions.RequestTimeout: a node that gives up before the
+        // coordinator does turns a slow model into what looks like a node failure.
+        var defaultDispatcherTimeout = TimeSpan.FromSeconds(new DispatcherOptions().TimeoutSeconds);
+
+        Assert.True(
+            TimeSpan.FromSeconds(new OpenAiBackendOptions().TimeoutSeconds) >= defaultDispatcherTimeout);
+    }
+
+    private static OpenAiBackendOptionsValidator OpenAiValidator(string backendType)
+        => new(Options.Create(new BackendOptions { Type = backendType }));
 
     [Fact]
     public void OllamaOptionsValidatorPassesForDefaults()

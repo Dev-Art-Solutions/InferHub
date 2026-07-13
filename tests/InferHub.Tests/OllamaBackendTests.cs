@@ -1,7 +1,9 @@
 using InferHub.Node.Backends;
+using InferHub.Node.Configuration;
 using OllamaClient;
 using OllamaClient.Models;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace InferHub.Tests;
 
@@ -23,7 +25,7 @@ public class OllamaBackendTests
                     }
                 ]
             });
-        var backend = new OllamaBackend(client, NullLogger<OllamaBackend>.Instance);
+        var backend = new OllamaBackend(client, Options.Create(new OllamaOptions()), NullLogger<OllamaBackend>.Instance);
 
         var models = await backend.ListModelsAsync(CancellationToken.None);
 
@@ -38,6 +40,7 @@ public class OllamaBackendTests
     {
         var backend = new OllamaBackend(
             new FakeOllamaHttpClient(new InvalidOperationException("offline")),
+            Options.Create(new OllamaOptions()),
             NullLogger<OllamaBackend>.Instance);
 
         var models = await backend.ListModelsAsync(CancellationToken.None);

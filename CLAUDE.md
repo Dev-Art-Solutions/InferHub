@@ -14,7 +14,7 @@ inference backend (Ollama today, pluggable). No port forwarding on the node side
 
 ```
 src/
-  InferHub.Shared/        Contracts + Ollama DTOs shared by coordinator and node.
+  InferHub.Shared/        Contracts + Ollama DTOs + OpenAI DTOs/translators (both ends speak it).
   InferHub.Coordinator/   ASP.NET Core web app (Sdk.Web). HTTP + SignalR hub + routing.
   InferHub.Node/          Worker service (Sdk.Worker). SignalR client + backend driver.
   InferHub.Node.WindowsService/  Windows-service host. References InferHub.Node, adds AddWindowsService + install scripts.
@@ -60,9 +60,11 @@ into `appsettings.json`.
   pre-stream failover + metrics, and is shared by **both** client dialects; the endpoint
   files only format its outcome (see D3).
 - [OpenAi/](src/InferHub.Coordinator/OpenAi/) — the OpenAI-compatible edge (phase 21):
-  `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`. DTOs,
-  `RequestTranslator` (OpenAI → Ollama body), `ResponseTranslator` (Ollama → OpenAI), and
-  `OpenAiStreamingResult` (SSE). Coordinator-only by design — see D1.
+  `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`. Only the two
+  ASP.NET-bound pieces live here now — `OpenAiEndpoints` and `OpenAiStreamingResult` (SSE).
+  The DTOs and the shape mappers moved to
+  [InferHub.Shared/OpenAi/](src/InferHub.Shared/OpenAi/) in phase 22, because the node drives
+  the same dialect *upstream*.
 - [Services/](src/InferHub.Coordinator/Services/) — `INodeRegistry` (the source of
   truth for connected nodes; raises `Changed` events the SSE stream listens to),
   `IRouter` (least-busy + sticky affinity, skips cordoned nodes), `IDispatcher` (job
@@ -120,9 +122,14 @@ itself, and why `NullVectorQueryRouter` replaces the node-serving router.
   selection is a `switch` on `Backend:Type`.
 - [Configuration/](src/InferHub.Node/Configuration/) holds the options classes,
   validators, and the model-filter helper.
-- [Backends/](src/InferHub.Node/Backends/) — `IInferenceBackend` abstraction; the
-  Ollama implementation drives the
+- [Backends/](src/InferHub.Node/Backends/) — `IInferenceBackend` abstraction, two
+  implementations. `OllamaBackend` drives the
   [OllamaClient](https://github.com/Dev-Art-Solutions/OllamaClient) NuGet package.
+  `OpenAiBackend` (phase 22, `Backend:Type=openai`) drives anything speaking the OpenAI wire
+  format — vLLM, llama.cpp's server, LM Studio, TGI, a hosted provider — via the shared
+  `OpenAiUpstreamClient`. `IInferenceBackend.Endpoint` is what the node reports at
+  registration: before phase 22 it hard-coded `Ollama:Endpoint`, so an OpenAI-backed node would
+  have advertised `localhost:11434` while talking to something else entirely.
 - [CoordinatorConnection.cs](src/InferHub.Node/CoordinatorConnection.cs) owns the
   SignalR client, heartbeat loop, model-refresh loop, and reconnect delay — all driven
   by `CoordinatorOptions`, not constants.
@@ -163,10 +170,14 @@ as load-bearing:
    in `InferHub.Shared` or `InferHub.Node`), and no connection is opened unless
    `VectorStore:Enabled=true` **and** `VectorStore:Provider=postgres`. That was a conscious,
    provider-scoped decision — the rule still holds for everything else. Add packages reluctantly.
-6. **The API mimics Ollama — on the node-facing contract.** Request/response DTOs in
-   `InferHub.Shared/Ollama/` track what real Ollama clients send. Do not invent custom
-   fields when Ollama already has one. Since phase 21 the *client-facing* edge has two
-   dialects; the rule is scoped correctly by D1 below, not weakened.
+6. **The node-facing job protocol is Ollama-shaped. Client-facing and upstream-facing
+   dialects are translations at the boundary.** `InferenceJob.RawJson` crossing SignalR and
+   `InferenceChunk.ResponseJson` coming back are both Ollama JSON, always — that is the one
+   shape the mesh's internals (dispatcher, router, affinity, retrieval) know. Request/response
+   DTOs in `InferHub.Shared/Ollama/` track what real Ollama clients send; do not invent custom
+   fields when Ollama already has one. Phase 21 added a second *client-facing* dialect and
+   phase 22 a second *upstream-facing* one; both are translations at the edges, and neither
+   changes what crosses the wire between coordinator and node.
 7. **Conversations carry no content on the coordinator.** Clients re-send full history
    each turn; the coordinator stores only routing affinity keyed by either the
    `X-InferHub-Conversation` header or a hash of the opening message. **Phase 18
@@ -176,10 +187,11 @@ as load-bearing:
 
 ### Phase 21 (OpenAI surface + Docker) — also load-bearing
 
-**D1 — OpenAI DTOs live at the edge, coordinator-only.** Everything OpenAI-shaped stays in
-`InferHub.Coordinator/OpenAi/`. Nothing OpenAI-shaped enters `InferHub.Shared` or
-`InferHub.Node`; the node protocol remains Ollama-shaped job kinds (`chat`, `generate`,
-embed) carrying raw Ollama JSON. The nodes do not know the second dialect exists.
+**D1 — OpenAI DTOs live at the edge, coordinator-only.** *Superseded by phase 22's D1 — see
+below.* The DTOs now live in `InferHub.Shared/OpenAi/` because the node speaks the dialect
+upstream too. What survives untouched is the part that mattered: the **node-facing job
+protocol** is still Ollama-shaped job kinds (`chat`, `generate`, embed) carrying raw Ollama
+JSON, and the nodes still do not know the coordinator has a second client-facing dialect.
 
 **D2 — The auth guard is prefix-based, and `/v1` is not `/api`.** `BearerApiKeyMiddleware`
 guards a list of prefixes (`/api`, `/v1`), keeps the `/api/admin` carve-out for
@@ -207,6 +219,54 @@ Verified at runtime, not assumed.
 
 **Rule 5 survived.** Phase 21 added **zero** new dependencies: `System.Text.Json` does the
 translation and the SSE framing is written by hand, exactly as the NDJSON framing is.
+
+### Phase 22 (OpenAI node backend + cloud burst) — also load-bearing
+
+**D1 — The OpenAI DTOs live in `InferHub.Shared/OpenAi/`.** They are pure records over
+`System.Text.Json` with no ASP.NET types, so rule 2 holds. Both ends need them now: the
+coordinator to speak OpenAI to *clients*, the node to speak it *upstream*. Duplicating a wire
+format into two projects is how two copies drift, silently. Only the ASP.NET-bound pieces
+(`OpenAiEndpoints`, `OpenAiStreamingResult`) stayed in the coordinator.
+
+**D2 — Rule 6 was reworded, not weakened.** See rule 6 above. The node-facing job protocol is
+still Ollama-shaped, always.
+
+**D3 — Yes, an OpenAI request can be translated twice, and that is deliberate.**
+`/v1/chat/completions` → Ollama body → node → OpenAI body → vLLM, and back. It looks silly
+written down. The alternative is a polymorphic job payload with a dialect tag, which infects
+the dispatcher, the router, the affinity-key derivation, the retrieval pipeline and every test
+that touches them — to save two `JsonSerializer` round-trips on a request that is about to
+spend seconds on a GPU. Take the round-trips. The reason is written in
+[UpstreamTranslator](src/InferHub.Shared/OpenAi/UpstreamTranslator.cs) so nobody "fixes" it.
+
+**D4 — Cloud burst stores nothing.** [FallbackDispatcher](src/InferHub.Coordinator/Services/FallbackDispatcher.cs)
+forwards the body in flight and streams the response straight through. It is a proxy hop, not
+a cache. Rule 7 is load-bearing and this does not dent it: the model name is metered, the
+prompt and the answer are not.
+
+**D5 — Cloud burst is off by default and loud when on.** Silently shipping a user's prompts to
+a third party because their GPU was asleep is a betrayal, not a feature. So: `Fallback:Enabled`
+defaults to `false`; only models named in `Fallback:ModelMap` are eligible (**the map is the
+consent**); every fallback response carries `X-InferHub-Served-By: fallback` (node-served ones
+say `node`); `/api/status` and the status page report the feature and its counter *even when it
+is off*; and each burst logs at Information with the model. **`FallbackTests` is mostly a suite
+about when it must not fire** — keep it that way.
+
+*Deviation from the phase brief, recorded on purpose:* the brief said "audit-log entry", but
+`IAuditLog` is a per-node *last admin action* store keyed by `nodeId` (cordon/uncordon), not an
+event stream. Writing bursts into it would overwrite a node's cordon history and key events by
+a node that by definition did not serve them. The visibility requirement is met by the log
+line, the metric, the header and the status block instead.
+
+**One backend implementation, five servers.** `Backend:Type=openai` covers vLLM, llama.cpp's
+server, LM Studio, TGI and every hosted provider, because they all landed on the same dialect.
+[OpenAiUpstreamClient](src/InferHub.Shared/OpenAi/OpenAiUpstreamClient.cs) is the single place
+that speaks it, and **both** the node's `OpenAiBackend` and the coordinator's
+`FallbackDispatcher` drive it. Do not grow a second one.
+
+**Rule 5 survived again.** Phase 22 added **zero** new dependencies: `HttpClient` and
+`System.Net.Http.Json` ship in the shared framework, and the SSE *parser* is written by hand
+just as the SSE *writer* was in phase 21.
 
 ## Auth model (three independent token sets)
 

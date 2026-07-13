@@ -1,3 +1,4 @@
+using InferHub.Node.Backends;
 using Microsoft.Extensions.Options;
 
 namespace InferHub.Node.Configuration;
@@ -58,6 +59,47 @@ public sealed class NodeOptionsValidator : IValidateOptions<NodeOptions>
         {
             failures.Add(
                 $"{NodeOptions.SectionName}:{nameof(NodeOptions.MaxConcurrency)} must be >= 1 when set (got {cap}).");
+        }
+
+        return failures.Count == 0
+            ? ValidateOptionsResult.Success
+            : ValidateOptionsResult.Fail(failures);
+    }
+}
+
+/// <summary>
+/// Only bites when <c>Backend:Type=openai</c> — an Ollama node has no upstream to configure.
+/// A node that boots and then 500s on every job it is handed is worse than a node that refuses
+/// to boot and says which key is missing.
+/// </summary>
+public sealed class OpenAiBackendOptionsValidator(IOptions<BackendOptions> backend)
+    : IValidateOptions<OpenAiBackendOptions>
+{
+    public ValidateOptionsResult Validate(string? name, OpenAiBackendOptions options)
+    {
+        if (backend.Value.Normalized() != BackendOptions.OpenAi)
+        {
+            return ValidateOptionsResult.Success;
+        }
+
+        var failures = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(options.BaseUrl))
+        {
+            failures.Add(
+                $"{OpenAiBackendOptions.SectionName}:{nameof(OpenAiBackendOptions.BaseUrl)} must be set when {BackendOptions.SectionName}:{nameof(BackendOptions.Type)}=openai.");
+        }
+        else if (!Uri.TryCreate(options.BaseUrl, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            failures.Add(
+                $"{OpenAiBackendOptions.SectionName}:{nameof(OpenAiBackendOptions.BaseUrl)} must be an absolute http(s) URL (got '{options.BaseUrl}').");
+        }
+
+        if (options.TimeoutSeconds <= 0)
+        {
+            failures.Add(
+                $"{OpenAiBackendOptions.SectionName}:{nameof(OpenAiBackendOptions.TimeoutSeconds)} must be greater than zero (got {options.TimeoutSeconds}).");
         }
 
         return failures.Count == 0

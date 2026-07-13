@@ -34,7 +34,13 @@ public static class NodeHostBuilderExtensions
             .ValidateOnStart();
         builder.Services.AddSingleton<IValidateOptions<OllamaOptions>, OllamaOptionsValidator>();
 
-        builder.Services.Configure<BackendOptions>(builder.Configuration.GetSection("Backend"));
+        builder.Services.Configure<BackendOptions>(builder.Configuration.GetSection(BackendOptions.SectionName));
+
+        builder.Services
+            .AddOptions<OpenAiBackendOptions>()
+            .Bind(builder.Configuration.GetSection(OpenAiBackendOptions.SectionName))
+            .ValidateOnStart();
+        builder.Services.AddSingleton<IValidateOptions<OpenAiBackendOptions>, OpenAiBackendOptionsValidator>();
 
         builder.Services
             .AddOptions<VectorReplicaOptions>()
@@ -57,19 +63,24 @@ public static class NodeHostBuilderExtensions
         {
             http.Timeout = ollamaOptions.RequestTimeout;
         });
+        // The upstream client's timeout and auth are per-request (they come from options, which
+        // can reload); the factory is here only to own the pooled handler.
+        builder.Services.AddHttpClient(OpenAiBackend.HttpClientName);
+
         builder.Services.AddSingleton<INodeIdentity, FileNodeIdentity>();
         builder.Services.AddSingleton<IInferenceBackend>(services =>
         {
             var options = services.GetRequiredService<IOptions<BackendOptions>>().Value;
-            var backendType = string.IsNullOrWhiteSpace(options.Type) ? "ollama" : options.Type.Trim();
 
-            return backendType.ToLowerInvariant() switch
+            return options.Normalized() switch
             {
-                "ollama" => services.GetRequiredService<OllamaBackend>(),
+                BackendOptions.Ollama => services.GetRequiredService<OllamaBackend>(),
+                BackendOptions.OpenAi => services.GetRequiredService<OpenAiBackend>(),
                 var type => throw new InvalidOperationException($"Unsupported inference backend '{type}'.")
             };
         });
         builder.Services.AddSingleton<OllamaBackend>();
+        builder.Services.AddSingleton<OpenAiBackend>();
         builder.Services.AddSingleton<InferenceExecutor>();
         builder.Services.AddSingleton<CoordinatorConnection>();
         builder.Services.AddHostedService<Worker>();

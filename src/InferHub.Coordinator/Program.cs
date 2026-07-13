@@ -27,6 +27,12 @@ builder.Services.AddSingleton<INodeConnectionTracker, NodeConnectionTracker>();
 builder.Services.AddSingleton<IEmbeddingDispatcher, EmbeddingDispatcher>();
 builder.Services.AddHostedService<NodeReaper>();
 
+// Cloud burst. Registered always, disabled unless Fallback:Enabled — with it off, ShouldServe
+// is a single `false` and every existing behaviour is byte-for-byte unchanged.
+builder.Services.Configure<FallbackOptions>(builder.Configuration.GetSection(FallbackOptions.SectionName));
+builder.Services.AddHttpClient(FallbackDispatcher.HttpClientName);
+builder.Services.AddSingleton<IFallbackDispatcher, FallbackDispatcher>();
+
 builder.Services.AddInferHubVectorStore(builder.Configuration);
 var vectorSection = builder.Configuration.GetSection(VectorStoreOptions.SectionName);
 var vectorStoreEnabled = vectorSection.GetValue<bool>(nameof(VectorStoreOptions.Enabled));

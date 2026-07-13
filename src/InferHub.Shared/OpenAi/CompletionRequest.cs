@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace InferHub.Coordinator.OpenAi;
+namespace InferHub.Shared.OpenAi;
 
 /// <summary>Legacy <c>/v1/completions</c>. Maps to the Ollama <c>generate</c> job kind.</summary>
 public sealed class CompletionRequest

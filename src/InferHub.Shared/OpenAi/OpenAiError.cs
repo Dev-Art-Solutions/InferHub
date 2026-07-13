@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace InferHub.Coordinator.OpenAi;
+namespace InferHub.Shared.OpenAi;
 
 /// <summary>
 /// The OpenAI error envelope. SDKs read <c>error.message</c> to build the exception they

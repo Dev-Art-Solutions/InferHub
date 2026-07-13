@@ -14,11 +14,19 @@ namespace InferHub.Coordinator.Endpoints;
 /// </summary>
 internal static class InferenceCore
 {
+    /// <summary>Values of the <c>X-InferHub-Served-By</c> response header.</summary>
+    public const string ServedByNode = "node";
+
+    public const string ServedByFallback = "fallback";
+
+    public const string ServedByHeader = "X-InferHub-Served-By";
+
     internal readonly record struct DispatchOutcome(
         ChannelReader<InferenceChunk>? Stream,
         string? ResponseJson,
         int? ErrorStatus,
-        string? ErrorMessage)
+        string? ErrorMessage,
+        string ServedBy = ServedByNode)
     {
         public static DispatchOutcome Streaming(ChannelReader<InferenceChunk> stream)
             => new(stream, null, null, null);
@@ -28,6 +36,9 @@ internal static class InferenceCore
 
         public static DispatchOutcome Failure(int status, string message)
             => new(null, null, status, message);
+
+        public static DispatchOutcome Fallback(FallbackResult result)
+            => new(result.Stream, result.ResponseJson, null, null, ServedByFallback);
 
         public bool IsError => ErrorStatus is not null;
     }
@@ -40,6 +51,7 @@ internal static class InferenceCore
         string? conversationKey,
         Services.IRouter router,
         IDispatcher dispatcher,
+        IFallbackDispatcher fallback,
         Metrics metrics,
         ILogger logger,
         CancellationToken cancellationToken)
@@ -50,6 +62,36 @@ internal static class InferenceCore
         }
 
         var node = router.Route(model, conversationKey);
+
+        // Cloud burst. Off by default, and when off this is a single false — the 404 below is
+        // byte-for-byte what every release since 1.0 has returned.
+        if (fallback.ShouldServe(model, hasCapableNode: node is not null))
+        {
+            try
+            {
+                var result = await fallback.DispatchAsync(
+                    kind,
+                    rawJson,
+                    model,
+                    stream is not false,
+                    cancellationToken);
+
+                return DispatchOutcome.Fallback(result);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex, "Cloud burst failed for model {Model}", model);
+
+                if (node is null)
+                {
+                    return DispatchOutcome.Failure(
+                        StatusCodes.Status502BadGateway,
+                        $"no node holds model '{model}' and the fallback upstream failed: {ex.Message}");
+                }
+
+                // Saturation burst is an optimisation, not a promise — fall through to the node.
+            }
+        }
 
         if (node is null)
         {

@@ -1,14 +1,17 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace InferHub.Coordinator.OpenAi;
+namespace InferHub.Shared.OpenAi;
 
 /// <summary>
 /// OpenAI request → Ollama request body. The output is the exact JSON the node already
 /// knows how to run, so everything behind the coordinator's front door (job kinds, the
 /// SignalR protocol, the retrieval pipeline) is untouched by the second dialect.
+///
+/// This is the client-facing half of the translation. <see cref="UpstreamTranslator"/> is the
+/// mirror the node runs against an OpenAI-compatible server.
 /// </summary>
-internal static class RequestTranslator
+public static class RequestTranslator
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -369,10 +372,14 @@ internal static class RequestTranslator
         => JsonNode.Parse(element.GetRawText());
 }
 
-/// <summary>A client-side error, surfaced through the OpenAI error envelope.</summary>
-internal sealed class OpenAiRequestException(
+/// <summary>
+/// A client-side error, surfaced through the OpenAI error envelope. The status is a plain
+/// <c>int</c> rather than an ASP.NET <c>StatusCodes</c> constant — this type now lives in
+/// InferHub.Shared, which stays host-agnostic (rule 2).
+/// </summary>
+public sealed class OpenAiRequestException(
     string message,
-    int statusCode = StatusCodes.Status400BadRequest,
+    int statusCode = 400,
     string type = OpenAiErrorTypes.InvalidRequest,
     string? param = null,
     string? code = null) : Exception(message)
