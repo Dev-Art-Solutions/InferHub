@@ -99,13 +99,15 @@ each of those is non-negotiable.
 | 20 | PostgreSQL + pgvector connector (done) | `v2.2.0` |
 | 21 | OpenAI-compatible API & Docker distribution (done) | `v2.3.0` |
 | 22 | OpenAI-compatible node backend & cloud burst (done) | `v2.4.0` |
+| 23 | Document ingestion pipeline (done) | `v2.5.0` |
 
-**What's next.** The obvious gap in retrieval is the ingestion side: a vector store you have
-to fill by hand is only half a RAG system, so documents-in / chunks-and-embeddings-out is
-next, followed by hybrid search and reranking with an evaluation harness to prove they
-actually helped. After that: quotas and per-key usage accounting, and fleet-wide remote model
-management. Streaming `tool_calls` deltas (mapped in blocking mode today, not yet streamed),
-multi-coordinator clustering and persisted affinity remain on the table.
+**What's next.** Retrieval can now be *filled* — the remaining gap is retrieval *quality*. Pure
+vector search is excellent at "what is this about" and poor at "find the exact thing I named", so
+hybrid search (keyword + vector, fused by rank) and an opt-in reranker come next, shipped together
+with an evaluation harness so the improvement is measured rather than asserted. After that: quotas
+and per-key usage accounting, and fleet-wide remote model management. Streaming `tool_calls` deltas
+(mapped in blocking mode today, not yet streamed), multi-coordinator clustering and persisted
+affinity remain on the table.
 
 ## Quick start
 
@@ -561,6 +563,78 @@ curl -X POST http://localhost:5080/api/vector/docs/query \
   -d '{"vector":[1,0,0],"k":3}'
 ```
 
+### Document ingestion (v2.5+)
+
+The vector store has existed since v1.5 and inline retrieval since v2.0, but until v2.5 you had to
+*fill* the store yourself — with pre-computed vectors, or text pasted in by hand. Ingestion closes
+the loop: upload a document and the coordinator extracts its text, chunks it, embeds the chunks **on
+the GPU fleet** (the same dispatcher that serves `/api/embed` — the coordinator has no embedding path
+of its own), and writes them to whichever vector store you configured.
+
+```bash
+# The collection must exist first — its dimension has to match your embedding model.
+curl -X POST http://your-coordinator:5080/api/admin/vector/collections \
+  -H "Authorization: Bearer YOUR_ADMIN_KEY" \
+  -d '{"name":"handbook","dimension":768,"distance":"cosine"}'
+
+# Then upload. Text, Markdown, HTML, JSON, PDF.
+curl -X POST http://your-coordinator:5080/api/collections/handbook/documents \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -F file=@employee-handbook.pdf
+```
+
+```json
+{ "documentId": "employee-handbook.pdf", "collection": "handbook", "status": "ingested",
+  "chunks": 214, "chunksEmbedded": 214, "bytes": 1048576, "contentHash": "48096003…" }
+```
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/collections/{c}/documents` | Upload. `multipart/form-data` (`file`, optional `id`, `metadata`, `model`) **or** JSON (`{ id?, text, metadata? }`). |
+| `GET /api/collections/{c}/documents` | List: id, chunk count, bytes, content hash, ingested-at, status. |
+| `GET /api/collections/{c}/documents/{id}/chunks` | The chunks themselves, in order, with page numbers. |
+| `DELETE /api/collections/{c}/documents/{id}` | Removes every chunk of that document. |
+
+These are guarded by the **client** key (`Auth:ApiKeys`), not the admin key. Ingesting is a client
+action, and forcing an admin key on it would push people toward using one key for everything.
+
+**Four decisions worth knowing about, because they are the ones that would have been easy to get
+wrong:**
+
+- **⚠ There is no OCR, and there never will be.** A PDF whose text layer is empty or near-empty is
+  **rejected** with an error saying it looks like a scan. It would have been easy to bolt on an OCR
+  pass that *usually* works — but a bad extraction does not fail. It succeeds, quietly, and fills
+  your corpus with near-gibberish that retrieves plausible nonsense, surfacing months later as a
+  model that is subtly and unaccountably wrong. If a document genuinely needs OCR, that is a
+  decision its owner should make deliberately, with a tool they chose, before it reaches InferHub.
+- **Your file is not kept.** Chunk text, a content hash and metadata. Not the document. A retrieval
+  system that also quietly becomes a document store has two sources of truth and a data-retention
+  question its owner never agreed to answer. If you need the original, you already have it.
+- **Re-ingesting is idempotent.** Chunk ids derive from the document id and the chunk index, so
+  uploading a revision *replaces* its chunks rather than layering a second copy underneath the
+  first — including sweeping the tail chunks when the revision is shorter. Upload the identical
+  bytes twice and the second call does no work and returns `"status": "unchanged"`.
+- **A partial ingest is a failure and says so.** If the fleet goes away mid-document, the response is
+  **HTTP 500** with `"status": "partial"` and the chunk counts. The chunks that landed are real and
+  visible, the document lists as `partial`, and re-posting the same bytes *resumes* rather than
+  no-ops. A half-ingested document that claims success is worse than a failure.
+
+Ingestion is provider-agnostic: it works identically under the file-backed local store (where the new
+chunks replicate to your nodes through the usual path) and under PostgreSQL + pgvector. The admin
+console gained a **Documents** panel — pick a collection, drop a file, watch the chunk count climb,
+preview chunks, delete a document.
+
+**Configuration** (`Ingestion` section; all optional):
+
+| Key | Default | Purpose |
+|---|---|---|
+| `MaxChars` | `1200` | Target chunk size in characters. |
+| `OverlapChars` | `150` | Tail context repeated at the head of the next chunk. |
+| `MaxDocumentBytes` | `26214400` | Upload ceiling (25 MB). Above ~30 MB you must also raise Kestrel's `MaxRequestBodySize`. |
+| `EmbeddingBatchSize` | `16` | Chunks embedded per batch — and the cap on chunks in flight, so a 300-page PDF cannot starve interactive chat. |
+| `EmbeddingModel` | *(empty)* | Falls back to `VectorStore:DefaultEmbeddingModel`. |
+| `MaxRetriesPerBatch` | `3` | Attempts per batch before the document is marked `partial`. |
+
 ### Retrieval-augmented inference
 
 `/api/chat` and `/api/generate` accept optional headers that opt a normal request
@@ -579,8 +653,21 @@ if available, hub-local otherwise), assembles an augmented prompt via
 `VectorStore:Retrieval:Template` (the literal `{context}` placeholder is replaced by
 the retrieved records rendered as `[id] text` — text is drawn from `payload.text`,
 then `payload.content`, then the raw payload), and dispatches the generation to a
-node. The response is Ollama-shaped and unaltered; the retrieved source ids come
-back as a JSON array in `X-InferHub-Sources`.
+node. The response is Ollama-shaped and unaltered; the retrieved sources come back
+as a JSON array in `X-InferHub-Sources`.
+
+**⚠ `X-InferHub-Sources` changed shape in v2.5.0.** It used to carry bare chunk ids
+(`["a1b2…", "c3d4…"]`); it now carries objects that name where each chunk came from:
+
+```
+X-InferHub-Sources: [{"id":"5d981c…","documentId":"employee-handbook.pdf","page":1},
+                     {"id":"0b72c7…","documentId":"policy.md"}]
+```
+
+A chunk id on its own identifies the row we retrieved but tells the reader nothing
+about *where the answer came from*, and a citation that cannot name a document and a
+page is not a citation. `documentId` and `page` are omitted — not null — for records
+written straight through `/api/vector`, which never had a document.
 
 **Where work happens.** Only orchestration and hub-local search live on the
 coordinator. Embedding and generation are both dispatched to nodes — the mesh does

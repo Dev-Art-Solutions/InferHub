@@ -95,16 +95,38 @@ public sealed class Metrics
         Interlocked.Add(ref counter.QueryLatencyMicrosTotal, Math.Max(0, micros));
     }
 
+    /// <summary>
+    /// One document finished ingesting. Like everything else in <see cref="Metrics"/> these are
+    /// **since-start** counters, not a census — they are named so, and the authoritative document
+    /// count is whatever <c>GET /api/collections/{c}/documents</c> reads back out of the store.
+    /// </summary>
+    public void RecordDocumentIngested(string collection, string embeddingModel)
+    {
+        var counter = perCollection.GetOrAdd(collection, _ => new VectorCollectionCounter());
+        Interlocked.Increment(ref counter.DocumentsIngested);
+        counter.LastEmbeddingModel = embeddingModel;
+        Interlocked.Exchange(ref counter.LastIngestAtTicks, DateTimeOffset.UtcNow.UtcTicks);
+    }
+
+    public void RecordChunksEmbedded(string collection, int count)
+    {
+        var counter = perCollection.GetOrAdd(collection, _ => new VectorCollectionCounter());
+        Interlocked.Add(ref counter.ChunksEmbedded, Math.Max(0, count));
+    }
+
+    public void RecordIngestionFailure(string collection)
+    {
+        var counter = perCollection.GetOrAdd(collection, _ => new VectorCollectionCounter());
+        Interlocked.Increment(ref counter.IngestionFailures);
+    }
+
     public VectorCollectionMetricsSnapshot GetVectorCollectionSnapshot(string collection)
     {
         if (!perCollection.TryGetValue(collection, out var counter))
         {
             return new VectorCollectionMetricsSnapshot(collection, 0, 0);
         }
-        var queries = Interlocked.Read(ref counter.Queries);
-        var micros = Interlocked.Read(ref counter.QueryLatencyMicrosTotal);
-        var avgMs = queries == 0 ? 0.0 : micros / (double)queries / 1000.0;
-        return new VectorCollectionMetricsSnapshot(collection, queries, avgMs);
+        return SnapshotOf(collection, counter);
     }
 
     public MetricsSnapshot Snapshot(DateTimeOffset now)
@@ -120,13 +142,7 @@ public sealed class Metrics
             .ToArray();
 
         var perCollectionSnapshot = perCollection
-            .Select(pair =>
-            {
-                var queries = Interlocked.Read(ref pair.Value.Queries);
-                var micros = Interlocked.Read(ref pair.Value.QueryLatencyMicrosTotal);
-                var avgMs = queries == 0 ? 0.0 : micros / (double)queries / 1000.0;
-                return new VectorCollectionMetricsSnapshot(pair.Key, queries, avgMs);
-            })
+            .Select(pair => SnapshotOf(pair.Key, pair.Value))
             .OrderBy(snapshot => snapshot.Collection, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
@@ -150,6 +166,24 @@ public sealed class Metrics
             Interlocked.Read(ref vectorUnderReplicated),
             perNodeSnapshot,
             perCollectionSnapshot);
+    }
+
+    private static VectorCollectionMetricsSnapshot SnapshotOf(string collection, VectorCollectionCounter counter)
+    {
+        var queries = Interlocked.Read(ref counter.Queries);
+        var micros = Interlocked.Read(ref counter.QueryLatencyMicrosTotal);
+        var avgMs = queries == 0 ? 0.0 : micros / (double)queries / 1000.0;
+        var lastIngestTicks = Interlocked.Read(ref counter.LastIngestAtTicks);
+
+        return new VectorCollectionMetricsSnapshot(
+            collection,
+            queries,
+            avgMs,
+            Interlocked.Read(ref counter.DocumentsIngested),
+            Interlocked.Read(ref counter.ChunksEmbedded),
+            Interlocked.Read(ref counter.IngestionFailures),
+            lastIngestTicks == 0 ? null : new DateTimeOffset(lastIngestTicks, TimeSpan.Zero),
+            counter.LastEmbeddingModel);
     }
 
     private void DecrementInFlight()
@@ -180,6 +214,11 @@ public sealed class Metrics
     {
         public long Queries;
         public long QueryLatencyMicrosTotal;
+        public long DocumentsIngested;
+        public long ChunksEmbedded;
+        public long IngestionFailures;
+        public long LastIngestAtTicks;
+        public volatile string? LastEmbeddingModel;
     }
 }
 
@@ -209,7 +248,18 @@ public sealed record NodeMetricsSnapshot(
     long RequestsCompleted,
     long RequestsFailed);
 
+/// <summary>
+/// Per-collection counters. <see cref="DocumentsIngested"/> and <see cref="ChunksEmbedded"/> count
+/// what this coordinator has done **since it started** — they are not a census of what is in the
+/// store, and a restart resets them to zero exactly like every other counter here. The store's own
+/// count is on the documents endpoint, which reads it.
+/// </summary>
 public sealed record VectorCollectionMetricsSnapshot(
     string Collection,
     long Queries,
-    double QueryLatencyAvgMs);
+    double QueryLatencyAvgMs,
+    long DocumentsIngested = 0,
+    long ChunksEmbedded = 0,
+    long IngestionFailures = 0,
+    DateTimeOffset? LastIngestAtUtc = null,
+    string? LastEmbeddingModel = null);

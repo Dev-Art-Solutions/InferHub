@@ -28,7 +28,7 @@ public class RetrievalPipelineTests
         var outcome = await pipeline.AugmentChatAsync(rawJson, request, new RetrievalRequest("docs", null, null), CancellationToken.None);
 
         Assert.True(outcome.WasAugmented);
-        Assert.Contains("a", outcome.SourceIds);
+        Assert.Contains(outcome.Sources, s => s.Id == "a");
 
         var augmented = JsonSerializer.Deserialize<ChatRequest>(outcome.RawJson)!;
         Assert.NotNull(augmented.Messages);
@@ -96,7 +96,7 @@ public class RetrievalPipelineTests
         var outcome = await pipeline.AugmentChatAsync(rawJson, request, new RetrievalRequest("nope", null, null), CancellationToken.None);
 
         Assert.False(outcome.WasAugmented);
-        Assert.Empty(outcome.SourceIds);
+        Assert.Empty(outcome.Sources);
         Assert.Equal(rawJson, outcome.RawJson);
     }
 
@@ -136,7 +136,7 @@ public class RetrievalPipelineTests
         var outcome = await pipeline.AugmentChatAsync(rawJson, request, new RetrievalRequest("docs", K: 10, Model: null), CancellationToken.None);
 
         Assert.True(outcome.WasAugmented);
-        Assert.Equal(2, outcome.SourceIds.Count);
+        Assert.Equal(2, outcome.Sources.Count);
     }
 
     [Fact]
@@ -171,7 +171,7 @@ public class RetrievalPipelineTests
         var outcome = await pipeline.AugmentChatAsync(rawJson, request, new RetrievalRequest("empty", null, null), CancellationToken.None);
 
         Assert.False(outcome.WasAugmented);
-        Assert.Empty(outcome.SourceIds);
+        Assert.Empty(outcome.Sources);
         Assert.Equal(rawJson, outcome.RawJson);
     }
 

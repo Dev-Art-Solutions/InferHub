@@ -1,3 +1,4 @@
+using InferHub.Coordinator.Ingestion;
 using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Vector.Postgres;
 using Microsoft.Extensions.Configuration;
@@ -64,6 +65,26 @@ public static class VectorStoreServiceCollectionExtensions
 
         // RAG works in both modes; keep it outside the provider branch.
         services.AddSingleton<RetrievalPipeline>();
+
+        AddIngestion(services, configuration);
         return services;
+    }
+
+    /// <summary>
+    /// Ingestion (phase 23) lives inside the vector-store branch on purpose: it writes to the
+    /// vector store and nowhere else (D1), so with no store there is nothing for it to do and no
+    /// reason for its services to exist. It is provider-agnostic — everything it touches is behind
+    /// <see cref="IVectorStore"/> and <c>IEmbeddingDispatcher</c>.
+    /// </summary>
+    private static void AddIngestion(IServiceCollection services, IConfiguration configuration)
+    {
+        services.Configure<IngestionOptions>(configuration.GetSection(IngestionOptions.SectionName));
+        services.AddSingleton<IValidateOptions<IngestionOptions>, IngestionOptionsValidator>();
+        services.AddOptions<IngestionOptions>().ValidateOnStart();
+
+        services.AddSingleton<IPdfTextExtractor, PdfTextExtractor>();
+        services.AddSingleton<TextExtractor>();
+        services.AddSingleton<DocumentIndex>();
+        services.AddSingleton<IngestionPipeline>();
     }
 }

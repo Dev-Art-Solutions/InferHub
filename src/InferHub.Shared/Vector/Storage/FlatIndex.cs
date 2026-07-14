@@ -100,7 +100,11 @@ public sealed class FlatIndex
         return matches;
     }
 
-    private static bool MatchesFilter(IReadOnlyDictionary<string, string>? metadata, IReadOnlyDictionary<string, string> filter)
+    /// <summary>
+    /// Exact-match-on-every-key metadata filter — the same semantics a query filter has, exposed
+    /// so scans and filtered deletes cannot drift into a second interpretation of "matches".
+    /// </summary>
+    public static bool MatchesFilter(IReadOnlyDictionary<string, string>? metadata, IReadOnlyDictionary<string, string> filter)
     {
         if (metadata is null) return false;
         foreach (var pair in filter)

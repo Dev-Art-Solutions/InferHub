@@ -99,6 +99,62 @@ public class VectorProviderParityTests : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// Phase 23's seam has to mean the same thing under both engines, because the document model is
+    /// built entirely on top of it: a scan that paged differently, or a filtered delete that matched
+    /// differently, would give the two providers two different ideas of what a document *is*.
+    /// </summary>
+    [PostgresFact]
+    public async Task ScanAndFilteredDeleteAgreeAcrossProviders()
+    {
+        var data = new (string Id, string Doc)[]
+        {
+            ("c3", "handbook"),
+            ("a1", "handbook"),
+            ("b2", "policy"),
+            ("d4", "handbook"),
+        };
+
+        using var local = NewLocal("cosine");
+        await local.CreateCollectionAsync("docs", 3, "cosine");
+
+        var pgName = "p_" + Guid.NewGuid().ToString("N")[..12];
+        _created.Add(pgName);
+        await _pg.CreateCollectionAsync(pgName, 3, "cosine");
+
+        foreach (var (id, doc) in data)
+        {
+            var upsert = new VectorUpsert(id, [1f, 0f, 0f], Metadata: new Dictionary<string, string> { ["documentId"] = doc });
+            await local.UpsertAsync("docs", upsert);
+            await _pg.UpsertAsync(pgName, upsert);
+        }
+
+        var filter = new Dictionary<string, string> { ["documentId"] = "handbook" };
+
+        // Unfiltered scan: same records, same id order.
+        var localAll = await local.ScanAsync("docs", null, limit: 10);
+        var pgAll = await _pg.ScanAsync(pgName, null, limit: 10);
+        Assert.Equal(localAll.Select(e => e.Id).ToArray(), pgAll.Select(e => e.Id).ToArray());
+
+        // Same cursor semantics: afterId is exclusive, ordering is by id.
+        var localPage = await local.ScanAsync("docs", null, limit: 2, afterId: localAll[0].Id);
+        var pgPage = await _pg.ScanAsync(pgName, null, limit: 2, afterId: pgAll[0].Id);
+        Assert.Equal(localPage.Select(e => e.Id).ToArray(), pgPage.Select(e => e.Id).ToArray());
+
+        // Same filter semantics.
+        var localFiltered = await local.ScanAsync("docs", filter, limit: 10);
+        var pgFiltered = await _pg.ScanAsync(pgName, filter, limit: 10);
+        Assert.Equal(["a1", "c3", "d4"], localFiltered.Select(e => e.Id).ToArray());
+        Assert.Equal(localFiltered.Select(e => e.Id).ToArray(), pgFiltered.Select(e => e.Id).ToArray());
+
+        // Same delete semantics, and the same count back.
+        Assert.Equal(3, await local.DeleteByFilterAsync("docs", filter));
+        Assert.Equal(3, await _pg.DeleteByFilterAsync(pgName, filter));
+
+        Assert.Equal(["b2"], (await local.ScanAsync("docs", null, limit: 10)).Select(e => e.Id).ToArray());
+        Assert.Equal(["b2"], (await _pg.ScanAsync(pgName, null, limit: 10)).Select(e => e.Id).ToArray());
+    }
+
     private LocalVectorStore NewLocal(string distance)
     {
         var opts = Options.Create(new VectorStoreOptions

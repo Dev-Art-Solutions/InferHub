@@ -23,6 +23,11 @@
   let latestStatus = null;
   let collectionsPollHandle = null;
 
+  // The documents panel talks to the *client*-scoped API (Auth:ApiKeys), so it holds its own key.
+  let clientKey = null;
+  let documentsCollection = null;
+  let documentsCollectionsSignature = "";
+
   const VECTOR_FEED_MAX = 40;
   const vectorFeed = [];    // newest first
 
@@ -403,6 +408,7 @@
       renderStats(latestStatus.metrics);
       renderModels(latestStatus.models);
       renderCollections(latestStatus.vector);
+      syncDocumentCollections(latestStatus.vector);
     }
     renderNodes(latestNodes ?? []);
     renderVectorFeed();
@@ -727,6 +733,254 @@
       if (action === "rebuild") rebuildCollection(collection);
     });
   }
+
+  // ---------------------------------------------------------------- documents (phase 23)
+  //
+  // Ingestion is a *client* action, not an admin one, so it is guarded by Auth:ApiKeys rather
+  // than Auth:AdminApiKeys. That means this panel needs its own key: the admin key the rest of
+  // the console holds will not open it. On loopback with the default config neither is required
+  // and both prompts stay out of the way.
+
+  const clientHeaders = (extra) => {
+    const h = { "Accept": "application/json" };
+    if (clientKey) h["Authorization"] = `Bearer ${clientKey}`;
+    return Object.assign(h, extra ?? {});
+  };
+
+  const setClientKey = (value) => {
+    clientKey = value && value.trim().length > 0 ? value.trim() : null;
+    const badge = document.getElementById("documents-key-state");
+    if (badge) badge.style.display = clientKey ? "" : "none";
+  };
+
+  const promptForClientKey = (reason) => {
+    const value = window.prompt(`${reason}\n\nEnter client bearer key (Auth:ApiKeys — not the admin key):`, "");
+    if (value === null) return false;
+    setClientKey(value);
+    return clientKey !== null;
+  };
+
+  // One place that turns a documents-API response into either data or a thrown, readable error —
+  // so the four callers below cannot each invent their own idea of what a 401 or a 404 means.
+  const documentsFetch = async (path, init, retryOn401 = true) => {
+    const res = await fetch(`/api/collections/${encodeURIComponent(documentsCollection)}/documents${path}`, {
+      ...init,
+      headers: clientHeaders(init?.headers)
+    });
+
+    if (res.status === 401 && retryOn401) {
+      if (!promptForClientKey("Client key required or invalid.")) return null;
+      return documentsFetch(path, init, false);
+    }
+    if (res.status === 204) return {};
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try { const body = await res.json(); if (body?.error) detail = body.error; } catch { }
+      throw new Error(detail);
+    }
+    return res.json();
+  };
+
+  const renderDocuments = (documents) => {
+    const tbody = document.getElementById("documents");
+    const summary = document.getElementById("documents-summary");
+    if (!tbody) return;
+
+    if (!documents || documents.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="7" class="empty">No documents in this collection yet.</td></tr>`;
+      if (summary) summary.textContent = "0 documents";
+      return;
+    }
+
+    const chunks = documents.reduce((sum, d) => sum + (d.chunks ?? 0), 0);
+    if (summary) {
+      summary.textContent = `${documents.length} document${documents.length === 1 ? "" : "s"} · ${chunks} chunk${chunks === 1 ? "" : "s"}`;
+    }
+
+    tbody.innerHTML = documents.map(d => {
+      const partial = d.status === "partial";
+      const id = encodeURIComponent(d.id);
+      return `
+        <tr${partial ? ` class="row-error"` : ""}>
+          <td><code>${escapeHtml(d.id)}</code>${d.source && d.source !== d.id ? `<div class="meta">${escapeHtml(d.source)}</div>` : ""}</td>
+          <td>${d.chunks ?? 0}</td>
+          <td>${fmtBytes(d.bytes ?? 0)}</td>
+          <td>${escapeHtml(d.mediaType ?? "—")}</td>
+          <td class="meta">${d.ingestedAt ? new Date(d.ingestedAt).toLocaleString() : "—"}</td>
+          <td>${partial
+            ? `<span class="pill pill-warn">partial</span>`
+            : `<span class="pill pill-ok">complete</span>`}</td>
+          <td><div class="actions">
+            <button data-daction="preview" data-doc="${id}">Preview</button>
+            <button class="danger" data-daction="delete" data-doc="${id}">Delete</button>
+          </div></td>
+        </tr>
+        <tr id="preview-${id}" style="display:none"><td colspan="7" style="padding:0"><div class="chunk-list"></div></td></tr>`;
+    }).join("");
+  };
+
+  const refreshDocuments = async () => {
+    if (!documentsCollection) {
+      renderDocuments([]);
+      return;
+    }
+    try {
+      const body = await documentsFetch("");
+      if (body) renderDocuments(body.documents ?? []);
+    } catch (err) {
+      toast("Could not list documents", `${documentsCollection}: ${err.message}`, "err");
+    }
+  };
+
+  const previewDocument = async (documentId) => {
+    const row = document.getElementById(`preview-${encodeURIComponent(documentId)}`);
+    if (!row) return;
+
+    if (row.style.display !== "none") {
+      row.style.display = "none";
+      return;
+    }
+
+    try {
+      const body = await documentsFetch(`/${encodeURIComponent(documentId)}/chunks`);
+      if (!body) return;
+
+      const list = row.querySelector(".chunk-list");
+      list.innerHTML = (body.chunks ?? []).map(c => `
+        <div class="chunk-preview">
+          <div class="chunk-head">chunk ${escapeHtml(c.index ?? "?")}${c.page ? ` · page ${escapeHtml(c.page)}` : ""} · <code>${escapeHtml((c.id ?? "").slice(0, 12))}…</code></div>
+          <div class="chunk-text">${escapeHtml(c.text ?? "")}</div>
+        </div>`).join("");
+      row.style.display = "";
+    } catch (err) {
+      toast("Could not read chunks", `${documentId}: ${err.message}`, "err");
+    }
+  };
+
+  const deleteDocument = async (documentId) => {
+    if (!window.confirm(`Delete "${documentId}" from "${documentsCollection}"?\n\nEvery chunk of it is removed from the vector store.`)) return;
+    try {
+      const body = await documentsFetch(`/${encodeURIComponent(documentId)}`, { method: "DELETE" });
+      if (!body) return;
+      toast("Document deleted", `${documentId} · ${body.chunks ?? 0} chunks removed`, "ok");
+      await refreshDocuments();
+      pollStatusNow();
+    } catch (err) {
+      toast("Delete failed", `${documentId}: ${err.message}`, "err");
+    }
+  };
+
+  const uploadDocument = async (file) => {
+    if (!documentsCollection) {
+      toast("No collection selected", "Create a vector collection first.", "warn");
+      return;
+    }
+
+    const zone = document.getElementById("documents-drop");
+    zone?.classList.add("busy");
+    const form = new FormData();
+    form.append("file", file);
+
+    try {
+      // A 500 with status=partial is the honest outcome of a run that embedded some chunks and
+      // then lost the fleet — the document is really there, in part, and saying "uploaded" would
+      // be the lie this whole feature is written to avoid.
+      const res = await fetch(`/api/collections/${encodeURIComponent(documentsCollection)}/documents`, {
+        method: "POST",
+        headers: clientKey ? { "Authorization": `Bearer ${clientKey}` } : {},
+        body: form
+      });
+
+      if (res.status === 401) {
+        if (promptForClientKey("Client key required or invalid.")) await uploadDocument(file);
+        return;
+      }
+
+      const body = await res.json().catch(() => null);
+
+      if (res.ok && body?.status === "unchanged") {
+        toast("Already ingested", `${body.documentId} — identical bytes, no work done`, "ok");
+      } else if (res.ok) {
+        toast("Document ingested", `${body.documentId} · ${body.chunks} chunks embedded`, "ok");
+      } else if (body?.status === "partial") {
+        toast("Partially ingested",
+          `${body.documentId} · ${body.chunksEmbedded}/${body.chunks} chunks — ${body.error ?? "embedding failed"}`, "err");
+      } else {
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
+
+      await refreshDocuments();
+      pollStatusNow();
+    } catch (err) {
+      toast("Ingest failed", `${file.name}: ${err.message}`, "err");
+    } finally {
+      zone?.classList.remove("busy");
+    }
+  };
+
+  // Collections come from the status poll; keep the picker in step with them without stamping
+  // on whatever the operator has currently selected.
+  const syncDocumentCollections = (vector) => {
+    const section = document.getElementById("documents-section");
+    const select = document.getElementById("documents-collection");
+    if (!section || !select) return;
+
+    const names = (vector?.collections ?? []).map(c => c.name);
+    section.style.display = names.length > 0 ? "" : "none";
+    if (names.length === 0) {
+      documentsCollection = null;
+      return;
+    }
+
+    const current = select.value;
+    const signature = names.join(" ");
+    if (signature !== documentsCollectionsSignature) {
+      documentsCollectionsSignature = signature;
+      select.innerHTML = names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
+      select.value = names.includes(current) ? current : names[0];
+    }
+
+    if (select.value !== documentsCollection) {
+      documentsCollection = select.value;
+      refreshDocuments();
+    }
+  };
+
+  document.getElementById("documents-collection")?.addEventListener("change", (event) => {
+    documentsCollection = event.target.value;
+    refreshDocuments();
+  });
+
+  document.getElementById("documents-refresh")?.addEventListener("click", refreshDocuments);
+
+  const dropzone = document.getElementById("documents-drop");
+  const fileInput = document.getElementById("documents-file");
+  if (dropzone && fileInput) {
+    dropzone.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files?.length) uploadDocument(fileInput.files[0]);
+      fileInput.value = "";
+    });
+    dropzone.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      dropzone.classList.add("over");
+    });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("over"));
+    dropzone.addEventListener("drop", (event) => {
+      event.preventDefault();
+      dropzone.classList.remove("over");
+      const file = event.dataTransfer?.files?.[0];
+      if (file) uploadDocument(file);
+    });
+  }
+
+  document.getElementById("documents")?.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-daction]");
+    if (!button) return;
+    const documentId = decodeURIComponent(button.dataset.doc);
+    if (button.dataset.daction === "preview") previewDocument(documentId);
+    if (button.dataset.daction === "delete") deleteDocument(documentId);
+  });
 
   document.getElementById("nodes").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-action]");

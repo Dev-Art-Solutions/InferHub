@@ -73,7 +73,10 @@ public static class StatusEndpoint
         if (store is null || replicas is null || options is null) return null;
 
         var collections = store.ListCollectionsAsync().GetAwaiter().GetResult();
-        return BuildVectorBlock(collections, replicas, nodes, options.Value.ReplicationFactor, options.Value.Provider);
+        return BuildVectorBlock(
+            collections, replicas, nodes,
+            options.Value.ReplicationFactor, options.Value.Provider,
+            services.GetService<Metrics>());
     }
 
     internal static VectorStatusBlock BuildVectorBlock(
@@ -81,7 +84,8 @@ public static class StatusEndpoint
         ReplicaRegistry replicas,
         IReadOnlyCollection<NodeSnapshot> nodes,
         int replicationFactor,
-        string provider = VectorStoreProviderExtensions.Local)
+        string provider = VectorStoreProviderExtensions.Local,
+        Metrics? metrics = null)
     {
         // Under postgres there is no node replication: placement is zeroed for every collection
         // so the replica formula can't false-flag under-replication against zero holders.
@@ -92,7 +96,8 @@ public static class StatusEndpoint
         {
             var postgresItems = collections.Select(c => new VectorStatusCollection(
                 c.Name, c.Dimension, c.Distance, c.RecordCount,
-                TargetReplicas: 0, LiveReplicas: 0, ReplicaNodes: Array.Empty<string>(), UnderReplicated: false)).ToArray();
+                TargetReplicas: 0, LiveReplicas: 0, ReplicaNodes: Array.Empty<string>(), UnderReplicated: false,
+                Ingestion: IngestionOf(metrics, c.Name))).ToArray();
             return new VectorStatusBlock(wire, postgresItems);
         }
 
@@ -117,10 +122,31 @@ public static class StatusEndpoint
                 target,
                 holderNodeIds.Length,
                 holderNodeIds,
-                holderNodeIds.Length < desired);
+                holderNodeIds.Length < desired,
+                IngestionOf(metrics, c.Name));
         }).ToArray();
 
         return new VectorStatusBlock(wire, items);
+    }
+
+    // Omitted entirely for a collection nothing has been ingested into this run — an all-zero
+    // block on every collection of a deployment that never uses ingestion is noise.
+    private static IngestionStatusBlock? IngestionOf(Metrics? metrics, string collection)
+    {
+        if (metrics is null) return null;
+
+        var snapshot = metrics.GetVectorCollectionSnapshot(collection);
+        if (snapshot.DocumentsIngested == 0 && snapshot.ChunksEmbedded == 0 && snapshot.IngestionFailures == 0)
+        {
+            return null;
+        }
+
+        return new IngestionStatusBlock(
+            snapshot.DocumentsIngested,
+            snapshot.ChunksEmbedded,
+            snapshot.IngestionFailures,
+            snapshot.LastIngestAtUtc,
+            snapshot.LastEmbeddingModel);
     }
 
     private sealed record StatusResponse(
@@ -165,5 +191,20 @@ public static class StatusEndpoint
         int TargetReplicas,
         int LiveReplicas,
         IReadOnlyList<string> ReplicaNodes,
-        bool UnderReplicated);
+        bool UnderReplicated,
+        IngestionStatusBlock? Ingestion = null);
+
+    /// <summary>
+    /// What this coordinator has ingested into the collection **since it started**. The names say
+    /// "ingested"/"embedded" rather than "documents"/"chunks" because that is what they are: a
+    /// restart zeroes them, exactly like every other counter in <c>Metrics</c>. The collection's
+    /// real chunk count is <c>recordCount</c> above, and its real document count is whatever
+    /// <c>GET /api/collections/{name}/documents</c> reads back.
+    /// </summary>
+    internal sealed record IngestionStatusBlock(
+        long DocumentsIngested,
+        long ChunksEmbedded,
+        long Failures,
+        DateTimeOffset? LastIngestAtUtc,
+        string? EmbeddingModel);
 }

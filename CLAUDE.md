@@ -65,6 +65,11 @@ into `appsettings.json`.
   The DTOs and the shape mappers moved to
   [InferHub.Shared/OpenAi/](src/InferHub.Shared/OpenAi/) in phase 22, because the node drives
   the same dialect *upstream*.
+- [Ingestion/](src/InferHub.Coordinator/Ingestion/) — document ingestion (phase 23):
+  `TextExtractor` (text/Markdown/HTML/JSON, and PDF via `IPdfTextExtractor`), `Chunker`,
+  `IngestionPipeline` (extract → chunk → batch → embed on the fleet → upsert), and `DocumentIndex`,
+  which is the *only* place that knows how to read a set of chunks back as a document. Registered
+  inside `AddInferHubVectorStore` — with no vector store there is nothing to ingest into.
 - [Services/](src/InferHub.Coordinator/Services/) — `INodeRegistry` (the source of
   truth for connected nodes; raises `Changed` events the SSE stream listens to),
   `IRouter` (least-busy + sticky affinity, skips cordoned nodes), `IDispatcher` (job
@@ -165,11 +170,18 @@ as load-bearing:
    stop and rethink. The default is `Enabled=false`, so deployments that don't opt in keep the
    original no-persistence contract unchanged.
 5. **No new heavy dependencies.** The dependency surface is deliberately minimal (ASP.NET Core,
-   SignalR, OllamaClient on the node, xunit for tests). The one recorded exception is phase 20's
-   **`Npgsql` + `Pgvector`**, which back the `postgres` vector provider: coordinator-only (never
-   in `InferHub.Shared` or `InferHub.Node`), and no connection is opened unless
-   `VectorStore:Enabled=true` **and** `VectorStore:Provider=postgres`. That was a conscious,
-   provider-scoped decision — the rule still holds for everything else. Add packages reluctantly.
+   SignalR, OllamaClient on the node, xunit for tests). There are exactly **two** recorded
+   exceptions, both coordinator-only, both feature-scoped, both inert unless the feature is on:
+   - **`Npgsql` + `Pgvector`** (phase 20) back the `postgres` vector provider. No connection is
+     opened unless `VectorStore:Enabled=true` **and** `VectorStore:Provider=postgres`.
+   - **`PdfPig`** (phase 23) backs PDF text extraction. It lives behind `IPdfTextExtractor`, is
+     referenced by exactly one file
+     ([PdfTextExtractor.cs](src/InferHub.Coordinator/Ingestion/PdfTextExtractor.cs)), and no code
+     path reaches it unless a PDF is actually uploaded. Hand-rolling a PDF text-layer parser is a
+     bad use of a week; taking a second-rate dependency into `InferHub.Shared` would be worse.
+
+   Neither is in `InferHub.Shared` or `InferHub.Node`, and the rule still holds for everything
+   else. Add packages reluctantly, and record them here when you do.
 6. **The node-facing job protocol is Ollama-shaped. Client-facing and upstream-facing
    dialects are translations at the boundary.** `InferenceJob.RawJson` crossing SignalR and
    `InferenceChunk.ResponseJson` coming back are both Ollama JSON, always — that is the one
@@ -267,6 +279,89 @@ that speaks it, and **both** the node's `OpenAiBackend` and the coordinator's
 **Rule 5 survived again.** Phase 22 added **zero** new dependencies: `HttpClient` and
 `System.Net.Http.Json` ship in the shared framework, and the SSE *parser* is written by hand
 just as the SSE *writer* was in phase 21.
+
+### Phase 23 (document ingestion) — also load-bearing
+
+**D1 — Ingestion writes to the vector store and nowhere else.** There is no documents table, no
+blob directory, no second lifecycle. **A document *is* the set of chunks sharing a `documentId` in
+their metadata**, and [DocumentIndex](src/InferHub.Coordinator/Ingestion/DocumentIndex.cs) is the
+only thing that knows how to read that set back as a document. Rule 4 survives untouched. This is
+what phase 23's two additions to `IVectorStore` are *for*:
+
+- `ScanAsync(collection, filter, limit, afterId)` — metadata scan, ordered by id, **without the
+  embeddings** (hence `VectorEntry`, a record minus its vector: "not fetched" must not be
+  confusable with "not there").
+- `DeleteByFilterAsync(collection, filter)` — bulk delete by metadata; the filter must be
+  non-empty, because an empty one means `DropCollectionAsync` and nobody should reach that by
+  accident.
+
+Both providers implement both, and `VectorProviderParityTests` proves they agree — if the two
+engines disagreed about what a scan or a filtered delete matches, they would have two different
+ideas of what a document *is*.
+
+> **`LocalVectorStore.DeleteByFilterAsync` deliberately loops over the ordinary per-id delete**
+> instead of doing a bulk removal under the lock. The per-id path is what appends to the raw store
+> and raises `RecordDeleted`, and `RecordDeleted` is the *only* way the deletion reaches the node
+> replicas. A faster bulk delete would leave every node in the fleet still serving the chunks of a
+> document the hub thinks is gone — and a node replica answers reads *before* the hub does.
+
+**D2 — The original document is not retained.** Chunk text, a content hash, and metadata. Not the
+file. A retrieval system that quietly becomes a document store has two sources of truth and a
+data-retention question its owner never agreed to answer.
+
+**D3 — PDF costs one dependency, scoped and recorded.** See rule 5.
+
+**D4 — No OCR, ever. Fail loudly instead.** A PDF whose text layer yields under ~50 characters per
+page is rejected with an error that says it looks like a scan. Bolting on OCR would produce
+something that *usually* works — and a bad extraction does not fail, it succeeds quietly and fills
+the corpus with near-gibberish that retrieves plausible nonsense, surfacing months later as a model
+that is subtly, unaccountably wrong. `PdfExtractionTests` builds **real** PDFs and parses them back;
+keep it that way, because a stub cannot reach the part this dependency was spent on.
+
+**D5 — Chunk ids are deterministic:** `sha256(documentId + ":" + chunkIndex)`. Re-ingesting replaces
+chunks in place rather than layering a second copy underneath the first, and a citation minted last
+month still points at the same chunk.
+
+> **Deterministic ids make re-ingest idempotent; they do not make a document *shrink*.** A revision
+> that chunks into fewer pieces leaves the old tail chunks behind — their indices no longer exist,
+> so nothing overwrote them, and a stale chunk retrieves as confidently as a live one.
+> `IngestionPipeline.DeleteStaleChunksAsync` is what sweeps them, *after* the new chunks land, so
+> there is no window in which the document is absent.
+
+**D6 — Embedding runs through the fleet.** `IEmbeddingDispatcher`, the same one that serves
+`/api/embed`. The coordinator grows no embedding path of its own. Batches are bounded by
+`Ingestion:EmbeddingBatchSize`, so a 300-page PDF queues behind itself instead of filling the fleet's
+job queues and starving interactive chat.
+
+**A partial ingest is a failure, and says so.** A run that embeds some chunks and then loses the
+fleet returns **HTTP 500** with `status: "partial"` and the chunk counts. The chunks that landed are
+real and visible, and re-posting the same bytes *resumes* rather than no-ops — the content-hash
+short-circuit deliberately does not fire on a `partial` document, because "you already have this"
+would be a lie about a document that is half-missing. A half-ingested document that claims success
+is worse than a failure.
+
+*Deviations from the phase brief, recorded on purpose:*
+- **There is no `status` key in chunk metadata.** A document is `partial` when the chunks actually
+  in the store are fewer than the `chunkCount` its chunks claim — derived at read time. Writing a
+  status onto the chunks would mean rewriting all of them when the verdict changed, and would let
+  the stored status drift from the stored chunks: the one thing a partial marker exists to prevent.
+- **`/api/status`'s per-collection ingestion block reports `documentsIngested` / `chunksEmbedded`,
+  not "document count" / "chunk count".** They are since-start counters that a restart zeroes, like
+  everything else in `Metrics`, and naming them as a census would be a quiet lie. The real chunk
+  count is `recordCount`; the real document count is what `GET /api/collections/{c}/documents` reads
+  back out of the store.
+
+**The ingest endpoints are client-scoped, not admin.** `/api/collections/{c}/documents` sits under
+the `Auth:ApiKeys` bearer guard. Ingesting is a client action; forcing an admin key on it would push
+people toward using one key for everything, which is worse for them than the split it was meant to
+protect. The console's documents panel therefore holds its **own** client key — the admin key the
+rest of the console uses will not open it.
+
+**`X-InferHub-Sources` changed shape in v2.5.0** — from `["chunkId", ...]` to
+`[{"id":..., "documentId":..., "page":...}, ...]`. A chunk id alone tells the reader nothing about
+where the answer came from, and a citation that cannot name a document and a page is not a citation.
+`documentId` and `page` are omitted (not null) for records written straight through `/api/vector`,
+which never had a document.
 
 ## Auth model (three independent token sets)
 

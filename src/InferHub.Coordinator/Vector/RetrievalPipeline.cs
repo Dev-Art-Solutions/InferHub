@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.Json.Nodes;
 using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
@@ -58,7 +59,7 @@ public sealed class RetrievalPipeline(
         }
 
         var augmentedJson = InjectContextIntoChat(rawJson, matches);
-        return new RetrievalOutcome(augmentedJson, matches.Select(m => m.Id).ToArray(), WasAugmented: true);
+        return new RetrievalOutcome(augmentedJson, matches.Select(ToSource).ToArray(), WasAugmented: true);
     }
 
     public async Task<RetrievalOutcome> AugmentGenerateAsync(
@@ -85,7 +86,7 @@ public sealed class RetrievalPipeline(
         }
 
         var augmentedJson = InjectContextIntoGenerate(rawJson, matches);
-        return new RetrievalOutcome(augmentedJson, matches.Select(m => m.Id).ToArray(), WasAugmented: true);
+        return new RetrievalOutcome(augmentedJson, matches.Select(ToSource).ToArray(), WasAugmented: true);
     }
 
     private async Task<IReadOnlyList<VectorMatch>?> RetrieveAsync(
@@ -136,7 +137,27 @@ public sealed class RetrievalPipeline(
     }
 
     private static RetrievalOutcome Passthrough(string rawJson)
-        => new(rawJson, Array.Empty<string>(), WasAugmented: false);
+        => new(rawJson, Array.Empty<RetrievalSource>(), WasAugmented: false);
+
+    /// <summary>
+    /// Lift the chunk's provenance out of its metadata. Chunks written by ingestion carry a
+    /// documentId, and PDF chunks carry the page they were lifted from; records upserted straight
+    /// into the vector store carry neither, and the citation is simply the id.
+    /// </summary>
+    private static RetrievalSource ToSource(VectorMatch match)
+    {
+        if (match.Metadata is not { } metadata)
+        {
+            return new RetrievalSource(match.Id);
+        }
+
+        metadata.TryGetValue("documentId", out var documentId);
+        var page = metadata.TryGetValue("page", out var raw) && int.TryParse(raw, out var parsed)
+            ? parsed
+            : (int?)null;
+
+        return new RetrievalSource(match.Id, documentId, page);
+    }
 
     internal static string? ExtractChatQueryText(ChatRequest request)
     {
@@ -231,6 +252,22 @@ public sealed class RetrievalPipeline(
 
 public sealed record RetrievalRequest(string Collection, int? K, string? Model);
 
-public sealed record RetrievalOutcome(string RawJson, IReadOnlyList<string> SourceIds, bool WasAugmented);
+/// <summary>
+/// One retrieved chunk, as it appears in the <c>X-InferHub-Sources</c> header. Since v2.5 the
+/// header carries objects rather than bare id strings: a chunk id alone identifies the row we
+/// retrieved but tells the reader nothing about <em>where it came from</em>, and a citation that
+/// cannot name a document and a page is not a citation. <see cref="DocumentId"/> and
+/// <see cref="Page"/> are absent for records written directly through <c>/api/vector</c>, which
+/// never had a document.
+/// </summary>
+public sealed record RetrievalSource(
+    [property: JsonPropertyName("id")] string Id,
+    // Declared on the record rather than left to the caller's serializer options: this record is
+    // serialized into a *header*, by two different endpoint files, and a stray "page":null on every
+    // citation from a text file is the kind of thing that only one of them would have remembered.
+    [property: JsonPropertyName("documentId"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? DocumentId = null,
+    [property: JsonPropertyName("page"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Page = null);
+
+public sealed record RetrievalOutcome(string RawJson, IReadOnlyList<RetrievalSource> Sources, bool WasAugmented);
 
 public sealed class RetrievalUnavailableException(string message) : InvalidOperationException(message);

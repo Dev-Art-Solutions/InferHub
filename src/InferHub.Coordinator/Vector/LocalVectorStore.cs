@@ -218,6 +218,70 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
         }
     }
 
+    public Task<IReadOnlyList<VectorEntry>> ScanAsync(
+        string collection,
+        IReadOnlyDictionary<string, string>? filter,
+        int limit,
+        string? afterId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var entry = RequireCollection(collection);
+        if (limit < 1) return Task.FromResult<IReadOnlyList<VectorEntry>>([]);
+
+        List<VectorEntry> page;
+        lock (entry.WriteLock)
+        {
+            var live = entry.Index.EnumerateLive().AsEnumerable();
+
+            if (filter is { Count: > 0 })
+            {
+                live = live.Where(r => FlatIndex.MatchesFilter(r.Metadata, filter));
+            }
+
+            if (afterId is not null)
+            {
+                live = live.Where(r => string.CompareOrdinal(r.Id, afterId) > 0);
+            }
+
+            page = live
+                .OrderBy(r => r.Id, StringComparer.Ordinal)
+                .Take(limit)
+                .Select(r => new VectorEntry(r.Id, r.Payload, r.Metadata, r.SeqNo, r.TimestampUtc))
+                .ToList();
+        }
+
+        return Task.FromResult<IReadOnlyList<VectorEntry>>(page);
+    }
+
+    public async Task<int> DeleteByFilterAsync(
+        string collection,
+        IReadOnlyDictionary<string, string> filter,
+        CancellationToken cancellationToken = default)
+    {
+        var entry = RequireCollection(collection);
+        if (filter.Count == 0) throw new ArgumentException("filter must not be empty", nameof(filter));
+
+        List<string> ids;
+        lock (entry.WriteLock)
+        {
+            ids = entry.Index.EnumerateLive()
+                .Where(r => FlatIndex.MatchesFilter(r.Metadata, filter))
+                .Select(r => r.Id)
+                .ToList();
+        }
+
+        // Deliberately routed through the ordinary per-id delete rather than a bulk path inside
+        // the lock: that is what appends to the raw store and raises RecordDeleted, which is how
+        // the deletion reaches the node replicas. A "faster" bulk delete here would leave every
+        // replica in the fleet still serving the chunks of a document the hub thinks is gone.
+        var deleted = 0;
+        foreach (var id in ids)
+        {
+            if (await DeleteAsync(collection, id, cancellationToken)) deleted++;
+        }
+        return deleted;
+    }
+
     public ReplicaSnapshot? SnapshotForReplica(string collection)
     {
         if (!_collections.TryGetValue(collection, out var entry))
