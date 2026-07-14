@@ -334,7 +334,7 @@ public static class OpenAiEndpoints
             return (ollamaJson, null);
         }
 
-        return (outcome.RawJson, JsonSerializer.Serialize(outcome.SourceIds, JsonOptions));
+        return (outcome.RawJson, JsonSerializer.Serialize(outcome.Sources, JsonOptions));
     }
 
     private static async Task<T> ReadRequestAsync<T>(HttpRequest httpRequest, CancellationToken cancellationToken)

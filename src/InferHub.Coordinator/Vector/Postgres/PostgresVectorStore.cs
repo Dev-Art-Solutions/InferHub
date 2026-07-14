@@ -312,6 +312,78 @@ public sealed class PostgresVectorStore : IVectorStore
         }
     }
 
+    public async Task<IReadOnlyList<VectorEntry>> ScanAsync(
+        string collection,
+        IReadOnlyDictionary<string, string>? filter,
+        int limit,
+        string? afterId = null,
+        CancellationToken cancellationToken = default)
+    {
+        await RequireMetaAsync(collection, cancellationToken);
+        if (limit < 1) return Array.Empty<VectorEntry>();
+
+        var hasFilter = filter is { Count: > 0 };
+        var table = PostgresSchema.QualifiedTable(_pg.Schema, _pg.TablePrefix, collection);
+
+        // The embedding column is deliberately absent from the projection — a scan of a few
+        // thousand chunks would otherwise drag every vector across the wire to be discarded.
+        // `metadata @> @filter` rides the GIN index created with the table.
+        var sql =
+            $"SELECT id, payload, metadata, seq_no, updated_at FROM {table} " +
+            "WHERE (@filter IS NULL OR metadata @> @filter) " +
+            "AND (@after IS NULL OR id > @after) " +
+            $"ORDER BY id LIMIT {limit}";
+
+        try
+        {
+            await using var conn = await _dataSource.OpenConnectionAsync(cancellationToken);
+            await using var cmd = new NpgsqlCommand(sql, conn) { CommandTimeout = _commandTimeout };
+            cmd.Parameters.Add(JsonbParam("filter", hasFilter ? SerializeMetadata(filter) : null));
+            cmd.Parameters.Add(new NpgsqlParameter("after", NpgsqlDbType.Text) { Value = (object?)afterId ?? DBNull.Value });
+
+            var entries = new List<VectorEntry>();
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                entries.Add(new VectorEntry(
+                    reader.GetString(0),
+                    ReadPayload(reader, 1),
+                    ReadMetadata(reader, 2),
+                    reader.GetInt64(3),
+                    reader.GetFieldValue<DateTimeOffset>(4)));
+            }
+            return entries;
+        }
+        catch (PostgresException ex)
+        {
+            throw Translate(ex, collection);
+        }
+    }
+
+    public async Task<int> DeleteByFilterAsync(
+        string collection,
+        IReadOnlyDictionary<string, string> filter,
+        CancellationToken cancellationToken = default)
+    {
+        await RequireMetaAsync(collection, cancellationToken);
+        if (filter.Count == 0) throw new ArgumentException("filter must not be empty", nameof(filter));
+
+        var table = PostgresSchema.QualifiedTable(_pg.Schema, _pg.TablePrefix, collection);
+        var sql = $"DELETE FROM {table} WHERE metadata @> @filter";
+
+        try
+        {
+            await using var conn = await _dataSource.OpenConnectionAsync(cancellationToken);
+            await using var cmd = new NpgsqlCommand(sql, conn) { CommandTimeout = _commandTimeout };
+            cmd.Parameters.Add(JsonbParam("filter", SerializeMetadata(filter)));
+            return await cmd.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (PostgresException ex)
+        {
+            throw Translate(ex, collection);
+        }
+    }
+
     /// <summary>
     /// Load the whole registry into the metadata cache. Called by the bootstrapper at
     /// startup after the registry table is ensured. Returns the collection count.

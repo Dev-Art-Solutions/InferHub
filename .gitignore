@@ -65,3 +65,7 @@ secrets.json
 
 # Local node identity
 .inferhub-node-id
+
+# Vector-store data written by a coordinator or node run from source
+# (VectorStore:DataDirectory and Vector:ReplicaDirectory both default under ./data)
+src/*/data/

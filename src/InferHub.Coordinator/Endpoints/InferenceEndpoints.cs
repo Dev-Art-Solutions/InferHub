@@ -259,7 +259,7 @@ public static class InferenceEndpoints
             return (rawJson, Sources: null);
         }
 
-        var sources = JsonSerializer.Serialize(outcome.SourceIds, JsonOptions);
+        var sources = JsonSerializer.Serialize(outcome.Sources, JsonOptions);
         return (outcome.RawJson, Sources: sources);
     }
 

@@ -85,6 +85,7 @@ app.MapAdminEndpoints();
 if (vectorStoreEnabled)
 {
     app.MapVectorEndpoints(vectorSupportsReplication);
+    app.MapIngestionEndpoints();
 }
 
 app.MapHub<NodeHub>("/hubs/node");

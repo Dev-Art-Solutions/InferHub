@@ -105,6 +105,23 @@
     .feed-body code { background: rgba(255,255,255,0.06); }
     .replica-list { display: flex; flex-wrap: wrap; gap: 4px; max-width: 260px; }
     .replica-chip { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(78, 161, 255, 0.12); color: var(--accent); white-space: nowrap; }
+    .docs-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; font-size: 13px; }
+    select {
+      background: var(--panel); color: var(--text); border: 1px solid var(--panel-border);
+      border-radius: 6px; padding: 5px 10px; font-size: 12px; font-family: inherit;
+    }
+    .dropzone {
+      border: 1px dashed var(--panel-border); border-radius: 8px; padding: 22px;
+      text-align: center; color: var(--muted); font-size: 13px; margin-bottom: 12px;
+      background: var(--panel); cursor: pointer; transition: border-color 0.12s, background 0.12s;
+    }
+    .dropzone:hover, .dropzone.over { border-color: var(--accent); background: rgba(78, 161, 255, 0.05); color: var(--text); }
+    .dropzone.busy { border-style: solid; border-color: var(--accent); }
+    .dropzone .hint { display: block; font-size: 11px; margin-top: 6px; color: var(--muted); }
+    .chunk-preview { padding: 10px 14px; background: rgba(255,255,255,0.02); border-bottom: 1px solid var(--panel-border); }
+    .chunk-preview:last-child { border-bottom: none; }
+    .chunk-head { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+    .chunk-text { font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow-y: auto; }
     @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
     @media (max-width: 720px) {
       body { padding: 16px; }
@@ -193,6 +210,41 @@
           </tr>
         </thead>
         <tbody id="collections"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="documents-section" style="display:none">
+    <h2>Documents <span id="documents-key-state" class="pill pill-ok" style="display:none">client key set</span></h2>
+
+    <div class="docs-bar">
+      <label for="documents-collection">Collection</label>
+      <select id="documents-collection"></select>
+      <button id="documents-refresh">Refresh</button>
+      <span class="spacer"></span>
+      <span class="meta" id="documents-summary">—</span>
+    </div>
+
+    <div class="dropzone" id="documents-drop">
+      Drop a file here, or click to choose one
+      <span class="hint">text · Markdown · HTML · JSON · PDF (text layer only — scans are rejected, InferHub does not OCR)</span>
+      <input type="file" id="documents-file" style="display:none">
+    </div>
+
+    <div class="table-wrap">
+      <table id="documents-table">
+        <thead>
+          <tr>
+            <th>Document</th>
+            <th>Chunks</th>
+            <th>Size</th>
+            <th>Type</th>
+            <th>Ingested</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="documents"></tbody>
       </table>
     </div>
   </section>
