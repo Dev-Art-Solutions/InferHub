@@ -60,6 +60,10 @@ services:
       # This node reaches Ollama on the *host*. host.docker.internal works on Docker Desktop;
       # on plain Linux use http://172.17.0.1:11434/ (see .env.example).
       Ollama__Endpoint: "${OLLAMA_ENDPOINT:-http://host.docker.internal:11434/}"
+    volumes:
+      # Vector replicas the coordinator assigns to this node. Without it the node rebuilds every
+      # replica from the hub on each restart — correct, but a needless re-push of the whole corpus.
+      - node_replicas:/data/vector-replicas
     extra_hosts:
       # Makes host.docker.internal resolve on Linux too, where it isn't built in.
       - "host.docker.internal:host-gateway"
@@ -72,3 +76,4 @@ networks:
 
 volumes:
   coordinator_vectors:
+  node_replicas:

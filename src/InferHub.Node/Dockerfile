@@ -32,6 +32,14 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 WORKDIR /app
 COPY --from=build /app .
 
+# Same trap as the coordinator's (see its Dockerfile for the long version): `USER app` cannot
+# write /app, so the default ReplicaDirectory of ./data/vector-replicas resolves to /app/data and
+# the node fails the moment the coordinator assigns it a vector replica. The mkdir+chown is what
+# lets a named volume mounted here be writable too — Docker seeds a fresh volume's ownership from
+# the image's mount point, and a mount point that does not exist is created root-owned.
+RUN mkdir -p /data && chown app:app /data
+ENV Vector__ReplicaDirectory=/data/vector-replicas
+
 USER app
 
 ENTRYPOINT ["dotnet", "InferHub.Node.dll"]
