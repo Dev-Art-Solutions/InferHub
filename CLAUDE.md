@@ -222,6 +222,30 @@ network with a non-loopback source address. **API keys are mandatory in the comp
 unlike the bare-metal quickstart. This is correct, and it surprises people — the runbook
 says so out loud.
 
+**D7 — In a container, `/app` is not writable, and a fresh named volume inherits its mount
+point's ownership from the image.** (Found in v2.5.1, by pulling the published image on a clean
+machine — the only way this class of bug is ever found. It had been shipped and broken since v2.3.)
+
+Both images run `USER app`. `LocalVectorStore` and the node's `ReplicaStore` both call
+`Directory.CreateDirectory` on a path that defaults to `./data/...` → `/app/data`, which `app`
+cannot write: the coordinator **died at startup** the moment `VectorStore:Enabled=true`, and the
+node would have died the moment it was assigned a replica. Pointing a volume at it did not help
+either — Docker seeds a fresh named volume from the image's mount point *including its ownership*,
+and a mount point that does not exist in the image is created **root-owned**. So the documented
+compose stack was broken by the same root cause, and nobody noticed because
+`INFERHUB_VECTORS_ENABLED` defaults to `false`.
+
+The fix is **two lines in each Dockerfile, and both are load-bearing**:
+
+```dockerfile
+RUN mkdir -p /data && chown app:app /data      # makes the *volume* case work
+ENV VectorStore__DataDirectory=/data/vectors   # makes the *bare image* case work
+```
+
+Do not "simplify" either away. And when a release touches anything that writes to disk, **pull the
+published image and run it** — the unit tests and a from-source end-to-end both pass happily while
+the artefact users actually install is dead on arrival.
+
 **D6 — `ASPNETCORE_URLS` does not work here; set `Urls`.** `appsettings.json` pins
 `"Urls": "http://localhost:5080"`, and that layer *overrides* the `ASPNETCORE_`-prefixed
 provider (which loads into host config first). A container honouring `ASPNETCORE_URLS` would

@@ -37,6 +37,24 @@ COPY --from=build /app .
 # after appsettings.json) is what actually wins. Verified at runtime, not assumed.
 ENV Urls=http://+:8080
 
+# The vector store's writable home, and it has to be BOTH of these lines.
+#
+# `USER app` (below) cannot write /app, so the default DataDirectory of ./data/vectors resolves
+# to /app/data and the coordinator dies at startup with "Access to the path '/app/data' is
+# denied" the moment VectorStore:Enabled=true. Pointing the default at /data fixes the bare
+# image.
+#
+# The mkdir+chown is what fixes the *volume* case, and it is not optional either: Docker seeds a
+# fresh named volume from the image's contents at the mount point — including its ownership — and
+# a mount point that does not exist in the image is created root-owned, which `app` cannot write.
+# So `-v vol:/data` failed for exactly the same reason, which is why the documented compose stack
+# was broken too and nobody noticed: INFERHUB_VECTORS_ENABLED defaults to false.
+#
+# Verified by pulling the published image on a clean machine and enabling the store, which is the
+# only way this class of bug is ever found.
+RUN mkdir -p /data && chown app:app /data
+ENV VectorStore__DataDirectory=/data/vectors
+
 EXPOSE 8080
 
 # Non-root. The runtime image ships this user for exactly this purpose.
