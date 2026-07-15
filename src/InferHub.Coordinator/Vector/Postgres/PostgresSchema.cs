@@ -83,6 +83,18 @@ internal static partial class PostgresSchema
         !string.Equals(indexKind, "none", StringComparison.OrdinalIgnoreCase)
         && dimension is > 0 and <= MaxAnnDimension;
 
+    /// <summary>Text-search configuration used for the keyword index and its queries. English stemming
+    /// helps prose; the exact-identifier case rides on the unstemmed token still being present.</summary>
+    public const string TextSearchConfig = "english";
+
+    /// <summary>
+    /// A <c>tsvector</c> generated from the chunk text — the same <c>text</c>/<c>content</c> payload
+    /// convention <see cref="ChunkText"/> reads on the local side. <c>GENERATED ALWAYS ... STORED</c>
+    /// keeps it in lock-step with the row with no application write path, so it cannot drift.
+    /// </summary>
+    public static string ContentTsvExpression() =>
+        $"to_tsvector('{TextSearchConfig}', coalesce(payload->>'text', payload->>'content', ''))";
+
     public static string CreateTableSql(string schema, string prefix, string collection, int dimension)
     {
         var table = QualifiedTable(schema, prefix, collection);
@@ -93,8 +105,39 @@ internal static partial class PostgresSchema
             "    payload     jsonb NULL,\n" +
             "    metadata    jsonb NULL,\n" +
             "    seq_no      bigint NOT NULL,\n" +
-            "    updated_at  timestamptz NOT NULL DEFAULT now()\n" +
+            "    updated_at  timestamptz NOT NULL DEFAULT now(),\n" +
+            $"    content_tsv tsvector GENERATED ALWAYS AS ({ContentTsvExpression()}) STORED\n" +
             ");";
+    }
+
+    /// <summary>Add the keyword column to a collection that predates hybrid search (v2.6). Idempotent.</summary>
+    public static string AddContentTsvColumnSql(string schema, string prefix, string collection)
+    {
+        var table = QualifiedTable(schema, prefix, collection);
+        return $"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS content_tsv tsvector " +
+               $"GENERATED ALWAYS AS ({ContentTsvExpression()}) STORED;";
+    }
+
+    public static string CreateContentTsvIndexSql(string schema, string prefix, string collection)
+    {
+        var table = QualifiedTable(schema, prefix, collection);
+        var indexName = QuoteIdent(TableName(prefix, collection) + "_content_tsv_idx");
+        return $"CREATE INDEX IF NOT EXISTS {indexName} ON {table} USING gin (content_tsv);";
+    }
+
+    /// <summary>
+    /// Keyword ranking with <c>ts_rank_cd</c> over <c>websearch_to_tsquery</c> — the ranked, GIN-backed
+    /// full-text search Postgres already ships. The score sits on its own scale (not the vector
+    /// distance's), which is why hybrid fuses by rank rather than by number.
+    /// </summary>
+    public static string KeywordSearchSql(string schema, string prefix, string collection, int limit)
+    {
+        var table = QualifiedTable(schema, prefix, collection);
+        return
+            $"SELECT id, ts_rank_cd(content_tsv, q) AS score, payload, metadata " +
+            $"FROM {table}, websearch_to_tsquery('{TextSearchConfig}', @query) q " +
+            "WHERE content_tsv @@ q " +
+            $"ORDER BY score DESC, id LIMIT {limit}";
     }
 
     public static string CreateSequenceSql(string schema, string prefix, string collection) =>

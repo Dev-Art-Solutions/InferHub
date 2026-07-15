@@ -122,6 +122,12 @@
     .chunk-preview:last-child { border-bottom: none; }
     .chunk-head { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
     .chunk-text { font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow-y: auto; }
+    .pg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin-top: 12px; }
+    .pg-col h3 { margin: 0 0 8px; font-size: 13px; }
+    .pg-hit { padding: 8px 0; border-bottom: 1px solid var(--panel-border); font-size: 12px; }
+    .pg-hit:last-child { border-bottom: none; }
+    .pg-hit .pg-rank { color: var(--muted); }
+    .pg-hit .pg-snippet { color: var(--text); white-space: pre-wrap; word-break: break-word; max-height: 84px; overflow-y: auto; margin-top: 4px; }
     @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
     @media (max-width: 720px) {
       body { padding: 16px; }
@@ -247,6 +253,17 @@
         <tbody id="documents"></tbody>
       </table>
     </div>
+  </section>
+
+  <section id="playground-section" style="display:none">
+    <h2>Retrieval playground</h2>
+    <div class="docs-bar">
+      <input type="text" id="pg-query" placeholder="Type a query to compare what each mode retrieves…" style="flex:1">
+      <label for="pg-k">k</label>
+      <input type="number" id="pg-k" value="5" min="1" max="20" style="width:64px">
+      <button id="pg-run">Search</button>
+    </div>
+    <div id="pg-results" class="pg-grid"></div>
   </section>
 
   <section>

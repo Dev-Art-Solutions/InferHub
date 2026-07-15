@@ -93,6 +93,39 @@ public sealed class RetrievalOptions
     public string OnMissing { get; set; } = "error";
 
     /// <summary>
+    /// Default retrieval mode when a request sends no <c>X-InferHub-Retrieve-Mode</c> header:
+    /// <c>vector</c> (default) | <c>keyword</c> | <c>hybrid</c>. The default stays <c>vector</c> so an
+    /// existing deployment sees byte-identical results — new capability that silently changes old
+    /// answers is a regression wearing a feature's clothes.
+    /// </summary>
+    public string Mode { get; set; } = "vector";
+
+    /// <summary>
+    /// How many candidates each branch (vector, keyword) fetches before RRF fusion in <c>hybrid</c>
+    /// mode. Larger recovers more of the long tail at more work; 20 is the usual sweet spot.
+    /// </summary>
+    public int CandidatesPerBranch { get; set; } = 20;
+
+    /// <summary>
+    /// Default reranker: <c>none</c> (default) | <c>llm</c>. Reranking costs a fleet round trip, so it
+    /// is off unless a request asks for it with <c>X-InferHub-Rerank: true</c> or this is set to
+    /// <c>llm</c>.
+    /// </summary>
+    public string Rerank { get; set; } = "none";
+
+    /// <summary>Chat model used by the LLM reranker. When null, the request's own model is used.</summary>
+    public string? RerankModel { get; set; }
+
+    /// <summary>Upper bound on how many candidates are handed to the reranker in one round trip.</summary>
+    public int RerankCandidates { get; set; } = 20;
+
+    /// <summary>
+    /// How long the reranker waits for the fleet before giving up and returning the candidates in
+    /// their original (un-reranked) order. A reranker that can hang is worse than no reranker.
+    /// </summary>
+    public int RerankTimeoutSeconds { get; set; } = 20;
+
+    /// <summary>
     /// Prompt template applied when retrieval is triggered. The literal token
     /// <c>{context}</c> is replaced by the concatenated retrieved records
     /// (each rendered as <c>[id] text</c>, one per line).
@@ -181,6 +214,31 @@ public sealed partial class VectorStoreOptionsValidator : IValidateOptions<Vecto
             else if (!options.Retrieval.Template.Contains("{context}", StringComparison.Ordinal))
             {
                 failures.Add($"{VectorStoreOptions.SectionName}:Retrieval:{nameof(RetrievalOptions.Template)} must contain the literal '{{context}}' placeholder.");
+            }
+
+            if (!RetrievalModes.TryParse(options.Retrieval.Mode, out _))
+            {
+                failures.Add($"{VectorStoreOptions.SectionName}:Retrieval:{nameof(RetrievalOptions.Mode)} must be 'vector', 'keyword' or 'hybrid' (got '{options.Retrieval.Mode}').");
+            }
+
+            if (options.Retrieval.CandidatesPerBranch < 1)
+            {
+                failures.Add($"{VectorStoreOptions.SectionName}:Retrieval:{nameof(RetrievalOptions.CandidatesPerBranch)} must be >= 1 (got {options.Retrieval.CandidatesPerBranch}).");
+            }
+
+            if (options.Retrieval.Rerank is not "none" and not "llm")
+            {
+                failures.Add($"{VectorStoreOptions.SectionName}:Retrieval:{nameof(RetrievalOptions.Rerank)} must be 'none' or 'llm' (got '{options.Retrieval.Rerank}').");
+            }
+
+            if (options.Retrieval.RerankCandidates < 1)
+            {
+                failures.Add($"{VectorStoreOptions.SectionName}:Retrieval:{nameof(RetrievalOptions.RerankCandidates)} must be >= 1 (got {options.Retrieval.RerankCandidates}).");
+            }
+
+            if (options.Retrieval.RerankTimeoutSeconds < 1)
+            {
+                failures.Add($"{VectorStoreOptions.SectionName}:Retrieval:{nameof(RetrievalOptions.RerankTimeoutSeconds)} must be >= 1 (got {options.Retrieval.RerankTimeoutSeconds}).");
             }
         }
 

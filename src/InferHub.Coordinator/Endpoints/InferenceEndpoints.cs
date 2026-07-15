@@ -17,6 +17,8 @@ public static class InferenceEndpoints
     public const string RetrieveHeader = "X-InferHub-Retrieve";
     public const string RetrieveKHeader = "X-InferHub-Retrieve-K";
     public const string RetrieveModelHeader = "X-InferHub-Retrieve-Model";
+    public const string RetrieveModeHeader = "X-InferHub-Retrieve-Mode";
+    public const string RerankHeader = "X-InferHub-Rerank";
     public const string SourcesHeader = "X-InferHub-Sources";
 
     private const string GenerateKind = "generate";
@@ -297,7 +299,42 @@ public static class InferenceEndpoints
             }
         }
 
-        retrieval = new RetrievalRequest(collection, k, model);
+        // An unknown mode is a client error, not a silent fall back to vector — a caller who asked
+        // for hybrid and got vector without being told would draw the wrong conclusion from the
+        // results. Same for a non-boolean rerank flag.
+        string? mode = null;
+        if (request.Headers.TryGetValue(RetrieveModeHeader, out var rawMode))
+        {
+            var value = rawMode.ToString().Trim();
+            if (!string.IsNullOrEmpty(value))
+            {
+                if (!RetrievalModes.TryParse(value, out _))
+                {
+                    throw new BadHttpRequestException(
+                        $"invalid {RetrieveModeHeader} '{value}'; expected vector, keyword or hybrid",
+                        StatusCodes.Status400BadRequest);
+                }
+                mode = value;
+            }
+        }
+
+        bool? rerank = null;
+        if (request.Headers.TryGetValue(RerankHeader, out var rawRerank))
+        {
+            var value = rawRerank.ToString().Trim();
+            if (!string.IsNullOrEmpty(value))
+            {
+                if (!bool.TryParse(value, out var parsedRerank))
+                {
+                    throw new BadHttpRequestException(
+                        $"invalid {RerankHeader} '{value}'; expected true or false",
+                        StatusCodes.Status400BadRequest);
+                }
+                rerank = parsedRerank;
+            }
+        }
+
+        retrieval = new RetrievalRequest(collection, k, model, mode, rerank);
         return true;
     }
 

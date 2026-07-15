@@ -64,6 +64,7 @@ public static class VectorStoreServiceCollectionExtensions
         }
 
         // RAG works in both modes; keep it outside the provider branch.
+        services.AddSingleton<IReranker, LlmReranker>();
         services.AddSingleton<RetrievalPipeline>();
 
         AddIngestion(services, configuration);

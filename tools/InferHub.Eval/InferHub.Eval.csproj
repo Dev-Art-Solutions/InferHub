@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Retrieval evaluation harness (phase 24). A standalone console tool with no project references,
+    deliberately NOT built into the coordinator or node images: it is something you run against a
+    live coordinator, not something you deploy. It measures whether hybrid search and reranking
+    actually helped on YOUR corpus, because "this improved retrieval" is a claim, not a feeling.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>InferHub.Eval</RootNamespace>
+    <AssemblyName>inferhub-eval</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+</Project>

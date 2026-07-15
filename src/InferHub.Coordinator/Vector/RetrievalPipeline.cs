@@ -27,6 +27,7 @@ public sealed class RetrievalPipeline(
     IVectorStore store,
     IEmbeddingDispatcher embeddings,
     IVectorQueryRouter queryRouter,
+    IReranker reranker,
     Metrics metrics,
     ILogger<RetrievalPipeline> logger)
 {
@@ -48,7 +49,7 @@ public sealed class RetrievalPipeline(
             return Passthrough(rawJson);
         }
 
-        var matches = await RetrieveAsync(retrieval, queryText, cancellationToken);
+        var matches = await RetrieveAsync(retrieval, queryText, request.Model, cancellationToken);
         if (matches is null || matches.Count == 0)
         {
             if (matches is { Count: 0 })
@@ -75,7 +76,7 @@ public sealed class RetrievalPipeline(
             return Passthrough(rawJson);
         }
 
-        var matches = await RetrieveAsync(retrieval, queryText, cancellationToken);
+        var matches = await RetrieveAsync(retrieval, queryText, request.Model, cancellationToken);
         if (matches is null || matches.Count == 0)
         {
             if (matches is { Count: 0 })
@@ -89,14 +90,95 @@ public sealed class RetrievalPipeline(
         return new RetrievalOutcome(augmentedJson, matches.Select(ToSource).ToArray(), WasAugmented: true);
     }
 
+    /// <summary>
+    /// Run a retrieval exactly as the RAG path would — same modes, same fusion, same optional
+    /// rerank — but return the ranked matches instead of injecting them into a prompt. This is what
+    /// the console's query playground and the eval harness look at: the single most useful thing you
+    /// can inspect when a corpus is retrieving badly.
+    /// </summary>
+    public Task<IReadOnlyList<VectorMatch>?> SearchAsync(
+        RetrievalRequest retrieval,
+        string queryText,
+        string? chatModel,
+        CancellationToken cancellationToken)
+        => RetrieveAsync(retrieval, queryText, chatModel, cancellationToken);
+
     private async Task<IReadOnlyList<VectorMatch>?> RetrieveAsync(
         RetrievalRequest retrieval,
         string queryText,
+        string? chatModel,
         CancellationToken cancellationToken)
     {
         var opts = options.Value.Retrieval;
-        var k = Math.Clamp(retrieval.K ?? opts.DefaultK, 1, opts.MaxRecords);
+        // The header value was validated at the edge; the default comes from config. Either way it
+        // parses — the false branch is unreachable and defaults to vector rather than throwing here.
+        if (!RetrievalModes.TryParse(retrieval.Mode ?? opts.Mode, out var mode))
+        {
+            mode = RetrievalMode.Vector;
+        }
 
+        var k = Math.Clamp(retrieval.K ?? opts.DefaultK, 1, opts.MaxRecords);
+        // Hybrid pulls a wider candidate pool per branch before fusion trims back to k; single-mode
+        // searches only ever need k.
+        var branchK = mode == RetrievalMode.Hybrid ? Math.Max(k, opts.CandidatesPerBranch) : k;
+
+        IReadOnlyList<VectorMatch> vectorMatches = Array.Empty<VectorMatch>();
+        IReadOnlyList<VectorMatch> keywordMatches = Array.Empty<VectorMatch>();
+
+        var started = Stopwatch.GetTimestamp();
+        try
+        {
+            if (mode is RetrievalMode.Vector or RetrievalMode.Hybrid)
+            {
+                var v = await VectorBranchAsync(retrieval, queryText, branchK, cancellationToken);
+                if (v is null)
+                {
+                    // Embedding was unavailable; HandleMissing already decided error vs passthrough.
+                    return null;
+                }
+                vectorMatches = v;
+            }
+
+            if (mode is RetrievalMode.Keyword or RetrievalMode.Hybrid)
+            {
+                // Keyword search is always hub-local: node replicas (phase 15) serve vector reads
+                // only, so the keyword branch runs against the hub's inverted index rather than
+                // silently dropping to vector-only. Recorded here so that fall-through is visible.
+                keywordMatches = await store.SearchKeywordAsync(retrieval.Collection, queryText, branchK, cancellationToken);
+                if (mode == RetrievalMode.Hybrid)
+                {
+                    logger.LogInformation(
+                        "Hybrid retrieval for collection {Collection}: keyword branch served hub-local (node replicas serve vector only)",
+                        retrieval.Collection);
+                }
+            }
+        }
+        catch (KeyNotFoundException)
+        {
+            HandleMissing($"collection '{retrieval.Collection}' does not exist");
+            return null;
+        }
+        finally
+        {
+            metrics.RecordVectorQuery(retrieval.Collection, Stopwatch.GetElapsedTime(started));
+        }
+
+        var fused = mode switch
+        {
+            RetrievalMode.Vector => vectorMatches,
+            RetrievalMode.Keyword => keywordMatches,
+            _ => HybridSearch.Fuse(vectorMatches, keywordMatches, branchK)
+        };
+
+        return await MaybeRerankAsync(retrieval, queryText, chatModel, fused, k, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<VectorMatch>?> VectorBranchAsync(
+        RetrievalRequest retrieval,
+        string queryText,
+        int k,
+        CancellationToken cancellationToken)
+    {
         float[] vector;
         try
         {
@@ -109,21 +191,39 @@ public sealed class RetrievalPipeline(
         }
 
         var query = new VectorQuery(Vector: vector, K: k);
-        var started = Stopwatch.GetTimestamp();
-        try
+        var nodeMatches = await queryRouter.TryQueryOnNodeAsync(retrieval.Collection, query, cancellationToken);
+        return nodeMatches ?? await store.QueryAsync(retrieval.Collection, query, cancellationToken);
+    }
+
+    /// <summary>
+    /// Optionally rerank the fused candidate pool, then trim to <paramref name="k"/>. Reranking is
+    /// off unless the request set <c>X-InferHub-Rerank: true</c> or the deployment defaults
+    /// <c>Retrieval:Rerank=llm</c>. At most <c>RerankCandidates</c> chunks go to the model in one
+    /// round trip; any pool beyond that keeps its fused order and rides behind the reranked head.
+    /// </summary>
+    private async Task<IReadOnlyList<VectorMatch>?> MaybeRerankAsync(
+        RetrievalRequest retrieval,
+        string queryText,
+        string? chatModel,
+        IReadOnlyList<VectorMatch> pool,
+        int k,
+        CancellationToken cancellationToken)
+    {
+        var opts = options.Value.Retrieval;
+        var rerankEnabled = retrieval.Rerank ?? string.Equals(opts.Rerank, "llm", StringComparison.OrdinalIgnoreCase);
+
+        if (!rerankEnabled || pool.Count <= 1)
         {
-            var nodeMatches = await queryRouter.TryQueryOnNodeAsync(retrieval.Collection, query, cancellationToken);
-            return nodeMatches ?? await store.QueryAsync(retrieval.Collection, query, cancellationToken);
+            return pool.Count > k ? pool.Take(k).ToList() : pool;
         }
-        catch (KeyNotFoundException)
-        {
-            HandleMissing($"collection '{retrieval.Collection}' does not exist");
-            return null;
-        }
-        finally
-        {
-            metrics.RecordVectorQuery(retrieval.Collection, Stopwatch.GetElapsedTime(started));
-        }
+
+        var cap = Math.Min(pool.Count, Math.Max(1, opts.RerankCandidates));
+        var head = pool.Take(cap).ToList();
+        var tail = pool.Skip(cap);
+        var model = string.IsNullOrWhiteSpace(opts.RerankModel) ? chatModel : opts.RerankModel;
+
+        var reranked = await reranker.RerankAsync(queryText, head, model, cancellationToken);
+        return reranked.Concat(tail).Take(k).ToList();
     }
 
     private void HandleMissing(string reason)
@@ -250,7 +350,7 @@ public sealed class RetrievalPipeline(
     }
 }
 
-public sealed record RetrievalRequest(string Collection, int? K, string? Model);
+public sealed record RetrievalRequest(string Collection, int? K, string? Model, string? Mode = null, bool? Rerank = null);
 
 /// <summary>
 /// One retrieved chunk, as it appears in the <c>X-InferHub-Sources</c> header. Since v2.5 the
