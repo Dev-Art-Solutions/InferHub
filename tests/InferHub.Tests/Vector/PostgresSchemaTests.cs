@@ -19,6 +19,32 @@ public class PostgresSchemaTests
         Assert.Equal(expected, PostgresSchema.ScoreExpression(metric));
     }
 
+    [Fact]
+    public void CreateTableIncludesGeneratedKeywordColumn()
+    {
+        var sql = PostgresSchema.CreateTableSql("inferhub", "vec_", "docs", 3);
+        Assert.Contains("content_tsv tsvector GENERATED ALWAYS AS", sql);
+        Assert.Contains("to_tsvector('english', coalesce(payload->>'text', payload->>'content', ''))", sql);
+        Assert.Contains("STORED", sql);
+    }
+
+    [Fact]
+    public void KeywordSearchSqlRanksWithTsRankCdOverWebsearchQuery()
+    {
+        var sql = PostgresSchema.KeywordSearchSql("inferhub", "vec_", "docs", 10);
+        Assert.Contains("ts_rank_cd(content_tsv, q)", sql);
+        Assert.Contains("websearch_to_tsquery('english', @query)", sql);
+        Assert.Contains("content_tsv @@ q", sql);
+        Assert.Contains("LIMIT 10", sql);
+    }
+
+    [Fact]
+    public void KeywordColumnMigrationIsIdempotent()
+    {
+        Assert.Contains("ADD COLUMN IF NOT EXISTS content_tsv", PostgresSchema.AddContentTsvColumnSql("inferhub", "vec_", "docs"));
+        Assert.Contains("CREATE INDEX IF NOT EXISTS", PostgresSchema.CreateContentTsvIndexSql("inferhub", "vec_", "docs"));
+    }
+
     [Theory]
     [InlineData(DistanceMetric.Cosine, "vector_cosine_ops")]
     [InlineData(DistanceMetric.Dot, "vector_ip_ops")]

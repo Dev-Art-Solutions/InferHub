@@ -100,12 +100,11 @@ each of those is non-negotiable.
 | 21 | OpenAI-compatible API & Docker distribution (done) | `v2.3.0` |
 | 22 | OpenAI-compatible node backend & cloud burst (done) | `v2.4.0` |
 | 23 | Document ingestion pipeline (done) | `v2.5.0` |
+| 24 | Hybrid search, reranking & eval harness (done) | `v2.6.0` |
 
-**What's next.** Retrieval can now be *filled* — the remaining gap is retrieval *quality*. Pure
-vector search is excellent at "what is this about" and poor at "find the exact thing I named", so
-hybrid search (keyword + vector, fused by rank) and an opt-in reranker come next, shipped together
-with an evaluation harness so the improvement is measured rather than asserted. After that: quotas
-and per-key usage accounting, and fleet-wide remote model management. Streaming `tool_calls` deltas
+**What's next.** Retrieval quality landed in 2.6 — hybrid search, an opt-in reranker, and a harness
+that measures whether either helped. Next: quotas and per-key usage accounting, then fleet-wide
+remote model management. Streaming `tool_calls` deltas
 (mapped in blocking mode today, not yet streamed), multi-coordinator clustering and persisted
 affinity remain on the table.
 
@@ -646,6 +645,8 @@ same routing, same streaming contract.
 | `X-InferHub-Retrieve` | Collection name to retrieve from. Presence enables RAG. |
 | `X-InferHub-Retrieve-K` | Top-k override (clamped to `VectorStore:Retrieval:MaxRecords`). |
 | `X-InferHub-Retrieve-Model` | Embedding model override (defaults to `VectorStore:DefaultEmbeddingModel`). |
+| `X-InferHub-Retrieve-Mode` | `vector` (default) \| `keyword` \| `hybrid`. Unknown value → `400`. **(v2.6+)** |
+| `X-InferHub-Rerank` | `true` to run an opt-in LLM rerank pass over the candidates. **(v2.6+)** |
 
 The coordinator extracts the query text (last user message for chat; `prompt` for
 generate), dispatches an embed job to a node, searches the collection (node replica
@@ -689,8 +690,43 @@ curl http://your-coordinator:5080/api/chat \
   -d '{"model":"llama3","messages":[{"role":"user","content":"What is InferHub?"}],"stream":false}'
 ```
 
-**Not yet.** Re-ranking, multi-collection fusion, query rewriting, and
-tool-calling-style retrieval are separate tracks — future work.
+### Hybrid search & reranking (v2.6+)
+
+Pure vector search is excellent at "what is this about" and poor at "find the exact
+thing I named" — ask for an error code, a SKU, or a surname and cosine similarity
+returns the general topic, not the line you wanted. v2.6 adds two answers, both
+per-request and both off by default:
+
+- **Retrieval modes** via `X-InferHub-Retrieve-Mode`: `keyword` is classic BM25 over
+  the same chunks; `hybrid` runs vector **and** keyword and fuses the two result lists
+  by **Reciprocal Rank Fusion** (by rank, not by blending scores that live on different
+  scales). Hybrid is the one you usually want — it recovers the exact-match case without
+  giving up the semantic one. Keyword search is provider-native (Postgres full-text under
+  `postgres`, an in-memory BM25 index under `local`) and added **zero dependencies**.
+- **Reranking** via `X-InferHub-Rerank: true`: an opt-in pass that hands the top
+  candidates to a chat model already on your fleet with a scoring prompt and reorders
+  them. It costs a round trip, so it is off unless asked, hard-capped by
+  `Retrieval:RerankCandidates` and `Retrieval:RerankTimeoutSeconds` — past the timeout the
+  un-reranked order is kept. Nothing is retained (rule #7).
+
+```bash
+curl http://your-coordinator:5080/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "X-InferHub-Retrieve: handbook" \
+  -H "X-InferHub-Retrieve-Mode: hybrid" \
+  -d '{"model":"llama3","messages":[{"role":"user","content":"What does error E-4021 mean?"}]}'
+```
+
+Defaults stay `vector` with no rerank, so a deployment that sends no headers and changes
+no config behaves **byte-identically to v2.5**. And "hybrid improves retrieval" is an
+empirical claim, so v2.6 ships an evaluation harness in the same release —
+[`tools/InferHub.Eval`](tools/InferHub.Eval) runs a golden set against a live coordinator in
+every mode and reports Recall@k, MRR, nDCG@k and latency. Run it on your own corpus; that is
+the only number that is about you.
+
+There is also a query playground in the admin console (and `POST /api/collections/{c}/search`
+behind it) that shows what each mode retrieves for a query, side by side — the most useful
+thing to look at when a corpus is retrieving badly.
 
 ### Vector configuration
 
@@ -709,6 +745,12 @@ Coordinator keys (all under `VectorStore:`):
 | `VectorStore:Retrieval:MaxRecords` | `8` | Hard cap on injected records per request. |
 | `VectorStore:Retrieval:OnMissing` | `error` | `error` \| `passthrough` when retrieval can't run. |
 | `VectorStore:Retrieval:Template` | _(see below)_ | Prompt template applied to retrieved context; must contain `{context}`. |
+| `VectorStore:Retrieval:Mode` | `vector` | Default mode: `vector` \| `keyword` \| `hybrid`. **(v2.6+)** |
+| `VectorStore:Retrieval:CandidatesPerBranch` | `20` | Candidates each branch fetches before RRF fusion in hybrid mode. **(v2.6+)** |
+| `VectorStore:Retrieval:Rerank` | `none` | Default reranker: `none` \| `llm`. **(v2.6+)** |
+| `VectorStore:Retrieval:RerankModel` | _(request model)_ | Chat model for the LLM reranker. **(v2.6+)** |
+| `VectorStore:Retrieval:RerankCandidates` | `20` | Max candidates sent to the reranker in one round trip. **(v2.6+)** |
+| `VectorStore:Retrieval:RerankTimeoutSeconds` | `20` | Reranker timeout; past it the un-reranked order is used. **(v2.6+)** |
 | `VectorStore:Healing:DebounceMilliseconds` | `750` | Debounce for fleet-change-driven heal passes. |
 | `VectorStore:Healing:IdleSweepSeconds` | `15` | Idle interval refreshing the under-replicated gauge. |
 

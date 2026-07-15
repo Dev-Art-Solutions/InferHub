@@ -21,6 +21,16 @@ public interface IVectorStore
     Task<IReadOnlyList<VectorMatch>> QueryAsync(string collection, VectorQuery query, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Keyword (lexical) search: the top <paramref name="k"/> records whose chunk text best matches
+    /// <paramref name="query"/> by the provider's full-text ranking (BM25 under <c>local</c>,
+    /// <c>ts_rank_cd</c> under <c>postgres</c>). This is the branch pure vector search is bad at —
+    /// literal identifiers, error codes, surnames — and the keyword half of hybrid retrieval. Scores
+    /// are on the provider's own scale and are <b>not</b> comparable to <see cref="QueryAsync"/>'s
+    /// distances, which is exactly why fusion is by rank (RRF) and not by blending the two numbers.
+    /// </summary>
+    Task<IReadOnlyList<VectorMatch>> SearchKeywordAsync(string collection, string query, int k, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Metadata-ordered scan: records whose metadata matches every key in <paramref name="filter"/>
     /// (all records when it is null or empty), ordered by id, starting after <paramref name="afterId"/>.
     /// Embeddings are not fetched — see <see cref="VectorEntry"/>.

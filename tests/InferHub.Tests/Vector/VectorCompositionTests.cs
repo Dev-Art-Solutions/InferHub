@@ -33,7 +33,11 @@ public class VectorCompositionTests
         var services = new ServiceCollection();
         services.AddLogging();
         // RetrievalPipeline's external collaborators — stubbed so we test the vector graph in isolation.
+        // In the real app IRouter/IDispatcher are registered globally before the vector store; the
+        // LLM reranker resolves them.
         services.AddSingleton<IEmbeddingDispatcher, StubEmbeddingDispatcher>();
+        services.AddSingleton<IRouter, StubRouter>();
+        services.AddSingleton<IDispatcher, StubDispatcher>();
         services.AddSingleton<Metrics>();
         services.AddInferHubVectorStore(configuration);
         return services;
@@ -84,5 +88,21 @@ public class VectorCompositionTests
 
         public Task<float[]> EmbedSingleAsync(string text, string? model, CancellationToken cancellationToken)
             => Task.FromResult(Array.Empty<float>());
+    }
+
+    private sealed class StubRouter : IRouter
+    {
+        public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null) => null;
+    }
+
+    private sealed class StubDispatcher : IDispatcher
+    {
+        public Task<InferHub.Shared.Contracts.InferenceResult> DispatchAsync(RoutableNode node, InferHub.Shared.Contracts.InferenceJob job, CancellationToken cancellationToken)
+            => throw new NotImplementedException();
+        public Task<System.Threading.Channels.ChannelReader<InferHub.Shared.Contracts.InferenceChunk>> DispatchStreamAsync(RoutableNode node, InferHub.Shared.Contracts.InferenceJob job, CancellationToken cancellationToken)
+            => throw new NotImplementedException();
+        public bool Complete(InferHub.Shared.Contracts.InferenceResult result) => true;
+        public bool WriteChunk(InferHub.Shared.Contracts.InferenceChunk chunk) => true;
+        public void FailForConnection(string connectionId, Exception? exception) { }
     }
 }

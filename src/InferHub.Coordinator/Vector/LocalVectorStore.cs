@@ -52,7 +52,9 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
 
                 var index = new FlatIndex(raw.Dimension, metric);
                 var seq = ReplayInto(raw, index);
-                _collections[raw.Name] = new CollectionEntry(raw, index, metric, seq);
+                var entry = new CollectionEntry(raw, index, metric, seq);
+                PopulateKeyword(entry);
+                _collections[raw.Name] = entry;
                 _logger.LogInformation("Loaded vector collection '{Collection}' ({Count} records, lastSeq={Seq})", raw.Name, index.Count, seq);
             }
             catch (Exception ex)
@@ -79,6 +81,16 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
             }
         }
         return lastSeq;
+    }
+
+    // The keyword index is derived, like the FlatIndex — rebuilt from the live records the ops log
+    // replayed into place, not from a second on-disk copy that could drift.
+    private static void PopulateKeyword(CollectionEntry entry)
+    {
+        foreach (var record in entry.Index.EnumerateLive())
+        {
+            entry.Keyword.Index(record.Id, ChunkText.Extract(record.Payload));
+        }
     }
 
     public Task<CollectionInfo> CreateCollectionAsync(string name, int dimension, string? distance, CancellationToken cancellationToken = default)
@@ -159,6 +171,7 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
             record = new VectorRecord(upsert.Id, stored, upsert.Payload, upsert.Metadata, seq, DateTimeOffset.UtcNow);
             entry.Raw.AppendUpsert(record);
             entry.Index.Upsert(record);
+            entry.Keyword.Index(record.Id, ChunkText.Extract(record.Payload));
             entry.OpsSinceSnapshot++;
 
             MaybeSnapshot(entry);
@@ -189,6 +202,7 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
                 return Task.FromResult(false);
             }
 
+            entry.Keyword.Remove(id);
             seq = ++entry.LastSeq;
             ts = DateTimeOffset.UtcNow;
             entry.Raw.AppendDelete(id, seq, ts);
@@ -216,6 +230,29 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
             var matches = entry.Index.Query(query.Vector, query.K, query.Filter);
             return Task.FromResult(matches);
         }
+    }
+
+    public Task<IReadOnlyList<VectorMatch>> SearchKeywordAsync(string collection, string query, int k, CancellationToken cancellationToken = default)
+    {
+        var entry = RequireCollection(collection);
+        if (k < 1) return Task.FromResult<IReadOnlyList<VectorMatch>>([]);
+
+        List<VectorMatch> matches;
+        lock (entry.WriteLock)
+        {
+            var hits = entry.Keyword.Search(query, k);
+            matches = new List<VectorMatch>(hits.Count);
+            foreach (var hit in hits)
+            {
+                // The BM25 hit is id + score; the payload and metadata a citation needs live in the
+                // FlatIndex, the single record of truth. Look them up rather than duplicate them.
+                var record = entry.Index.Get(hit.Id);
+                if (record is null) continue;
+                matches.Add(new VectorMatch(hit.Id, hit.Score, record.Payload, record.Metadata));
+            }
+        }
+
+        return Task.FromResult<IReadOnlyList<VectorMatch>>(matches);
     }
 
     public Task<IReadOnlyList<VectorEntry>> ScanAsync(
@@ -388,6 +425,7 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
     {
         public RawCollection Raw { get; } = raw;
         public FlatIndex Index { get; } = index;
+        public InvertedIndex Keyword { get; } = new();
         public DistanceMetric Metric { get; } = metric;
         public long LastSeq { get; set; } = lastSeq;
         public long OpsSinceSnapshot { get; set; }

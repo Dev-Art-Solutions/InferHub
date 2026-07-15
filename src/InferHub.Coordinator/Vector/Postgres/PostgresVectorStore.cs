@@ -92,6 +92,7 @@ public sealed class PostgresVectorStore : IVectorStore
                 }
 
                 await ExecuteAsync(conn, tx, PostgresSchema.CreateGinIndexSql(_pg.Schema, _pg.TablePrefix, name), cancellationToken);
+                await ExecuteAsync(conn, tx, PostgresSchema.CreateContentTsvIndexSql(_pg.Schema, _pg.TablePrefix, name), cancellationToken);
 
                 await tx.CommitAsync(cancellationToken);
             }
@@ -312,6 +313,38 @@ public sealed class PostgresVectorStore : IVectorStore
         }
     }
 
+    public async Task<IReadOnlyList<VectorMatch>> SearchKeywordAsync(string collection, string query, int k, CancellationToken cancellationToken = default)
+    {
+        await RequireMetaAsync(collection, cancellationToken);
+        if (k < 1) return Array.Empty<VectorMatch>();
+        if (string.IsNullOrWhiteSpace(query)) return Array.Empty<VectorMatch>();
+
+        var sql = PostgresSchema.KeywordSearchSql(_pg.Schema, _pg.TablePrefix, collection, k);
+
+        try
+        {
+            await using var conn = await _dataSource.OpenConnectionAsync(cancellationToken);
+            await using var cmd = new NpgsqlCommand(sql, conn) { CommandTimeout = _commandTimeout };
+            cmd.Parameters.Add(Param("query", query));
+
+            var matches = new List<VectorMatch>(k);
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var id = reader.GetString(0);
+                var score = reader.GetDouble(1);
+                var payload = ReadPayload(reader, 2);
+                var metadata = ReadMetadata(reader, 3);
+                matches.Add(new VectorMatch(id, score, payload, metadata));
+            }
+            return matches;
+        }
+        catch (PostgresException ex)
+        {
+            throw Translate(ex, collection);
+        }
+    }
+
     public async Task<IReadOnlyList<VectorEntry>> ScanAsync(
         string collection,
         IReadOnlyDictionary<string, string>? filter,
@@ -398,6 +431,23 @@ public sealed class PostgresVectorStore : IVectorStore
             _cache[name] = meta;
         }
         return _cache.Count;
+    }
+
+    /// <summary>
+    /// Bring every pre-v2.6 collection up to hybrid search: add the generated <c>content_tsv</c> column
+    /// and its GIN index if they are missing. Both statements are <c>IF NOT EXISTS</c>, so this is a
+    /// no-op on a fresh database and safe to run at every startup. No re-embedding — the column is
+    /// derived from the payload that is already there.
+    /// </summary>
+    internal async Task EnsureKeywordIndexesAsync(CancellationToken cancellationToken)
+    {
+        await using var conn = await _dataSource.OpenConnectionAsync(cancellationToken);
+        var registry = await ReadRegistryAsync(conn, cancellationToken);
+        foreach (var (name, _) in registry)
+        {
+            await ExecuteAsync(conn, null, PostgresSchema.AddContentTsvColumnSql(_pg.Schema, _pg.TablePrefix, name), cancellationToken);
+            await ExecuteAsync(conn, null, PostgresSchema.CreateContentTsvIndexSql(_pg.Schema, _pg.TablePrefix, name), cancellationToken);
+        }
     }
 
     private async Task<CollectionMeta> RequireMetaAsync(string collection, CancellationToken cancellationToken)

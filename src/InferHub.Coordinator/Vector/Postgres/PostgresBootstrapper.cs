@@ -68,6 +68,12 @@ public sealed class PostgresBootstrapper(
             await ExecuteAsync(conn, PostgresSchema.CreateRegistryTableSql(_pg.Schema), cancellationToken);
 
             var count = await store.LoadRegistryCacheAsync(cancellationToken);
+
+            // Bring collections created before v2.6 up to hybrid search — add the keyword column and
+            // index where they're missing. Idempotent, and no re-embedding: the column is generated
+            // from the payload text already stored.
+            await store.EnsureKeywordIndexesAsync(cancellationToken);
+
             logger.LogInformation(
                 "Postgres vector store ready (schema={Schema}, collections={Count}, pgvector={Version})",
                 _pg.Schema, count, version);

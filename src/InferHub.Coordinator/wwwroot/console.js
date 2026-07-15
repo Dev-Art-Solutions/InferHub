@@ -927,6 +927,8 @@
 
     const names = (vector?.collections ?? []).map(c => c.name);
     section.style.display = names.length > 0 ? "" : "none";
+    const playground = document.getElementById("playground-section");
+    if (playground) playground.style.display = names.length > 0 ? "" : "none";
     if (names.length === 0) {
       documentsCollection = null;
       return;
@@ -1003,6 +1005,76 @@
           `Deregister node "${nodeId}"?\n\nThis force-disconnects the node. It will re-register on reconnect.`);
         break;
     }
+  });
+
+  // --- Retrieval playground (phase 24) -----------------------------------------------------
+  // Runs the same query in each mode against POST /api/collections/{c}/search and shows the ranked
+  // chunks side by side. Client-scoped like the documents panel, so it reuses the same client key.
+  const pgModes = [
+    { label: "vector", mode: "vector", rerank: false },
+    { label: "keyword", mode: "keyword", rerank: false },
+    { label: "hybrid", mode: "hybrid", rerank: false },
+    { label: "hybrid + rerank", mode: "hybrid", rerank: true },
+  ];
+
+  const pgColumn = (label, hits, error) => {
+    let inner;
+    if (error) {
+      inner = `<div class="meta">${escapeHtml(error)}</div>`;
+    } else if (!hits || hits.length === 0) {
+      inner = `<div class="meta">no matches</div>`;
+    } else {
+      inner = hits.map((h, i) => {
+        const cite = h.documentId
+          ? `${escapeHtml(h.documentId)}${h.page ? ` · p${h.page}` : ""}`
+          : `<code>${escapeHtml(h.id)}</code>`;
+        return `<div class="pg-hit">
+          <div><span class="pg-rank">#${i + 1}</span> ${cite} <span class="meta">${h.score.toFixed(3)}</span></div>
+          <div class="pg-snippet">${escapeHtml(h.text ?? "")}</div>
+        </div>`;
+      }).join("");
+    }
+    return `<div class="card pg-col"><h3>${escapeHtml(label)}</h3>${inner}</div>`;
+  };
+
+  const pgSearchOne = async (query, spec, k) => {
+    try {
+      const res = await fetch(`/api/collections/${encodeURIComponent(documentsCollection)}/search`, {
+        method: "POST",
+        headers: clientHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ query, mode: spec.mode, k, rerank: spec.rerank })
+      });
+      if (res.status === 401) {
+        promptForClientKey("Client key required for the retrieval playground.");
+        return pgColumn(spec.label, null, "unauthorized");
+      }
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try { const body = await res.json(); if (body?.error) detail = body.error; } catch { }
+        return pgColumn(spec.label, null, detail);
+      }
+      const body = await res.json();
+      return pgColumn(spec.label, body.hits, null);
+    } catch (err) {
+      return pgColumn(spec.label, null, err.message);
+    }
+  };
+
+  const runPlayground = async () => {
+    if (!documentsCollection) { toast("No collection", "Select a collection in the Documents panel first.", "err"); return; }
+    const query = document.getElementById("pg-query")?.value.trim();
+    if (!query) return;
+    const k = Math.max(1, Math.min(50, parseInt(document.getElementById("pg-k")?.value, 10) || 5));
+    const results = document.getElementById("pg-results");
+    if (!results) return;
+    results.innerHTML = pgModes.map(m => pgColumn(m.label, [], "searching…")).join("");
+    const columns = await Promise.all(pgModes.map(m => pgSearchOne(query, m, k)));
+    results.innerHTML = columns.join("");
+  };
+
+  document.getElementById("pg-run")?.addEventListener("click", runPlayground);
+  document.getElementById("pg-query")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") runPlayground();
   });
 
   setKey(null);
