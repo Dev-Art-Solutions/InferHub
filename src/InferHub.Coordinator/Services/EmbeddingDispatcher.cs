@@ -10,6 +10,8 @@ public sealed class EmbeddingDispatcher(
     IRouter router,
     IDispatcher dispatcher,
     IOptions<VectorStoreOptions> options,
+    UsageMeter usage,
+    IHttpContextAccessor httpContextAccessor,
     ILogger<EmbeddingDispatcher> logger) : IEmbeddingDispatcher
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -34,7 +36,20 @@ public sealed class EmbeddingDispatcher(
             throw new InvalidOperationException(result.Error ?? "embed job failed");
         }
 
-        return result.ResponseJson ?? "{}";
+        var responseJson = result.ResponseJson ?? "{}";
+
+        // Every embed path funnels through here — the direct endpoints, retrieval's query
+        // embedding, ingestion's chunk batches, the vector endpoints. Metering once at the
+        // funnel is what makes "a client that ingests a 500-page manual has consumed the
+        // fleet" true without threading a client id through four call chains. Attribution
+        // comes from the request that triggered the work; fleet work with no request behind
+        // it (none exists today) would meter as anonymous.
+        var client = httpContextAccessor.HttpContext is { } httpContext
+            ? Auth.BearerApiKeyMiddleware.ClientOf(httpContext)
+            : Auth.ResolvedClient.Anonymous;
+        usage.RecordEmbedResponse(client, model, responseJson);
+
+        return responseJson;
     }
 
     public async Task<float[]> EmbedSingleAsync(string text, string? model, CancellationToken cancellationToken)

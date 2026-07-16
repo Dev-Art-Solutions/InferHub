@@ -343,6 +343,7 @@ public class FallbackTests
             model,
             stream: false,
             conversationKey: null,
+            TestUsage.Context(new NodeRegistry()),
             new StubRouter(node),
             new StubDispatcher(),
             fallback,

@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using InferHub.Coordinator.Auth;
 using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
 using InferHub.Shared.Contracts;
@@ -6,11 +7,13 @@ using InferHub.Shared.Contracts;
 namespace InferHub.Coordinator.Endpoints;
 
 /// <summary>
-/// Routing + pre-stream failover + metrics, shared by both client-facing dialects. The
-/// outcome is deliberately format-neutral: <see cref="InferenceEndpoints"/> renders it as
-/// Ollama NDJSON and <see cref="OpenAi.OpenAiEndpoints"/> renders it as OpenAI SSE.
+/// Admission control + routing + queueing + pre-stream failover + metering, shared by both
+/// client-facing dialects. The outcome is deliberately format-neutral: <see cref="InferenceEndpoints"/>
+/// renders it as Ollama NDJSON and <see cref="OpenAi.OpenAiEndpoints"/> renders it as OpenAI SSE.
 ///
-/// Two copies of failover logic is how failover quietly rots — there is exactly one here.
+/// Two copies of failover logic is how failover quietly rots — there is exactly one here. The
+/// same goes for the phase-25 admission check: it runs here, once, because the decision needs
+/// the model name, which middleware does not have.
 /// </summary>
 internal static class InferenceCore
 {
@@ -26,7 +29,8 @@ internal static class InferenceCore
         string? ResponseJson,
         int? ErrorStatus,
         string? ErrorMessage,
-        string ServedBy = ServedByNode)
+        string ServedBy = ServedByNode,
+        int? RetryAfterSeconds = null)
     {
         public static DispatchOutcome Streaming(ChannelReader<InferenceChunk> stream)
             => new(stream, null, null, null);
@@ -34,13 +38,31 @@ internal static class InferenceCore
         public static DispatchOutcome Blocking(string responseJson)
             => new(null, responseJson, null, null);
 
-        public static DispatchOutcome Failure(int status, string message)
-            => new(null, null, status, message);
+        public static DispatchOutcome Failure(int status, string message, int? retryAfterSeconds = null)
+            => new(null, null, status, message, RetryAfterSeconds: retryAfterSeconds);
 
         public static DispatchOutcome Fallback(FallbackResult result)
             => new(result.Stream, result.ResponseJson, null, null, ServedByFallback);
 
         public bool IsError => ErrorStatus is not null;
+    }
+
+    /// <summary>The per-request services phase 25 added, bundled so the endpoint signatures stay sane.</summary>
+    internal readonly record struct ClientContext(
+        ResolvedClient Client,
+        AdmissionControl Admission,
+        UsageMeter Usage,
+        IRequestQueue Queue)
+    {
+        public static ClientContext From(HttpContext httpContext)
+        {
+            var services = httpContext.RequestServices;
+            return new ClientContext(
+                BearerApiKeyMiddleware.ClientOf(httpContext),
+                services.GetRequiredService<AdmissionControl>(),
+                services.GetRequiredService<UsageMeter>(),
+                services.GetRequiredService<IRequestQueue>());
+        }
     }
 
     public static async Task<DispatchOutcome> DispatchAsync(
@@ -49,6 +71,7 @@ internal static class InferenceCore
         string? model,
         bool? stream,
         string? conversationKey,
+        ClientContext context,
         Services.IRouter router,
         IDispatcher dispatcher,
         IFallbackDispatcher fallback,
@@ -61,82 +84,162 @@ internal static class InferenceCore
             return DispatchOutcome.Failure(StatusCodes.Status400BadRequest, "model is required");
         }
 
-        var node = router.Route(model, conversationKey);
+        // Admission first: a client over its limits must not consume routing, queue capacity
+        // or an upstream call. Everything after this point holds the client's concurrency
+        // lease and must release it on every path out.
+        var admission = context.Admission.TryAdmit(context.Client, model);
 
-        // Cloud burst. Off by default, and when off this is a single false — the 404 below is
-        // byte-for-byte what every release since 1.0 has returned.
-        if (fallback.ShouldServe(model, hasCapableNode: node is not null))
-        {
-            try
-            {
-                var result = await fallback.DispatchAsync(
-                    kind,
-                    rawJson,
-                    model,
-                    stream is not false,
-                    cancellationToken);
-
-                return DispatchOutcome.Fallback(result);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                logger.LogWarning(ex, "Cloud burst failed for model {Model}", model);
-
-                if (node is null)
-                {
-                    return DispatchOutcome.Failure(
-                        StatusCodes.Status502BadGateway,
-                        $"no node holds model '{model}' and the fallback upstream failed: {ex.Message}");
-                }
-
-                // Saturation burst is an optimisation, not a promise — fall through to the node.
-            }
-        }
-
-        if (node is null)
-        {
-            return DispatchOutcome.Failure(StatusCodes.Status404NotFound, $"model '{model}' not found");
-        }
-
-        if (conversationKey is not null)
+        if (!admission.Allowed)
         {
             logger.LogInformation(
-                "Routing {Kind} for conversation {ConversationKey} to node {NodeId} ({NodeName})",
+                "Rejected {Kind} for client {ClientId}: {Status} {Message}",
                 kind,
-                conversationKey,
-                node.NodeId,
-                node.Name);
+                context.Client.Id,
+                admission.Status,
+                admission.Message);
+            return DispatchOutcome.Failure(admission.Status, admission.Message!, admission.RetryAfterSeconds);
         }
 
-        var job = new InferenceJob(Guid.NewGuid(), kind, rawJson);
+        var lease = admission.Lease;
+        var leaseHandedOff = false;
 
         try
         {
-            return await DispatchWithFailoverAsync(
-                kind,
-                model,
-                stream,
-                conversationKey,
-                node,
-                job,
-                router,
-                dispatcher,
-                metrics,
-                logger,
-                cancellationToken);
+            var node = router.Route(model, conversationKey);
+
+            // Cloud burst. Off by default, and when off this is a single false — the 404 below is
+            // byte-for-byte what every release since 1.0 has returned. With Trigger=no-node-or-saturated
+            // a saturated fleet overflows to the upstream INSTEAD of queueing — the upstream answers
+            // in seconds, the queue in tens of seconds, and a client who opted into burst asked for
+            // the former (precedence recorded in CLAUDE.md, covered by QueueTests).
+            if (fallback.ShouldServe(model, hasCapableNode: node is not null))
+            {
+                try
+                {
+                    var result = await fallback.DispatchAsync(
+                        kind,
+                        rawJson,
+                        model,
+                        stream is not false,
+                        cancellationToken);
+
+                    if (result.Stream is { } fallbackStream)
+                    {
+                        leaseHandedOff = true;
+                        return DispatchOutcome.Fallback(result) with
+                        {
+                            Stream = context.Usage.WrapStream(fallbackStream, context.Client, kind, model, fallback: true, lease)
+                        };
+                    }
+
+                    context.Usage.RecordResponse(context.Client, kind, model, result.ResponseJson ?? "{}", fallback: true);
+                    return DispatchOutcome.Fallback(result);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogWarning(ex, "Cloud burst failed for model {Model}", model);
+
+                    if (node is null)
+                    {
+                        return DispatchOutcome.Failure(
+                            StatusCodes.Status502BadGateway,
+                            $"no node holds model '{model}' and the fallback upstream failed: {ex.Message}");
+                    }
+
+                    // Saturation burst is an optimisation, not a promise — fall through to the node.
+                }
+            }
+
+            if (node is null)
+            {
+                return DispatchOutcome.Failure(StatusCodes.Status404NotFound, $"model '{model}' not found");
+            }
+
+            // Every capable node is at its declared cap: wait for a slot, briefly, then say so
+            // (phase 25, D5). Nodes that declared no cap are never saturated and never queue.
+            if (context.Queue.IsSaturated(model))
+            {
+                var queueOutcome = await context.Queue.WaitForCapacityAsync(model, cancellationToken);
+
+                if (queueOutcome is not QueueOutcome.Admitted)
+                {
+                    var reason = queueOutcome == QueueOutcome.QueueFull
+                        ? "the request queue is full"
+                        : $"every node serving '{model}' stayed at capacity for {context.Queue.MaxWaitSeconds}s";
+                    return DispatchOutcome.Failure(
+                        StatusCodes.Status503ServiceUnavailable,
+                        reason,
+                        Math.Max(1, context.Queue.MaxWaitSeconds));
+                }
+
+                // A slot freed somewhere — route again so the request lands on the node that has it.
+                node = router.Route(model, conversationKey) ?? node;
+            }
+
+            if (conversationKey is not null)
+            {
+                logger.LogInformation(
+                    "Routing {Kind} for conversation {ConversationKey} to node {NodeId} ({NodeName})",
+                    kind,
+                    conversationKey,
+                    node.NodeId,
+                    node.Name);
+            }
+
+            var job = new InferenceJob(Guid.NewGuid(), kind, rawJson);
+
+            try
+            {
+                var outcome = await DispatchWithFailoverAsync(
+                    kind,
+                    model,
+                    stream,
+                    conversationKey,
+                    node,
+                    job,
+                    router,
+                    dispatcher,
+                    metrics,
+                    logger,
+                    cancellationToken);
+
+                if (outcome.Stream is { } chunks)
+                {
+                    leaseHandedOff = true;
+                    return outcome with
+                    {
+                        Stream = context.Usage.WrapStream(chunks, context.Client, kind, model, fallback: false, lease)
+                    };
+                }
+
+                if (!outcome.IsError)
+                {
+                    context.Usage.RecordResponse(context.Client, kind, model, outcome.ResponseJson ?? "{}", fallback: false);
+                }
+
+                return outcome;
+            }
+            catch (TimeoutException)
+            {
+                logger.LogWarning("Job {JobId} for model {Model} timed out", job.JobId, model);
+                return DispatchOutcome.Failure(StatusCodes.Status504GatewayTimeout, "inference request timed out");
+            }
+            catch (NodeDisconnectedException ex)
+            {
+                // We're here only if failover also failed (or was impossible). Surface a clean
+                // 502 — the caller hasn't received any content yet for either path because the
+                // streaming dispatcher only returns its reader after the first chunk arrives.
+                logger.LogWarning(ex, "Job {JobId} for model {Model} could not be dispatched", job.JobId, model);
+                return DispatchOutcome.Failure(StatusCodes.Status502BadGateway, "no node was able to handle the request");
+            }
         }
-        catch (TimeoutException)
+        finally
         {
-            logger.LogWarning("Job {JobId} for model {Model} timed out", job.JobId, model);
-            return DispatchOutcome.Failure(StatusCodes.Status504GatewayTimeout, "inference request timed out");
-        }
-        catch (NodeDisconnectedException ex)
-        {
-            // We're here only if failover also failed (or was impossible). Surface a clean
-            // 502 — the caller hasn't received any content yet for either path because the
-            // streaming dispatcher only returns its reader after the first chunk arrives.
-            logger.LogWarning(ex, "Job {JobId} for model {Model} could not be dispatched", job.JobId, model);
-            return DispatchOutcome.Failure(StatusCodes.Status502BadGateway, "no node was able to handle the request");
+            // Streams carry the lease with them; every other exit releases it here.
+            if (!leaseHandedOff)
+            {
+                lease?.Dispose();
+            }
         }
     }
 

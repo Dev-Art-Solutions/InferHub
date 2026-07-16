@@ -105,7 +105,7 @@
       return `<span class="pill pill-err">missing</span>`;
     };
 
-    const renderStats = (snapshot, fallback) => {
+    const renderStats = (snapshot, fallback, queue) => {
       const cards = [
         ["Requests total", snapshot.requestsTotal ?? 0],
         ["In-flight", snapshot.requestsInFlight ?? 0],
@@ -122,6 +122,12 @@
         cards.push(fallback.enabled
           ? ["Cloud burst", `${dispatched} dispatched`]
           : ["Cloud burst", "off"]);
+      }
+
+      // A queue you cannot see is a queue you will not notice filling.
+      if (queue) {
+        const wait = queue.medianWaitMs != null ? ` · ~${Math.round(queue.medianWaitMs)}ms` : "";
+        cards.push(["Queue", `${queue.depth ?? 0} waiting${wait}`]);
       }
 
       document.getElementById("stats").innerHTML = cards.map(([label, value]) =>
@@ -172,7 +178,7 @@
         document.getElementById("version").textContent = `v${data.coordinatorVersion}`;
         document.getElementById("uptime").textContent = fmtSeconds(data.uptimeSeconds);
         document.getElementById("refreshed").textContent = new Date().toLocaleTimeString();
-        renderStats(data.metrics, data.fallback);
+        renderStats(data.metrics, data.fallback, data.queue);
         renderNodes(data.nodes);
         renderModels(data.models);
       } catch (err) {

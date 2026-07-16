@@ -12,7 +12,11 @@ using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.Configure<ApiKeyOptions>(builder.Configuration.GetSection(ApiKeyOptions.SectionName));
+builder.Services.AddOptions<ApiKeyOptions>()
+    .Bind(builder.Configuration.GetSection(ApiKeyOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<ApiKeyOptions>, ApiKeyOptionsValidator>();
+builder.Services.AddSingleton<IClientRegistry, ClientRegistry>();
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<NodeAuthFilter>();
 builder.Services.Configure<DispatcherOptions>(builder.Configuration.GetSection("Dispatcher"));
@@ -26,6 +30,33 @@ builder.Services.AddSingleton<IDispatcher, Dispatcher>();
 builder.Services.AddSingleton<INodeConnectionTracker, NodeConnectionTracker>();
 builder.Services.AddSingleton<IEmbeddingDispatcher, EmbeddingDispatcher>();
 builder.Services.AddHostedService<NodeReaper>();
+
+// Clients, quotas & usage (phase 25). All of it is inert for a config without Auth:Clients:
+// every key resolves anonymous-unlimited, admission is a dictionary miss, and the ledger
+// records what the responses already carried.
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddOptions<QueueOptions>()
+    .Bind(builder.Configuration.GetSection(QueueOptions.SectionName));
+builder.Services.AddOptions<UsageOptions>()
+    .Bind(builder.Configuration.GetSection(UsageOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<UsageOptions>, UsageOptionsValidator>();
+builder.Services.AddSingleton<AdmissionControl>();
+builder.Services.AddSingleton<UsageMeter>();
+builder.Services.AddSingleton<IRequestQueue, RequestQueue>();
+
+var usagePersistence = builder.Configuration
+    .GetSection(UsageOptions.SectionName)
+    .GetValue<string>(nameof(UsageOptions.Persistence)) ?? UsageOptions.PersistenceNone;
+
+if (string.Equals(usagePersistence.Trim(), UsageOptions.PersistencePostgres, StringComparison.OrdinalIgnoreCase))
+{
+    builder.Services.AddSingleton<IUsageLedger, PostgresUsageLedger>();
+}
+else
+{
+    builder.Services.AddSingleton<IUsageLedger, InMemoryUsageLedger>();
+}
 
 // Cloud burst. Registered always, disabled unless Fallback:Enabled — with it off, ShouldServe
 // is a single `false` and every existing behaviour is byte-for-byte unchanged.

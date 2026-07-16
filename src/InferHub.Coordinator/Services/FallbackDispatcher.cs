@@ -163,36 +163,9 @@ public sealed class FallbackDispatcher(
         return channel.Reader;
     }
 
-    /// <summary>
-    /// Every node advertising the model is already at its declared cap. A node that declared no
-    /// cap is never saturated — we have no number to compare against, and inventing one would
-    /// burst to a paid upstream on a guess.
-    /// </summary>
-    private bool IsSaturated(string model)
-    {
-        var capable = registry.FindNodesWithModel(model);
-
-        if (capable.Count == 0)
-        {
-            return true;
-        }
-
-        var snapshots = registry
-            .Snapshot(DateTimeOffset.UtcNow)
-            .ToDictionary(node => node.ConnectionId, StringComparer.Ordinal);
-
-        foreach (var node in capable)
-        {
-            if (!snapshots.TryGetValue(node.ConnectionId, out var snapshot)
-                || snapshot.MaxConcurrency is not { } cap
-                || snapshot.LocalInFlight < cap)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
+    // Saturation is defined once, in FleetSaturation — the request queue (phase 25) must agree
+    // with cloud burst about what "full" means, or the two features fight at the boundary.
+    private bool IsSaturated(string model) => FleetSaturation.IsSaturated(registry, model);
 
     private string? ResolveUpstreamModel(string model)
     {

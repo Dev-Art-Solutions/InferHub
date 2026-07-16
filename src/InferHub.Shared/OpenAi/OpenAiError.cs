@@ -25,4 +25,5 @@ public static class OpenAiErrorTypes
     public const string InvalidRequest = "invalid_request_error";
     public const string NotFound = "not_found_error";
     public const string ApiError = "api_error";
+    public const string RateLimit = "rate_limit_error";
 }
