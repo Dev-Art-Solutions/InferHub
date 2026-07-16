@@ -201,6 +201,56 @@
   </section>
 
   <section>
+    <h2>Clients &amp; usage</h2>
+
+    <div class="docs-bar">
+      <label for="usage-from">From</label>
+      <input type="date" id="usage-from">
+      <label for="usage-to">To</label>
+      <input type="date" id="usage-to">
+      <input type="text" id="usage-client" placeholder="client id (optional)" style="width:150px">
+      <input type="text" id="usage-model" placeholder="model (optional)" style="width:150px">
+      <button id="usage-refresh">Refresh</button>
+      <button id="usage-csv" disabled>Export CSV</button>
+      <span class="spacer"></span>
+      <span class="meta" id="usage-summary">set the admin key, then refresh</span>
+    </div>
+
+    <div class="table-wrap" style="margin-bottom:12px">
+      <table id="clients-table">
+        <thead>
+          <tr>
+            <th>Client</th>
+            <th>Limits</th>
+            <th>In-flight</th>
+            <th>Req (1m)</th>
+            <th>Tokens (1m)</th>
+            <th>Tokens today</th>
+          </tr>
+        </thead>
+        <tbody id="clients"></tbody>
+      </table>
+    </div>
+
+    <div class="table-wrap">
+      <table id="usage-table">
+        <thead>
+          <tr>
+            <th>Client</th>
+            <th>Model</th>
+            <th>Requests</th>
+            <th>Prompt tokens</th>
+            <th>Completion tokens</th>
+            <th>Total</th>
+            <th>Fallback</th>
+          </tr>
+        </thead>
+        <tbody id="usage"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
     <h2>Vector collections <span id="vector-provider" class="pill" style="display:none"></span></h2>
     <div class="table-wrap">
       <table id="collections-table">

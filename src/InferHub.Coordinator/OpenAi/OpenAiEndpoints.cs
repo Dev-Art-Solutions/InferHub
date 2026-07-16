@@ -93,6 +93,7 @@ public static class OpenAiEndpoints
             model,
             stream,
             conversationKey,
+            InferenceCore.ClientContext.From(httpContext),
             router,
             dispatcher,
             fallback,
@@ -102,7 +103,7 @@ public static class OpenAiEndpoints
 
         if (outcome.IsError)
         {
-            return DispatchError(outcome);
+            return DispatchError(httpContext, outcome);
         }
 
         httpContext.Response.Headers[InferenceCore.ServedByHeader] = outcome.ServedBy;
@@ -168,6 +169,7 @@ public static class OpenAiEndpoints
             model,
             stream,
             conversationKey: null,
+            InferenceCore.ClientContext.From(httpContext),
             router,
             dispatcher,
             fallback,
@@ -177,7 +179,7 @@ public static class OpenAiEndpoints
 
         if (outcome.IsError)
         {
-            return DispatchError(outcome);
+            return DispatchError(httpContext, outcome);
         }
 
         httpContext.Response.Headers[InferenceCore.ServedByHeader] = outcome.ServedBy;
@@ -388,15 +390,23 @@ public static class OpenAiEndpoints
         }
     }
 
-    private static IResult DispatchError(InferenceCore.DispatchOutcome outcome)
+    private static IResult DispatchError(HttpContext httpContext, InferenceCore.DispatchOutcome outcome)
     {
         var status = outcome.ErrorStatus!.Value;
         var message = outcome.ErrorMessage!;
+
+        if (outcome.RetryAfterSeconds is { } retryAfter)
+        {
+            httpContext.Response.Headers.RetryAfter = retryAfter.ToString();
+        }
 
         var (type, code, param) = status switch
         {
             StatusCodes.Status404NotFound => (OpenAiErrorTypes.NotFound, "model_not_found", "model"),
             StatusCodes.Status400BadRequest => (OpenAiErrorTypes.InvalidRequest, null, "model"),
+            // The two phase-25 rejections, in the vocabulary an OpenAI SDK retries on.
+            StatusCodes.Status429TooManyRequests => (OpenAiErrorTypes.RateLimit, "rate_limit_exceeded", (string?)null),
+            StatusCodes.Status402PaymentRequired => (OpenAiErrorTypes.RateLimit, "insufficient_quota", (string?)null),
             _ => (OpenAiErrorTypes.ApiError, (string?)null, (string?)null)
         };
 

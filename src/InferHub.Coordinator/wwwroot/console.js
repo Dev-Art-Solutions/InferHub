@@ -1077,6 +1077,129 @@
     if (event.key === "Enter") runPlayground();
   });
 
+  // --- Clients & usage (phase 25) -----------------------------------------------------------
+  // Admin-scoped. The rows are aggregates of (client, model, counts) — the ledger holds
+  // counts, never text, so there is nothing more detailed to show.
+  let usageRows = [];
+
+  const fmtInt = (n) => (n ?? 0).toLocaleString("en-US");
+
+  const limitChips = (limits) => {
+    if (!limits) return `<span class="meta">unlimited</span>`;
+    const parts = [];
+    if (limits.maxConcurrent != null) parts.push(`concurrent ≤ ${limits.maxConcurrent}`);
+    if (limits.requestsPerMinute != null) parts.push(`${limits.requestsPerMinute} req/min`);
+    if (limits.tokensPerMinute != null) parts.push(`${fmtInt(limits.tokensPerMinute)} tok/min`);
+    if (limits.tokensPerDay != null) parts.push(`${fmtInt(limits.tokensPerDay)} tok/day`);
+    if (limits.allowedModels?.length) parts.push(`models: ${limits.allowedModels.join(", ")}`);
+    if (parts.length === 0) return `<span class="meta">unlimited</span>`;
+    return `<div class="labels">${parts.map(p => `<span class="label-chip">${escapeHtml(p)}</span>`).join("")}</div>`;
+  };
+
+  const renderClients = (clients) => {
+    const tbody = document.getElementById("clients");
+    if (!tbody) return;
+    if (!clients || clients.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="6" class="empty">No named clients configured — every key is anonymous and unlimited (Auth:Clients).</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = clients.map(c => `<tr>
+      <td><code>${escapeHtml(c.id)}</code></td>
+      <td>${limitChips(c.limits)}</td>
+      <td>${fmtInt(c.live?.inFlight)}</td>
+      <td>${fmtInt(c.live?.requestsLastMinute)}</td>
+      <td>${fmtInt(c.live?.tokensLastMinute)}</td>
+      <td>${fmtInt(c.live?.tokensToday)}</td>
+    </tr>`).join("");
+  };
+
+  const renderUsage = (rows) => {
+    const tbody = document.getElementById("usage");
+    if (!tbody) return;
+    if (!rows || rows.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="7" class="empty">No usage recorded for this window.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows.map(r => `<tr>
+      <td><code>${escapeHtml(r.clientId)}</code></td>
+      <td>${escapeHtml(r.model)}</td>
+      <td>${fmtInt(r.requests)}</td>
+      <td>${fmtInt(r.promptTokens)}</td>
+      <td>${fmtInt(r.completionTokens)}</td>
+      <td>${fmtInt(r.totalTokens)}</td>
+      <td>${fmtInt(r.fallbackRequests)}</td>
+    </tr>`).join("");
+  };
+
+  const usageQueryString = () => {
+    const params = new URLSearchParams();
+    const from = document.getElementById("usage-from")?.value;
+    const to = document.getElementById("usage-to")?.value;
+    const client = document.getElementById("usage-client")?.value.trim();
+    const model = document.getElementById("usage-model")?.value.trim();
+    // Date inputs are day-granular; the ledger is UTC, so the window is [from 00:00Z, to+1d 00:00Z).
+    if (from) params.set("from", `${from}T00:00:00Z`);
+    if (to) {
+      const end = new Date(`${to}T00:00:00Z`);
+      end.setUTCDate(end.getUTCDate() + 1);
+      params.set("to", end.toISOString());
+    }
+    if (client) params.set("clientId", client);
+    if (model) params.set("model", model);
+    const qs = params.toString();
+    return qs ? `?${qs}` : "";
+  };
+
+  const refreshUsage = async () => {
+    if (!adminKey && !promptForKey("Admin key required for usage data.")) return;
+    const summary = document.getElementById("usage-summary");
+    try {
+      const [usageRes, clientsRes] = await Promise.all([
+        fetch(`/api/admin/usage${usageQueryString()}`, { headers: adminHeaders() }),
+        fetch("/api/admin/clients", { headers: adminHeaders() })
+      ]);
+      if (usageRes.status === 401 || clientsRes.status === 401) {
+        if (promptForKey("Admin key required or invalid.")) return refreshUsage();
+        return;
+      }
+      if (!usageRes.ok) throw new Error(`HTTP ${usageRes.status}`);
+      if (!clientsRes.ok) throw new Error(`HTTP ${clientsRes.status}`);
+      const usageBody = await usageRes.json();
+      usageRows = usageBody.rows ?? [];
+      renderUsage(usageRows);
+      renderClients(await clientsRes.json());
+      const totalTokens = usageRows.reduce((sum, r) => sum + (r.totalTokens ?? 0), 0);
+      if (summary) summary.textContent =
+        `${usageRows.length} row${usageRows.length === 1 ? "" : "s"} · ${fmtInt(totalTokens)} tokens`;
+      const csvBtn = document.getElementById("usage-csv");
+      if (csvBtn) csvBtn.disabled = usageRows.length === 0;
+    } catch (err) {
+      if (summary) summary.textContent = err.message;
+      toast("Usage refresh failed", err.message, "err");
+    }
+  };
+
+  const exportUsageCsv = () => {
+    if (usageRows.length === 0) return;
+    const esc = (v) => {
+      const s = String(v ?? "");
+      return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+    };
+    const header = "clientId,model,requests,promptTokens,completionTokens,totalTokens,fallbackRequests";
+    const lines = usageRows.map(r =>
+      [r.clientId, r.model, r.requests, r.promptTokens, r.completionTokens, r.totalTokens, r.fallbackRequests]
+        .map(esc).join(","));
+    const blob = new Blob([header + "\n" + lines.join("\n") + "\n"], { type: "text/csv" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `inferhub-usage-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
+  document.getElementById("usage-refresh")?.addEventListener("click", refreshUsage);
+  document.getElementById("usage-csv")?.addEventListener("click", exportUsageCsv);
+
   setKey(null);
   pollStatusNow();
   statusPollHandle = setInterval(pollStatusNow, STATUS_POLL_MS);

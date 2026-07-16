@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using Microsoft.Extensions.Options;
 
 namespace InferHub.Coordinator.Auth;
@@ -7,9 +5,13 @@ namespace InferHub.Coordinator.Auth;
 public sealed class BearerApiKeyMiddleware(
     RequestDelegate next,
     IOptionsMonitor<ApiKeyOptions> options,
+    IClientRegistry clients,
     ILogger<BearerApiKeyMiddleware> logger)
 {
     public const string OpenAiPathPrefix = "/v1";
+
+    /// <summary>The <see cref="ResolvedClient"/> for this request, set on every guarded path.</summary>
+    public const string ClientItemKey = "InferHub.Client";
 
     private const string OllamaPathPrefix = "/api";
     private const string BearerPrefix = "Bearer ";
@@ -36,13 +38,17 @@ public sealed class BearerApiKeyMiddleware(
         var remoteIp = context.Connection.RemoteIpAddress;
         var isLoopback = remoteIp is not null && System.Net.IPAddress.IsLoopback(remoteIp);
 
+        var token = ExtractBearerToken(context.Request.Headers.Authorization);
+
         if (isLoopback && !settings.RequireAuthForLoopback)
         {
+            // Loopback is exempt from *rejection*, not from identity: a valid named key still
+            // resolves (so quotas can be exercised locally), anything else stays anonymous.
+            context.Items[ClientItemKey] = (token is not null ? clients.Resolve(token) : null)
+                ?? ResolvedClient.Anonymous;
             await next(context);
             return;
         }
-
-        var token = ExtractBearerToken(context.Request.Headers.Authorization);
 
         if (token is null)
         {
@@ -54,7 +60,9 @@ public sealed class BearerApiKeyMiddleware(
             return;
         }
 
-        if (!IsTokenAccepted(token, settings.ApiKeys))
+        var client = clients.Resolve(token);
+
+        if (client is null)
         {
             await WriteUnauthorizedAsync(context, "invalid bearer token");
             logger.LogWarning(
@@ -64,8 +72,15 @@ public sealed class BearerApiKeyMiddleware(
             return;
         }
 
+        context.Items[ClientItemKey] = client;
         await next(context);
     }
+
+    /// <summary>The resolved client for this request; anonymous when nothing resolved it.</summary>
+    public static ResolvedClient ClientOf(HttpContext context)
+        => context.Items.TryGetValue(ClientItemKey, out var value) && value is ResolvedClient client
+            ? client
+            : ResolvedClient.Anonymous;
 
     private static bool IsGuardedPath(PathString path)
     {
@@ -87,37 +102,6 @@ public sealed class BearerApiKeyMiddleware(
 
         var token = authorizationHeader[BearerPrefix.Length..].Trim();
         return string.IsNullOrEmpty(token) ? null : token;
-    }
-
-    private static bool IsTokenAccepted(string presented, IReadOnlyList<string> apiKeys)
-    {
-        if (apiKeys.Count == 0)
-        {
-            return false;
-        }
-
-        Span<byte> presentedHash = stackalloc byte[32];
-        SHA256.HashData(Encoding.UTF8.GetBytes(presented), presentedHash);
-
-        Span<byte> keyHash = stackalloc byte[32];
-        var accepted = false;
-
-        foreach (var key in apiKeys)
-        {
-            if (string.IsNullOrEmpty(key))
-            {
-                continue;
-            }
-
-            SHA256.HashData(Encoding.UTF8.GetBytes(key), keyHash);
-
-            if (CryptographicOperations.FixedTimeEquals(presentedHash, keyHash))
-            {
-                accepted = true;
-            }
-        }
-
-        return accepted;
     }
 
     private static async Task WriteUnauthorizedAsync(HttpContext context, string message)

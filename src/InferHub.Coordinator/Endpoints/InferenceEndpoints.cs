@@ -360,6 +360,7 @@ public static class InferenceEndpoints
             model,
             stream,
             conversationKey,
+            InferenceCore.ClientContext.From(httpContext),
             router,
             dispatcher,
             fallback,
@@ -369,6 +370,11 @@ public static class InferenceEndpoints
 
         if (outcome.IsError)
         {
+            if (outcome.RetryAfterSeconds is { } retryAfter)
+            {
+                httpContext.Response.Headers.RetryAfter = retryAfter.ToString();
+            }
+
             return Error(outcome.ErrorStatus!.Value, outcome.ErrorMessage!);
         }
 

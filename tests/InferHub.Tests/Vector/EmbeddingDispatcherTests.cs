@@ -27,6 +27,8 @@ public class EmbeddingDispatcherTests
             router,
             dispatcher,
             Options.Create(new VectorStoreOptions { Enabled = true, DefaultEmbeddingModel = "nomic-embed-text" }),
+            TestUsage.Meter(),
+            TestUsage.NoHttpContext(),
             NullLogger<EmbeddingDispatcher>.Instance);
 
         var vector = await subject.EmbedSingleAsync("hello", model: null, CancellationToken.None);
@@ -51,6 +53,8 @@ public class EmbeddingDispatcherTests
             router,
             dispatcher,
             Options.Create(new VectorStoreOptions { Enabled = true, DefaultEmbeddingModel = "default" }),
+            TestUsage.Meter(),
+            TestUsage.NoHttpContext(),
             NullLogger<EmbeddingDispatcher>.Instance);
 
         _ = await subject.EmbedSingleAsync("hello", model: "explicit", CancellationToken.None);
@@ -68,6 +72,8 @@ public class EmbeddingDispatcherTests
             router,
             dispatcher,
             Options.Create(new VectorStoreOptions { Enabled = true, DefaultEmbeddingModel = "nomic" }),
+            TestUsage.Meter(),
+            TestUsage.NoHttpContext(),
             NullLogger<EmbeddingDispatcher>.Instance);
 
         await Assert.ThrowsAsync<NoEmbeddingNodeException>(() =>
@@ -84,6 +90,8 @@ public class EmbeddingDispatcherTests
             router,
             dispatcher,
             Options.Create(new VectorStoreOptions { Enabled = true }),
+            TestUsage.Meter(),
+            TestUsage.NoHttpContext(),
             NullLogger<EmbeddingDispatcher>.Instance);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>

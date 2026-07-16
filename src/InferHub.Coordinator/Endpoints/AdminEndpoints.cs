@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Threading.Channels;
+using InferHub.Coordinator.Auth;
 using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
 using Microsoft.AspNetCore.Http;
@@ -88,6 +89,70 @@ public static class AdminEndpoints
         });
 
         group.MapGet("/stream", StreamAsync);
+
+        // Usage accounting (phase 25). Aggregates only — the ledger holds counts, never text,
+        // so this endpoint could not leak a prompt even if asked nicely.
+        group.MapGet("/usage", async (
+            IUsageLedger ledger,
+            DateTimeOffset? from,
+            DateTimeOffset? to,
+            string? clientId,
+            string? model,
+            CancellationToken cancellationToken) =>
+        {
+            var rows = await ledger.QueryAsync(new UsageQuery(from, to, clientId, model), cancellationToken);
+
+            return Results.Ok(new
+            {
+                from,
+                to,
+                rows = rows.Select(r => new
+                {
+                    clientId = r.ClientId,
+                    model = r.Model,
+                    requests = r.Requests,
+                    promptTokens = r.PromptTokens,
+                    completionTokens = r.CompletionTokens,
+                    totalTokens = r.TotalTokens,
+                    fallbackRequests = r.FallbackRequests
+                })
+            });
+        });
+
+        // Configured clients with live window consumption. Ids and limits — never keys.
+        group.MapGet("/clients", (IClientRegistry clients, AdmissionControl admission) =>
+        {
+            var rows = clients.NamedClients
+                .Where(client => !string.IsNullOrWhiteSpace(client.Id))
+                .Select(client =>
+                {
+                    var live = admission.LiveUsageOf(client.Id);
+                    return new
+                    {
+                        id = client.Id,
+                        limits = client.Limits is { } limits
+                            ? new
+                            {
+                                maxConcurrent = limits.MaxConcurrent,
+                                requestsPerMinute = limits.RequestsPerMinute,
+                                tokensPerMinute = limits.TokensPerMinute,
+                                tokensPerDay = limits.TokensPerDay,
+                                allowedModels = limits.AllowedModels
+                            }
+                            : null,
+                        live = new
+                        {
+                            inFlight = live.InFlight,
+                            requestsLastMinute = live.RequestsLastMinute,
+                            tokensLastMinute = live.TokensLastMinute,
+                            tokensToday = live.TokensToday
+                        }
+                    };
+                })
+                .OrderBy(row => row.id, StringComparer.OrdinalIgnoreCase);
+
+            return Results.Ok(rows);
+        });
 
         return app;
     }

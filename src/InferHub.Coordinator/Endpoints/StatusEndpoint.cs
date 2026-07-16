@@ -14,6 +14,7 @@ public static class StatusEndpoint
             INodeRegistry registry,
             Metrics metrics,
             Microsoft.Extensions.Options.IOptions<FallbackOptions> fallback,
+            IRequestQueue queue,
             IServiceProvider services) =>
         {
             var now = DateTimeOffset.UtcNow;
@@ -40,7 +41,8 @@ public static class StatusEndpoint
                 models,
                 snapshot,
                 vectorBlock,
-                BuildFallbackBlock(fallback.Value, snapshot)));
+                BuildFallbackBlock(fallback.Value, snapshot),
+                BuildQueueBlock(queue)));
         });
 
         return app;
@@ -51,6 +53,22 @@ public static class StatusEndpoint
     /// reports <c>enabled: false</c>, so "is this thing sending my prompts anywhere?" is a
     /// question the status page answers rather than one you have to go and read the config for.
     /// </summary>
+    /// <summary>
+    /// A queue you cannot see is a queue you will not notice filling (phase 25, D5). Reported
+    /// even when nothing has ever queued, so a zero is a statement rather than an absence.
+    /// </summary>
+    internal static QueueStatusBlock BuildQueueBlock(IRequestQueue queue)
+    {
+        var snapshot = queue.Snapshot();
+        return new QueueStatusBlock(
+            snapshot.Depth,
+            snapshot.Queued,
+            snapshot.Admitted,
+            snapshot.TimedOut,
+            snapshot.Rejected,
+            snapshot.MedianWaitMs);
+    }
+
     internal static FallbackStatusBlock BuildFallbackBlock(FallbackOptions options, MetricsSnapshot metrics)
         => new(
             options.Enabled && !string.IsNullOrWhiteSpace(options.BaseUrl),
@@ -157,7 +175,16 @@ public static class StatusEndpoint
         IReadOnlyCollection<ModelInfo> Models,
         MetricsSnapshot Metrics,
         VectorStatusBlock? Vector,
-        FallbackStatusBlock Fallback);
+        FallbackStatusBlock Fallback,
+        QueueStatusBlock Queue);
+
+    internal sealed record QueueStatusBlock(
+        int Depth,
+        long Queued,
+        long Admitted,
+        long TimedOut,
+        long Rejected,
+        double? MedianWaitMs);
 
     internal sealed record FallbackStatusBlock(
         bool Enabled,

@@ -181,7 +181,7 @@ public class OpenAiAuthTests
             RequireAuthForLoopback = requireAuthForLoopback
         });
 
-        return new BearerApiKeyMiddleware(next, options, NullLogger<BearerApiKeyMiddleware>.Instance);
+        return new BearerApiKeyMiddleware(next, options, new ClientRegistry(options), NullLogger<BearerApiKeyMiddleware>.Instance);
     }
 
     private static HttpContext NewContext(string path, IPAddress remoteIp, string? authorization = null)

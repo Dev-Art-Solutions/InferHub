@@ -63,17 +63,13 @@ of one.
 
 ## Status
 
-**InferHub 2.4** teaches the mesh to speak the OpenAI format *upstream*, not just to its
-clients. A node is no longer synonymous with Ollama: set `Backend:Type=openai` and it drives
-**vLLM** — continuous batching, the difference between one GPU serving four users and one
-serving forty — or llama.cpp's server, LM Studio, TGI, or a hosted provider. One backend
-implementation covers all of them, because they all landed on the same dialect.
-
-The other half is the failure nobody plans for: the GPU box is switched off. A coordinator
-with no capable node has returned a flat `404` since 1.0; it can now **cloud burst** to a
-configured upstream instead. Off by default, mapped models only, tagged in the response,
-counted on the status page, and never stored — see [Cloud burst](#cloud-burst-v24) for why
-each of those is non-negotiable.
+**InferHub 2.7** gives an API key a name, a budget, and a bill. `Auth:Clients` turns a flat
+list of anonymous keys into **named clients** with per-key concurrency, rate and token limits
+and a model allowlist; every completed request is metered per client and per model —
+[counts, never text](#clients-quotas--usage-v27) — queryable from the admin API, visible on
+the console, exportable as CSV, and optionally persisted to Postgres. Over a limit is a `429`
+with `Retry-After`; over the daily budget is a `402`; a fleet at capacity **queues briefly,
+with a real bound**, then says `503`. Existing configs run unchanged.
 
 | Phase | Theme | Version |
 |------:|-------|---------|
@@ -101,12 +97,13 @@ each of those is non-negotiable.
 | 22 | OpenAI-compatible node backend & cloud burst (done) | `v2.4.0` |
 | 23 | Document ingestion pipeline (done) | `v2.5.0` |
 | 24 | Hybrid search, reranking & eval harness (done) | `v2.6.0` |
+| 25 | Clients, quotas & usage accounting (done) | `v2.7.0` |
 
-**What's next.** Retrieval quality landed in 2.6 — hybrid search, an opt-in reranker, and a harness
-that measures whether either helped. Next: quotas and per-key usage accounting, then fleet-wide
-remote model management. Streaming `tool_calls` deltas
-(mapped in blocking mode today, not yet streamed), multi-coordinator clustering and persisted
-affinity remain on the table.
+**What's next.** With per-key metering in 2.7, a hub is safe to point a paying client at.
+Next: fleet operations — remote model management (pull/delete/warm from the console, no SSH)
+and measured, throughput-aware routing. Streaming `tool_calls` deltas (mapped in blocking mode
+today, not yet streamed), multi-coordinator clustering and persisted affinity remain on the
+table.
 
 ## Quick start
 
@@ -283,6 +280,77 @@ or .NET user-secrets — `appsettings.json` only ships empty placeholders.
 Client and admin scopes are checked separately — an admin key cannot run inference
 unless it is also listed in `Auth:ApiKeys`, and vice versa.
 
+### Clients, quotas & usage (v2.7+)
+
+A flat key list is fine until a second party is behind one of the keys. `Auth:Clients` gives
+a key an identity and, optionally, limits:
+
+```jsonc
+{
+  "Auth": {
+    "Clients": [
+      {
+        "Id": "acme-marketing",
+        // Key via env: Auth__Clients__0__Key=sk-... — never in a config file.
+        "Limits": {
+          "MaxConcurrent": 4,
+          "RequestsPerMinute": 60,
+          "TokensPerMinute": 100000,
+          "TokensPerDay": 2000000,
+          "AllowedModels": ["llama3", "nomic-embed-text"]
+        }
+      }
+    ]
+  }
+}
+```
+
+Every limit is nullable; `null` means unlimited. The flat `Auth:ApiKeys` list keeps working —
+its entries are anonymous clients with no limits, so **an existing config runs unchanged**.
+
+What happens at the boundary, per status code:
+
+| Situation | Response |
+|---|---|
+| Over `MaxConcurrent`, `RequestsPerMinute` or `TokensPerMinute` | `429` with a window-accurate `Retry-After` |
+| Over `TokensPerDay` | `402 Payment Required`, `Retry-After` pointing at UTC midnight |
+| Model outside `AllowedModels` | `404`, byte-identical to a model that does not exist |
+| Every capable node at its declared cap, longer than `Queue:MaxWaitSeconds` | `503` with `Retry-After` |
+
+On `/v1` the rejections use the OpenAI error envelope (`rate_limit_error` /
+`insufficient_quota`), so SDK retry logic does the right thing out of the box.
+
+**Usage accounting.** Every completed request is metered per client and per model — requests,
+prompt tokens, completion tokens, and whether it was served by [cloud burst](#cloud-burst-v24)
+(the one that costs actual money). Embeddings and [document ingestion](#document-ingestion-v25)
+count too: a client that ingests a 500-page manual has consumed the fleet. A usage record is
+a client id, a model, a kind, two integers, a flag and a timestamp. **It never contains the
+prompt, the completion, a hash of either, or a "sample" — and there is no flag to change
+that.** Streaming counts come from the terminal chunk; a stream that never delivers it (a
+mid-stream disconnect) records nothing rather than guessing.
+
+```bash
+# Aggregates you could put on an invoice (admin scope):
+curl -H "Authorization: Bearer $ADMIN_KEY" \
+  "http://localhost:5080/api/admin/usage?from=2026-07-01T00:00:00Z&clientId=acme-marketing"
+
+# Configured clients with live window consumption:
+curl -H "Authorization: Bearer $ADMIN_KEY" http://localhost:5080/api/admin/clients
+```
+
+The console has a matching **Clients & usage** panel with a date range and CSV export.
+
+By default the counters are in-memory and a restart resets them — honest, and useless for
+billing. Set `Usage:Persistence=postgres` (with its own `Usage:Postgres:ConnectionString`,
+deliberately independent of the vector store's) to write each record to an append-only table.
+
+**Queueing.** When every node holding a model is at its declared `MaxConcurrency`, a request
+waits in a bounded queue instead of failing instantly: up to `Queue:MaxWaitSeconds` (default
+30), at most `Queue:MaxDepth` waiting (default 64), then `503`. Nodes that declared no cap
+never queue. If cloud burst is enabled with `Trigger=no-node-or-saturated`, saturation
+overflows to the upstream *instead of* queueing. Queue depth and median wait are on
+`/api/status` and the status page.
+
 **Coordinator — client, admin & enrollment secrets**
 
 ```bash
@@ -338,7 +406,8 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Dispatcher:TimeoutSeconds` | `300` | Per-job wall-clock timeout (applies to streaming and blocking). |
 | `Router:AffinitySlidingMinutes` | `10` | Sticky-conversation idle expiry. |
 | `Router:AffinityLoadBreakThreshold` | `2` | Extra in-flight jobs the sticky node may have before affinity is broken in favour of a less-busy node. |
-| `Auth:ApiKeys` | `[]` | Accepted client Bearer tokens (constant-time compared). |
+| `Auth:ApiKeys` | `[]` | Accepted client Bearer tokens (constant-time compared). Anonymous, unlimited. |
+| `Auth:Clients` | `[]` | Named clients: `{Id, Key, Limits}`. See [Clients, quotas & usage](#clients-quotas--usage-v27). |
 | `Auth:AdminApiKeys` | `[]` | Accepted admin Bearer tokens guarding `/api/admin/*`. Separate from `ApiKeys`. |
 | `Auth:RequireAuthForLoopback` | `false` | Force loopback callers to present a token too (applies to client and admin scopes). |
 | `Auth:NodeEnrollmentSecret` | _(empty)_ | Shared secret nodes present when joining the hub. Empty disables enrollment. |
@@ -349,6 +418,11 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Fallback:ModelMap` | `{}` | Local model name → upstream model name. **Only mapped models are ever sent upstream.** |
 | `Fallback:AllowedModels` | `[]` | Narrower allowlist within the map. Empty = every mapped model. |
 | `Fallback:TimeoutSeconds` | `300` | Per-request timeout against the upstream. |
+| `Queue:MaxWaitSeconds` | `30` | How long a request may wait for a saturated fleet before `503`. |
+| `Queue:MaxDepth` | `64` | How many requests may wait at once. Past it, an immediate `503`. |
+| `Usage:Persistence` | `none` | `none` (in-memory, reset on restart) or `postgres` (append-only table). |
+| `Usage:Postgres:ConnectionString` | _(empty)_ | Required when `Persistence=postgres`. Env / user-secrets only. Independent of the vector store's. |
+| `Usage:Postgres:Schema` / `:Table` | `inferhub` / `usage_records` | Where the ledger lives. Created on first use. |
 
 ### Node configuration
 
