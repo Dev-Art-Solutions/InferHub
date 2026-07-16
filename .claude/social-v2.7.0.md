@@ -15,11 +15,11 @@ Post manually; no connector for FB/X. Blog: https://devart.solutions/blog/inferh
 > Existing configs run unchanged.
 > 👉 https://github.com/Dev-Art-Solutions/InferHub
 
-## X
+## X (276 chars with the t.co link)
 
-> InferHub 2.7: per-key quotas and usage accounting.
+> InferHub 2.7: per-key quotas & usage accounting.
 >
-> Named clients, concurrency + rate + token budgets, model allowlists, CSV export, optional Postgres ledger. 429 over limit, 402 over budget, bounded queue when the fleet is full.
+> Named clients, rate + token budgets, model allowlists. 429 over limit, 402 over budget, bounded queue when the fleet is full.
 >
 > A usage record is an id, a model, two ints, a timestamp. Never the prompt.
 >
