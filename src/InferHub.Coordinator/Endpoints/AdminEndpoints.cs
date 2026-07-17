@@ -3,6 +3,8 @@ using System.Threading.Channels;
 using InferHub.Coordinator.Auth;
 using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
+using InferHub.Coordinator.Vector;
+using InferHub.Shared.Contracts;
 using Microsoft.AspNetCore.Http;
 
 namespace InferHub.Coordinator.Endpoints;
@@ -88,6 +90,68 @@ public static class AdminEndpoints
             return Results.Ok(new { nodeId, deregistered = true });
         });
 
+        // Model management (phase 26). Commands travel down the node's existing outbound
+        // connection; progress is relayed on the SSE stream below as `model-progress` events.
+        group.MapPost("/nodes/{nodeId}/models/{model}/pull", (
+            string nodeId, string model, HttpContext context,
+            INodeRegistry registry, ModelCommandCoordinator commands, IAuditLog audit,
+            ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
+            RunModelCommandAsync(ModelCommand.KindPull, nodeId, model, context, registry, commands, audit, loggerFactory, cancellationToken));
+
+        group.MapDelete("/nodes/{nodeId}/models/{model}", (
+            string nodeId, string model, HttpContext context,
+            INodeRegistry registry, ModelCommandCoordinator commands, IAuditLog audit,
+            ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
+            RunModelCommandAsync(ModelCommand.KindDelete, nodeId, model, context, registry, commands, audit, loggerFactory, cancellationToken));
+
+        group.MapPost("/nodes/{nodeId}/models/{model}/warm", (
+            string nodeId, string model, HttpContext context,
+            INodeRegistry registry, ModelCommandCoordinator commands, IAuditLog audit,
+            ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
+            RunModelCommandAsync(ModelCommand.KindWarm, nodeId, model, context, registry, commands, audit, loggerFactory, cancellationToken));
+
+        // Fleet-wide model matrix (phase 26): model × node, with sizes and which nodes hold each.
+        // The view that makes the whole feature make sense.
+        group.MapGet("/models", (INodeRegistry registry) =>
+        {
+            var inventory = registry.ModelInventory();
+
+            var nodes = inventory
+                .Select(n => new
+                {
+                    nodeId = n.NodeId,
+                    name = n.Name,
+                    cordoned = n.Cordoned,
+                    supportsModelManagement = n.SupportsModelManagement,
+                    modelCount = n.Models.Count
+                })
+                .ToArray();
+
+            var models = inventory
+                .SelectMany(n => n.Models.Select(m => new { n.NodeId, Model = m }))
+                .GroupBy(x => x.Model.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(g => new
+                {
+                    name = g.Key,
+                    sizeBytes = g.Select(x => x.Model.SizeBytes).Where(s => s.HasValue).Select(s => s!.Value)
+                        .DefaultIfEmpty(0).Max() is var mx && mx > 0 ? (long?)mx : null,
+                    nodes = g.Select(x => x.NodeId).Distinct(StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray()
+                })
+                .OrderBy(m => m.name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            return Results.Ok(new { nodes, models });
+        });
+
+        // Ensure a model is held by at least N nodes: pull it onto the most suitable
+        // capable-and-manageable nodes that don't already have it, skipping cordoned ones.
+        group.MapPost("/models/{model}/ensure", async (
+            string model, int? replicas, HttpContext context,
+            INodeRegistry registry, ModelCommandCoordinator commands, IAuditLog audit,
+            ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
+            await EnsureModelAsync(model, replicas ?? 1, context, registry, commands, audit, loggerFactory, cancellationToken));
+
         group.MapGet("/stream", StreamAsync);
 
         // Usage accounting (phase 25). Aggregates only — the ledger holds counts, never text,
@@ -157,6 +221,132 @@ public static class AdminEndpoints
         return app;
     }
 
+    private static async Task<IResult> RunModelCommandAsync(
+        string kind,
+        string nodeId,
+        string model,
+        HttpContext context,
+        INodeRegistry registry,
+        ModelCommandCoordinator commands,
+        IAuditLog audit,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin");
+        model = (model ?? string.Empty).Trim();
+
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            return Results.BadRequest(new { error = "a model name is required" });
+        }
+
+        var node = registry.Snapshot(DateTimeOffset.UtcNow)
+            .FirstOrDefault(n => string.Equals(n.NodeId, nodeId, StringComparison.OrdinalIgnoreCase));
+
+        if (node is null)
+        {
+            return Results.NotFound(new { error = $"node '{nodeId}' not found" });
+        }
+
+        // A backend that cannot manage models refuses cleanly here, not with a 500 from the node.
+        if (!node.SupportsModelManagement)
+        {
+            return Results.BadRequest(new
+            {
+                error = $"node '{nodeId}' runs a backend that cannot manage models"
+            });
+        }
+
+        var result = await commands.SendAsync(node.NodeId, kind, model, cancellationToken);
+        if (result is null)
+        {
+            return Results.NotFound(new { error = $"node '{nodeId}' is no longer connected" });
+        }
+
+        audit.Record(node.NodeId, $"model.{kind}", ActorOf(context), DateTimeOffset.UtcNow);
+        logger.LogInformation(
+            "Model command {Kind} '{Model}' on node {NodeId} → command {CommandId} (reused={Reused})",
+            kind, model, node.NodeId, result.CommandId, result.Reused);
+
+        return Results.Accepted($"/api/admin/nodes/{node.NodeId}/models", new
+        {
+            nodeId = node.NodeId,
+            model,
+            kind,
+            commandId = result.CommandId,
+            reused = result.Reused
+        });
+    }
+
+    private static async Task<IResult> EnsureModelAsync(
+        string model,
+        int replicas,
+        HttpContext context,
+        INodeRegistry registry,
+        ModelCommandCoordinator commands,
+        IAuditLog audit,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin");
+        model = (model ?? string.Empty).Trim();
+
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            return Results.BadRequest(new { error = "a model name is required" });
+        }
+
+        if (replicas < 1)
+        {
+            return Results.BadRequest(new { error = "replicas must be >= 1" });
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var snapshot = registry.Snapshot(now);
+        var holders = registry.FindNodesWithModel(model); // non-cordoned nodes already holding it
+        var holderConns = holders.Select(h => h.ConnectionId).ToHashSet(StringComparer.Ordinal);
+        var byConn = snapshot.ToDictionary(n => n.ConnectionId, StringComparer.Ordinal);
+
+        var plan = ModelPlacement.Choose(snapshot, holderConns, replicas);
+
+        var pulling = new List<object>();
+        foreach (var connId in plan.PullConnectionIds)
+        {
+            if (!byConn.TryGetValue(connId, out var node)) continue;
+            var result = await commands.SendAsync(node.NodeId, ModelCommand.KindPull, model, cancellationToken);
+            if (result is null) continue;
+            audit.Record(node.NodeId, "model.pull", ActorOf(context), now);
+            pulling.Add(new { nodeId = node.NodeId, name = node.Name, commandId = result.CommandId, reused = result.Reused });
+        }
+
+        var cordonedHolders = snapshot.Where(n => n.Cordoned).Select(n => n.NodeId).ToArray();
+
+        logger.LogInformation(
+            "Ensure '{Model}' replicas={Replicas}: {Holders} already present, pulling onto {Pulling}, satisfied={Satisfied}",
+            model, replicas, holders.Count, pulling.Count, plan.Satisfied);
+
+        return Results.Ok(new
+        {
+            model,
+            requestedReplicas = replicas,
+            alreadyPresent = holders.Select(h => h.NodeId).ToArray(),
+            pulling,
+            satisfied = plan.Satisfied,
+            // The "why": what was and wasn't eligible, so an operator can trust the decision.
+            decision = new
+            {
+                effectiveTarget = plan.EffectiveTarget,
+                nonManageableHolders = plan.NonManageableHolders,
+                eligibleCandidates = plan.EligibleCandidates,
+                cordonedNodesSkipped = cordonedHolders,
+                shortfall = plan.Shortfall,
+                note = plan.Satisfied
+                    ? "target met (already-present holders plus new pulls cover the requested replicas)"
+                    : "not enough eligible manageable nodes to reach the requested replica count"
+            }
+        });
+    }
+
     private static async Task StreamAsync(
         HttpContext context,
         INodeRegistry registry,
@@ -166,6 +356,7 @@ public static class AdminEndpoints
     {
         var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin.Stream");
         var vectorEvents = context.RequestServices.GetService<VectorEvents>();
+        var commands = context.RequestServices.GetService<ModelCommandCoordinator>();
 
         context.Response.Headers.ContentType = "text/event-stream";
         context.Response.Headers.CacheControl = "no-cache, no-store";
@@ -187,14 +378,26 @@ public static class AdminEndpoints
             SingleWriter = false
         });
 
+        var modelQueue = Channel.CreateBounded<ModelCommandProgress>(new BoundedChannelOptions(256)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = true,
+            SingleWriter = false
+        });
+
         void OnChanged() => signal.Writer.TryWrite(0);
         void OnVector(VectorEvent ev)
         {
             if (vectorQueue.Writer.TryWrite(ev)) signal.Writer.TryWrite(1);
         }
+        void OnModelProgress(ModelCommandProgress progress)
+        {
+            if (modelQueue.Writer.TryWrite(progress)) signal.Writer.TryWrite(2);
+        }
 
         registry.Changed += OnChanged;
         IDisposable? vectorSub = vectorEvents?.Subscribe(OnVector);
+        if (commands is not null) commands.ProgressReceived += OnModelProgress;
 
         try
         {
@@ -219,6 +422,11 @@ public static class AdminEndpoints
                     while (vectorQueue.Reader.TryRead(out var ev))
                     {
                         await WriteVectorEventAsync(context.Response, ev, cancellationToken);
+                    }
+                    // Then model-command progress frames, likewise order-preserving.
+                    while (modelQueue.Reader.TryRead(out var progress))
+                    {
+                        await WriteModelProgressAsync(context.Response, progress, cancellationToken);
                     }
                     // A fleet change (or the very first wake) always warrants a fresh snapshot.
                     if (needSnapshot)
@@ -245,7 +453,19 @@ public static class AdminEndpoints
         {
             registry.Changed -= OnChanged;
             vectorSub?.Dispose();
+            if (commands is not null) commands.ProgressReceived -= OnModelProgress;
         }
+    }
+
+    private static async Task WriteModelProgressAsync(
+        HttpResponse response,
+        ModelCommandProgress progress,
+        CancellationToken cancellationToken)
+    {
+        var payload = JsonSerializer.Serialize(progress, StreamJsonOptions);
+        await response.WriteAsync("event: model-progress\n", cancellationToken);
+        await response.WriteAsync($"data: {payload}\n\n", cancellationToken);
+        await response.Body.FlushAsync(cancellationToken);
     }
 
     private static async Task WriteSnapshotAsync(
@@ -311,6 +531,7 @@ public static class AdminEndpoints
         IReadOnlyDictionary<string, string> Labels,
         int? MaxConcurrency,
         bool Cordoned,
+        bool SupportsModelManagement,
         AdminNodeAction? LastAction)
     {
         public static AdminNode From(NodeSnapshot node, AuditEntry? lastAction)
@@ -329,6 +550,7 @@ public static class AdminEndpoints
                 node.Labels,
                 node.MaxConcurrency,
                 node.Cordoned,
+                node.SupportsModelManagement,
                 lastAction is null
                     ? null
                     : new AdminNodeAction(lastAction.Action, lastAction.AtUtc, lastAction.By));

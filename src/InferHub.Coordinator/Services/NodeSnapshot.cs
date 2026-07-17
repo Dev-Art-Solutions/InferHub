@@ -13,4 +13,5 @@ public sealed record NodeSnapshot(
     int ModelCount,
     IReadOnlyDictionary<string, string> Labels,
     int? MaxConcurrency,
-    bool Cordoned);
+    bool Cordoned,
+    bool SupportsModelManagement = false);

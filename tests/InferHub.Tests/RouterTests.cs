@@ -229,7 +229,7 @@ public class RouterTests
         });
 
         affinity = new ConversationAffinity(options);
-        return new Router(registry, affinity, options);
+        return new Router(registry, affinity, new ThroughputTracker(), options);
     }
 
     private static void SeedTwoNodes(NodeRegistry registry)

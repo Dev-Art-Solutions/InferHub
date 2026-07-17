@@ -115,6 +115,19 @@ public sealed class NodeHub(
         }
     }
 
+    // Node → hub upload of model-command progress (phase 26). Like StreamChunks this is a
+    // client-to-server stream, so it must NOT declare a CancellationToken parameter — see the
+    // StreamChunks comment above for why. Use Context.ConnectionAborted instead.
+    public async Task StreamModelCommandProgress(IAsyncEnumerable<ModelCommandProgress> frames)
+    {
+        var commands = services.GetService(typeof(ModelCommandCoordinator)) as ModelCommandCoordinator;
+
+        await foreach (var frame in frames.WithCancellation(Context.ConnectionAborted))
+        {
+            commands?.ReportProgress(frame);
+        }
+    }
+
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         connections.Forget(Context.ConnectionId);

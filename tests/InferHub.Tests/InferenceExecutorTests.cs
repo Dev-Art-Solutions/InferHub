@@ -140,6 +140,11 @@ public class InferenceExecutorTests : IDisposable
 
         public IAsyncEnumerable<string> StreamAsync(string kind, string requestJson, CancellationToken cancellationToken)
             => throw new NotImplementedException();
+
+        public bool SupportsModelManagement => false;
+        public IAsyncEnumerable<ModelPullProgress> PullAsync(string model, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task DeleteAsync(string model, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task WarmAsync(string model, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
     private sealed class FakeBackend(params string[] chunks) : IInferenceBackend
@@ -180,5 +185,10 @@ public class InferenceExecutorTests : IDisposable
                 yield return chunk;
             }
         }
+
+        public bool SupportsModelManagement => false;
+        public IAsyncEnumerable<ModelPullProgress> PullAsync(string model, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task DeleteAsync(string model, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task WarmAsync(string model, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 }

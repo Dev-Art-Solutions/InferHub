@@ -182,6 +182,21 @@ public sealed class NodeRegistry : INodeRegistry
             .ToArray();
     }
 
+    public IReadOnlyCollection<NodeModelInventory> ModelInventory()
+    {
+        return nodes
+            .Select(pair => new NodeModelInventory(
+                pair.Key,
+                pair.Value.Registration.NodeId,
+                pair.Value.Registration.Name,
+                pair.Value.Cordoned,
+                pair.Value.Registration.SupportsModelManagement,
+                pair.Value.Models))
+            .OrderBy(node => node.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(node => node.NodeId, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
     public IReadOnlyCollection<RoutableNode> FindNodesWithModel(string model)
     {
         if (string.IsNullOrWhiteSpace(model))
@@ -279,7 +294,8 @@ public sealed class NodeRegistry : INodeRegistry
             entry.Models.Count,
             entry.Registration.Labels ?? EmptyLabels,
             entry.Registration.MaxConcurrency,
-            entry.Cordoned);
+            entry.Cordoned,
+            entry.Registration.SupportsModelManagement);
     }
 
     private static readonly IReadOnlyDictionary<string, string> EmptyLabels =

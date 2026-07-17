@@ -133,6 +133,7 @@ public class DispatcherResilienceTests
             new NoOpHubContext(),
             registry,
             metrics,
+            new ThroughputTracker(),
             options,
             NullLogger<Dispatcher>.Instance);
     }

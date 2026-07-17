@@ -29,6 +29,8 @@ builder.Services.AddSingleton<InferHub.Coordinator.Services.IRouter, Router>();
 builder.Services.AddSingleton<IDispatcher, Dispatcher>();
 builder.Services.AddSingleton<INodeConnectionTracker, NodeConnectionTracker>();
 builder.Services.AddSingleton<IEmbeddingDispatcher, EmbeddingDispatcher>();
+builder.Services.AddSingleton<ModelCommandCoordinator>();
+builder.Services.AddSingleton<ThroughputTracker>();
 builder.Services.AddHostedService<NodeReaper>();
 
 // Clients, quotas & usage (phase 25). All of it is inert for a config without Auth:Clients:

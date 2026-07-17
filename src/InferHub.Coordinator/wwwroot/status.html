@@ -64,6 +64,7 @@
           <th>Status</th>
           <th>In-flight (local / reported)</th>
           <th>Models</th>
+          <th title="Measured throughput — EWMA of tokens/second across this node's models (v2.8+)">tok/s</th>
           <th>Last seen</th>
         </tr>
       </thead>
@@ -150,6 +151,7 @@
           <td>${statusPill(n.ageSeconds)}</td>
           <td>${n.localInFlight} / ${n.inFlight}</td>
           <td>${n.modelCount}</td>
+          <td>${n.tokensPerSecond == null ? "—" : n.tokensPerSecond.toFixed(1)}</td>
           <td>${fmtSeconds(n.ageSeconds)} ago</td>
         </tr>
       `).join("");

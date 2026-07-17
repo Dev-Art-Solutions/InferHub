@@ -494,6 +494,60 @@ overflows to the upstream *instead of* queueing — a client who opted into burs
 answer in seconds, not a place in line. Queue depth and median wait are on `/api/status`
 (reported even when zero) and the status page.
 
+### Phase 26 (fleet operations: model management & measured routing) — also load-bearing
+
+**D1 — Model management is a hub → node command, not a new API on the node.** The node has no
+inbound surface and never will — that is the whole point of the outbound SignalR design. Model
+commands travel down the existing connection: the coordinator sends `ExecuteModelCommand` to a node,
+and the node streams `ModelCommandProgress` back via `StreamModelCommandProgress` — a client-to-server
+stream, so like `StreamChunks` **it must never declare a `CancellationToken` parameter** (same binder
+trap; use `Context.ConnectionAborted`). Nothing about the NAT story changes.
+
+**D2 — Progress streams on the existing SSE channel.** A pull takes minutes, so it is not
+request/response. [ModelCommandCoordinator](src/InferHub.Coordinator/Services/ModelCommandCoordinator.cs)
+relays each frame as a `model-progress` event on the existing `/api/admin/stream`. No new transport.
+It also **coalesces** a duplicate command for the same node+kind+model onto the one already running
+(returns the existing command id, `reused: true`), and it holds no persistent state — a restart forgets
+in-flight commands like everything else on the hub.
+
+**D3 — Not every backend can manage models, and it declares so rather than throwing.**
+`IInferenceBackend.SupportsModelManagement` is reported at registration (on `NodeRegistration`), so the
+coordinator gates the endpoints and the console greys out controls a node cannot honour. `OllamaBackend`
+returns `true` (pull/delete via `OllamaClient`, warm via an empty-prompt generate); `OpenAiBackend`
+returns `false` — a vLLM/hosted upstream's model is fixed at launch. A backend asked to do the
+impossible **refuses with a clean terminal error frame, never a 500** — `ModelCommandExecutor` turns an
+unsupported backend or a thrown backend call into a `Done` frame with `Error` set. `ModelCommandTests`
+pins this.
+
+**Placement reuses phase-15, it does not reinvent it.** `POST /api/admin/models/{model}/ensure?replicas=N`
+pulls the model onto the most suitable capable-and-manageable nodes that don't already have it, skipping
+cordoned ones, and **reports what it decided and why** (already-present, pulling, shortfall, eligible
+candidates). The pure decision lives in
+[ModelPlacement.Choose](src/InferHub.Coordinator/Services/ModelPlacement.cs) over
+`ReplicaPlacement.ComputeTarget` — a non-manageable holder (e.g. a vLLM node serving the model) still
+counts toward N, but only manageable nodes are ever pulled onto. `PlacementTests` covers the skips and
+the "not enough candidates, and says so" case. `GET /api/admin/models` is the fleet-wide model × node
+matrix.
+
+**D4 — Measured throughput is decayed and never a cold-start penalty.**
+[ThroughputTracker](src/InferHub.Coordinator/Services/ThroughputTracker.cs) keeps an EWMA
+(`alpha=0.3`) of tokens/second per (node, model), fed from the `eval_count`/`eval_duration` every
+completed response already carries — the `Dispatcher` records it at completion, blocking and streaming,
+and reads no message content. **A node with no measurement is treated as *average* (the mean measured
+rate for that model), never as slow** — a pessimistic default would starve a fresh node of the requests
+it needs to earn a measurement, which is a load balancer that has quietly stopped balancing. Measured
+tokens/sec is on `/api/status` per node and on the status page.
+
+**D5 — Measured routing is opt-in for one release.** `Router:Strategy` = `least-busy` (default,
+**bit-for-bit** the pre-v2.8 behaviour) | `throughput` (best expected completion time = `(load+1)/rate`).
+**Sticky conversation affinity still wins where it applies** — throughput is a tiebreak among
+candidates, not a replacement for affinity, because a warm model on a slower node usually beats a cold
+one on a faster node. `ThroughputRoutingTests` asserts the fast node wins, the unmeasured node is not
+starved, affinity still wins, and `least-busy` is unchanged. Default moves to `throughput` in a later
+release once there is evidence, not an argument.
+
+**Rule 5 survived again.** Phase 26 added **zero** new dependencies.
+
 ## Auth model (three independent token sets)
 
 | Scope | Config key | Guards |
