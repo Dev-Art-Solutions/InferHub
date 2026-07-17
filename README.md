@@ -99,11 +99,12 @@ with a real bound**, then says `503`. Existing configs run unchanged.
 | 24 | Hybrid search, reranking & eval harness (done) | `v2.6.0` |
 | 25 | Clients, quotas & usage accounting (done) | `v2.7.0` |
 | 26 | Fleet operations — model management & measured routing (done) | `v2.8.0` |
+| 27 | Streaming `tool_calls` deltas (done) | `v2.9.0` |
 
-**What's next.** 2.8 makes a mixed fleet pleasant to run: pull/delete/warm models from the console
-(no SSH), a fleet-wide model matrix, and opt-in throughput-aware routing that knows a 4090 is not a
-laptop. Streaming `tool_calls` deltas (mapped in blocking mode today, not yet streamed),
-multi-coordinator clustering and persisted affinity remain on the table.
+**What's next.** 2.9 finishes tool calling on the OpenAI surface: function calls now stream as
+proper `delta.tool_calls` frames, so a streaming agent loop gets the call the moment it lands
+rather than a bare `finish_reason`. Multi-coordinator clustering, persisted affinity, Prometheus
+`/metrics`, and multimodal passthrough remain on the table.
 
 ## Quick start
 
@@ -176,8 +177,12 @@ client = OpenAI(
 **Where the translation is lossy — stated plainly rather than papered over:**
 
 - `n > 1` is **rejected** with a `400`, not quietly served once.
-- Tool calls are mapped in **blocking mode only**. Streaming `tool_calls` deltas are not
-  implemented yet, and we don't pretend otherwise.
+- Tool calls are mapped in **both blocking and streaming** modes. A streamed call arrives as
+  one `delta.tool_calls` frame with `index: 0` (Ollama emits the whole call at once, not
+  incrementally — we do not fabricate OpenAI-style argument-fragment streaming it never
+  produced), and the terminal frame resolves `finish_reason: tool_calls`. The full loop —
+  streamed call → tool result → grounded answer — works with the OpenAI SDK's string-form
+  arguments.
 - `logprobs`, `logit_bias` and `user` are **accepted and ignored** (logged at debug).
 - Image / multimodal content parts are **rejected**, not silently dropped — a model should
   never answer confidently about an image it was never sent.

@@ -59,20 +59,44 @@ public static class ResponseTranslator
         string id,
         long created,
         string requestedModel,
-        bool isFirst)
+        bool isFirst,
+        bool toolCallsAlreadySeen = false)
     {
         var done = ollama.Done == true;
 
-        // Only the opening chunk announces the role; the terminal chunk carries an empty
-        // delta and the finish_reason.
-        var delta = done
-            ? new ChatCompletionDelta(Role: null, Content: null)
-            : new ChatCompletionDelta(
+        // The whole tool call arrives in one chunk — we do not fabricate a stream of argument
+        // fragments Ollama never sent (rule 6 / phase 27 note). Which chunk it lands on varies
+        // by Ollama version: observed on a non-terminal chunk (done:false), while the phase
+        // brief assumed the terminal one. Either way we emit it as it arrives; the terminal
+        // chunk still resolves finish_reason=tool_calls via <paramref name="toolCallsAlreadySeen"/>.
+        var toolCalls = ExtractStreamingToolCalls(ollama.Message);
+
+        // Only the opening chunk announces the role; a tool-call delta carries the calls with
+        // null content (a tool-call frame and a text frame are not the same frame); the plain
+        // terminal chunk carries an empty delta and the finish_reason.
+        ChatCompletionDelta delta;
+        if (toolCalls is { Count: > 0 })
+        {
+            delta = new ChatCompletionDelta(
+                Role: isFirst ? "assistant" : null,
+                Content: null,
+                ToolCalls: toolCalls);
+        }
+        else if (done)
+        {
+            delta = new ChatCompletionDelta(Role: null, Content: null);
+        }
+        else
+        {
+            delta = new ChatCompletionDelta(
                 Role: isFirst ? "assistant" : null,
                 Content: ollama.Message?.Content ?? string.Empty);
+        }
 
         var finishReason = done
-            ? ResolveFinishReason(ollama.AdditionalProperties, HasToolCalls(ollama.Message))
+            ? ResolveFinishReason(
+                ollama.AdditionalProperties,
+                toolCalls is { Count: > 0 } || toolCallsAlreadySeen)
             : null;
 
         var choice = new ChatCompletionChunkChoice(Index: 0, Delta: delta, FinishReason: finishReason);
@@ -173,8 +197,27 @@ public static class ResponseTranslator
         return StopReason;
     }
 
-    private static bool HasToolCalls(ChatMessage? message)
-        => ExtractToolCalls(message) is { Count: > 0 };
+    /// <summary>
+    /// The streaming shape of <see cref="ExtractToolCalls"/>: the same calls (id, name,
+    /// stringified arguments) with a 0-based <c>index</c> in array order, as the streaming
+    /// spec requires. Reusing the blocking extractor keeps the streamed call byte-equivalent
+    /// (id aside) to the blocking <see cref="ToChatCompletion"/> result for the same body.
+    /// </summary>
+    internal static IReadOnlyList<StreamingToolCall>? ExtractStreamingToolCalls(ChatMessage? message)
+    {
+        if (ExtractToolCalls(message) is not { Count: > 0 } calls)
+        {
+            return null;
+        }
+
+        var streaming = new List<StreamingToolCall>(calls.Count);
+        for (var i = 0; i < calls.Count; i++)
+        {
+            streaming.Add(new StreamingToolCall(i, calls[i].Id, calls[i].Function));
+        }
+
+        return streaming;
+    }
 
     /// <summary>
     /// Ollama nests tool calls under <c>message.tool_calls[].function</c> with the arguments
