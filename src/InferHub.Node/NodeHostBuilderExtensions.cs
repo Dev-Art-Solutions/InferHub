@@ -82,6 +82,7 @@ public static class NodeHostBuilderExtensions
         builder.Services.AddSingleton<OllamaBackend>();
         builder.Services.AddSingleton<OpenAiBackend>();
         builder.Services.AddSingleton<InferenceExecutor>();
+        builder.Services.AddSingleton<ModelCommandExecutor>();
         builder.Services.AddSingleton<CoordinatorConnection>();
         builder.Services.AddHostedService<Worker>();
 

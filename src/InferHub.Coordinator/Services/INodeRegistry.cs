@@ -24,6 +24,9 @@ public interface INodeRegistry
 
     IReadOnlyCollection<ModelInfo> DistinctModels();
 
+    /// <summary>Per-node model lists (phase 26) — what the fleet-wide model matrix is built from.</summary>
+    IReadOnlyCollection<NodeModelInventory> ModelInventory();
+
     IReadOnlyCollection<RoutableNode> FindNodesWithModel(string model);
 
     int IncrementInFlight(string connectionId);
@@ -34,3 +37,12 @@ public interface INodeRegistry
 
     IReadOnlyCollection<NodeSnapshot> EvictStale(DateTimeOffset cutoffUtc, DateTimeOffset now);
 }
+
+/// <summary>One node's model inventory, for the phase-26 fleet model matrix.</summary>
+public sealed record NodeModelInventory(
+    string ConnectionId,
+    string NodeId,
+    string Name,
+    bool Cordoned,
+    bool SupportsModelManagement,
+    IReadOnlyList<ModelInfo> Models);

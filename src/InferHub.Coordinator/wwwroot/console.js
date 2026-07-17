@@ -31,6 +31,8 @@
   const VECTOR_FEED_MAX = 40;
   const vectorFeed = [];    // newest first
 
+  const modelCommands = new Map();  // commandId -> latest ModelCommandProgress frame (newest render on top)
+
   // ---------------------------------------------------------------- formatting
 
   const fmtSeconds = (s) => {
@@ -412,6 +414,172 @@
     }
     renderNodes(latestNodes ?? []);
     renderVectorFeed();
+    renderModelNodeSelect();
+  };
+
+  // ---------------------------------------------------------------- model management
+
+  const selectedModelNode = () =>
+    (latestNodes ?? []).find(n => n.nodeId === document.getElementById("mm-node")?.value) ?? null;
+
+  const renderModelNodeSelect = () => {
+    const sel = document.getElementById("mm-node");
+    if (!sel) return;
+    const nodes = latestNodes ?? [];
+    const prev = sel.value;
+    sel.innerHTML = nodes.length === 0
+      ? `<option value="">No nodes connected</option>`
+      : nodes.map(n => `<option value="${escapeHtml(n.nodeId)}">${escapeHtml(n.name)} (${escapeHtml(n.nodeId.slice(0, 8))})</option>`).join("");
+    if (nodes.some(n => n.nodeId === prev)) sel.value = prev;
+
+    const node = selectedModelNode();
+    const canManage = Boolean(node && node.supportsModelManagement);
+    const note = document.getElementById("mm-note");
+    for (const id of ["mm-pull", "mm-warm", "mm-delete", "mm-model"]) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      el.disabled = !canManage;
+      el.title = canManage ? "" : "This node's backend cannot manage models (e.g. an OpenAI/vLLM upstream — its model is fixed at launch).";
+    }
+    if (note) {
+      note.textContent = !node
+        ? "Connect a node to manage its models."
+        : canManage
+          ? `${node.name} runs a backend that can pull, delete and warm models.`
+          : `${node.name} runs a backend that cannot manage models — controls disabled.`;
+    }
+  };
+
+  const postModelCommand = async (kind, nodeId, model) => {
+    const enc = encodeURIComponent(model);
+    const base = `/api/admin/nodes/${encodeURIComponent(nodeId)}/models/${enc}`;
+    const url = kind === "pull" ? `${base}/pull` : kind === "warm" ? `${base}/warm` : base;
+    const method = kind === "delete" ? "DELETE" : "POST";
+    try {
+      const res = await fetch(url, { method, headers: adminHeaders() });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        pushModelNote(`${kind} '${model}' failed: ${body.error ?? ("HTTP " + res.status)}`, true);
+      } else if (body.reused) {
+        pushModelNote(`${kind} '${model}' already running (command ${String(body.commandId).slice(0, 8)}).`, false);
+      }
+    } catch (err) {
+      pushModelNote(`${kind} '${model}' failed: ${err.message}`, true);
+    }
+  };
+
+  const pushModelNote = (text, isError) => {
+    const note = document.getElementById("mm-note");
+    if (note) {
+      note.textContent = text;
+      note.style.color = isError ? "var(--danger, #ff6b6b)" : "";
+    }
+  };
+
+  const handleModelProgress = (frame) => {
+    if (!frame || !frame.commandId) return;
+    modelCommands.set(frame.commandId, { ...frame, at: Date.now() });
+    renderModelProgress();
+    // A completed pull/delete changes what each node holds — refresh the matrix.
+    if (frame.done) queueMatrixRefresh();
+  };
+
+  const renderModelProgress = () => {
+    const el = document.getElementById("mm-progress");
+    if (!el) return;
+    const rows = [...modelCommands.values()].sort((a, b) => b.at - a.at).slice(0, 12);
+    if (rows.length === 0) {
+      el.innerHTML = `<div class="empty">No model commands yet.</div>`;
+      return;
+    }
+    el.innerHTML = rows.map(f => {
+      const pct = typeof f.percent === "number" ? Math.round(f.percent) : null;
+      const state = f.error ? "err" : f.done ? "ok" : "warn";
+      const bar = pct === null
+        ? ""
+        : `<div style="height:6px;background:var(--panel-border);border-radius:3px;overflow:hidden;margin-top:4px">
+             <div style="height:100%;width:${pct}%;background:${f.error ? "#ff6b6b" : "#00d4ff"}"></div></div>`;
+      const detail = f.error ? escapeHtml(f.error) : `${escapeHtml(f.status)}${pct === null ? "" : ` · ${pct}%`}`;
+      return `
+        <div class="feed-row">
+          <span class="feed-kind ${state}">${escapeHtml(f.kind)}</span>
+          <span class="feed-body"><code>${escapeHtml(f.modelName)}</code> <span class="empty" style="padding:0">on ${escapeHtml(f.nodeId.slice(0, 8))}</span><br>${detail}${bar}</span>
+        </div>`;
+    }).join("");
+  };
+
+  let modelMatrix = null;
+  let matrixFetchQueued = false;
+
+  const fetchModelMatrix = async () => {
+    if (!adminKey) return;
+    try {
+      const res = await fetch("/api/admin/models", { headers: adminHeaders() });
+      if (!res.ok) return;
+      modelMatrix = await res.json();
+      renderModelMatrix();
+    } catch { /* transient; next trigger refetches */ }
+  };
+
+  const queueMatrixRefresh = () => {
+    if (matrixFetchQueued) return;
+    matrixFetchQueued = true;
+    setTimeout(() => { matrixFetchQueued = false; fetchModelMatrix(); }, 500);
+  };
+
+  const renderModelMatrix = () => {
+    const el = document.getElementById("model-matrix");
+    if (!el) return;
+    const m = modelMatrix;
+    if (!m || !m.nodes || m.nodes.length === 0) {
+      el.innerHTML = `<div class="empty" style="padding:12px">No nodes connected.</div>`;
+      return;
+    }
+    if (!m.models || m.models.length === 0) {
+      el.innerHTML = `<div class="empty" style="padding:12px">No models reported by the fleet yet.</div>`;
+      return;
+    }
+    const nodeHead = m.nodes.map(n =>
+      `<th title="${escapeHtml(n.nodeId)}${n.supportsModelManagement ? "" : " — backend cannot manage models"}">${escapeHtml(n.name)}${n.cordoned ? " 🚫" : ""}${n.supportsModelManagement ? "" : " 🔒"}</th>`).join("");
+    const rows = m.models.map(model => {
+      const held = new Set(model.nodes);
+      const cells = m.nodes.map(n => {
+        const enc = encodeURIComponent(model.name);
+        const nid = encodeURIComponent(n.nodeId);
+        if (held.has(n.nodeId)) {
+          const del = n.supportsModelManagement
+            ? ` <button data-mm="delete" data-node="${nid}" data-model="${enc}" title="Delete from this node" style="padding:1px 6px">×</button>`
+            : "";
+          return `<td style="text-align:center;color:#4ade80">✓${del}</td>`;
+        }
+        if (n.cordoned || !n.supportsModelManagement) return `<td style="text-align:center" class="empty">—</td>`;
+        return `<td style="text-align:center"><button data-mm="pull" data-node="${nid}" data-model="${enc}" style="padding:1px 8px">pull</button></td>`;
+      }).join("");
+      return `<tr><td><code>${escapeHtml(model.name)}</code></td><td>${fmtBytes(model.sizeBytes)}</td>${cells}</tr>`;
+    }).join("");
+    el.innerHTML = `
+      <table>
+        <thead><tr><th>Model</th><th>Size</th>${nodeHead}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  };
+
+  const ensureModel = async (model, replicas) => {
+    try {
+      const res = await fetch(`/api/admin/models/${encodeURIComponent(model)}/ensure?replicas=${replicas}`,
+        { method: "POST", headers: adminHeaders() });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) { pushModelNote(`ensure '${model}' failed: ${body.error ?? ("HTTP " + res.status)}`, true); return; }
+      const pulling = (body.pulling ?? []).length;
+      const present = (body.alreadyPresent ?? []).length;
+      pushModelNote(
+        `ensure '${model}' ×${replicas}: ${present} already present, pulling onto ${pulling}` +
+        (body.satisfied ? "" : ` — short by ${body.decision?.shortfall ?? "?"} (${body.decision?.note ?? ""})`),
+        !body.satisfied);
+      queueMatrixRefresh();
+    } catch (err) {
+      pushModelNote(`ensure '${model}' failed: ${err.message}`, true);
+    }
   };
 
   const applyAdminNodes = (nodes) => {
@@ -419,6 +587,7 @@
     evaluateDrains(latestNodes);
     document.getElementById("refreshed").textContent = new Date().toLocaleTimeString();
     refreshRender();
+    queueMatrixRefresh();
   };
 
   const runAction = async (nodeId, action) => {
@@ -548,6 +717,15 @@
       } catch (err) {
         // Malformed payload — log to console and let the next event recover.
         console.warn("admin stream: failed to parse snapshot", err);
+      }
+      return;
+    }
+
+    if (event.event === "model-progress") {
+      try {
+        handleModelProgress(JSON.parse(event.data));
+      } catch (err) {
+        console.warn("admin stream: failed to parse model progress", err);
       }
       return;
     }
@@ -1199,6 +1377,29 @@
 
   document.getElementById("usage-refresh")?.addEventListener("click", refreshUsage);
   document.getElementById("usage-csv")?.addEventListener("click", exportUsageCsv);
+
+  document.getElementById("mm-node")?.addEventListener("change", renderModelNodeSelect);
+  const runModelCommand = (kind) => {
+    const node = selectedModelNode();
+    const model = document.getElementById("mm-model")?.value.trim();
+    if (!node) { pushModelNote("Select a node first.", true); return; }
+    if (!model) { pushModelNote("Enter a model name.", true); return; }
+    postModelCommand(kind, node.nodeId, model);
+  };
+  document.getElementById("mm-pull")?.addEventListener("click", () => runModelCommand("pull"));
+  document.getElementById("mm-warm")?.addEventListener("click", () => runModelCommand("warm"));
+  document.getElementById("mm-delete")?.addEventListener("click", () => runModelCommand("delete"));
+  document.getElementById("mm-ensure")?.addEventListener("click", () => {
+    const model = document.getElementById("mm-model")?.value.trim();
+    const replicas = Math.max(1, parseInt(document.getElementById("mm-replicas")?.value, 10) || 1);
+    if (!model) { pushModelNote("Enter a model name to ensure.", true); return; }
+    ensureModel(model, replicas);
+  });
+  document.getElementById("model-matrix")?.addEventListener("click", (event) => {
+    const btn = event.target.closest("button[data-mm]");
+    if (!btn) return;
+    postModelCommand(btn.dataset.mm, decodeURIComponent(btn.dataset.node), decodeURIComponent(btn.dataset.model));
+  });
 
   setKey(null);
   pollStatusNow();

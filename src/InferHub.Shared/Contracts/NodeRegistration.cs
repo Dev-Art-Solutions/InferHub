@@ -11,7 +11,11 @@ public sealed record NodeRegistration(
     string Version,
     IReadOnlyDictionary<string, string>? Labels = null,
     int? MaxConcurrency = null,
-    IReadOnlyList<NodeReplicaInventoryItem>? Replicas = null);
+    IReadOnlyList<NodeReplicaInventoryItem>? Replicas = null,
+    /// Whether this node's backend can pull/delete/warm models (phase 26). Ollama can; an
+    /// OpenAI-compatible upstream cannot. Reported at registration so the coordinator can gate the
+    /// model-management endpoints and the console can grey out controls a node cannot honour.
+    bool SupportsModelManagement = false);
 
 /// <summary>
 /// One row of a node's on-disk vector replica inventory, reported at registration so the

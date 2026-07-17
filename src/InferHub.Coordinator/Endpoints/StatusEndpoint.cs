@@ -22,6 +22,7 @@ public static class StatusEndpoint
             var models = registry.DistinctModels();
             var snapshot = metrics.Snapshot(now);
             var vectorBlock = BuildVectorBlock(services, nodes);
+            var throughput = services.GetService(typeof(ThroughputTracker)) as ThroughputTracker;
 
             return Results.Ok(new StatusResponse(
                 version,
@@ -37,7 +38,8 @@ public static class StatusEndpoint
                     node.InFlight,
                     node.LocalInFlight,
                     node.ModelCount,
-                    node.Cordoned)).ToArray(),
+                    node.Cordoned,
+                    throughput?.NodeAverage(node.NodeId))).ToArray(),
                 models,
                 snapshot,
                 vectorBlock,
@@ -204,7 +206,8 @@ public static class StatusEndpoint
         int InFlight,
         int LocalInFlight,
         int ModelCount,
-        bool Cordoned);
+        bool Cordoned,
+        double? TokensPerSecond);
 
     internal sealed record VectorStatusBlock(
         string Provider,

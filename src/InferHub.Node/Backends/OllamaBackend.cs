@@ -10,6 +10,8 @@ using OllamaChatStreamRequest = OllamaClient.Models.ChatStreamRequest;
 using OllamaEmbedRequest = OllamaClient.Models.EmbedRequest;
 using OllamaGenerateRequest = OllamaClient.Models.GenerateRequest;
 using OllamaGenerateStreamRequest = OllamaClient.Models.GenerateStreamRequest;
+using OllamaDeleteRequest = OllamaClient.Models.DeleteRequest;
+using OllamaPullStreamRequest = OllamaClient.Models.PullStreamRequest;
 
 namespace InferHub.Node.Backends;
 
@@ -104,6 +106,37 @@ public sealed class OllamaBackend(
         {
             yield return JsonSerializer.Serialize(chunk, JsonOptions);
         }
+    }
+
+    public bool SupportsModelManagement => true;
+
+    public async IAsyncEnumerable<ModelPullProgress> PullAsync(
+        string model,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var request = new OllamaPullStreamRequest { Name = model };
+
+        await foreach (var chunk in client.Pull(request, cancellationToken).WithCancellation(cancellationToken))
+        {
+            yield return new ModelPullProgress(chunk.Status, chunk.Total, chunk.Completed);
+        }
+    }
+
+    public async Task DeleteAsync(string model, CancellationToken cancellationToken)
+    {
+        var response = await client.Delete(new OllamaDeleteRequest { Name = model }, cancellationToken);
+
+        if (!response.IsSuccessful)
+        {
+            throw new InvalidOperationException($"Ollama refused to delete model '{model}'.");
+        }
+    }
+
+    public async Task WarmAsync(string model, CancellationToken cancellationToken)
+    {
+        // An empty-prompt generate makes Ollama load the model into memory and return immediately
+        // (done_reason "load"), which is exactly a warm — no tokens are produced.
+        await client.Generate(new OllamaGenerateRequest { Model = model, Prompt = string.Empty }, cancellationToken);
     }
 
     private static T Deserialize<T>(string requestJson)

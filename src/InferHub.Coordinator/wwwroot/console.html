@@ -201,6 +201,26 @@
   </section>
 
   <section>
+    <h2>Model management</h2>
+    <div class="card" style="margin-bottom:12px">
+      <div class="actions" style="flex-wrap:wrap;gap:8px;align-items:center">
+        <select id="mm-node" style="min-width:200px"></select>
+        <input id="mm-model" placeholder="model name (e.g. llama3.2)" style="min-width:220px" />
+        <button id="mm-pull">Pull</button>
+        <button id="mm-warm">Warm</button>
+        <button id="mm-delete">Delete</button>
+        <span style="opacity:.5">|</span>
+        <input id="mm-replicas" type="number" min="1" value="2" style="width:64px" title="replica count for Ensure (fleet-wide)" />
+        <button id="mm-ensure" title="Pull the model onto N suitable nodes fleet-wide">Ensure N</button>
+      </div>
+      <div id="mm-note" class="empty" style="padding:8px 0 0"></div>
+    </div>
+    <div class="table-wrap"><div id="model-matrix"></div></div>
+    <h3 style="margin:14px 0 6px;font-size:14px">Command progress</h3>
+    <div id="mm-progress" class="feed"><div class="empty">No model commands yet.</div></div>
+  </section>
+
+  <section>
     <h2>Clients &amp; usage</h2>
 
     <div class="docs-bar">

@@ -12,6 +12,7 @@ public sealed class Dispatcher(
     IHubContext<NodeHub> hubContext,
     INodeRegistry registry,
     Metrics metrics,
+    ThroughputTracker throughput,
     IOptions<DispatcherOptions> options,
     ILogger<Dispatcher> logger) : IDispatcher
 {
@@ -144,6 +145,7 @@ public sealed class Dispatcher(
         if (result.Success)
         {
             metrics.RecordRequestComplete(pending.NodeId);
+            throughput.RecordFromResponse(pending.NodeId, result.ResponseJson);
         }
         else
         {
@@ -173,6 +175,7 @@ public sealed class Dispatcher(
         {
             registry.DecrementInFlight(completed.ConnectionId);
             metrics.RecordRequestComplete(completed.NodeId);
+            throughput.RecordFromResponse(completed.NodeId, chunk.ResponseJson);
             completed.CancellationRegistration.Dispose();
             completed.Channel.Writer.TryComplete();
             logger.LogInformation("Completed streaming job {JobId}", chunk.JobId);

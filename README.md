@@ -98,12 +98,12 @@ with a real bound**, then says `503`. Existing configs run unchanged.
 | 23 | Document ingestion pipeline (done) | `v2.5.0` |
 | 24 | Hybrid search, reranking & eval harness (done) | `v2.6.0` |
 | 25 | Clients, quotas & usage accounting (done) | `v2.7.0` |
+| 26 | Fleet operations — model management & measured routing (done) | `v2.8.0` |
 
-**What's next.** With per-key metering in 2.7, a hub is safe to point a paying client at.
-Next: fleet operations — remote model management (pull/delete/warm from the console, no SSH)
-and measured, throughput-aware routing. Streaming `tool_calls` deltas (mapped in blocking mode
-today, not yet streamed), multi-coordinator clustering and persisted affinity remain on the
-table.
+**What's next.** 2.8 makes a mixed fleet pleasant to run: pull/delete/warm models from the console
+(no SSH), a fleet-wide model matrix, and opt-in throughput-aware routing that knows a 4090 is not a
+laptop. Streaming `tool_calls` deltas (mapped in blocking mode today, not yet streamed),
+multi-coordinator clustering and persisted affinity remain on the table.
 
 ## Quick start
 
@@ -406,6 +406,7 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Dispatcher:TimeoutSeconds` | `300` | Per-job wall-clock timeout (applies to streaming and blocking). |
 | `Router:AffinitySlidingMinutes` | `10` | Sticky-conversation idle expiry. |
 | `Router:AffinityLoadBreakThreshold` | `2` | Extra in-flight jobs the sticky node may have before affinity is broken in favour of a less-busy node. |
+| `Router:Strategy` | `least-busy` | How capable nodes are ranked (v2.8): `least-busy` (default, unchanged) or `throughput` (measured tokens/sec, EWMA, load-adjusted). Affinity still wins. See [Fleet operations](#fleet-operations-v28). |
 | `Auth:ApiKeys` | `[]` | Accepted client Bearer tokens (constant-time compared). Anonymous, unlimited. |
 | `Auth:Clients` | `[]` | Named clients: `{Id, Key, Limits}`. See [Clients, quotas & usage](#clients-quotas--usage-v27). |
 | `Auth:AdminApiKeys` | `[]` | Accepted admin Bearer tokens guarding `/api/admin/*`. Separate from `ApiKeys`. |
@@ -946,6 +947,38 @@ InferHub is built to keep running while nodes come and go.
 - **Job timeout.** `Dispatcher:TimeoutSeconds` caps how long any one job can hold a
   request open.
 
+## Fleet operations (v2.8)
+
+The coordinator can manage models across the fleet without an SSH session — over the same outbound
+connection the nodes already hold open, so the node still needs no inbound port.
+
+```bash
+# pull a model onto one node (progress streams on the admin SSE feed)
+curl -X POST http://your-coordinator:5080/api/admin/nodes/$NODE_ID/models/llama3.2/pull \
+  -H "Authorization: Bearer $ADMIN_KEY"
+
+# ensure a model is held by 3 suitable nodes (skips cordoned ones, tells you what it decided)
+curl -X POST "http://your-coordinator:5080/api/admin/models/llama3.2/ensure?replicas=3" \
+  -H "Authorization: Bearer $ADMIN_KEY"
+
+# the fleet-wide model × node matrix
+curl http://your-coordinator:5080/api/admin/models -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+| Endpoint | What it does |
+|---|---|
+| `POST /api/admin/nodes/{id}/models/{model}/pull` | Pull a model onto a node; progress relayed as `model-progress` SSE events. |
+| `DELETE /api/admin/nodes/{id}/models/{model}` | Delete a model from a node. |
+| `POST /api/admin/nodes/{id}/models/{model}/warm` | Load a model into memory ahead of first use. |
+| `POST /api/admin/models/{model}/ensure?replicas=N` | Pull onto the N most suitable capable nodes lacking it; reports its decision. |
+| `GET /api/admin/models` | Fleet-wide model × node matrix, with sizes. |
+
+Not every backend can manage models: an **OpenAI-compatible** node (vLLM, llama.cpp, a hosted
+provider) has its model fixed at launch, so it advertises that it cannot, the endpoints refuse it
+cleanly (never a 500), and the console greys out its controls. A duplicate command for the same
+node+model coalesces onto the running one, and every command is audited. All of this is on the
+**Model management** panel in the [console](#management-console--admin-api).
+
 ## Conversations & routing
 
 InferHub stores **no conversation content**. Clients send the full message history on every
@@ -953,8 +986,16 @@ turn, exactly like Ollama — the coordinator only decides *which node* runs the
 
 - **Least-busy by default.** When several nodes hold the requested model, the coordinator
   picks the one with the lowest in-flight job count and breaks ties round-robin.
+- **Measured routing (v2.8, opt-in).** Set `Router:Strategy=throughput` and the coordinator
+  ranks capable nodes by *expected completion time* — a decayed average (EWMA) of measured
+  tokens/second per model, adjusted for in-flight load — instead of raw queue depth. A 4090 and a
+  laptop both reporting one job in flight are no longer treated as equal. A node with **no**
+  measurement is treated as *average*, never as slow, so a fresh node still earns traffic. The
+  default is `least-busy` and is unchanged bit-for-bit; measured tokens/sec appears on `/api/status`
+  per node. See [Fleet operations](#fleet-operations-v28).
 - **Sticky conversations.** Successive turns of the same chat prefer the same node, which
-  keeps that model's KV-cache warm. Affinity expires after ~10 idle minutes.
+  keeps that model's KV-cache warm. Affinity expires after ~10 idle minutes. Affinity wins over
+  the throughput strategy — a warm model on a slower node usually beats a cold one on a faster node.
 - **Affinity guard.** If the sticky node is far busier than the least-busy alternative,
   the coordinator breaks affinity to avoid piling up on one machine.
 - **Graceful fallback.** If the sticky node disconnects, the next turn transparently

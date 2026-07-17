@@ -16,6 +16,7 @@ public sealed class CoordinatorConnection(
     INodeIdentity nodeIdentity,
     IInferenceBackend backend,
     InferenceExecutor inferenceExecutor,
+    ModelCommandExecutor modelCommandExecutor,
     ReplicaStore replicaStore,
     ILogger<CoordinatorConnection> logger) : IAsyncDisposable
 {
@@ -112,6 +113,7 @@ public sealed class CoordinatorConnection(
     {
         hubConnection.On<InferenceJob>("RunJob", RunJobAsync);
         hubConnection.On<InferenceJob>("RunStreamingJob", RunStreamingJobAsync);
+        hubConnection.On<ModelCommand>("ExecuteModelCommand", RunModelCommandAsync);
         hubConnection.On<Guid>("CancelJob", CancelJob);
         hubConnection.On<VectorReplicaAssignment>("AssignVectorReplica", OnAssignVectorReplica);
         hubConnection.On<VectorReplicaOp>("ApplyVectorOp", OnApplyVectorOp);
@@ -201,7 +203,8 @@ public sealed class CoordinatorConnection(
             GetVersion(),
             node.Labels.Count == 0 ? null : new Dictionary<string, string>(node.Labels),
             node.MaxConcurrency,
-            inventory.Count == 0 ? null : inventory);
+            inventory.Count == 0 ? null : inventory,
+            backend.SupportsModelManagement);
 
         await connection.InvokeAsync("Register", registration, cancellationToken);
         await ReportModelsAsync(cancellationToken);
@@ -347,6 +350,38 @@ public sealed class CoordinatorConnection(
         {
             activeJobs.TryRemove(job.JobId, out _);
             Interlocked.Decrement(ref inFlight);
+        }
+    }
+
+    private async Task RunModelCommandAsync(ModelCommand command)
+    {
+        var activeConnection = connection;
+
+        if (activeConnection is not { State: HubConnectionState.Connected })
+        {
+            logger.LogWarning("Received model command {CommandId} while not connected", command.CommandId);
+            return;
+        }
+
+        using var commandCts = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+
+        try
+        {
+            logger.LogInformation("Executing {Kind} model command {CommandId}", command.Kind, command.CommandId);
+
+            // Upload the progress frames as a client-to-server stream, exactly like StreamChunks —
+            // the same reason the hub method must not declare a CancellationToken parameter applies.
+            await activeConnection.InvokeAsync(
+                "StreamModelCommandProgress",
+                modelCommandExecutor.ExecuteAsync(command, nodeId, commandCts.Token),
+                commandCts.Token);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Could not run model command {CommandId}", command.CommandId);
         }
     }
 

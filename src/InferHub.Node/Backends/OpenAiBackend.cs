@@ -89,6 +89,20 @@ public sealed class OpenAiBackend(
         }
     }
 
+    // A vLLM / llama.cpp / hosted upstream has its served model fixed at launch — there is nothing
+    // to pull into it. The capability is declared false so the coordinator never offers the controls;
+    // these throw only as a defensive backstop, since a capable caller will not reach them.
+    public bool SupportsModelManagement => false;
+
+    public IAsyncEnumerable<ModelPullProgress> PullAsync(string model, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("the OpenAI-compatible backend cannot manage models");
+
+    public Task DeleteAsync(string model, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("the OpenAI-compatible backend cannot manage models");
+
+    public Task WarmAsync(string model, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("the OpenAI-compatible backend cannot manage models");
+
     private HttpClient CreateHttpClient()
     {
         var baseUrl = options.BaseUrl

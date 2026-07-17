@@ -202,6 +202,8 @@ public class NodeHubStreamingTests
 
         public IReadOnlyCollection<ModelInfo> DistinctModels() => [];
 
+        public IReadOnlyCollection<NodeModelInventory> ModelInventory() => [];
+
         public IReadOnlyCollection<RoutableNode> FindNodesWithModel(string model) => [];
 
         public int IncrementInFlight(string connectionId) => 0;
