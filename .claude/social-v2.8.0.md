@@ -20,14 +20,12 @@ r/selfhosted and r/LocalLLaMA drafts included; post by hand.
 
 ## X
 
-> InferHub 2.8:
+> InferHub 2.8: manage models on any node from the console — pull/delete/warm, no inbound port on your GPU box. And the router now routes by measured tokens/sec: a 4090 isn't a laptop.
 >
-> — Pull/delete/warm models on any node from the console. No inbound port on your GPU box.
-> — The router now knows a 4090 isn't a laptop. Measured tokens/sec, not "fewest jobs in flight".
->
-> Unmeasured nodes are treated as average, not slow — otherwise they never earn a measurement.
->
+> MIT, .NET 10.
 > https://github.com/Dev-Art-Solutions/InferHub
+
+_(≈220 chars incl. the t.co-counted link — under 280. Ultra-short alt if needed: "InferHub 2.8: pull/delete/warm models on any node from the console (no inbound port), and routing now by measured tokens/sec — a 4090 isn't a laptop. https://github.com/Dev-Art-Solutions/InferHub")_
 
 ## r/selfhosted / r/LocalLLaMA (draft)
 
