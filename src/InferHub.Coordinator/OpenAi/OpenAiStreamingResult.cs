@@ -121,6 +121,10 @@ internal sealed class ChatStreamFormatter(
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
+    // Ollama streams the tool call on a non-terminal chunk, but the terminal chunk must still
+    // resolve finish_reason=tool_calls — so once we've seen a call we carry that forward.
+    private bool _sawToolCalls;
+
     public string? FormatChunk(string ollamaJson, bool isFirst)
     {
         var ollama = ResponseTranslator.ParseChat(ollamaJson);
@@ -129,7 +133,13 @@ internal sealed class ChatStreamFormatter(
             return null;
         }
 
-        var chunk = ResponseTranslator.ToChatChunk(ollama, id, created, model, isFirst);
+        var chunk = ResponseTranslator.ToChatChunk(ollama, id, created, model, isFirst, _sawToolCalls);
+
+        if (chunk.Choices is [{ Delta.ToolCalls: { Count: > 0 } }, ..])
+        {
+            _sawToolCalls = true;
+        }
+
         return JsonSerializer.Serialize(chunk, JsonOptions);
     }
 

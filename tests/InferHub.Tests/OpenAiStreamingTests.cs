@@ -28,6 +28,26 @@ public class OpenAiStreamingTests
             """,
             true);
 
+    // A terminal Ollama chunk carrying a tool call, the way Ollama emits it: on the final
+    // message chunk (done:true), arguments as a nested object, no call id of its own.
+    private static InferenceChunk ToolCallTerminalChunk()
+        => new(
+            Guid.NewGuid(),
+            """
+            {"model":"llama3","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"get_weather","arguments":{"city":"Sofia"}}}]},"done":true,"done_reason":"stop","prompt_eval_count":11,"eval_count":7}
+            """,
+            true);
+
+    // The way the live qwen2.5 node actually streams a call: tool_calls on a NON-terminal
+    // chunk (done:false), with the done flag arriving on a separate later chunk.
+    private static InferenceChunk ToolCallDeltaChunk()
+        => new(
+            Guid.NewGuid(),
+            """
+            {"model":"llama3","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"get_weather","arguments":{"city":"Sofia"}}}]},"done":false}
+            """,
+            false);
+
     private static async Task<string> RunAsync(
         IEnumerable<InferenceChunk> chunks,
         bool includeUsage = false,
@@ -162,6 +182,76 @@ public class OpenAiStreamingTests
         Assert.Equal(7, usage.GetProperty("prompt_tokens").GetInt32());
         Assert.Equal(3, usage.GetProperty("completion_tokens").GetInt32());
         Assert.Equal(10, usage.GetProperty("total_tokens").GetInt32());
+    }
+
+    [Fact]
+    public async Task ToolCallStreamsAsADeltaToolCallsFrameThenFinishReasonToolCalls()
+    {
+        var sse = await RunAsync([Chunk("Let me check"), ToolCallTerminalChunk()]);
+        var frames = DataFrames(sse);
+
+        // Last frame is [DONE]; the one before it carries the tool call and the finish_reason.
+        var terminal = JsonDocument.Parse(frames[^2]).RootElement;
+        var choice = terminal.GetProperty("choices")[0];
+        Assert.Equal("tool_calls", choice.GetProperty("finish_reason").GetString());
+
+        var delta = choice.GetProperty("delta");
+
+        // A tool-call delta and a text delta are not the same frame: content is null/absent.
+        Assert.False(
+            delta.TryGetProperty("content", out var content) && content.ValueKind != JsonValueKind.Null);
+
+        var call = delta.GetProperty("tool_calls")[0];
+        Assert.Equal(0, call.GetProperty("index").GetInt32());
+        Assert.Equal("function", call.GetProperty("type").GetString());
+        Assert.StartsWith("call_", call.GetProperty("id").GetString());
+
+        var function = call.GetProperty("function");
+        Assert.Equal("get_weather", function.GetProperty("name").GetString());
+
+        // Arguments are a JSON *string*, as the OpenAI SDK's ChoiceDeltaToolCall expects.
+        var arguments = function.GetProperty("arguments");
+        Assert.Equal(JsonValueKind.String, arguments.ValueKind);
+        Assert.Equal("""{"city":"Sofia"}""", arguments.GetString());
+    }
+
+    [Fact]
+    public async Task ToolCallOnANonTerminalChunkStillResolvesFinishReasonToolCallsOnTheTerminalChunk()
+    {
+        // Regression for the shape the real Ollama node emits: the tool call lands on a
+        // done:false chunk and the terminal chunk carries no tool_calls. A stateless
+        // per-chunk finish_reason would have said "stop" here, and a strict agent loop keys
+        // tool execution off finish_reason == "tool_calls".
+        var sse = await RunAsync([ToolCallDeltaChunk(), TerminalChunk(11, 7)]);
+        var frames = DataFrames(sse);
+
+        // The tool-call frame carries the call, finish_reason still null.
+        var callFrame = JsonDocument.Parse(frames[0]).RootElement.GetProperty("choices")[0];
+        Assert.True(callFrame.GetProperty("finish_reason").ValueKind == JsonValueKind.Null);
+        var call = callFrame.GetProperty("delta").GetProperty("tool_calls")[0];
+        Assert.Equal(0, call.GetProperty("index").GetInt32());
+        Assert.Equal("get_weather", call.GetProperty("function").GetProperty("name").GetString());
+
+        // The terminal frame (before [DONE]) resolves to tool_calls, not stop.
+        var terminal = JsonDocument.Parse(frames[^2]).RootElement.GetProperty("choices")[0];
+        Assert.Equal("tool_calls", terminal.GetProperty("finish_reason").GetString());
+    }
+
+    [Fact]
+    public async Task OrdinaryTextDeltasCarryNoToolCallsField()
+    {
+        var sse = await RunAsync([Chunk("He"), Chunk("llo"), TerminalChunk(3, 2)]);
+
+        foreach (var frame in DataFrames(sse).Where(f => f != "[DONE]"))
+        {
+            var choices = JsonDocument.Parse(frame).RootElement.GetProperty("choices");
+            if (choices.GetArrayLength() == 0)
+            {
+                continue;
+            }
+
+            Assert.False(choices[0].GetProperty("delta").TryGetProperty("tool_calls", out _));
+        }
     }
 
     [Fact]

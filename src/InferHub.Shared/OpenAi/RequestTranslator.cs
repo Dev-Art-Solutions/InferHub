@@ -179,7 +179,7 @@ public static class RequestTranslator
 
             if (message.ToolCalls is { } toolCalls && toolCalls.ValueKind == JsonValueKind.Array)
             {
-                item["tool_calls"] = ToNode(toolCalls);
+                item["tool_calls"] = TranslateToolCalls(toolCalls);
             }
 
             if (!string.IsNullOrEmpty(message.ToolCallId))
@@ -365,6 +365,53 @@ public static class RequestTranslator
         if (n is > 1)
         {
             throw new OpenAiRequestException("n > 1 is not supported", param: "n");
+        }
+    }
+
+    /// <summary>
+    /// A prior assistant turn's <c>tool_calls</c>, back into the Ollama shape. The one
+    /// non-passthrough part is <c>function.arguments</c>: OpenAI clients serialize it as a JSON
+    /// *string* (and our own streamed <c>delta.tool_calls</c> does too), but Ollama emits and
+    /// expects it as an *object*. Without parsing it back, the round-trip the streaming feature
+    /// exists for — streamed call → tool result → grounded answer — reaches the model as a
+    /// string it cannot read, and the model answers empty. Verified live against a real node.
+    /// </summary>
+    private static JsonArray TranslateToolCalls(JsonElement toolCalls)
+    {
+        var array = new JsonArray();
+
+        foreach (var call in toolCalls.EnumerateArray())
+        {
+            if (ToNode(call) is not { } node)
+            {
+                continue;
+            }
+
+            if (node is JsonObject obj
+                && obj["function"] is JsonObject function
+                && function["arguments"] is JsonValue argument
+                && argument.TryGetValue<string>(out var argumentString))
+            {
+                function["arguments"] = ParseArgumentsOrKeep(argumentString);
+            }
+
+            array.Add(node);
+        }
+
+        return array;
+    }
+
+    private static JsonNode? ParseArgumentsOrKeep(string arguments)
+    {
+        // Leave it as-is if it isn't valid JSON — a best-effort object beats throwing on a
+        // client that sent something odd.
+        try
+        {
+            return JsonNode.Parse(arguments);
+        }
+        catch (JsonException)
+        {
+            return arguments;
         }
     }
 

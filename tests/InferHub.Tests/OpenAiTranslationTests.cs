@@ -97,6 +97,55 @@ public class OpenAiTranslationTests
     }
 
     [Fact]
+    public void PriorToolCallArgumentsAreParsedFromStringBackToAnObjectForOllama()
+    {
+        // OpenAI clients (and our own streamed delta.tool_calls) serialize arguments as a JSON
+        // *string*; Ollama emits and expects an object. Without this, the streamed call → tool
+        // result → answer loop reaches the model as a string it can't read and it answers empty.
+        var body = Translate("""
+        {
+          "model": "llama3",
+          "messages": [
+            {"role":"assistant","content":"","tool_calls":[
+              {"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Sofia\"}"}}]},
+            {"role":"tool","content":"18C, sunny","tool_call_id":"call_1"}
+          ]
+        }
+        """);
+
+        var arguments = body.GetProperty("messages")[0]
+            .GetProperty("tool_calls")[0]
+            .GetProperty("function")
+            .GetProperty("arguments");
+
+        Assert.Equal(JsonValueKind.Object, arguments.ValueKind);
+        Assert.Equal("Sofia", arguments.GetProperty("city").GetString());
+    }
+
+    [Fact]
+    public void PriorToolCallArgumentsAlreadyAnObjectPassThroughUnchanged()
+    {
+        // A client that (non-spec) sent an object must not break — leave it an object.
+        var body = Translate("""
+        {
+          "model": "llama3",
+          "messages": [
+            {"role":"assistant","content":"","tool_calls":[
+              {"id":"call_1","type":"function","function":{"name":"f","arguments":{"a":1}}}]}
+          ]
+        }
+        """);
+
+        var arguments = body.GetProperty("messages")[0]
+            .GetProperty("tool_calls")[0]
+            .GetProperty("function")
+            .GetProperty("arguments");
+
+        Assert.Equal(JsonValueKind.Object, arguments.ValueKind);
+        Assert.Equal(1, arguments.GetProperty("a").GetInt32());
+    }
+
+    [Fact]
     public void LegacyPromptMapsToOllamaPrompt()
     {
         var ollama = RequestTranslator.ToOllamaGenerate(LegacyRequest("""
@@ -393,6 +442,60 @@ public class OpenAiTranslationTests
 
         // Ollama emits arguments as an object; OpenAI clients parse a JSON *string*.
         Assert.Equal("""{"city":"Sofia"}""", call.Function.Arguments);
+    }
+
+    [Fact]
+    public void StreamedToolCallIsByteEquivalentToTheBlockingOneIdAside()
+    {
+        var ollama = Ollama("""
+        {
+          "model": "llama3",
+          "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"function":{"name":"get_weather","arguments":{"city":"Sofia"}}}]
+          },
+          "done": true,
+          "done_reason": "stop"
+        }
+        """);
+
+        var blocking = ResponseTranslator.ToChatCompletion(ollama, "id", 0, "llama3").Choices[0];
+        var streamed = ResponseTranslator.ToChatChunk(ollama, "id", 0, "llama3", isFirst: false).Choices[0];
+
+        // Same terminal verdict on both surfaces.
+        Assert.Equal("tool_calls", blocking.FinishReason);
+        Assert.Equal("tool_calls", streamed.FinishReason);
+
+        var blockingCall = Assert.Single(blocking.Message.ToolCalls!);
+        var streamedCall = Assert.Single(streamed.Delta.ToolCalls!);
+
+        Assert.Equal(0, streamedCall.Index);
+        // Function name and stringified arguments are byte-identical; only the synthesized id
+        // is minted per call and so differs.
+        Assert.Equal(blockingCall.Type, streamedCall.Type);
+        Assert.Equal(blockingCall.Function.Name, streamedCall.Function.Name);
+        Assert.Equal(blockingCall.Function.Arguments, streamedCall.Function.Arguments);
+        Assert.StartsWith("call_", streamedCall.Id);
+    }
+
+    [Fact]
+    public void StreamedTextDeltaSerializesWithoutAToolCallsField()
+    {
+        var ollama = Ollama("""
+        {"model":"llama3","message":{"role":"assistant","content":"hi"},"done":false}
+        """);
+
+        var json = JsonSerializer.Serialize(
+            ResponseTranslator.ToChatChunk(ollama, "id", 0, "llama3", isFirst: true),
+            JsonOptions);
+
+        var delta = JsonDocument.Parse(json).RootElement
+            .GetProperty("choices")[0]
+            .GetProperty("delta");
+
+        Assert.Equal("hi", delta.GetProperty("content").GetString());
+        Assert.False(delta.TryGetProperty("tool_calls", out _));
     }
 
     [Fact]
