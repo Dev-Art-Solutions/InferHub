@@ -1,0 +1,133 @@
+{
+  "uid": "inferhub-mesh",
+  "title": "InferHub mesh",
+  "tags": ["inferhub"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "15s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Requests in flight",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "inferhub-prometheus" },
+      "targets": [
+        { "expr": "inferhub_requests_in_flight", "legendFormat": "fleet", "refId": "A" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Nodes connected",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "inferhub-prometheus" },
+      "targets": [
+        { "expr": "sum(inferhub_node_up)", "legendFormat": "nodes", "refId": "A" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Queue depth",
+      "description": "Requests waiting for a slot on a saturated fleet. A number that stays above zero means the fleet is short of GPUs, not that the queue is broken.",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "inferhub-prometheus" },
+      "targets": [
+        { "expr": "inferhub_queue_depth", "legendFormat": "waiting", "refId": "A" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Failure rate (5m)",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "inferhub-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percentunit" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(inferhub_requests_failed_total[5m])) / clamp_min(sum(rate(inferhub_requests_total[5m])), 0.0001)",
+          "legendFormat": "failed",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Request rate by outcome",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "inferhub-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rate(inferhub_requests_completed_total[5m]))", "legendFormat": "completed", "refId": "A" },
+        { "expr": "sum(rate(inferhub_requests_failed_total[5m]))", "legendFormat": "failed", "refId": "B" },
+        { "expr": "sum(rate(inferhub_fallback_dispatched_total[5m]))", "legendFormat": "cloud burst", "refId": "C" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Tokens/second per node and model",
+      "description": "Measured decayed throughput (EWMA). A node with no series has not been measured yet — the router treats it as average, never as slow.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "inferhub-prometheus" },
+      "targets": [
+        {
+          "expr": "inferhub_node_tokens_per_second",
+          "legendFormat": "{{node}} · {{model}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "In-flight per node",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "inferhub-prometheus" },
+      "targets": [
+        { "expr": "inferhub_node_requests_in_flight", "legendFormat": "{{node}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Retrieval latency per collection",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "inferhub-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "inferhub_collection_query_latency_avg_ms",
+          "legendFormat": "{{collection}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Queue outcomes",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 21 },
+      "datasource": { "type": "prometheus", "uid": "inferhub-prometheus" },
+      "targets": [
+        { "expr": "rate(inferhub_queue_admitted_total[5m])", "legendFormat": "admitted", "refId": "A" },
+        { "expr": "rate(inferhub_queue_timed_out_total[5m])", "legendFormat": "timed out", "refId": "B" },
+        { "expr": "rate(inferhub_queue_rejected_total[5m])", "legendFormat": "queue full", "refId": "C" }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Client token consumption (trailing minute)",
+      "description": "Named clients only. Counts, never content — the usage path has no prompt or completion text anywhere in it.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 21 },
+      "datasource": { "type": "prometheus", "uid": "inferhub-prometheus" },
+      "targets": [
+        { "expr": "inferhub_client_tokens_last_minute", "legendFormat": "{{client}}", "refId": "A" }
+      ]
+    }
+  ]
+}

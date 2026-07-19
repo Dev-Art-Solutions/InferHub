@@ -257,6 +257,17 @@ Do not "simplify" either away. And when a release touches anything that writes t
 published image and run it** — the unit tests and a from-source end-to-end both pass happily while
 the artefact users actually install is dead on arrival.
 
+> **The v2.5.1 fix was half of the bug, and the other half hid for five releases.** Found in
+> v2.10.0, again by running the container. `FileNodeIdentity` writes the stable node id to
+> `Node:DataDirectory`, defaulting to the content root — `/app` — so the **node image threw
+> `UnauthorizedAccessException: /app/.inferhub-node-id` at startup on every run since v2.3.0**.
+> It went unnoticed because the replica half *is* conditional on a feature being on, which made
+> the conditional fix look like the whole fix. The node Dockerfile now also sets
+> `ENV Node__DataDirectory=/data`, and the compose stack mounts the node's volume at **`/data`**
+> rather than a subdirectory — a volume at a path the image does not contain is created
+> root-owned, which is the same trap a third time. When you fix a permissions bug, grep for
+> *every* write path, not the one that reported it.
+
 **D6 — `ASPNETCORE_URLS` does not work here; set `Urls`.** `appsettings.json` pins
 `"Urls": "http://localhost:5080"`, and that layer *overrides* the `ASPNETCORE_`-prefixed
 provider (which loads into host config first). A container honouring `ASPNETCORE_URLS` would
@@ -548,12 +559,55 @@ release once there is evidence, not an argument.
 
 **Rule 5 survived again.** Phase 26 added **zero** new dependencies.
 
+### Phase 28 (Prometheus `/metrics`) — also load-bearing
+
+**D1 — The exposition format is hand-written, and `prometheus-net` stays out.**
+[PrometheusFormatter](src/InferHub.Coordinator/Observability/PrometheusFormatter.cs) is a pure
+function from a gathered `PrometheusScrape` to a string. The format is `# HELP` / `# TYPE` /
+`name{labels} value` — the same "three lines of string formatting" reasoning that kept the NDJSON
+(phase 9) and SSE (phase 21) framing dependency-free. Rule 5 survived again: **zero new
+dependencies**. An OTLP *push* exporter would genuinely need a package and is deferred, opt-in,
+only if demand appears.
+
+**D2 — This phase exposes numbers; it measures none.** Every series comes from `Metrics`,
+`ThroughputTracker`, `RequestQueue` and `AdmissionControl`, all of which already computed it.
+Nothing was added to the request path, and `/api/status` is **unchanged** — this adds a surface,
+it does not migrate one. If a future change starts *measuring* in the formatter, it has drifted.
+
+**D3 — `/metrics` is admin-guarded by default, and is not under the bearer guard.** It is
+operational like `/health` (which is open), but unlike `/health` it exposes node names, model
+names, client ids and traffic shape. So `AdminApiKeyMiddleware` now guards a small **prefix set**
+(`/api/admin`, plus `/metrics` unless `Metrics:OpenScrape`) rather than one constant.
+`OpenScrape=true` opens **only** the scrape endpoint — `PrometheusMetricsTests` fails if it ever
+unlocks `/api/admin/*`, which would be a config flag that quietly grants cordon and model-pull to
+anyone who can reach the port. It is deliberately not under `BearerApiKeyMiddleware`: a scraper is
+not an inference client and must not hold a token that can spend GPU time.
+
+**D4 — Client series come from `AdmissionControl`, never from the usage ledger.** The ledger is
+append-only history and is never *read* to drive anything (rule 4 / phase-25 D2) — a metrics
+endpoint reading it would have quietly ended that reasoning. Counts only; there is no content
+anywhere in the usage path (rule 7).
+
+**D5 — Absence is a fact, so absence is what is emitted.** An unmeasured `(node, model)` has **no**
+`inferhub_node_tokens_per_second` series rather than a `0`: the router treats an unmeasured node as
+*average*, never as slow (phase 26, D4), and a zero on a dashboard is a lie that pages someone about
+a node nobody has asked anything yet. Same for an unset client limit (unlimited is no series — not
+`0`, and not a `-1` sentinel a dashboard would happily plot) and for the queue's median before
+anything has queued. The **fleet** counters are the opposite and always present at zero, where a
+zero is a statement rather than an absence.
+
+> `PrometheusMetricsTests` **parses the output back** with a minimal in-test exposition reader
+> rather than string-matching it. Substring assertions pass happily on output no Prometheus can
+> read, which is the exact failure this endpoint exists to avoid. It also asserts an invariant
+> decimal separator on every value line — a decimal comma is a locale bug that only appears on a
+> Bulgarian or German host and sinks the whole scrape.
+
 ## Auth model (three independent token sets)
 
 | Scope | Config key | Guards |
 |---|---|---|
 | Inference clients | `Auth:ApiKeys` (anonymous) / `Auth:Clients` (named, with limits) | `/api/generate`, `/api/chat`, `/api/tags`, etc. |
-| Admins | `Auth:AdminApiKeys` | Everything under `/api/admin/*` (incl. `/usage`, `/clients`). |
+| Admins | `Auth:AdminApiKeys` | Everything under `/api/admin/*` (incl. `/usage`, `/clients`), **and `/metrics`** unless `Metrics:OpenScrape=true`. |
 | Node enrollment | `Auth:NodeEnrollmentSecret` | The SignalR hub handshake. |
 
 Tokens are hashed and compared with `CryptographicOperations.FixedTimeEquals` — keep that

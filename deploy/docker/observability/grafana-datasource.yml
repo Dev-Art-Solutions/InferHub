@@ -1,0 +1,12 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    # Pinned so the dashboard JSON can reference it. Left unset, Grafana generates a different
+    # uid per install and every panel in a provisioned dashboard comes up "datasource not found".
+    uid: inferhub-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

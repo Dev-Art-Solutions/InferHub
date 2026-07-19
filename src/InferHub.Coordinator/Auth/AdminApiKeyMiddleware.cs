@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using InferHub.Coordinator.Observability;
 using Microsoft.Extensions.Options;
 
 namespace InferHub.Coordinator.Auth;
@@ -7,15 +8,24 @@ namespace InferHub.Coordinator.Auth;
 public sealed class AdminApiKeyMiddleware(
     RequestDelegate next,
     IOptionsMonitor<ApiKeyOptions> options,
+    IOptionsMonitor<MetricsOptions> metricsOptions,
     ILogger<AdminApiKeyMiddleware> logger)
 {
     public const string AdminPathPrefix = "/api/admin";
+
+    /// <summary>
+    /// The scrape endpoint (phase 28). It is not under <c>/api/admin</c> — Prometheus convention
+    /// is a bare <c>/metrics</c> and fighting it would earn nothing — so the prefix check is a
+    /// small set rather than one constant. It is admin-guarded by default and open only when
+    /// <c>Metrics:OpenScrape</c> says so.
+    /// </summary>
+    public const string MetricsPath = "/metrics";
 
     private const string BearerPrefix = "Bearer ";
 
     public async Task InvokeAsync(HttpContext context)
     {
-        if (!context.Request.Path.StartsWithSegments(AdminPathPrefix))
+        if (!Guards(context.Request.Path))
         {
             await next(context);
             return;
@@ -54,6 +64,16 @@ public sealed class AdminApiKeyMiddleware(
         }
 
         await next(context);
+    }
+
+    private bool Guards(PathString path)
+    {
+        if (path.StartsWithSegments(AdminPathPrefix))
+        {
+            return true;
+        }
+
+        return path.StartsWithSegments(MetricsPath) && !metricsOptions.CurrentValue.OpenScrape;
     }
 
     private static string? ExtractBearerToken(string? authorizationHeader)

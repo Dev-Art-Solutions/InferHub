@@ -22,6 +22,7 @@ builder.Services.AddSingleton<NodeAuthFilter>();
 builder.Services.Configure<DispatcherOptions>(builder.Configuration.GetSection("Dispatcher"));
 builder.Services.Configure<RouterOptions>(builder.Configuration.GetSection("Router"));
 builder.Services.AddSingleton<Metrics>();
+builder.Services.Configure<MetricsOptions>(builder.Configuration.GetSection(MetricsOptions.SectionName));
 builder.Services.AddSingleton<INodeRegistry, NodeRegistry>();
 builder.Services.AddSingleton<IAuditLog, AuditLog>();
 builder.Services.AddSingleton<IConversationAffinity, ConversationAffinity>();
@@ -111,6 +112,7 @@ app.MapGet("/api/nodes", (INodeRegistry registry) =>
 });
 
 app.MapStatusEndpoint(version);
+app.MapMetricsEndpoint(version);
 app.MapInferenceEndpoints();
 app.MapOpenAiEndpoints();
 app.MapAdminEndpoints();

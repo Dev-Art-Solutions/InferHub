@@ -1,0 +1,2 @@
+# The admin key Prometheus scrapes with. Written by the operator, never committed.
+inferhub-key

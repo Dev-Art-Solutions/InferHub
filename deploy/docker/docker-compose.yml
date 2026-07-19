@@ -61,9 +61,15 @@ services:
       # on plain Linux use http://172.17.0.1:11434/ (see .env.example).
       Ollama__Endpoint: "${OLLAMA_ENDPOINT:-http://host.docker.internal:11434/}"
     volumes:
-      # Vector replicas the coordinator assigns to this node. Without it the node rebuilds every
-      # replica from the hub on each restart — correct, but a needless re-push of the whole corpus.
-      - node_replicas:/data/vector-replicas
+      # One volume for everything the node keeps: its stable node id (/data/.inferhub-node-id)
+      # and the vector replicas the coordinator assigns it (/data/vector-replicas). Mounted at
+      # /data rather than the replica subdirectory because /data is the path the image creates
+      # and chowns — a volume at a mount point that does not exist in the image is created
+      # root-owned, and `USER app` cannot write it (the D7 trap, twice over).
+      #
+      # Without persistence the node comes back with a *new* node id after a restart and rebuilds
+      # every replica from the hub — both correct, both needless.
+      - node_data:/data
     extra_hosts:
       # Makes host.docker.internal resolve on Linux too, where it isn't built in.
       - "host.docker.internal:host-gateway"
@@ -76,4 +82,4 @@ networks:
 
 volumes:
   coordinator_vectors:
-  node_replicas:
+  node_data:
