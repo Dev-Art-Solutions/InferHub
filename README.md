@@ -63,13 +63,13 @@ of one.
 
 ## Status
 
-**InferHub 2.7** gives an API key a name, a budget, and a bill. `Auth:Clients` turns a flat
-list of anonymous keys into **named clients** with per-key concurrency, rate and token limits
-and a model allowlist; every completed request is metered per client and per model —
-[counts, never text](#clients-quotas--usage-v27) — queryable from the admin API, visible on
-the console, exportable as CSV, and optionally persisted to Postgres. Over a limit is a `429`
-with `Retry-After`; over the daily budget is a `402`; a fleet at capacity **queues briefly,
-with a real bound**, then says `503`. Existing configs run unchanged.
+**InferHub 2.10** gives the mesh a scrape endpoint. [`GET /metrics`](#prometheus-metrics-v210)
+serves the Prometheus text exposition format — fleet in-flight, per-node measured tokens/second,
+queue depth and outcomes, retrieval latency per collection, per-client token windows — so the
+numbers that were only ever a snapshot on `/api/status` now have a history, a graph and an
+alert. A Prometheus + Grafana overlay with a starter dashboard ships in `deploy/docker/`. The
+exposition format is written by hand, so it is still **zero new dependencies**; the endpoint is
+admin-key-guarded by default and `/api/status` is unchanged.
 
 | Phase | Theme | Version |
 |------:|-------|---------|
@@ -100,11 +100,12 @@ with a real bound**, then says `503`. Existing configs run unchanged.
 | 25 | Clients, quotas & usage accounting (done) | `v2.7.0` |
 | 26 | Fleet operations — model management & measured routing (done) | `v2.8.0` |
 | 27 | Streaming `tool_calls` deltas (done) | `v2.9.0` |
+| 28 | Observability export — Prometheus `/metrics` (done) | `v2.10.0` |
 
-**What's next.** 2.9 finishes tool calling on the OpenAI surface: function calls now stream as
-proper `delta.tool_calls` frames, so a streaming agent loop gets the call the moment it lands
-rather than a bare `finish_reason`. Multi-coordinator clustering, persisted affinity, Prometheus
-`/metrics`, and multimodal passthrough remain on the table.
+**What's next.** 2.10 makes the mesh scrapeable: `/metrics` in the Prometheus exposition
+format, plus a Grafana overlay in `deploy/docker/`. Multimodal (vision) passthrough,
+persisted stable-node affinity, client-scoped collections, and multi-coordinator clustering
+remain on the table.
 
 ## Quick start
 
@@ -424,6 +425,7 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Fallback:ModelMap` | `{}` | Local model name → upstream model name. **Only mapped models are ever sent upstream.** |
 | `Fallback:AllowedModels` | `[]` | Narrower allowlist within the map. Empty = every mapped model. |
 | `Fallback:TimeoutSeconds` | `300` | Per-request timeout against the upstream. |
+| `Metrics:OpenScrape` | `false` | Whether `GET /metrics` is reachable without an admin key. See [Prometheus `/metrics`](#prometheus-metrics-v210). |
 | `Queue:MaxWaitSeconds` | `30` | How long a request may wait for a saturated fleet before `503`. |
 | `Queue:MaxDepth` | `64` | How many requests may wait at once. Past it, an immediate `503`. |
 | `Usage:Persistence` | `none` | `none` (in-memory, reset on restart) or `postgres` (append-only table). |
@@ -891,6 +893,57 @@ and failover stats. For fleet operations (cordon, drain, deregister) use the
 ```
 
 `GET /health` stays unauthenticated for monitoring.
+
+### Prometheus `/metrics` (v2.10+)
+
+`GET /metrics` returns the Prometheus text exposition format. It **measures nothing new** —
+every number was already on `/api/status` and the status page; this gives them a history, a
+graph and an alert. `/api/status` is unchanged.
+
+```bash
+curl -H "Authorization: Bearer $INFERHUB_ADMIN_KEY" http://localhost:5080/metrics
+```
+
+```
+# HELP inferhub_node_tokens_per_second Measured decayed tokens/second per node and model (EWMA).
+# TYPE inferhub_node_tokens_per_second gauge
+inferhub_node_tokens_per_second{node="gpu-1",model="llama3"} 42.5
+```
+
+What is exposed, all namespaced `inferhub_*`:
+
+| Area | Series |
+|---|---|
+| Fleet | `requests_total`, `requests_in_flight`, `requests_completed_total`, `requests_failed_total`, `failovers_attempted_total`, `failovers_succeeded_total`, `nodes_evicted_total`, `openai_requests_total`, `uptime_seconds`, `build_info{version}` |
+| Cloud burst | `fallback_dispatched_total`, `fallback_last_model{model}` |
+| Per node (`node=`) | `node_up{node,name}`, `node_cordoned`, `node_models`, `node_local_in_flight`, `node_seconds_since_heartbeat`, `node_requests_total`, `node_requests_in_flight`, `node_requests_completed_total`, `node_requests_failed_total`, `node_tokens_per_second{node,model}` |
+| Vector (`collection=`) | `vector_replicas_healed_total`, `vector_rebuilds_from_raw_total`, `vector_under_replicated`, `collection_queries_total`, `collection_query_latency_avg_ms`, `collection_documents_ingested_total`, `collection_chunks_embedded_total`, `collection_ingestion_failures_total` |
+| Queue | `queue_depth`, `queue_queued_total`, `queue_admitted_total`, `queue_timed_out_total`, `queue_rejected_total`, `queue_wait_median_ms` |
+| Named clients (`client=`) | `client_requests_in_flight`, `client_requests_last_minute`, `client_tokens_last_minute`, `client_tokens_today`, and `client_limit_*` for each configured limit |
+
+**Auth: the admin key, not a client key.** `/metrics` is operational like `/health`, but
+unlike `/health` it exposes node names, model names, client ids and the shape of your
+traffic — so it sits behind `Auth:AdminApiKeys` by default and is deliberately *not* under
+the bearer inference guard. A scraper is not a client, and giving a monitoring system a token
+that can spend GPU time would be the wrong trade. On a trusted network, `Metrics:OpenScrape=true`
+drops the guard on this one endpoint (it does not open `/api/admin/*`).
+
+Counts only, never content: the client series come from the in-memory admission windows, the
+same source `/api/admin/clients` reads. The usage ledger is append-only history and is never
+read to drive anything.
+
+Absence is meaningful. An unmeasured `(node, model)` has **no** `node_tokens_per_second`
+series rather than a zero — the router treats an unmeasured node as *average*, and a 0 on a
+dashboard would be a lie that invites an alert. Same for a client limit that is unset, and for
+the queue's median before anything has ever queued.
+
+A ready-made Prometheus + Grafana overlay with a starter dashboard ships in
+[`deploy/docker/compose.observability.yml`](deploy/docker/compose.observability.yml) — see the
+[deploy runbook](deploy/docker/README.md#observability--prometheus--grafana).
+
+Written by hand, like the NDJSON and SSE framing before it: the exposition format is
+`# HELP` / `# TYPE` / `name{labels} value`, and `prometheus-net` would have been a permanent
+dependency in exchange for code that fits on a screen. **Zero new dependencies.**
 
 ## Management console & admin API
 

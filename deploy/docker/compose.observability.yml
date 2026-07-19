@@ -1,0 +1,53 @@
+# Overlay: Prometheus + Grafana over the coordinator's /metrics endpoint (phase 28).
+# Apply it *after* the base file — later files win:
+#
+#   docker compose -f deploy/docker/docker-compose.yml \
+#                  -f deploy/docker/compose.observability.yml up -d
+#
+#   Grafana:    http://localhost:3000   (admin / ${GRAFANA_PASSWORD:-admin})
+#   Prometheus: http://localhost:9090
+#
+# This is an overlay on purpose. The base stack stays two services; nobody who just wants a
+# mesh has to run a monitoring stack to get one. Nothing here changes what the coordinator
+# measures — every number was already on /api/status, and this gives it a history and an alert.
+#
+# ⚠ Prometheus scrapes with the *admin* key, not a client key. A scraper is not an inference
+#   client, and handing a monitoring system a token that can spend GPU time would be wrong.
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    restart: unless-stopped
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/inferhub-key:/etc/prometheus/inferhub-key:ro
+      - prometheus_data:/prometheus
+    networks:
+      - inferhub
+    depends_on:
+      coordinator:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:11.5.1
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASSWORD:-admin}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./observability/grafana-datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+      - ./observability/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/inferhub.yml:ro
+      - ./observability/dashboard-inferhub.json:/var/lib/grafana/dashboards/inferhub.json:ro
+      - grafana_data:/var/lib/grafana
+    networks:
+      - inferhub
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus_data:
+  grafana_data:

@@ -1,5 +1,6 @@
 using System.Net;
 using InferHub.Coordinator.Auth;
+using InferHub.Coordinator.Observability;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -144,7 +145,11 @@ public class AdminAuthTests
             RequireAuthForLoopback = requireAuthForLoopback
         });
 
-        return new AdminApiKeyMiddleware(next, options, NullLogger<AdminApiKeyMiddleware>.Instance);
+        return new AdminApiKeyMiddleware(
+            next,
+            options,
+            TestOptions.Monitor(new MetricsOptions()),
+            NullLogger<AdminApiKeyMiddleware>.Instance);
     }
 
     private static BearerApiKeyMiddleware NewBearerMiddleware(

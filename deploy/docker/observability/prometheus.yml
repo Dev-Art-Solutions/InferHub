@@ -1,0 +1,22 @@
+# Scrape config for the InferHub coordinator.
+#
+# The admin key is read from a file rather than inlined here, so the key never lands in a
+# config you might paste into an issue. Write it once:
+#
+#   echo -n "$INFERHUB_ADMIN_KEY" > deploy/docker/observability/inferhub-key
+#
+# If you set Metrics:OpenScrape=true on the coordinator (trusted network only), drop the
+# authorization block entirely.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: inferhub-coordinator
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/inferhub-key
+    static_configs:
+      - targets: ["coordinator:8080"]

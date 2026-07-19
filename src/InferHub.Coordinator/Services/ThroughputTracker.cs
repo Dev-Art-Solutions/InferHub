@@ -14,6 +14,8 @@ namespace InferHub.Coordinator.Services;
 /// requests it needs to earn a measurement, which is a load balancer that has quietly stopped
 /// balancing (D4).</para>
 /// </summary>
+public sealed record ThroughputSample(string NodeId, string Model, double TokensPerSecond);
+
 public sealed class ThroughputTracker
 {
     // Smoothing factor: weight of the newest sample. 0.3 reacts within a few requests without
@@ -97,6 +99,17 @@ public sealed class ThroughputTracker
 
         return count == 0 ? null : sum / count;
     }
+
+    /// <summary>
+    /// Every measured (node, model) rate, ordered so a scrape produces stable output. Read-only —
+    /// the EWMA is fed from completions and nothing else.
+    /// </summary>
+    public IReadOnlyList<ThroughputSample> Snapshot() =>
+        ewma
+            .Select(pair => new ThroughputSample(pair.Key.Node, pair.Key.Model, pair.Value))
+            .OrderBy(sample => sample.NodeId, StringComparer.Ordinal)
+            .ThenBy(sample => sample.Model, StringComparer.Ordinal)
+            .ToArray();
 
     private static bool TryParse(string responseJson, out string model, out long evalCount, out double evalDurationNs)
     {
