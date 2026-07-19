@@ -40,6 +40,14 @@ COPY --from=build /app .
 RUN mkdir -p /data && chown app:app /data
 ENV Vector__ReplicaDirectory=/data/vector-replicas
 
+# The *other* half of the same bug, and the one v2.5.1 missed: `FileNodeIdentity` persists the
+# stable node id to `Node:DataDirectory`, which defaults to the content root — /app, which `app`
+# cannot write. Unlike the replica directory this is not conditional on a feature being on, so
+# the node image has been **dead at startup** since v2.3.0: it threw
+# `UnauthorizedAccessException: /app/.inferhub-node-id` before it ever reached the coordinator.
+# Found the only way this class of bug is ever found — by running the container (D7).
+ENV Node__DataDirectory=/data
+
 USER app
 
 ENTRYPOINT ["dotnet", "InferHub.Node.dll"]
