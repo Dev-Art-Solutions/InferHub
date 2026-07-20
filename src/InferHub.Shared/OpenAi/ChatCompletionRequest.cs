@@ -71,8 +71,9 @@ public sealed class OpenAiChatMessage
     [JsonPropertyName("role")]
     public string? Role { get; set; }
 
-    // Either a plain string or an array of content parts. Only the string form is
-    // translated today; multimodal parts are out of scope for this phase.
+    // Either a plain string or an array of content parts. Text parts are joined and
+    // image_url parts become Ollama's base64 images array (phase 29); audio and video
+    // parts are rejected.
     [JsonPropertyName("content")]
     public JsonElement? Content { get; set; }
 

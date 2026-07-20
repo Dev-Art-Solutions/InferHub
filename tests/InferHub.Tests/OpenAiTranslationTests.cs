@@ -60,21 +60,122 @@ public class OpenAiTranslationTests
         Assert.Equal("one\ntwo", body.GetProperty("messages")[0].GetProperty("content").GetString());
     }
 
+    // ---- request: vision (phase 29) --------------------------------------------------
+
+    // A 1x1 PNG. Real bytes, because the translator validates the base64 it forwards.
+    private const string PngBase64 =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+    private const string JpegBase64 = "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAEBAQEBAQEBAQEB";
+
     [Fact]
-    public void ImageContentPartsAreRejectedRatherThanDropped()
+    public void DataUrlImagePartsBecomeOllamaImages()
     {
-        // Dropping the image would let the model answer confidently about something it was
-        // never shown. Out of scope means rejected, not silently ignored.
+        var body = Translate($$$"""
+        {
+          "model": "llava",
+          "messages": [
+            {"role":"user","content":[
+              {"type":"text","text":"What is this?"},
+              {"type":"image_url","image_url":{"url":"data:image/png;base64,{{{PngBase64}}}"}}
+            ]}
+          ]
+        }
+        """);
+
+        var message = body.GetProperty("messages")[0];
+
+        // Text and images are two fields in Ollama, not one array of parts.
+        Assert.Equal("What is this?", message.GetProperty("content").GetString());
+
+        var images = message.GetProperty("images");
+        Assert.Equal(1, images.GetArrayLength());
+        Assert.Equal(PngBase64, images[0].GetString());
+    }
+
+    [Fact]
+    public void MultipleImagesKeepTheirArrayOrder()
+    {
+        var body = Translate($$$"""
+        {
+          "model": "llava",
+          "messages": [
+            {"role":"user","content":[
+              {"type":"image_url","image_url":{"url":"data:image/png;base64,{{{PngBase64}}}"}},
+              {"type":"text","text":"Compare these."},
+              {"type":"image_url","image_url":{"url":"data:image/jpeg;base64,{{{JpegBase64}}}"}}
+            ]}
+          ]
+        }
+        """);
+
+        var images = body.GetProperty("messages")[0].GetProperty("images");
+        Assert.Equal(2, images.GetArrayLength());
+        Assert.Equal(PngBase64, images[0].GetString());
+        Assert.Equal(JpegBase64, images[1].GetString());
+    }
+
+    [Fact]
+    public void TextOnlyMessagesCarryNoImagesKey()
+    {
+        // A stray empty images array on every ordinary message would be a wire change for
+        // requests that have nothing to do with vision.
+        var body = Translate("""
+        {"model":"llama3","messages":[{"role":"user","content":"Hi!"}]}
+        """);
+
+        Assert.False(body.GetProperty("messages")[0].TryGetProperty("images", out _));
+    }
+
+    [Fact]
+    public void RemoteImageUrlsAreRejectedWithAReason()
+    {
+        // Fetching a caller-supplied URL would make the coordinator an SSRF proxy and pull
+        // third-party bytes through a hop that retains nothing. Inlining is the caller's job.
         var ex = Assert.Throws<OpenAiRequestException>(() => Translate("""
         {
-          "model": "llama3",
+          "model": "llava",
           "messages": [
             {"role":"user","content":[{"type":"image_url","image_url":{"url":"http://x/y.png"}}]}
           ]
         }
         """));
 
-        Assert.Contains("image_url", ex.Message);
+        Assert.Contains("does not fetch remote images", ex.Message);
+        Assert.Equal(400, ex.StatusCode);
+    }
+
+    [Fact]
+    public void MalformedBase64IsRejectedAtTheEdge()
+    {
+        var ex = Assert.Throws<OpenAiRequestException>(() => Translate("""
+        {
+          "model": "llava",
+          "messages": [
+            {"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,!!!not-base64!!!"}}]}
+          ]
+        }
+        """));
+
+        Assert.Contains("base64", ex.Message);
+        Assert.Equal(400, ex.StatusCode);
+    }
+
+    [Fact]
+    public void AudioContentPartsAreStillRejectedRatherThanDropped()
+    {
+        // Dropping it would let the model answer confidently about something it was never
+        // shown. Unsupported means rejected, not silently ignored.
+        var ex = Assert.Throws<OpenAiRequestException>(() => Translate("""
+        {
+          "model": "llama3",
+          "messages": [
+            {"role":"user","content":[{"type":"input_audio","input_audio":{"data":"x","format":"wav"}}]}
+          ]
+        }
+        """));
+
+        Assert.Contains("input_audio", ex.Message);
         Assert.Equal(400, ex.StatusCode);
     }
 

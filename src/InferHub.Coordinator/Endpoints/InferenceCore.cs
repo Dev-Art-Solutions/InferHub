@@ -47,6 +47,71 @@ internal static class InferenceCore
         public bool IsError => ErrorStatus is not null;
     }
 
+    /// <summary>
+    /// The innermost human sentence in a node's error, for the client-facing envelope.
+    /// </summary>
+    /// <remarks>
+    /// Ollama stuffs its own backend's JSON error into its <c>error</c> field as a *string*, so a
+    /// llama.cpp refusal arrives already double-encoded and lands in our envelope triple-escaped:
+    /// an SDK reads <c>error.message</c> and shows the user a wall of backslashes instead of the
+    /// one sentence that says what to fix. Found live in phase 29, where "this model does not
+    /// support multimodal requests" is the error a vision user hits first.
+    ///
+    /// This is **presentation only**: nothing is inferred from the text and the status code is
+    /// untouched. Unwrapping is not the same as interpreting — do not grow this into a function
+    /// that decides what an upstream error *means*.
+    /// </remarks>
+    internal static string ReadableNodeError(string? error)
+    {
+        const string fallback = "node failed to run inference";
+
+        var message = error;
+
+        // Bounded: Ollama + llama.cpp produce two levels, and an unbounded loop over
+        // caller-influenced text is not something to leave lying around.
+        for (var depth = 0; depth < 4; depth++)
+        {
+            if (message is null || message.TrimStart() is not ['{', ..] trimmed)
+            {
+                break;
+            }
+
+            try
+            {
+                using var document = System.Text.Json.JsonDocument.Parse(trimmed);
+
+                if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object
+                    || !document.RootElement.TryGetProperty("error", out var inner))
+                {
+                    break;
+                }
+
+                if (inner.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    message = inner.GetString();
+                    continue;
+                }
+
+                if (inner.ValueKind == System.Text.Json.JsonValueKind.Object
+                    && inner.TryGetProperty("message", out var sentence)
+                    && sentence.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    message = sentence.GetString();
+                    continue;
+                }
+
+                break;
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                // Not JSON after all — what we already have is the best available text.
+                break;
+            }
+        }
+
+        return string.IsNullOrWhiteSpace(message) ? fallback : message;
+    }
+
     /// <summary>The per-request services phase 25 added, bundled so the endpoint signatures stay sane.</summary>
     internal readonly record struct ClientContext(
         ResolvedClient Client,
@@ -270,7 +335,7 @@ internal static class InferenceCore
             {
                 return DispatchOutcome.Failure(
                     StatusCodes.Status502BadGateway,
-                    result.Error ?? "node failed to run inference");
+                    ReadableNodeError(result.Error));
             }
 
             return DispatchOutcome.Blocking(result.ResponseJson ?? "{}");
@@ -318,7 +383,7 @@ internal static class InferenceCore
                 metrics.RecordFailoverSucceeded();
                 return DispatchOutcome.Failure(
                     StatusCodes.Status502BadGateway,
-                    result.Error ?? "node failed to run inference");
+                    ReadableNodeError(result.Error));
             }
 
             metrics.RecordFailoverSucceeded();

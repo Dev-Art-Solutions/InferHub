@@ -21,6 +21,12 @@ public static class UpstreamTranslator
 {
     private const string ObjectRole = "assistant";
 
+    // Not `u8` literals: 0x89 and 0xFF are not ASCII, and a UTF-8 literal would encode them as
+    // two bytes each — a signature that matches nothing.
+    private static ReadOnlySpan<byte> PngSignature => [0x89, 0x50, 0x4E, 0x47];
+
+    private static ReadOnlySpan<byte> JpegSignature => [0xFF, 0xD8, 0xFF];
+
     // ---- Ollama request → OpenAI request ---------------------------------------------
 
     public static ChatCompletionRequest ToOpenAiChat(ChatRequest ollama)
@@ -212,7 +218,7 @@ public static class UpstreamTranslator
         var openAi = new OpenAiChatMessage
         {
             Role = message.Role ?? "user",
-            Content = JsonSerializer.SerializeToElement(message.Content ?? string.Empty)
+            Content = ToOpenAiContent(message)
         };
 
         if (message.AdditionalProperties is not { } extras)
@@ -231,6 +237,77 @@ public static class UpstreamTranslator
         }
 
         return openAi;
+    }
+
+    /// <summary>
+    /// A text-only message stays a plain string — that is what every upstream accepts and what
+    /// the pre-vision wire looked like, so nothing changes for it. A message carrying Ollama's
+    /// <c>images</c> array becomes OpenAI content parts on the way back out, so a vision request
+    /// that arrived on <c>/v1</c> survives the double translation to a vLLM or hosted node.
+    /// </summary>
+    private static JsonElement ToOpenAiContent(ChatMessage message)
+    {
+        var text = message.Content ?? string.Empty;
+
+        if (message.Images is not { ValueKind: JsonValueKind.Array } images || images.GetArrayLength() == 0)
+        {
+            return JsonSerializer.SerializeToElement(text);
+        }
+
+        var parts = new JsonArray
+        {
+            new JsonObject { ["type"] = "text", ["text"] = text }
+        };
+
+        foreach (var image in images.EnumerateArray())
+        {
+            if (image.ValueKind != JsonValueKind.String || image.GetString() is not { Length: > 0 } base64)
+            {
+                continue;
+            }
+
+            parts.Add(new JsonObject
+            {
+                ["type"] = "image_url",
+                ["image_url"] = new JsonObject { ["url"] = $"data:{SniffMediaType(base64)};base64,{base64}" }
+            });
+        }
+
+        return JsonSerializer.SerializeToElement(parts);
+    }
+
+    /// <summary>
+    /// Ollama's <c>images</c> are bare base64 with no media type, but an OpenAI data URL needs
+    /// one — so it is sniffed from the magic bytes rather than guessed at a default. An upstream
+    /// handed <c>image/png</c> for a JPEG is a failure that looks like a bad model answer, which
+    /// is exactly the class of quiet wrongness this codebase spends errors to avoid.
+    /// </summary>
+    private static string SniffMediaType(string base64)
+    {
+        // 16 base64 chars decode to 12 bytes — enough for every signature below, and a valid
+        // standalone block, so no padding games.
+        Span<byte> header = stackalloc byte[12];
+        var prefix = base64.Length >= 16 ? base64[..16] : base64;
+
+        if (!Convert.TryFromBase64String(prefix, header, out var written) || written < 4)
+        {
+            throw new OpenAiRequestException(
+                "an image could not be forwarded upstream: its media type is unreadable",
+                statusCode: 400);
+        }
+
+        var bytes = header[..written];
+
+        if (bytes.StartsWith(PngSignature)) return "image/png";
+        if (bytes.StartsWith(JpegSignature)) return "image/jpeg";
+        if (bytes.StartsWith("GIF8"u8)) return "image/gif";
+        if (written >= 12 && bytes.StartsWith("RIFF"u8) && bytes[8..12].SequenceEqual("WEBP"u8)) return "image/webp";
+
+        // Fail clean rather than silently mislabel: an upstream that can't carry this image
+        // should say so here, not answer about something it never decoded.
+        throw new OpenAiRequestException(
+            "an image could not be forwarded upstream: only PNG, JPEG, GIF and WebP are recognised",
+            statusCode: 400);
     }
 
     /// <summary>
