@@ -51,8 +51,8 @@ public class ThroughputRoutingTests
         tracker.RecordFromResponse("node-b", Resp("llama3", evalCount: 100, durationNs: 100_000_000));   // slow
 
         // Pin the conversation to the slow node; affinity should keep it there (both idle, within
-        // the load-break threshold) even though node-a is faster.
-        affinity.Record("conv-1", "connection-b");
+        // the load-break threshold) even though node-a is faster. Affinity keys on the node id (phase 30).
+        affinity.Record("conv-1", "node-b");
         Assert.Equal("node-b", router.Route("llama3", "conv-1")!.NodeId);
         Assert.Equal("node-b", router.Route("llama3", "conv-1")!.NodeId);
     }

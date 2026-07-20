@@ -25,7 +25,28 @@ builder.Services.AddSingleton<Metrics>();
 builder.Services.Configure<MetricsOptions>(builder.Configuration.GetSection(MetricsOptions.SectionName));
 builder.Services.AddSingleton<INodeRegistry, NodeRegistry>();
 builder.Services.AddSingleton<IAuditLog, AuditLog>();
-builder.Services.AddSingleton<IConversationAffinity, ConversationAffinity>();
+
+// Conversation affinity (phase 30). Keyed on the stable node id so a node reconnecting keeps its
+// warm conversations. Persistence is opt-in and off by default: `none` keeps the map in-memory
+// (byte-identical to v2.11), `file` writes a derived cache of routing hints to disk.
+builder.Services.Configure<AffinityOptions>(builder.Configuration.GetSection(AffinityOptions.SectionName));
+var affinityPersistence = builder.Configuration
+    .GetSection(AffinityOptions.SectionName)
+    .GetValue<string>(nameof(AffinityOptions.Persistence)) ?? AffinityOptions.PersistenceNone;
+
+if (string.Equals(affinityPersistence.Trim(), AffinityOptions.PersistenceFile, StringComparison.OrdinalIgnoreCase))
+{
+    builder.Services.AddSingleton<IAffinityStore, FileAffinityStore>();
+}
+else
+{
+    builder.Services.AddSingleton<IAffinityStore, NoAffinityStore>();
+}
+
+builder.Services.AddSingleton<IConversationAffinity>(sp => new ConversationAffinity(
+    sp.GetRequiredService<IOptions<RouterOptions>>(),
+    sp.GetRequiredService<IAffinityStore>(),
+    TimeProvider.System));
 builder.Services.AddSingleton<InferHub.Coordinator.Services.IRouter, Router>();
 builder.Services.AddSingleton<IDispatcher, Dispatcher>();
 builder.Services.AddSingleton<INodeConnectionTracker, NodeConnectionTracker>();

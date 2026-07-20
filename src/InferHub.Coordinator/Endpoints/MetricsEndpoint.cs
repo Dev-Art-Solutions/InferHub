@@ -22,7 +22,8 @@ public static class MetricsEndpoint
             ThroughputTracker throughput,
             IRequestQueue queue,
             IClientRegistry clients,
-            AdmissionControl admission) =>
+            AdmissionControl admission,
+            IConversationAffinity affinity) =>
         {
             var now = DateTimeOffset.UtcNow;
 
@@ -34,7 +35,8 @@ public static class MetricsEndpoint
                 registry.Snapshot(now).OrderBy(node => node.NodeId, StringComparer.Ordinal).ToArray(),
                 throughput.Snapshot(),
                 queue.Snapshot(),
-                ClientSamples(clients, admission));
+                ClientSamples(clients, admission),
+                affinity.Count);
 
             return Results.Text(PrometheusFormatter.Format(scrape), PrometheusFormatter.ContentType);
         });

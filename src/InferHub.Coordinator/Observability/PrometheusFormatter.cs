@@ -14,7 +14,8 @@ public sealed record PrometheusScrape(
     IReadOnlyList<NodeSnapshot> Nodes,
     IReadOnlyList<ThroughputSample> Throughput,
     QueueSnapshot Queue,
-    IReadOnlyList<ClientScrapeSample> Clients);
+    IReadOnlyList<ClientScrapeSample> Clients,
+    int AffinityEntries);
 
 /// <summary>
 /// A client's live window consumption against its configured limits. Counts and ids only — the
@@ -82,6 +83,9 @@ public static class PrometheusFormatter
         Counter(builder, "inferhub_vector_replicas_healed_total", "Vector replicas re-pushed by the healing service.", m.VectorReplicasHealed);
         Counter(builder, "inferhub_vector_rebuilds_from_raw_total", "Vector index rebuilds from the raw store.", m.VectorRebuildsFromRaw);
         Gauge(builder, "inferhub_vector_under_replicated", "Collections currently below their replication factor.", m.VectorUnderReplicated);
+
+        // A fleet gauge, so present at zero: "no warm conversations" is a fact, not an absence.
+        Gauge(builder, "inferhub_affinity_entries", "Live sticky-conversation affinity hints.", scrape.AffinityEntries);
 
         PerNode(builder, scrape);
         PerCollection(builder, m);

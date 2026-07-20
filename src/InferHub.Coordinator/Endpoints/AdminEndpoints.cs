@@ -66,6 +66,7 @@ public static class AdminEndpoints
             HttpContext context,
             INodeRegistry registry,
             INodeConnectionTracker connections,
+            IConversationAffinity affinity,
             IAuditLog audit,
             ILoggerFactory loggerFactory) =>
         {
@@ -79,6 +80,9 @@ public static class AdminEndpoints
 
             var aborted = connections.Abort(connectionId);
             registry.Remove(connectionId);
+            // Explicit deregister is the operator saying this node is gone for good — unlike a
+            // transient disconnect, so its warm conversations should not linger pinned to it.
+            affinity.ForgetNode(nodeId);
             audit.Record(nodeId, "deregister", ActorOf(context), DateTimeOffset.UtcNow);
 
             logger.LogInformation(

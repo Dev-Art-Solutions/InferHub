@@ -651,6 +651,42 @@ back door. `NodeErrorReadabilityTests` pins the real captured Ollama payload.
 
 **Rule 5 survived again.** Phase 29 added **zero** new dependencies.
 
+### Phase 30 (stable-node affinity + optional persistence) — also load-bearing
+
+**D1 — Affinity keys on the stable `nodeId`, and a disconnect no longer forgets.** The map was
+keyed to a SignalR `connectionId`, which is **not stable across a node's own reconnect** — so a
+node bouncing its connection dropped its warm conversations even while it stayed up.
+[ConversationAffinity](src/InferHub.Coordinator/Services/ConversationAffinity.cs) now keys on
+`nodeId`; the [Router](src/InferHub.Coordinator/Services/Router.cs) resolves it to a live candidate
+at dispatch time (a hint for a disconnected/cordoned/model-less node is simply absent from the
+candidate set — a clean miss). The consequence that matters: **`NodeHub.OnDisconnectedAsync` and
+`NodeReaper` deliberately do *not* forget affinity anymore.** A disconnect is often a reconnect in
+progress, and an evicted node that re-registers with the same id should resume its conversations;
+the sliding window bounds the map for one that never returns. **Only an explicit admin deregister**
+(`ForgetNode`) forgets — the operator saying a node is gone for good. *Recorded deviation from the
+phase brief:* the brief kept `ForgetConnection`; it is replaced by `ForgetNode(nodeId)`, because a
+connection-keyed forget on disconnect is the exact bug the re-key fixes.
+
+**D2 — Persistence is opt-in, off by default, and a derived cache — never a source of truth.**
+`Affinity:Persistence` = `none` (default, byte-identical to v2.11) | `file`.
+[FileAffinityStore](src/InferHub.Coordinator/Services/FileAffinityStore.cs) reuses the local vector
+raw-store discipline (append-only `ops.jsonl` + periodic compacted `snapshot.jsonl`), loaded on
+startup with entries past their sliding expiry dropped on load. Rule 4 survives because a lost or
+stale entry costs **one cold model load, never a wrong answer** — so it is not a third authority
+alongside the vector store and the usage ledger. It is flushed but not fsynced on the hot path, and
+a torn last line from a crash mid-append is skipped on load, not treated as corruption. The seam is
+[IAffinityStore](src/InferHub.Coordinator/Services/IAffinityStore.cs); `NoAffinityStore` is the
+default no-op. Rule 7 holds: the persisted record is `(conversationKey, nodeId, lastUsed)` — the key
+is still a header value or a hash of the opening message, never content.
+
+**D3 — Same Docker permissions trap as the vector store (D7), headed off in the same place.** The
+`file` store's default `./data/affinity` resolves to `/app/data` under `USER app`, which cannot
+write it. The coordinator image sets `ENV Affinity__DataDirectory=/data/affinity`, under the
+existing `chown app:app /data` mount. Inert unless persistence is turned on — but when a release
+touches a disk-writing path, pull the image and run it (D7), don't trust the unit tests.
+
+**Rule 5 survived again.** Phase 30 added **zero** new dependencies.
+
 ## Auth model (three independent token sets)
 
 | Scope | Config key | Guards |

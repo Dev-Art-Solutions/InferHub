@@ -55,6 +55,11 @@ ENV Urls=http://+:8080
 RUN mkdir -p /data && chown app:app /data
 ENV VectorStore__DataDirectory=/data/vectors
 
+# Affinity persistence (phase 30) writes under /data too when Affinity:Persistence=file. Same trap
+# as the vector store: the default ./data/affinity resolves to /app/data, which `app` cannot write.
+# The /data chown above covers the parent; this points the default at it. Inert unless persistence is on.
+ENV Affinity__DataDirectory=/data/affinity
+
 EXPOSE 8080
 
 # Non-root. The runtime image ships this user for exactly this purpose.
