@@ -5,7 +5,6 @@ namespace InferHub.Coordinator.Services;
 public sealed class NodeReaper(
     INodeRegistry registry,
     IDispatcher dispatcher,
-    IConversationAffinity affinity,
     Metrics metrics,
     IConfiguration configuration,
     ILogger<NodeReaper> logger) : BackgroundService
@@ -36,7 +35,9 @@ public sealed class NodeReaper(
                 dispatcher.FailForConnection(
                     node.ConnectionId,
                     new TimeoutException($"node '{node.NodeId}' missed its heartbeat"));
-                affinity.ForgetConnection(node.ConnectionId);
+                // Affinity is not forgotten on eviction (phase 30): an evicted node that re-registers
+                // with the same node id resumes its warm conversations, and the sliding window bounds
+                // the map for one that never returns. Only an explicit deregister forgets a node.
                 metrics.RecordNodeEvicted();
             }
         }

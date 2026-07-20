@@ -9,7 +9,6 @@ namespace InferHub.Coordinator.Hubs;
 public sealed class NodeHub(
     INodeRegistry registry,
     IDispatcher dispatcher,
-    IConversationAffinity affinity,
     INodeConnectionTracker connections,
     NodeAuthFilter nodeAuth,
     IServiceProvider services,
@@ -138,7 +137,10 @@ public sealed class NodeHub(
         }
 
         dispatcher.FailForConnection(Context.ConnectionId, exception);
-        affinity.ForgetConnection(Context.ConnectionId);
+        // Deliberately do NOT forget affinity here (phase 30). A disconnect is often a reconnect in
+        // progress: the node comes back with a *new* connection id but the same stable node id, and
+        // its warm conversations must survive that. Affinity now keys on the node id, so a hint for a
+        // momentarily-absent node is a clean miss until the node returns or the sliding window lapses.
         await base.OnDisconnectedAsync(exception);
     }
 }

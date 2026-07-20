@@ -217,13 +217,15 @@ public class NodeHubStreamingTests
 
     private sealed class NoopAffinity : IConversationAffinity
     {
+        public int Count => 0;
+
         public string? GetNodeFor(string conversationKey) => null;
 
-        public void Record(string conversationKey, string connectionId) { }
+        public void Record(string conversationKey, string nodeId) { }
 
         public void Forget(string conversationKey) { }
 
-        public int ForgetConnection(string connectionId) => 0;
+        public int ForgetNode(string nodeId) => 0;
     }
 
     private sealed class NoopConnections : INodeConnectionTracker

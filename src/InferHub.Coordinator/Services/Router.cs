@@ -40,11 +40,14 @@ public sealed class Router(
 
         if (!string.IsNullOrEmpty(conversationKey))
         {
-            var stickyConnectionId = affinity.GetNodeFor(conversationKey);
+            // Affinity keys on the stable nodeId (phase 30). We resolve it to a live candidate here:
+            // a sticky node that is disconnected, cordoned, or no longer holds the model is simply
+            // absent from `candidates`, so a stale hint is a clean miss and we fall through to best.
+            var stickyNodeId = affinity.GetNodeFor(conversationKey);
 
-            if (stickyConnectionId is not null)
+            if (stickyNodeId is not null)
             {
-                var sticky = Array.Find(loads, l => l.Node.ConnectionId == stickyConnectionId);
+                var sticky = Array.Find(loads, l => string.Equals(l.Node.NodeId, stickyNodeId, StringComparison.Ordinal));
 
                 if (sticky.Node is not null)
                 {
@@ -55,13 +58,13 @@ public sealed class Router(
 
                     if (sticky.Load - minLoad <= threshold)
                     {
-                        affinity.Record(conversationKey, sticky.Node.ConnectionId);
+                        affinity.Record(conversationKey, sticky.Node.NodeId);
                         return sticky.Node;
                     }
                 }
             }
 
-            affinity.Record(conversationKey, best.ConnectionId);
+            affinity.Record(conversationKey, best.NodeId);
         }
 
         return best;

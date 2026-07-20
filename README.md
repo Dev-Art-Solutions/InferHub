@@ -444,6 +444,9 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Router:AffinitySlidingMinutes` | `10` | Sticky-conversation idle expiry. |
 | `Router:AffinityLoadBreakThreshold` | `2` | Extra in-flight jobs the sticky node may have before affinity is broken in favour of a less-busy node. |
 | `Router:Strategy` | `least-busy` | How capable nodes are ranked (v2.8): `least-busy` (default, unchanged) or `throughput` (measured tokens/sec, EWMA, load-adjusted). Affinity still wins. See [Fleet operations](#fleet-operations-v28). |
+| `Affinity:Persistence` | `none` | Sticky-conversation persistence (v2.12): `none` (in-memory, reset on restart) or `file` (survives a coordinator restart). Affinity keys on the stable node id either way, so a node reconnecting keeps its warm conversations. |
+| `Affinity:DataDirectory` | `./data/affinity` | Where the `file` store writes (append-log + periodic snapshot). Container image overrides to `/data/affinity`. |
+| `Affinity:SnapshotEveryOps` | `256` | Ops appended before the log is compacted to a snapshot. |
 | `Auth:ApiKeys` | `[]` | Accepted client Bearer tokens (constant-time compared). Anonymous, unlimited. |
 | `Auth:Clients` | `[]` | Named clients: `{Id, Key, Limits}`. See [Clients, quotas & usage](#clients-quotas--usage-v27). |
 | `Auth:AdminApiKeys` | `[]` | Accepted admin Bearer tokens guarding `/api/admin/*`. Separate from `ApiKeys`. |

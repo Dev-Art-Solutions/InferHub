@@ -99,7 +99,8 @@ public class PrometheusMetricsTests
             [],
             [],
             new QueueSnapshot(0, 0, 0, 0, 0, MedianWaitMs: null),
-            []);
+            [],
+            AffinityEntries: 0);
 
         var parsed = Exposition.Parse(PrometheusFormatter.Format(empty));
 
@@ -110,6 +111,8 @@ public class PrometheusMetricsTests
         // The fleet counters still exist at zero — a zero there is a statement, not an absence.
         Assert.Equal(0, parsed.Value("inferhub_requests_total"));
         Assert.Equal(0, parsed.Value("inferhub_queue_depth"));
+        // Affinity entries is a fleet gauge: present at zero, like the queue depth.
+        Assert.Equal(0, parsed.Value("inferhub_affinity_entries"));
     }
 
     [Fact]
@@ -124,7 +127,8 @@ public class PrometheusMetricsTests
             [],
             [],
             new QueueSnapshot(0, 0, 0, 0, 0, null),
-            []);
+            [],
+            AffinityEntries: 0);
 
         var text = PrometheusFormatter.Format(scrape);
 
@@ -222,7 +226,8 @@ public class PrometheusMetricsTests
             [],
             [new ThroughputSample("gpu-1", "llama3", 42.5)],
             new QueueSnapshot(1, 4, 3, 1, 0, MedianWaitMs: 250),
-            [new ClientScrapeSample("acme", 1, 7, 40, 120, null, null, null, TokensPerDay: 1000)]);
+            [new ClientScrapeSample("acme", 1, 7, 40, 120, null, null, null, TokensPerDay: 1000)],
+            AffinityEntries: 3);
     }
 
     private static AdminApiKeyMiddleware NewMiddleware(

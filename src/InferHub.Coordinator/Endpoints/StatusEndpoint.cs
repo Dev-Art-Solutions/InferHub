@@ -15,6 +15,7 @@ public static class StatusEndpoint
             Metrics metrics,
             Microsoft.Extensions.Options.IOptions<FallbackOptions> fallback,
             IRequestQueue queue,
+            IConversationAffinity affinity,
             IServiceProvider services) =>
         {
             var now = DateTimeOffset.UtcNow;
@@ -28,6 +29,7 @@ public static class StatusEndpoint
                 version,
                 now,
                 snapshot.UptimeSeconds,
+                affinity.Count,
                 nodes.Select(node => new StatusNode(
                     node.NodeId,
                     node.Name,
@@ -173,6 +175,8 @@ public static class StatusEndpoint
         string CoordinatorVersion,
         DateTimeOffset NowUtc,
         double UptimeSeconds,
+        // Live sticky-conversation hints (phase 30). A gauge, reported even when zero.
+        int AffinityEntries,
         IReadOnlyList<StatusNode> Nodes,
         IReadOnlyCollection<ModelInfo> Models,
         MetricsSnapshot Metrics,
