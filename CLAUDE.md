@@ -602,6 +602,55 @@ zero is a statement rather than an absence.
 > decimal separator on every value line — a decimal comma is a locale bug that only appears on a
 > Bulgarian or German host and sinks the whole scrape.
 
+### Phase 29 (vision passthrough) — also load-bearing
+
+**D1 — Text and images are one array on one side and two fields on the other, so the
+translator splits rather than joins.** `RequestTranslator.ExtractContent` returns a
+`MessageContent(Text, Images)` pair instead of a joined string; `image_url` parts become
+Ollama's base64 `images` array. `UpstreamTranslator` mirrors it for `Backend:Type=openai`
+nodes. A message with no images emits **no** `images` key and goes upstream as a plain
+`content` string — a stray empty array on every ordinary message would be a wire change for
+requests that have nothing to do with vision.
+
+**D2 — `data:` URLs only; the coordinator does not fetch remote images.** An `http(s)`
+`image_url` is a `400` that says why. Fetching a caller-supplied URL makes the hub an SSRF
+proxy and pulls third-party bytes through a hop designed to retain nothing (rule 7). Inlining
+is one line in every OpenAI SDK, and it is the caller's job. Do not "helpfully" add a fetcher.
+
+**D3 — Media type is sniffed from the magic bytes, never defaulted.** Ollama's `images` are
+bare base64 with no type; an OpenAI data URL needs one. PNG/JPEG/GIF/WebP are recognised and
+anything else is a clean `400`. Defaulting to `image/png` for bytes that are not a PNG turns a
+detectable error into a bad model answer. The signatures are **not** `u8` literals — `0x89` and
+`0xFF` are not ASCII, and a UTF-8 literal encodes them as two bytes each, a signature that
+matches nothing. That bug was live for one test run; keep the explicit byte arrays.
+
+**D4 — Base64 is validated at the edge.** A node rejecting malformed base64 seconds later, from
+behind routing and a queue wait, is a much worse error than a `400` in the translator.
+
+**D5 — No capability registry, deliberately.** A text-only model handed an image errors at the
+node, and that refusal is forwarded as-is — a clean `502` carrying the model's own message,
+never a `500`. Ollama is the source of truth for what a model accepts; a second list here of
+"which models see images" would drift and start lying. *This is a recorded deviation from the
+phase brief, which asked for a `400`/`404` shape:* the request was well-formed and it was the
+upstream that refused, so `502` is the honest status. What the brief actually cared about — no
+`500`s — holds.
+
+**D6 — Node errors are unwrapped before they reach a client, and that is presentation, not
+interpretation.** Found live in phase 29: Ollama encodes *its* backend's JSON error as a
+**string** inside its own `error` field, so a llama.cpp refusal arrives double-encoded and our
+envelope made three layers. A client read `error.message` and got
+`{"error":"{\"error\":{\"code\":400,\"message\":\"…\"}}"}` — a wall of backslashes instead of
+the one sentence saying what to fix, which is precisely the "useless unknown error" the OpenAI
+envelope exists to prevent. `InferenceCore.ReadableNodeError` drills to the innermost message,
+bounded at four levels, and lives in the **one** dispatch path so both dialects get it.
+
+It unwraps; it never infers. Nothing is decided from the error *text* and the status code is
+untouched — the moment this function starts deciding what an upstream error *means* (mapping it
+to a 4xx, sniffing for "unsupported"), it has become the capability registry D5 refused, by the
+back door. `NodeErrorReadabilityTests` pins the real captured Ollama payload.
+
+**Rule 5 survived again.** Phase 29 added **zero** new dependencies.
+
 ## Auth model (three independent token sets)
 
 | Scope | Config key | Guards |

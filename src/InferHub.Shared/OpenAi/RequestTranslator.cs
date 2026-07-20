@@ -166,11 +166,23 @@ public static class RequestTranslator
 
         foreach (var message in messages)
         {
+            var content = ExtractContent(message.Content);
+
             var item = new JsonObject
             {
                 ["role"] = message.Role ?? "user",
-                ["content"] = ExtractContent(message.Content)
+                ["content"] = content.Text
             };
+
+            if (content.Images.Count > 0)
+            {
+                var images = new JsonArray();
+                foreach (var image in content.Images)
+                {
+                    images.Add(JsonValue.Create(image));
+                }
+                item["images"] = images;
+            }
 
             if (!string.IsNullOrEmpty(message.Name))
             {
@@ -194,20 +206,31 @@ public static class RequestTranslator
     }
 
     /// <summary>
-    /// <c>content</c> is a string, or an array of parts. Text parts are joined; an image or
-    /// audio part is rejected outright rather than dropped, so a multimodal client gets an
-    /// error instead of a confidently wrong answer about an image we never sent.
+    /// The text and the images of one message. Ollama carries them as two fields —
+    /// <c>content</c> and <c>images</c> — where OpenAI carries them as one array of parts, so
+    /// the translation has to split rather than join.
     /// </summary>
-    internal static string ExtractContent(JsonElement? content)
+    internal readonly record struct MessageContent(string Text, IReadOnlyList<string> Images)
+    {
+        public static readonly MessageContent Empty = new(string.Empty, []);
+    }
+
+    /// <summary>
+    /// <c>content</c> is a string, or an array of parts. Text parts are joined; <c>image_url</c>
+    /// parts become Ollama's base64 <c>images</c> array. Audio and video parts are still rejected
+    /// outright rather than dropped, so a client gets an error instead of a confidently wrong
+    /// answer about something we never sent.
+    /// </summary>
+    internal static MessageContent ExtractContent(JsonElement? content)
     {
         if (content is not { } value || value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
         {
-            return string.Empty;
+            return MessageContent.Empty;
         }
 
         if (value.ValueKind == JsonValueKind.String)
         {
-            return value.GetString() ?? string.Empty;
+            return new MessageContent(value.GetString() ?? string.Empty, []);
         }
 
         if (value.ValueKind != JsonValueKind.Array)
@@ -216,6 +239,7 @@ public static class RequestTranslator
         }
 
         var parts = new List<string>();
+        var images = new List<string>();
 
         foreach (var part in value.EnumerateArray())
         {
@@ -229,10 +253,16 @@ public static class RequestTranslator
                 ? typeElement.GetString()
                 : null;
 
+            if (type == "image_url")
+            {
+                images.Add(ExtractImage(part));
+                continue;
+            }
+
             if (type != "text")
             {
                 throw new OpenAiRequestException(
-                    $"content part of type '{type ?? "unknown"}' is not supported; only text parts are",
+                    $"content part of type '{type ?? "unknown"}' is not supported; text and image_url parts are",
                     param: "messages");
             }
 
@@ -242,7 +272,53 @@ public static class RequestTranslator
             }
         }
 
-        return string.Join("\n", parts);
+        return new MessageContent(string.Join("\n", parts), images);
+    }
+
+    /// <summary>
+    /// One <c>image_url</c> part → the bare base64 Ollama wants. Only <c>data:</c> URLs are
+    /// accepted: fetching an <c>http(s)</c> image would make the coordinator issue outbound
+    /// requests to caller-supplied URLs (an SSRF surface), and would pull third-party bytes
+    /// through a hop that is supposed to retain nothing (rule 7). Inlining a hosted image is
+    /// the caller's job, and every OpenAI SDK can already do it.
+    /// </summary>
+    private static string ExtractImage(JsonElement part)
+    {
+        var url = part.TryGetProperty("image_url", out var wrapper) && wrapper.ValueKind == JsonValueKind.Object
+            && wrapper.TryGetProperty("url", out var urlElement) && urlElement.ValueKind == JsonValueKind.String
+                ? urlElement.GetString()
+                : null;
+
+        if (string.IsNullOrEmpty(url))
+        {
+            throw new OpenAiRequestException("image_url.url is required on an image_url content part", param: "messages");
+        }
+
+        if (!url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new OpenAiRequestException(
+                "image_url.url must be a data: URL with base64 image data; the coordinator does not fetch remote images",
+                param: "messages");
+        }
+
+        var marker = url.IndexOf(";base64,", StringComparison.OrdinalIgnoreCase);
+        if (marker < 0)
+        {
+            throw new OpenAiRequestException(
+                "image_url.url must be a base64 data: URL (data:image/...;base64,...)",
+                param: "messages");
+        }
+
+        var payload = url[(marker + ";base64,".Length)..];
+
+        // Validate rather than forward blindly: a node rejecting malformed base64 seconds later,
+        // from behind a GPU queue, is a much worse error than a 400 here.
+        if (payload.Length == 0 || !Convert.TryFromBase64String(payload, new byte[payload.Length], out _))
+        {
+            throw new OpenAiRequestException("image_url.url does not carry valid base64 data", param: "messages");
+        }
+
+        return payload;
     }
 
     private static string ExtractPrompt(JsonElement? prompt)

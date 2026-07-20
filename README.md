@@ -175,6 +175,37 @@ client = OpenAI(
 )
 ```
 
+### Vision (v2.11+)
+
+Send an image the way the OpenAI SDK does and it reaches whichever GPU in the fleet is holding
+a vision model (`llava`, `llama3.2-vision`, `qwen2-vl`, `moondream`, …):
+
+```python
+client.chat.completions.create(
+    model="llava",
+    messages=[{"role": "user", "content": [
+        {"type": "text", "text": "What is in this image?"},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+    ]}],
+)
+```
+
+**The image must be inlined as a `data:` URL.** A remote `http(s)` image URL is rejected with a
+`400` that says why, and that is deliberate: fetching a caller-supplied URL would make the
+coordinator issue outbound requests to arbitrary hosts (an SSRF surface) and would pull
+third-party bytes through a hop whose whole design is to retain nothing. Every OpenAI SDK can
+inline a file in one line; the coordinator is not going to be a fetcher.
+
+Images pass through in flight, exactly like text — nothing is stored, nothing is logged, and
+usage stays counts-only (an image contributes to the prompt tokens the node itself reports; we
+do not measure pixels). Vision works through an OpenAI-backed node too (vLLM, LM Studio, a
+hosted provider): the image is re-emitted as a data URL on the way upstream, with its media type
+sniffed from the bytes rather than guessed.
+
+A text-only model handed an image will refuse at the node, and that refusal is forwarded as-is —
+there is no capability registry here, because Ollama is the source of truth for what a model
+accepts.
+
 **Where the translation is lossy — stated plainly rather than papered over:**
 
 - `n > 1` is **rejected** with a `400`, not quietly served once.
@@ -185,8 +216,8 @@ client = OpenAI(
   streamed call → tool result → grounded answer — works with the OpenAI SDK's string-form
   arguments.
 - `logprobs`, `logit_bias` and `user` are **accepted and ignored** (logged at debug).
-- Image / multimodal content parts are **rejected**, not silently dropped — a model should
-  never answer confidently about an image it was never sent.
+- Audio and video content parts are **rejected**, not silently dropped — a model should
+  never answer confidently about something it was never sent.
 
 Errors on `/v1/*` use the OpenAI envelope (`{"error": {"message", "type", "param", "code"}}`),
 because an SDK reads `error.message` and would otherwise surface a useless "unknown error".

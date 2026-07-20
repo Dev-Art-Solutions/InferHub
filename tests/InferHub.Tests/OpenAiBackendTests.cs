@@ -182,6 +182,65 @@ public class OpenAiBackendTests
     }
 
     [Fact]
+    public async Task VisionSurvivesTheDoubleTranslationToAnOpenAiUpstream()
+    {
+        // A /v1 vision request is translated to Ollama at the coordinator and back to OpenAI
+        // here. The image must come out the far side as a data URL an upstream can decode —
+        // media type sniffed from the bytes, not defaulted (phase 29).
+        const string png =
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+        var upstream = StubUpstream.Json("""
+        {"id":"c","created":0,"model":"llava","choices":[{"index":0,"message":{"role":"assistant","content":"A dot."},"finish_reason":"stop"}]}
+        """);
+
+        await Backend(upstream).ChatAsync($$"""
+        {"model":"llava","messages":[{"role":"user","content":"What is this?","images":["{{png}}"]}],"stream":false}
+        """, CancellationToken.None);
+
+        var content = upstream.LastRequestBody().GetProperty("messages")[0].GetProperty("content");
+        Assert.Equal(2, content.GetArrayLength());
+        Assert.Equal("text", content[0].GetProperty("type").GetString());
+        Assert.Equal("What is this?", content[0].GetProperty("text").GetString());
+        Assert.Equal("image_url", content[1].GetProperty("type").GetString());
+        Assert.Equal(
+            $"data:image/png;base64,{png}",
+            content[1].GetProperty("image_url").GetProperty("url").GetString());
+    }
+
+    [Fact]
+    public async Task TextOnlyMessagesStayAPlainStringUpstream()
+    {
+        var upstream = StubUpstream.Json("""
+        {"id":"c","created":0,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"x"},"finish_reason":"stop"}]}
+        """);
+
+        await Backend(upstream).ChatAsync("""
+        {"model":"llama3","messages":[{"role":"user","content":"hi"}],"stream":false}
+        """, CancellationToken.None);
+
+        var content = upstream.LastRequestBody().GetProperty("messages")[0].GetProperty("content");
+        Assert.Equal(JsonValueKind.String, content.ValueKind);
+    }
+
+    [Fact]
+    public async Task AnUnrecognisedImageFormatFailsCleanRatherThanMislabelled()
+    {
+        // Guessing image/png for bytes that are not a PNG produces a bad model answer, not an
+        // error — the quiet wrongness this codebase spends errors to avoid.
+        var upstream = StubUpstream.Json("""
+        {"id":"c","created":0,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"x"},"finish_reason":"stop"}]}
+        """);
+
+        var ex = await Assert.ThrowsAsync<OpenAiRequestException>(() => Backend(upstream).ChatAsync("""
+        {"model":"llava","messages":[{"role":"user","content":"?","images":["AAAAAAAAAAAAAAAAAAAA"]}],"stream":false}
+        """, CancellationToken.None));
+
+        Assert.Equal(400, ex.StatusCode);
+        Assert.Contains("PNG, JPEG, GIF and WebP", ex.Message);
+    }
+
+    [Fact]
     public async Task StreamingRequestsUsageFromTheUpstream()
     {
         var upstream = StubUpstream.Sse("data: [DONE]");
