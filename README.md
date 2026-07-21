@@ -388,6 +388,62 @@ never queue. If cloud burst is enabled with `Trigger=no-node-or-saturated`, satu
 overflows to the upstream *instead of* queueing. Queue depth and median wait are on
 `/api/status` and the status page.
 
+### Multi-tenant collections (v2.13+)
+
+A key with an identity and a budget still had the run of every RAG collection in the mesh.
+For one owner that is fine; for an agency serving several end-clients out of one InferHub it
+is a data-isolation gap. `Auth:Clients[].Collections` closes it:
+
+```jsonc
+{
+  "Auth": {
+    "Clients": [
+      { "Id": "acme",     "Collections": ["acme-*", "shared-glossary"] },
+      { "Id": "globex",   "Collections": ["globex-docs"] },
+      { "Id": "internal" }                       // no list = every collection, as before
+    ]
+  }
+}
+```
+
+Each entry is an exact collection name or a single trailing-`*` prefix — enough for
+provisioning a tenant a namespace, and small enough that nobody has to reason about a glob
+dialect on an isolation boundary. **A client with no `Collections` list may touch everything,
+which is what every key could do before v2.13, so an existing config is unchanged.**
+
+The scope is enforced on *every* path that names a collection — document ingest, list, get,
+chunks, delete, `POST /api/collections/{c}/search`, the raw `/api/vector/{c}/*` data plane,
+and the `X-InferHub-Retrieve` inline-RAG header on both `/api` and `/v1`.
+
+**A collection outside your scope returns `404`, not `403`** — byte-identical to a collection
+that does not exist, and the check runs before the store is consulted, so a name outside your
+scope reads the same whether or not it exists. A tenant never learns another tenant's
+collections are there.
+
+**Provisioning is just ingesting.** A scoped client posting a document to a collection inside
+its scope that doesn't exist yet creates it — dimension measured from the first embedded
+batch, distance from `VectorStore:Distance`. There is no separate create ceremony and no
+admin round trip per tenant. Unscoped clients keep the old behaviour: collections are an
+admin's to create.
+
+Admin keys stay fleet-wide, as they always have been. `GET /api/admin/vector/collections`
+gains a `scopes` block naming which clients can reach each collection — the view that makes a
+tenancy misconfiguration visible before a tenant finds it.
+
+```bash
+# acme's key, acme's corpus:
+curl -H "Authorization: Bearer $ACME_KEY" \
+  -F file=@handbook.pdf http://localhost:5080/api/collections/acme-hr/documents
+
+# acme's key, globex's corpus — indistinguishable from a collection that isn't there:
+curl -H "Authorization: Bearer $ACME_KEY" \
+  http://localhost:5080/api/collections/globex-docs/documents
+# 404 {"error":"collection 'globex-docs' does not exist"}
+```
+
+One vector store, one source of truth: this is an authorization filter over the single store,
+not a store per tenant.
+
 **Coordinator — client, admin & enrollment secrets**
 
 ```bash
@@ -448,7 +504,8 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Affinity:DataDirectory` | `./data/affinity` | Where the `file` store writes (append-log + periodic snapshot). Container image overrides to `/data/affinity`. |
 | `Affinity:SnapshotEveryOps` | `256` | Ops appended before the log is compacted to a snapshot. |
 | `Auth:ApiKeys` | `[]` | Accepted client Bearer tokens (constant-time compared). Anonymous, unlimited. |
-| `Auth:Clients` | `[]` | Named clients: `{Id, Key, Limits}`. See [Clients, quotas & usage](#clients-quotas--usage-v27). |
+| `Auth:Clients` | `[]` | Named clients: `{Id, Key, Limits, Collections}`. See [Clients, quotas & usage](#clients-quotas--usage-v27). |
+| `Auth:Clients[].Collections` | `null` | Collections this client may touch; exact names or a `prefix*`. `null` = all. See [Multi-tenant collections](#multi-tenant-collections-v213). |
 | `Auth:AdminApiKeys` | `[]` | Accepted admin Bearer tokens guarding `/api/admin/*`. Separate from `ApiKeys`. |
 | `Auth:RequireAuthForLoopback` | `false` | Force loopback callers to present a token too (applies to client and admin scopes). |
 | `Auth:NodeEnrollmentSecret` | _(empty)_ | Shared secret nodes present when joining the hub. Empty disables enrollment. |

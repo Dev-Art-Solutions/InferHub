@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using InferHub.Coordinator.Auth;
 using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
 using InferHub.Coordinator.Vector;
@@ -151,6 +152,10 @@ public static class InferenceEndpoints
                 httpContext.Response.Headers[SourcesHeader] = sources;
             }
         }
+        catch (CollectionNotVisibleException ex)
+        {
+            return Error(StatusCodes.Status404NotFound, ex.Message);
+        }
         catch (RetrievalUnavailableException ex)
         {
             logger.LogWarning(ex, "Retrieval unavailable for generate request");
@@ -198,6 +203,10 @@ public static class InferenceEndpoints
             {
                 httpContext.Response.Headers[SourcesHeader] = sources;
             }
+        }
+        catch (CollectionNotVisibleException ex)
+        {
+            return Error(StatusCodes.Status404NotFound, ex.Message);
         }
         catch (RetrievalUnavailableException ex)
         {
@@ -250,7 +259,7 @@ public static class InferenceEndpoints
         Func<RetrievalRequest, Task<RetrievalOutcome>> augment,
         CancellationToken cancellationToken)
     {
-        if (!TryReadRetrievalHeader(httpContext.Request, out var retrieval))
+        if (!TryReadRetrievalHeader(httpContext, out var retrieval))
         {
             return (rawJson, Sources: null);
         }
@@ -267,8 +276,9 @@ public static class InferenceEndpoints
 
     // internal: the OpenAI surface honours the same retrieval headers, and a second parser
     // would be a second set of defaults to keep in sync.
-    internal static bool TryReadRetrievalHeader(HttpRequest request, out RetrievalRequest retrieval)
+    internal static bool TryReadRetrievalHeader(HttpContext context, out RetrievalRequest retrieval)
     {
+        var request = context.Request;
         retrieval = default!;
         if (!request.Headers.TryGetValue(RetrieveHeader, out var raw))
         {
@@ -279,6 +289,14 @@ public static class InferenceEndpoints
         if (string.IsNullOrEmpty(collection))
         {
             return false;
+        }
+
+        // Inline retrieval names a collection too, so it is scoped like every other path that does
+        // (phase 31). Checked here rather than in the pipeline: this is the one parser both client
+        // dialects share, and the check must land before any embedding work is dispatched.
+        if (!CollectionAccessPolicy.CanAccess(context, collection))
+        {
+            throw new CollectionNotVisibleException(collection);
         }
 
         int? k = null;

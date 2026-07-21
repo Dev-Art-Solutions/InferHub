@@ -31,7 +31,18 @@ public sealed class IngestionPipeline(
     Metrics metrics,
     ILogger<IngestionPipeline> logger)
 {
-    public async Task<IngestResult> IngestAsync(string collection, IngestRequest request, CancellationToken cancellationToken)
+    public Task<IngestResult> IngestAsync(string collection, IngestRequest request, CancellationToken cancellationToken)
+        => IngestAsync(collection, request, autoProvision: false, cancellationToken);
+
+    /// <summary>
+    /// <paramref name="autoProvision"/> lets a scoped client (phase 31) ingest into a collection
+    /// inside its own scope that does not exist yet, without a separate create ceremony.
+    /// </summary>
+    public async Task<IngestResult> IngestAsync(
+        string collection,
+        IngestRequest request,
+        bool autoProvision,
+        CancellationToken cancellationToken)
     {
         var opts = options.Value;
 
@@ -40,17 +51,25 @@ public sealed class IngestionPipeline(
             throw new DocumentTooLargeException(request.Content.LongLength, opts.MaxDocumentBytes);
         }
 
-        // Fail before doing any work if the collection isn't there. Auto-creating one would mean
-        // guessing its dimension from whichever model happened to embed the first chunk, and would
-        // route around the admin scope that owns collection lifecycle.
-        _ = await store.GetCollectionAsync(collection, cancellationToken)
-            ?? throw new KeyNotFoundException($"collection '{collection}' does not exist");
+        // Fail before doing any work if the collection isn't there and nobody is allowed to create
+        // it. Phase 23 refused to auto-create at all, for two reasons: it would guess the dimension,
+        // and it would route around the admin scope that owns collection lifecycle. The second
+        // dissolves for a client whose config *names* the collection scope — that list is the
+        // provisioning grant. The first does not dissolve, so the dimension is not guessed: creation
+        // is deferred until the first batch comes back embedded and the dimension is measured.
+        var info = await store.GetCollectionAsync(collection, cancellationToken);
+        if (info is null && !autoProvision)
+        {
+            throw new KeyNotFoundException($"collection '{collection}' does not exist");
+        }
 
         var documentId = ResolveDocumentId(request);
         var contentHash = DocumentIndex.ContentHash(request.Content);
         var model = ResolveModel(request.EmbeddingModel);
 
-        var existing = await documents.GetAsync(collection, documentId, cancellationToken);
+        var existing = info is null
+            ? null
+            : await documents.GetAsync(collection, documentId, cancellationToken);
         if (existing is not null
             && string.Equals(existing.ContentHash, contentHash, StringComparison.Ordinal)
             && existing.Status != IngestResult.Partial)
@@ -86,7 +105,8 @@ public sealed class IngestionPipeline(
             {
                 embedded += await EmbedAndUpsertBatchAsync(
                     collection, documentId, contentHash, extracted, chunks.Count,
-                    request, model, ingestedAt, batch, cancellationToken);
+                    request, model, ingestedAt, batch, info is null, cancellationToken);
+                info ??= await store.GetCollectionAsync(collection, cancellationToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -126,9 +146,21 @@ public sealed class IngestionPipeline(
         string model,
         DateTimeOffset ingestedAt,
         DocumentChunk[] batch,
+        bool createIfMissing,
         CancellationToken cancellationToken)
     {
         var vectors = await EmbedWithRetryAsync(batch, model, cancellationToken);
+
+        if (createIfMissing && await store.GetCollectionAsync(collection, cancellationToken) is null)
+        {
+            // Measured, not guessed: the dimension is whatever the model that just embedded these
+            // chunks produced. Distance comes from VectorStore:Distance, exactly as it would for an
+            // admin-created collection with no explicit metric.
+            var created = await store.CreateCollectionAsync(collection, vectors[0].Length, distance: null, cancellationToken);
+            logger.LogInformation(
+                "Auto-provisioned collection '{Collection}' (dimension {Dimension}, model {Model}) on first ingest",
+                created.Name, created.Dimension, model);
+        }
 
         for (var i = 0; i < batch.Length; i++)
         {

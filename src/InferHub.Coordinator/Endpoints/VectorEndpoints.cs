@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using InferHub.Coordinator.Auth;
 using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
 using InferHub.Coordinator.Vector;
@@ -18,7 +19,10 @@ public static class VectorEndpoints
 
     private static void MapDataPlane(IEndpointRouteBuilder app)
     {
-        var group = app.MapGroup("/api/vector/{collection}");
+        // The raw data plane names a collection on every route, so it carries the same client
+        // scope the document and search surfaces do — an isolation boundary with a hole in it
+        // where the low-level API lives would not be one.
+        var group = app.MapGroup("/api/vector/{collection}").RequireCollectionScope();
 
         group.MapPost("/upsert", async (
             string collection,
@@ -166,6 +170,7 @@ public static class VectorEndpoints
             IVectorStore store,
             ReplicaRegistry replicas,
             INodeRegistry nodes,
+            IClientRegistry clients,
             Microsoft.Extensions.Options.IOptions<VectorStoreOptions> options,
             CancellationToken cancellationToken) =>
         {
@@ -176,7 +181,25 @@ public static class VectorEndpoints
                     ? ZeroPlacement(c.Name)
                     : BuildPlacement(c.Name, replicas, nodes, options.Value.ReplicationFactor))
                 .ToArray();
-            return Results.Ok(new { collections, placement });
+
+            // Who can reach each collection (phase 31). Admin sees everything — it always has —
+            // and this is the view that makes a tenancy misconfiguration visible before a tenant
+            // finds it. A collection no scoped client matches is listed with an empty array, which
+            // is a real answer: only unscoped keys and admins can see it.
+            var scopes = collections
+                .Select(c => new
+                {
+                    collection = c.Name,
+                    clients = clients.NamedClients
+                        .Where(client => client.Collections is { Count: > 0 }
+                            && CollectionAccessPolicy.CanAccess(new ResolvedClient(client.Id, client.Limits, client.Collections), c.Name))
+                        .Select(client => client.Id)
+                        .OrderBy(id => id, StringComparer.Ordinal)
+                        .ToArray()
+                })
+                .ToArray();
+
+            return Results.Ok(new { collections, placement, scopes });
         });
 
         // Per-collection detail: everything the console needs to draw one row and its

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using InferHub.Coordinator.Auth;
 using InferHub.Coordinator.Endpoints;
 using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
@@ -76,6 +77,17 @@ public static class OpenAiEndpoints
             {
                 httpContext.Response.Headers[InferenceEndpoints.SourcesHeader] = sources;
             }
+        }
+        catch (CollectionNotVisibleException ex)
+        {
+            // Same 404 the Ollama surface returns, in this dialect's envelope. Not a passthrough:
+            // answering without the context the caller asked for, silently, is the wrong failure on
+            // a tenancy boundary.
+            return Error(new OpenAiRequestException(
+                ex.Message,
+                StatusCodes.Status404NotFound,
+                OpenAiErrorTypes.NotFound,
+                code: "collection_not_found"));
         }
         catch (RetrievalUnavailableException ex)
         {
@@ -321,7 +333,7 @@ public static class OpenAiEndpoints
         ChatRequest ollamaRequest,
         CancellationToken cancellationToken)
     {
-        if (!InferenceEndpoints.TryReadRetrievalHeader(httpContext.Request, out var retrieval))
+        if (!InferenceEndpoints.TryReadRetrievalHeader(httpContext, out var retrieval))
         {
             return (ollamaJson, null);
         }

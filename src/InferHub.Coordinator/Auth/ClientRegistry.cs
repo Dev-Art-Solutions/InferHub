@@ -5,11 +5,12 @@ using Microsoft.Extensions.Options;
 namespace InferHub.Coordinator.Auth;
 
 /// <summary>The identity a bearer token resolved to. Flows on <c>HttpContext.Items</c>.</summary>
-public sealed record ResolvedClient(string Id, ClientLimits? Limits)
+public sealed record ResolvedClient(string Id, ClientLimits? Limits, IReadOnlyList<string>? Collections = null)
 {
     /// <summary>
     /// A flat <c>Auth:ApiKeys</c> entry, a loopback caller, or no auth at all: one shared
-    /// anonymous identity with no limits — exactly what every key was before phase 25.
+    /// anonymous identity with no limits and no collection scope — exactly what every key was
+    /// before phase 25, and before phase 31.
     /// </summary>
     public static readonly ResolvedClient Anonymous = new("anonymous", null);
 }
@@ -56,7 +57,7 @@ public sealed class ClientRegistry(IOptionsMonitor<ApiKeyOptions> options) : ICl
 
             if (CryptographicOperations.FixedTimeEquals(presentedHash, keyHash))
             {
-                resolved = new ResolvedClient(client.Id, client.Limits);
+                resolved = new ResolvedClient(client.Id, client.Limits, client.Collections);
             }
         }
 
