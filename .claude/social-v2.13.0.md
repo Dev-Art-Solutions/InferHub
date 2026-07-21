@@ -31,6 +31,7 @@ Blog post is **live**: https://devart.solutions/blog/inferhub-2-13-scoped-collec
 > per customer. A config that never heard of scoping runs exactly as it did in 2.12.
 >
 > Self-hosted, MIT, .NET 10. Zero new dependencies, as ever.
+> The full write-up: https://devart.solutions/blog/inferhub-2-13-scoped-collections
 > 👉 https://github.com/Dev-Art-Solutions/InferHub
 
 ## X
