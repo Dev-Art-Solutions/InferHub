@@ -292,6 +292,65 @@ public class IngestionPipelineTests
         Assert.NotNull(snapshot.LastIngestAtUtc);
     }
 
+    [Fact]
+    public async Task AMissingCollectionIsStillARefusalWhenAutoProvisionIsOff()
+    {
+        // Phase 23's contract, unchanged for every unscoped client: collections are an admin's
+        // to create, and ingesting into one that isn't there fails before any work is done.
+        var h = await NewHarnessAsync();
+
+        await Assert.ThrowsAsync<KeyNotFoundException>(
+            () => h.Ingest("Some text.", documentId: "doc", collection: "not-there"));
+
+        Assert.Equal(0, h.Embeddings.Calls);
+    }
+
+    [Fact]
+    public async Task AutoProvisionCreatesTheCollectionWithTheMeasuredDimension()
+    {
+        // Phase 31. The dimension is not guessed from config — it is whatever the model that just
+        // embedded the first batch produced, which is why creation happens after the batch, not
+        // before it.
+        var h = await NewHarnessAsync();
+
+        var result = await h.Ingest("The leave policy grants 25 days.", documentId: "policy",
+            collection: "tenant-a-docs", autoProvision: true);
+
+        Assert.Equal(IngestResult.Ingested, result.Status);
+
+        var info = await h.Store.GetCollectionAsync("tenant-a-docs");
+        Assert.NotNull(info);
+        Assert.Equal(2, info!.Dimension);
+        Assert.Equal(result.Chunks, info.RecordCount);
+    }
+
+    [Fact]
+    public async Task AutoProvisionOnAnExistingCollectionJustIngests()
+    {
+        var h = await NewHarnessAsync();
+
+        await h.Ingest("First document.", documentId: "one", autoProvision: true);
+        await h.Ingest("Second document.", documentId: "two", autoProvision: true);
+
+        var documents = await h.Documents.ListAsync(Collection, CancellationToken.None);
+        Assert.Equal(2, documents.Count);
+    }
+
+    [Fact]
+    public async Task AFailedFirstBatchLeavesNoHalfCreatedCollection()
+    {
+        // Creation happens only once vectors are in hand, so an embed that never succeeds cannot
+        // leave an empty collection behind for the next caller to find and misread as provisioned.
+        var h = await NewHarnessAsync();
+        h.Embeddings.NoNode = true;
+
+        var result = await h.Ingest("Doomed text.", documentId: "doc",
+            collection: "tenant-a-docs", autoProvision: true);
+
+        Assert.Equal(IngestResult.Partial, result.Status);
+        Assert.Null(await h.Store.GetCollectionAsync("tenant-a-docs"));
+    }
+
     private static async Task<Harness> NewHarnessAsync(
         int maxChars = 1200,
         int overlap = 150,
@@ -339,11 +398,16 @@ public class IngestionPipelineTests
         FakeEmbeddings Embeddings,
         Metrics Metrics)
     {
-        public Task<IngestResult> Ingest(string text, string documentId) =>
-            Pipeline.IngestAsync(Collection, new IngestRequest(
+        public Task<IngestResult> Ingest(
+            string text,
+            string documentId,
+            string? collection = null,
+            bool autoProvision = false) =>
+            Pipeline.IngestAsync(collection ?? Collection, new IngestRequest(
                 Content: Encoding.UTF8.GetBytes(text),
                 DocumentId: documentId,
                 ContentType: "text/plain"),
+                autoProvision,
                 CancellationToken.None);
     }
 

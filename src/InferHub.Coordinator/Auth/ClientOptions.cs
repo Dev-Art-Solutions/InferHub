@@ -13,6 +13,15 @@ public sealed class ClientConfig
     public string Key { get; set; } = string.Empty;
 
     public ClientLimits? Limits { get; set; }
+
+    /// <summary>
+    /// RAG collections this client may touch (phase 31). <c>null</c>/absent = all collections,
+    /// which is what every key had before v2.13 — so a config that never heard of scoping is
+    /// unchanged. Entries are exact names or a single trailing-<c>*</c> prefix (<c>tenant-a-*</c>).
+    /// Unlike <see cref="ClientLimits"/> this is not a limit but an isolation boundary, so it sits
+    /// on the client itself rather than inside a "limits" bag an operator might read as advisory.
+    /// </summary>
+    public List<string>? Collections { get; set; }
 }
 
 /// <summary>All limits are nullable; <c>null</c> means unlimited.</summary>

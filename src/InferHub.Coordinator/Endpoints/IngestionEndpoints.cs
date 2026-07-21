@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using InferHub.Coordinator.Auth;
 using InferHub.Coordinator.Ingestion;
 using InferHub.Coordinator.Services;
 using Microsoft.AspNetCore.Http;
@@ -21,7 +22,7 @@ public static class IngestionEndpoints
 
     public static IEndpointRouteBuilder MapIngestionEndpoints(this IEndpointRouteBuilder app)
     {
-        var group = app.MapGroup("/api/collections/{collection}/documents");
+        var group = app.MapGroup("/api/collections/{collection}/documents").RequireCollectionScope();
 
         group.MapPost("/", IngestAsync).DisableAntiforgery();
         group.MapGet("/", ListAsync);
@@ -34,10 +35,19 @@ public static class IngestionEndpoints
 
     private static async Task<IResult> IngestAsync(
         string collection,
-        HttpRequest http,
+        HttpContext context,
         IngestionPipeline pipeline,
         CancellationToken cancellationToken)
     {
+        var http = context.Request;
+
+        // A client whose config names a collection scope has already been granted that namespace,
+        // so ingesting into a not-yet-existing name inside it provisions the collection rather than
+        // demanding a separate admin create. A name *outside* the scope never reaches here — the
+        // group filter answered 404. An unscoped client keeps the pre-v2.13 behaviour: collections
+        // are an admin's to create.
+        var autoProvision = BearerApiKeyMiddleware.ClientOf(context).Collections is { Count: > 0 };
+
         IngestRequest request;
         try
         {
@@ -56,7 +66,7 @@ public static class IngestionEndpoints
 
         try
         {
-            var result = await pipeline.IngestAsync(collection, request, cancellationToken);
+            var result = await pipeline.IngestAsync(collection, request, autoProvision, cancellationToken);
 
             // A partial ingest is not a success. The chunks that landed are real and visible, and
             // re-posting the same bytes will resume rather than no-op — but the call the caller

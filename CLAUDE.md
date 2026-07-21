@@ -687,11 +687,52 @@ touches a disk-writing path, pull the image and run it (D7), don't trust the uni
 
 **Rule 5 survived again.** Phase 30 added **zero** new dependencies.
 
+### Phase 31 (client-scoped collections) — also load-bearing
+
+**D1 — Scoping is an authorization filter over the one vector store, not a store per tenant.**
+`Auth:Clients[].Collections` (null/absent = all, exactly as before v2.13) is answered in exactly one
+place, [CollectionAccessPolicy](src/InferHub.Coordinator/Auth/CollectionAccessPolicy.cs) — the same
+"one place saturation is defined" discipline as `FleetSaturation`. Rule 4 survives untouched: there
+is still one collection namespace and one source of truth, and a scope only decides which names a
+key may say. Only a **trailing `*`** is a wildcard; a full glob dialect or a regex in a config file
+is a footgun aimed at an isolation boundary, and `tenant-a-*` is what provisioning actually needs.
+
+**D2 — Enforcement is a group filter, not a line in each handler.** `RequireCollectionScope()` hangs
+off the route groups that carry `{collection}` (`/api/collections/{c}/documents`, the search route,
+the `/api/vector/{c}` data plane). The ingestion group alone has five routes, and **the one that
+gets forgotten is the isolation hole** — so no path may enforce this inline. Inline retrieval is the
+one exception, because it names its collection in a *header*: the check lives in
+`InferenceEndpoints.TryReadRetrievalHeader`, the single parser both client dialects already share.
+
+**D3 — Out of scope is `404`, and the check runs before the store is consulted.** Phase-25 D4's
+principle: a tenant is not told another tenant's collections exist. The denial is the *same
+sentence* a missing collection produces (`collection 'x' does not exist`) at the same status. And
+because nothing is looked up first, a name outside a client's scope reads identically whether or not
+it exists — so the 404 leaks nothing, it only reflects the caller's own scope back at them.
+`CollectionAccessTests` asserts the real-vs-imaginary pair are indistinguishable.
+
+**D4 — A scoped-out `X-InferHub-Retrieve` is an error, not a passthrough.** It does **not** go
+through `Retrieval:OnMissing`: answering without the context the caller asked for, silently, is the
+wrong failure on a tenancy boundary. `CollectionNotVisibleException` is caught by both surfaces and
+rendered as a 404 in each dialect (`collection_not_found` in the OpenAI envelope).
+
+**D5 — Auto-provision on first ingest, for scoped clients only. This is a deliberate reversal of
+half of phase 23's refusal, and only half.** Phase 23 declined to auto-create collections for two
+reasons: it would guess the dimension, and it would route around the admin scope that owns
+collection lifecycle. The second dissolves for a client whose config *names* its collection scope —
+that list **is** the provisioning grant. The first does not dissolve, so nothing is guessed:
+creation is deferred until the first batch comes back embedded and the dimension is **measured**
+from the vectors (`IngestionPipeline.EmbedAndUpsertBatchAsync`). A consequence worth keeping: an
+embed that never succeeds leaves **no** empty collection behind for the next caller to misread as
+provisioned. An unscoped client keeps the phase-23 contract exactly — `autoProvision: false`.
+
+**Rule 5 survived again.** Phase 31 added **zero** new dependencies.
+
 ## Auth model (three independent token sets)
 
 | Scope | Config key | Guards |
 |---|---|---|
-| Inference clients | `Auth:ApiKeys` (anonymous) / `Auth:Clients` (named, with limits) | `/api/generate`, `/api/chat`, `/api/tags`, etc. |
+| Inference clients | `Auth:ApiKeys` (anonymous) / `Auth:Clients` (named, with limits and an optional `Collections` scope) | `/api/generate`, `/api/chat`, `/api/tags`, etc. |
 | Admins | `Auth:AdminApiKeys` | Everything under `/api/admin/*` (incl. `/usage`, `/clients`), **and `/metrics`** unless `Metrics:OpenScrape=true`. |
 | Node enrollment | `Auth:NodeEnrollmentSecret` | The SignalR hub handshake. |
 

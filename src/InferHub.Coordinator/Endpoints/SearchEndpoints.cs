@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using InferHub.Coordinator.Auth;
 using InferHub.Coordinator.Vector;
 using InferHub.Shared.Vector;
 
@@ -20,7 +21,7 @@ public static class SearchEndpoints
 
     public static IEndpointRouteBuilder MapSearchEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/api/collections/{collection}/search", SearchAsync);
+        app.MapPost("/api/collections/{collection}/search", SearchAsync).RequireCollectionScope();
         return app;
     }
 
