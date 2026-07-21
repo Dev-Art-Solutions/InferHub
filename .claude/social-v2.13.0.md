@@ -3,6 +3,9 @@
 **Status: written, NOT posted.** No FB/X connector — the standing debt across every release since v2.4.
 Post by hand.
 
+Blog post is **live**: https://devart.solutions/blog/inferhub-2-13-scoped-collections
+("InferHub 2.13: one mesh, several clients, and a 404 that tells you nothing")
+
 ---
 
 ## Facebook
