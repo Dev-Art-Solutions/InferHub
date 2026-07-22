@@ -795,14 +795,24 @@ ingestion, search, the vector data plane and the node hub. `/health`, `/api/stat
 answerable *from* the instance that stopped serving. A standby that goes dark is a standby nobody
 can diagnose.
 
-**D7 — `CREATE SCHEMA IF NOT EXISTS` is not atomic, and this is the first phase where that is
-reachable.** Two coordinators booting at the same instant both pass the existence check and one
-dies on `pg_namespace`'s unique index (`23505`; `42P07` for the table). Everywhere else in InferHub
-bootstrap happens once on one hub, so the race never fired; here simultaneous startup is the
-*normal* case, and an HA pair that crashes half of itself on a cold boot is not HA. The lease
-bootstrap retries those two SQL states — the other session winning is success. Found by running
-eight contenders against a real Postgres; a single-connection test could not have surfaced it. If
-the vector store or the usage ledger ever bootstrap concurrently, they need the same treatment.
+**D7 — `IF NOT EXISTS` is not atomic, and this is the first phase where that is reachable.** The
+existence check and the catalog insert are separate steps, so two coordinators booting at the same
+instant both pass the check and one dies on a unique index in `pg_extension` / `pg_namespace` /
+`pg_class`. Everywhere else in InferHub bootstrap happens once on one hub, so the race never fired;
+here simultaneous startup is the *normal* case, and an HA pair that crashes half of itself on a cold
+boot is not HA. [ConcurrentDdl](src/InferHub.Coordinator/Postgres/ConcurrentDdl.cs) is the one place
+that retries it — the other session winning **is** success — and **all three** Postgres bootstraps
+(the lease, the vector store, the usage ledger) go through it.
+
+> **This shipped broken in v3.0.0, in the two paths that were noted-but-not-fixed.** The lease was
+> hardened during the phase; the note said "if the vector store or the usage ledger ever bootstrap
+> concurrently, they need the same treatment" — and then v3.0.0 tagged without doing it. Pulling the
+> published images and cold-booting two hubs against an empty database, `hub-a` exited 139 on
+> `pg_extension_name_index` while `hub-b` came up fine, and the error text blamed a missing
+> privilege, sending the operator after a DBA for a problem that was a race. Fixed in v3.0.1.
+> `ConcurrentBootstrapTests` races eight of each against a real Postgres and fails without the
+> retry. **A hazard you have written down but not fixed is still shipped** — and D7 exists because
+> that class of thing is only ever found by running the artefact.
 
 **Rule 5 survived again.** Phase 32 added **zero** new dependencies: the lease is `Npgsql`, already
 recorded for the `postgres` vector provider, and the standby refusal is `System.Text.Json`.
