@@ -1,6 +1,8 @@
 # Blog post — InferHub v3.0.0
 
-**Status: DRAFTED, NOT POSTED.** Publish only once **`v3.0.1`** is tagged and its GHCR images are
+**Status: POSTED 2026-07-23** — https://devart.solutions/blog/inferhub-3-0-warm-standby (ID `6a613c0123f8acdcc93025af`).
+
+Originally drafted with: publish only once **`v3.0.1`** is tagged and its GHCR images are
 live — v3.0.0 shipped with the concurrent-bootstrap bug the post itself describes, so `3.0.1` is the
 version being announced. The connector is insert-only with a unique slug and no update or delete — so call
 `create_post` **once**, already visible (`isVisible_en=true`, `isVisible_bg=false`); a hidden

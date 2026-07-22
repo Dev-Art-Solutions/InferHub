@@ -3,7 +3,8 @@
 **Status: written, NOT posted.** No FB/X connector — the standing debt across every release since v2.4.
 Post by hand.
 
-Blog post: **drafted, not yet posted** — `.claude/blog-v3.0.0.md`.
+Blog post is **live**: https://devart.solutions/blog/inferhub-3-0-warm-standby
+("InferHub 3.0: the hub stops being the single point of failure")
 
 ---
 
