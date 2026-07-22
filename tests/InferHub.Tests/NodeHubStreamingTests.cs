@@ -125,6 +125,8 @@ public class NodeHubStreamingTests
             builder.Services.AddSingleton<INodeRegistry, NoopRegistry>();
             builder.Services.AddSingleton<IConversationAffinity, NoopAffinity>();
             builder.Services.AddSingleton<INodeConnectionTracker, NoopConnections>();
+            builder.Services.AddSingleton<InferHub.Coordinator.Cluster.IClusterMembership,
+                InferHub.Coordinator.Cluster.SingleCoordinatorMembership>();
 
             host.app = builder.Build();
             host.app.MapHub<NodeHub>("/hubs/node");
@@ -235,6 +237,8 @@ public class NodeHubStreamingTests
         public void Forget(string connectionId) { }
 
         public bool Abort(string connectionId) => false;
+
+        public int AbortAll() => 0;
     }
 
     private sealed class StaticOptionsMonitor(ApiKeyOptions value) : IOptionsMonitor<ApiKeyOptions>

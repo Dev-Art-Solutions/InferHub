@@ -1,4 +1,5 @@
 using InferHub.Coordinator.Auth;
+using InferHub.Coordinator.Cluster;
 using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
 
@@ -23,7 +24,8 @@ public static class MetricsEndpoint
             IRequestQueue queue,
             IClientRegistry clients,
             AdmissionControl admission,
-            IConversationAffinity affinity) =>
+            IConversationAffinity affinity,
+            IClusterMembership membership) =>
         {
             var now = DateTimeOffset.UtcNow;
 
@@ -36,7 +38,10 @@ public static class MetricsEndpoint
                 throughput.Snapshot(),
                 queue.Snapshot(),
                 ClientSamples(clients, admission),
-                affinity.Count);
+                affinity.Count,
+                membership.Enabled
+                    ? new ClusterScrapeSample(membership.InstanceId, membership.IsActive, membership.Fence)
+                    : null);
 
             return Results.Text(PrometheusFormatter.Format(scrape), PrometheusFormatter.ContentType);
         });

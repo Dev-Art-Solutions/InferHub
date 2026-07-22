@@ -10,6 +10,12 @@ public interface INodeConnectionTracker
     void Forget(string connectionId);
 
     bool Abort(string connectionId);
+
+    /// <summary>
+    /// Drop every node connection and report how many. Used on demotion (phase 32): a node left
+    /// attached to a coordinator that has stopped leading is a node the mesh has silently lost.
+    /// </summary>
+    int AbortAll();
 }
 
 public sealed class NodeConnectionTracker : INodeConnectionTracker
@@ -35,5 +41,20 @@ public sealed class NodeConnectionTracker : INodeConnectionTracker
 
         context.Abort();
         return true;
+    }
+
+    public int AbortAll()
+    {
+        var aborted = 0;
+
+        foreach (var connectionId in contexts.Keys)
+        {
+            if (Abort(connectionId))
+            {
+                aborted++;
+            }
+        }
+
+        return aborted;
     }
 }

@@ -1,5 +1,6 @@
 using System.Reflection;
 using InferHub.Coordinator.Auth;
+using InferHub.Coordinator.Cluster;
 using InferHub.Coordinator.Endpoints;
 using InferHub.Coordinator.Hubs;
 using InferHub.Coordinator.Observability;
@@ -88,6 +89,35 @@ builder.Services.Configure<FallbackOptions>(builder.Configuration.GetSection(Fal
 builder.Services.AddHttpClient(FallbackDispatcher.HttpClientName);
 builder.Services.AddSingleton<IFallbackDispatcher, FallbackDispatcher>();
 
+// High availability (phase 32). Off by default and inert when off: no lease, no Postgres
+// connection, and SingleCoordinatorMembership reports Enabled=false so the role header, the
+// standby 503 and the status block never appear — byte-identical to v2.13.
+builder.Services.AddOptions<ClusterOptions>()
+    .Bind(builder.Configuration.GetSection(ClusterOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<ClusterOptions>, ClusterOptionsValidator>();
+
+var clusterEnabled = builder.Configuration
+    .GetSection(ClusterOptions.SectionName)
+    .GetValue<bool>(nameof(ClusterOptions.Enabled));
+
+if (clusterEnabled)
+{
+    var instanceId = builder.Configuration
+        .GetSection(ClusterOptions.SectionName)
+        .GetValue<string>(nameof(ClusterOptions.InstanceId)) ?? Environment.MachineName;
+
+    builder.Services.AddSingleton(new ClusterMembership(instanceId));
+    builder.Services.AddSingleton<IClusterMembership>(sp => sp.GetRequiredService<ClusterMembership>());
+    builder.Services.AddSingleton<IClusterLease, PostgresClusterLease>();
+    builder.Services.AddSingleton(TimeProvider.System);
+    builder.Services.AddHostedService<ClusterLeaseService>();
+}
+else
+{
+    builder.Services.AddSingleton<IClusterMembership, SingleCoordinatorMembership>();
+}
+
 builder.Services.AddInferHubVectorStore(builder.Configuration);
 var vectorSection = builder.Configuration.GetSection(VectorStoreOptions.SectionName);
 var vectorStoreEnabled = vectorSection.GetValue<bool>(nameof(VectorStoreOptions.Enabled));
@@ -105,6 +135,10 @@ var version = typeof(Program).Assembly
 app.UseMiddleware<AdminApiKeyMiddleware>();
 app.UseMiddleware<BearerApiKeyMiddleware>();
 
+// After the two auth guards, before anything routes: a standby refuses work but still answers
+// health, status and /metrics, so an operator can see what the standby thinks it is.
+app.UseMiddleware<ClusterRoleMiddleware>();
+
 // Status page is read-only; serve it from wwwroot/ and surface /status as an alias.
 var defaultFiles = new DefaultFilesOptions();
 defaultFiles.DefaultFileNames.Clear();
@@ -115,10 +149,23 @@ app.UseStaticFiles();
 app.MapGet("/status", () => Results.Redirect("/status.html"));
 app.MapGet("/console", () => Results.Redirect("/console.html"));
 
-app.MapGet("/health", (ILogger<Program> logger) =>
+// Intentionally open, and intentionally still 200 on a standby: a standby *is* healthy, it just
+// is not leading. A load balancer drains it on the role field (or on the 503 the inference routes
+// return); reporting a standby as unhealthy would have an orchestrator restart-loop the very
+// instance that is supposed to be waiting quietly.
+app.MapGet("/health", (IClusterMembership membership, ILogger<Program> logger) =>
 {
     logger.LogInformation("Health check requested");
-    return Results.Ok(new { status = "ok", version });
+
+    return membership.Enabled
+        ? Results.Ok(new
+        {
+            status = "ok",
+            version,
+            role = membership.IsActive ? ClusterRoleMiddleware.ActiveRole : ClusterRoleMiddleware.StandbyRole,
+            instance = membership.InstanceId
+        })
+        : Results.Ok(new { status = "ok", version });
 });
 
 app.MapGet("/api/tags", (INodeRegistry registry, ILogger<Program> logger) =>

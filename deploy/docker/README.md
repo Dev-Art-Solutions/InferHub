@@ -165,6 +165,91 @@ Verify the endpoint by hand:
 curl -H "Authorization: Bearer $INFERHUB_ADMIN_KEY" http://localhost:5080/metrics
 ```
 
+## High availability — a warm standby coordinator
+
+The always-on hub is the mesh's single durability anchor, which also makes it the single point
+of failure. From v3.0 you can run a **second coordinator as a warm standby** over the same
+Postgres. Exactly one holds a lease and serves inference; the other waits, answering `/health`,
+`/api/status` and `/metrics` but returning `503` on every inference route. When the active one
+dies, the standby takes the lease within the TTL, the nodes reconnect to it, and the mesh keeps
+serving — no manual promotion, no data migration.
+
+**This requires `VectorStore:Provider=postgres`**, because that is where the durable truth
+already lives outside any one coordinator. The `local` provider's raw store is per-hub and
+clustering it is future work. Usage persistence should be `postgres` too, or an invoice restarts
+from zero on whichever hub happens to be leading.
+
+```bash
+docker compose -f deploy/docker/docker-compose.yml \
+               -f deploy/docker/compose.postgres.yml \
+               -f deploy/docker/compose.ha.yml up -d
+```
+
+That brings up `coordinator` (hub-a), `coordinator-standby` (hub-b), the shared Postgres, and an
+nginx `front` on `http://localhost:5079` as the single client address. Both hubs keep their own
+published ports (`5080` and `5081`) — a failover runbook you can only follow through the load
+balancer is a runbook you cannot debug.
+
+**Which one leads is a race, and the service names do not decide it.** `coordinator-standby` is
+just the container that was added second; on a cold start either hub may take the lease first. Ask
+`/health` rather than assuming.
+
+**What is a standby, and what does a client see?**
+
+| Signal | Active | Standby |
+|---|---|---|
+| `X-InferHub-Role` (every response) | `active` | `standby` |
+| `GET /health` | `200`, `"role": "active"` | `200`, `"role": "standby"` |
+| `POST /api/chat`, `/v1/*`, ingest, search | served | `503` + `Retry-After: 5` |
+| `GET /api/status`, `/metrics`, `/api/admin/*` | served | served |
+| Node SignalR handshake | accepted | refused with `503` |
+
+A standby returning `200` on `/health` is deliberate: a standby **is** healthy, it just is not
+leading. Reporting it unhealthy would have an orchestrator restart-loop the very instance that is
+supposed to be waiting quietly. Drain it on the role field or on the inference `503`, not on
+`/health`.
+
+### Failover runbook
+
+```bash
+# Who is leading right now?
+curl -s http://localhost:5080/health   # hub-a
+curl -s http://localhost:5081/health   # hub-b
+
+# Kill the active one.
+docker compose -f deploy/docker/docker-compose.yml \
+               -f deploy/docker/compose.postgres.yml \
+               -f deploy/docker/compose.ha.yml stop coordinator
+
+# Within Cluster__LeaseTtlSeconds (15s by default, and immediately on a *clean* stop, because a
+# shutting-down active hub releases the lease rather than letting it expire):
+curl -s http://localhost:5081/health          # -> "role": "standby" becomes "active"
+curl -s http://localhost:5079/api/status      # through the front: served by hub-b
+docker compose ... logs coordinator-standby   # "Promoted to ACTIVE coordinator"
+```
+
+The nodes rotate through `Coordinator__Endpoints` and re-register with whoever answers, so
+`/api/nodes` on hub-b fills in over the next few seconds. Warm conversation affinity survives the
+switch if `Affinity__Persistence=file` is on **and** both hubs share that directory; otherwise the
+first turn after a failover costs one cold model load, which is the phase-30 contract.
+
+**Tuning the TTL.** `Cluster__LeaseTtlSeconds` is the worst-case failover delay *and* the window
+inside which a partitioned old primary must have fenced itself — they are the same number, on
+purpose. `Cluster__RenewIntervalSeconds` must be at most a third of it (startup fails if it is not)
+so one slow round-trip cannot demote a healthy leader.
+
+**Split-brain.** A coordinator that cannot renew its lease demotes itself after one TTL, measured
+on its own clock, whether or not it can reach anything to ask. So an unreachable database takes the
+mesh down rather than letting two hubs both serve — correct, and not something to soften: an
+inference request the mesh cannot attribute to a single leader is worse than a `503` the front
+routes elsewhere. Watch `inferhub_cluster_active` on `/metrics`: summed across both hubs it should
+be exactly `1`. `0` means no leader; `2` would mean the fence failed.
+
+### What v3.0 does *not* do
+
+Active-active load sharing (both hubs serving at once) and clustering the `local` vector provider
+are explicitly future work. This is the foundation — a survivable hub — not the whole HA track.
+
 ## Images
 
 Published to GHCR on every `v*` tag, for `linux/amd64` and `linux/arm64`:

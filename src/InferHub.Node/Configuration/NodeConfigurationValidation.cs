@@ -9,15 +9,25 @@ public sealed class CoordinatorOptionsValidator : IValidateOptions<CoordinatorOp
     {
         var failures = new List<string>();
 
-        if (string.IsNullOrWhiteSpace(options.Url))
+        // Endpoints falls back to Url, so validating the resolved list covers both shapes and
+        // cannot let a typo in an HA list boot a node that then silently only ever reaches one hub.
+        var endpoints = options.Endpoints.Count > 0
+            ? nameof(CoordinatorOptions.Endpoints)
+            : nameof(CoordinatorOptions.Url);
+
+        if (options.ResolvedEndpoints().Count == 0 || options.ResolvedEndpoints().Any(string.IsNullOrWhiteSpace))
         {
-            failures.Add($"{CoordinatorOptions.SectionName}:{nameof(CoordinatorOptions.Url)} must be set.");
+            failures.Add($"{CoordinatorOptions.SectionName}:{endpoints} must be set.");
         }
-        else if (!Uri.TryCreate(options.Url, UriKind.Absolute, out var uri)
-            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+
+        foreach (var endpoint in options.ResolvedEndpoints().Where(e => !string.IsNullOrWhiteSpace(e)))
         {
-            failures.Add(
-                $"{CoordinatorOptions.SectionName}:{nameof(CoordinatorOptions.Url)} must be an absolute http(s) URL (got '{options.Url}').");
+            if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri)
+                || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            {
+                failures.Add(
+                    $"{CoordinatorOptions.SectionName}:{endpoints} must be absolute http(s) URLs (got '{endpoint}').");
+            }
         }
 
         if (options.HeartbeatInterval <= TimeSpan.Zero)
