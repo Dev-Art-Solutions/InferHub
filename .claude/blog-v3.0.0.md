@@ -1,7 +1,8 @@
 # Blog post — InferHub v3.0.0
 
-**Status: DRAFTED, NOT POSTED.** Publish only once `v3.0.0` is tagged and the GHCR images are
-live. The connector is insert-only with a unique slug and no update or delete — so call
+**Status: DRAFTED, NOT POSTED.** Publish only once **`v3.0.1`** is tagged and its GHCR images are
+live — v3.0.0 shipped with the concurrent-bootstrap bug the post itself describes, so `3.0.1` is the
+version being announced. The connector is insert-only with a unique slug and no update or delete — so call
 `create_post` **once**, already visible (`isVisible_en=true`, `isVisible_bg=false`); a hidden
 draft locks the slug and cannot be flipped. Confirm the slug is absent via `list_posts` first.
 Content HTML is passed **entity-escaped** — that is how every prior post is stored; do not "fix" it.
@@ -11,7 +12,7 @@ Content HTML is passed **entity-escaped** — that is how every prior post is st
 - **author:** `Admin`
 - **title_en:** InferHub 3.0: the hub stops being the single point of failure
 - **title_bg:** InferHub 3.0: хъбът вече не е единствената точка на отказ
-- **excerpt_en:** A second coordinator can now run as a warm standby over the same Postgres — the primary dies, the standby takes the lease, your nodes reconnect on their own, and the mesh keeps serving. Plus the split-brain bug that only showed up when we pulled the plug for real.
+- **excerpt_en:** A second coordinator can now run as a warm standby over the same Postgres — the primary dies, the standby takes the lease, your nodes reconnect on their own, and the mesh keeps serving. Plus the two bugs that only showed up when we pulled the plug for real, one of them after tagging.
 - **excerpt_bg:** Втори координатор вече може да работи като топъл резервен над същия Postgres — първичният отпада, резервният поема лиценза, възлите се преизключват сами и мрежата продължава да обслужва. Плюс bug-ът със split-brain, който се показа чак когато наистина дръпнахме кабела.
 
 ---
@@ -73,6 +74,20 @@ Content HTML is passed **entity-escaped** — that is how every prior post is st
 <p>No test we would have thought to write would have caught this. It needed a real database, really unreachable, on a real clock. Which is the same lesson this project keeps re-learning: <a href="https://github.com/Dev-Art-Solutions/InferHub">a green suite tells you the code does what you told it to</a>, not what happens when the world stops cooperating.</p>
 
 <p>The same rehearsal turned up a second one, smaller but just as characteristic. <code>CREATE SCHEMA IF NOT EXISTS</code> is not atomic — two sessions racing it can both pass the existence check, and one dies on the unique index. Everywhere else in InferHub, bootstrap happens once, on one hub, so the race had never been reachable. Here two coordinators booting at the same instant is the <em>normal</em> case. An HA pair that crashes half of itself on a cold boot is not, whatever else it might be, HA.</p>
+
+<h2>And then it happened again, after tagging</h2>
+
+<p>I fixed that race where I found it — in the lease — and wrote a note to myself, in the design doc, in as many words: <em>if the vector store or the usage ledger ever bootstrap concurrently, they need the same treatment.</em> Then I tagged 3.0.0.</p>
+
+<p>The release ritual here ends with a rule earned the hard way: pull the <em>published</em> images and run the feature, because a green test suite tells you nothing about what actually shipped. So I pulled 3.0.0 from the registry, brought two hubs up against an empty database, and watched one of them exit on <code>pg_extension_name_index</code> while the other came up perfectly happy.</p>
+
+<p>Same race. Two layers up. In the exact two places the note named.</p>
+
+<p>What makes it worth writing about isn't the SQL — it's the failure mode. The surviving hub took the lease and served normally, so the mesh <em>looked</em> fine. It was just silently down to one coordinator, with no standby, which is to say: the high-availability feature had quietly turned itself off. And the error message blamed a missing database privilege, so the first hour of debugging would have been spent asking a DBA about permissions that were never the problem.</p>
+
+<p>3.0.1 fixes it properly, in one place, for all three bootstraps, with a test that races eight coordinators and fails without the fix. <strong>Pull <code>3.0.1</code>, not <code>3.0.0</code>.</strong></p>
+
+<p>The lesson I'd actually like to keep: a hazard you have written down but have not fixed is still shipped. Documenting a risk feels like progress and isn't. The note was correct, specific, and sitting in the file the whole time.</p>
 
 <h2>What a client and a load balancer see</h2>
 

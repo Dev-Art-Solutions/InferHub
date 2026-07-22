@@ -33,6 +33,12 @@ Blog post: **drafted, not yet posted** — `.claude/blog-v3.0.0.md`.
 > clustering the local vector provider are still to come. Off by default — single-coordinator
 > setups are byte-identical to 2.13.
 >
+> Then it happened again after I tagged. I'd fixed the same class of race in one place and written
+> a note saying two other places needed it too — and shipped without acting on the note. Pulling the
+> published images and cold-booting two hubs killed one of them, so the mesh looked healthy while
+> the HA had quietly turned itself off. Pull 3.0.1, not 3.0.0. A hazard you've written down but not
+> fixed is still shipped.
+>
 > Self-hosted, MIT, .NET 10. Still zero new dependencies — the lease is one Postgres row.
 > 👉 https://github.com/Dev-Art-Solutions/InferHub
 
