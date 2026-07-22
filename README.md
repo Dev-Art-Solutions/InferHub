@@ -63,13 +63,14 @@ of one.
 
 ## Status
 
-**InferHub 2.10** gives the mesh a scrape endpoint. [`GET /metrics`](#prometheus-metrics-v210)
-serves the Prometheus text exposition format — fleet in-flight, per-node measured tokens/second,
-queue depth and outcomes, retrieval latency per collection, per-client token windows — so the
-numbers that were only ever a snapshot on `/api/status` now have a history, a graph and an
-alert. A Prometheus + Grafana overlay with a starter dashboard ships in `deploy/docker/`. The
-exposition format is written by hand, so it is still **zero new dependencies**; the endpoint is
-admin-key-guarded by default and `/api/status` is unchanged.
+**InferHub 3.0** removes the single point of failure. Run a second coordinator as a
+[warm standby](#high-availability-v30) over the same Postgres: exactly one holds a lease and
+serves inference, the other waits. When the active hub dies, the standby takes the lease within
+the TTL, the nodes reconnect to it, and the mesh keeps serving — no manual promotion, no data
+migration, and a fencing guard so there is never a moment with two hubs both serving. It is the
+foundation of the HA track, honestly scoped: active-active load sharing and clustering the
+`local` vector provider are still future work. Off by default; single-coordinator deployments are
+byte-identical to 2.13. Still **zero new dependencies** — the lease is `Npgsql`, already there.
 
 | Phase | Theme | Version |
 |------:|-------|---------|
@@ -101,11 +102,16 @@ admin-key-guarded by default and `/api/status` is unchanged.
 | 26 | Fleet operations — model management & measured routing (done) | `v2.8.0` |
 | 27 | Streaming `tool_calls` deltas (done) | `v2.9.0` |
 | 28 | Observability export — Prometheus `/metrics` (done) | `v2.10.0` |
+| 29 | Multimodal (vision) passthrough (done) | `v2.11.0` |
+| 30 | Stable-node affinity + optional persistence (done) | `v2.12.0` |
+| 31 | Client-scoped collections (RAG multi-tenancy) (done) | `v2.13.0` |
+| 32 | Multi-coordinator — standby hub & warm failover (done) | `v3.0.0` |
 
-**What's next.** 2.10 makes the mesh scrapeable: `/metrics` in the Prometheus exposition
-format, plus a Grafana overlay in `deploy/docker/`. Multimodal (vision) passthrough,
-persisted stable-node affinity, client-scoped collections, and multi-coordinator clustering
-remain on the table.
+**What's next.** 3.0 closes the roadmap that started at 2.9. What remains on the table:
+**active-active** multi-coordinator load sharing and cross-hub replication for the `local`
+vector provider, an **OTLP push** exporter behind an explicit opt-in (`/metrics` is
+scrape-only today), and a dedicated cross-encoder reranker behind the existing `IReranker`
+seam.
 
 ## Quick start
 
@@ -517,6 +523,12 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Fallback:AllowedModels` | `[]` | Narrower allowlist within the map. Empty = every mapped model. |
 | `Fallback:TimeoutSeconds` | `300` | Per-request timeout against the upstream. |
 | `Metrics:OpenScrape` | `false` | Whether `GET /metrics` is reachable without an admin key. See [Prometheus `/metrics`](#prometheus-metrics-v210). |
+| `Cluster:Enabled` | `false` | Warm-standby HA (v3.0). Off = byte-identical to v2.13. Requires `VectorStore:Provider=postgres`. See [High availability](#high-availability-v30). |
+| `Cluster:InstanceId` | _(machine name)_ | Names this hub in the lease row, the logs, `/api/status` and `/metrics`. |
+| `Cluster:ConnectionString` | _(empty)_ | Required when `Enabled`. Env / user-secrets only. Its own key, independent of the vector store's and the ledger's. |
+| `Cluster:LeaseName` | `default` | Separates two unrelated meshes sharing one database. |
+| `Cluster:LeaseTtlSeconds` | `15` | Worst-case failover delay, and the window inside which a partitioned old primary fences itself. |
+| `Cluster:RenewIntervalSeconds` | `5` | Renew cadence. Must be ≤ a third of the TTL; startup fails otherwise. |
 | `Queue:MaxWaitSeconds` | `30` | How long a request may wait for a saturated fleet before `503`. |
 | `Queue:MaxDepth` | `64` | How many requests may wait at once. Past it, an immediate `503`. |
 | `Usage:Persistence` | `none` | `none` (in-memory, reset on restart) or `postgres` (append-only table). |
@@ -533,6 +545,7 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | Key | Default | Purpose |
 |---|---|---|
 | `Coordinator:Url` | `http://localhost:5080/` | Coordinator base URL (must be absolute http/https). |
+| `Coordinator:Endpoints` | `[]` | HA coordinator list (v3.0). Empty = just `Url`. The node walks the list on each failed connect; a standby refuses the handshake, so rotation is how it finds the leader. See [High availability](#high-availability-v30). |
 | `Coordinator:EnrollmentSecret` | _(empty)_ | Shared secret matching the coordinator's `Auth:NodeEnrollmentSecret`. |
 | `Coordinator:HeartbeatInterval` | `00:00:10` | How often the node pings the coordinator. |
 | `Coordinator:ModelRefreshInterval` | `00:01:00` | How often the node re-reports its model list. |
@@ -955,9 +968,10 @@ an approximate-nearest-neighbour strategy plugs in — and as of v2.2 that seam 
 second implementation**: the `postgres` provider serves HNSW-indexed ANN search from pgvector.
 The dependency was a conscious, provider-scoped decision, not smuggled in.
 
-**Multi-coordinator note.** The always-on hub is the single durability anchor by design
-today. Cross-hub raw-store replication is future work and belongs to the "multi-coordinator
-clustering" track called out below.
+**Multi-coordinator note.** Under the `postgres` provider the durable truth already lives
+outside any one coordinator, which is what makes [high availability](#high-availability-v30)
+possible from v3.0. Under `local` the raw store is per-hub: cross-hub raw-store replication is
+still future work, so a `local` deployment stays single-coordinator.
 
 ## Status & observability
 
@@ -1011,6 +1025,7 @@ What is exposed, all namespaced `inferhub_*`:
 | Vector (`collection=`) | `vector_replicas_healed_total`, `vector_rebuilds_from_raw_total`, `vector_under_replicated`, `collection_queries_total`, `collection_query_latency_avg_ms`, `collection_documents_ingested_total`, `collection_chunks_embedded_total`, `collection_ingestion_failures_total` |
 | Queue | `queue_depth`, `queue_queued_total`, `queue_admitted_total`, `queue_timed_out_total`, `queue_rejected_total`, `queue_wait_median_ms` |
 | Named clients (`client=`) | `client_requests_in_flight`, `client_requests_last_minute`, `client_tokens_last_minute`, `client_tokens_today`, and `client_limit_*` for each configured limit |
+| Cluster (`instance=`, v3.0+) | `cluster_active` (1 = holds the lease), `cluster_fence` (acquisition counter — a change means leadership moved). Absent entirely unless `Cluster:Enabled`. Alert on `sum(inferhub_cluster_active) != 1`. |
 
 **Auth: the admin key, not a client key.** `/metrics` is operational like `/health`, but
 unlike `/health` it exposes node names, model names, client ids and the shape of your
@@ -1095,6 +1110,70 @@ InferHub is built to keep running while nodes come and go.
   final error chunk so callers don't hang.
 - **Job timeout.** `Dispatcher:TimeoutSeconds` caps how long any one job can hold a
   request open.
+
+### High availability (v3.0+)
+
+Everything above keeps the mesh running while *nodes* come and go. The **coordinator** was the
+remaining single point of failure. From v3.0 you can run a second one as a warm standby.
+
+**What it does.** Two (or more) coordinators share one Postgres. A lease row elects exactly one
+**active** hub; the rest run **standby** — they answer `/health`, `/api/status`, `/metrics` and
+`/api/admin/*`, and return `503` + `Retry-After` on every inference route. Nodes connect through a
+list of hubs and land on whoever holds the lease. When the active hub dies, the standby takes the
+lease within the TTL and the mesh serves again: no manual promotion, no data migration, no
+gossip — the durable state was already shared.
+
+**What it does not do,** stated plainly: no active-active load sharing (one hub serves at a time),
+and no clustering of the `local` vector provider. Those are the rest of the HA track, not this
+release.
+
+```jsonc
+// Both coordinators, differing only in InstanceId. Requires VectorStore:Provider=postgres.
+"Cluster": {
+  "Enabled": true,
+  "InstanceId": "hub-a",
+  "ConnectionString": "",   // env Cluster__ConnectionString — the SAME database on both
+  "LeaseTtlSeconds": 15,
+  "RenewIntervalSeconds": 5
+}
+```
+
+| Config key | Default | What it does |
+|---|---|---|
+| `Cluster:Enabled` | `false` | Off = byte-identical to v2.13: no lease, no connection, no role. |
+| `Cluster:InstanceId` | machine name | Names this hub in the lease row, the logs, and `/metrics`. |
+| `Cluster:ConnectionString` | *(required when enabled)* | Its own key, like the usage ledger's — HA without a Postgres vector store, or the reverse, are both reasonable. |
+| `Cluster:LeaseName` | `default` | Separates two unrelated meshes sharing one database. |
+| `Cluster:LeaseTtlSeconds` | `15` | Worst-case failover delay **and** the fencing window — the same number, on purpose. |
+| `Cluster:RenewIntervalSeconds` | `5` | Must be ≤ a third of the TTL, or one slow round-trip demotes a healthy leader. Startup fails if it is not. |
+
+**What a client sees.** Every response from a clustered hub carries `X-InferHub-Role:
+active|standby`, `GET /health` gains a `role` field, and inference against a standby is a `503`
+with `Retry-After` in the caller's own dialect (the OpenAI error envelope on `/v1`). Put a load
+balancer or DNS failover in front — **the hub does not become one** — and drain on the role, not
+on `/health`: a standby is *healthy*, it is just not leading, and an orchestrator told otherwise
+will restart-loop the instance that is supposed to be waiting quietly.
+
+**Split-brain.** A coordinator that has not *proved* it holds the lease within the TTL demotes
+itself, measured on its own clock, whether or not it can reach anything to ask. So a partition
+that cuts a primary off from Postgres stops it serving rather than letting two hubs both answer.
+The trade is deliberate: an unreachable database takes the mesh down, and an inference request the
+mesh cannot attribute to a single leader is worse than a `503` the front routes elsewhere. Watch
+`inferhub_cluster_active` — summed across hubs it should be exactly `1`.
+
+The node side is one key:
+
+```jsonc
+"Coordinator": {
+  "Endpoints": [ "http://hub-a:8080/", "http://hub-b:8080/" ]
+}
+```
+
+Leave it empty and the node uses `Coordinator:Url` exactly as before. A standby refuses the
+SignalR handshake with a `503`, so rotating the list is how a node finds the current leader.
+
+A two-coordinator compose overlay and a failover runbook live in
+[`deploy/docker/`](deploy/docker/README.md#high-availability--a-warm-standby-coordinator).
 
 ## Fleet operations (v2.8)
 

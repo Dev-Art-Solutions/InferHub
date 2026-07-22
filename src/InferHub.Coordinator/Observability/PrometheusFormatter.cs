@@ -15,7 +15,16 @@ public sealed record PrometheusScrape(
     IReadOnlyList<ThroughputSample> Throughput,
     QueueSnapshot Queue,
     IReadOnlyList<ClientScrapeSample> Clients,
-    int AffinityEntries);
+    int AffinityEntries,
+    // Null for a single-coordinator deployment: no cluster, no series (D5 — absence is a fact).
+    ClusterScrapeSample? Cluster = null);
+
+/// <summary>
+/// Leadership, as a dashboard can read it (phase 32). <c>Active</c> is the one that matters: it is
+/// the series an alert watches, because a mesh where it sums to 0 has no leader and a mesh where it
+/// sums to 2 has a split brain the fence was supposed to prevent.
+/// </summary>
+public sealed record ClusterScrapeSample(string InstanceId, bool Active, long Fence);
 
 /// <summary>
 /// A client's live window consumption against its configured limits. Counts and ids only — the
@@ -86,6 +95,17 @@ public static class PrometheusFormatter
 
         // A fleet gauge, so present at zero: "no warm conversations" is a fact, not an absence.
         Gauge(builder, "inferhub_affinity_entries", "Live sticky-conversation affinity hints.", scrape.AffinityEntries);
+
+        if (scrape.Cluster is { } cluster)
+        {
+            Header(builder, "inferhub_cluster_active", "gauge",
+                "1 when this coordinator holds the lease and serves inference, 0 when it is a standby.");
+            Sample(builder, "inferhub_cluster_active", [("instance", cluster.InstanceId)], cluster.Active ? 1 : 0);
+
+            Header(builder, "inferhub_cluster_fence", "gauge",
+                "Acquisition counter of the coordinator lease; a change means leadership moved.");
+            Sample(builder, "inferhub_cluster_fence", [("instance", cluster.InstanceId)], cluster.Fence);
+        }
 
         PerNode(builder, scrape);
         PerCollection(builder, m);

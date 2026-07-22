@@ -1,4 +1,5 @@
 using InferHub.Coordinator.Auth;
+using InferHub.Coordinator.Cluster;
 using InferHub.Coordinator.Services;
 using InferHub.Coordinator.Vector;
 using InferHub.Shared.Contracts;
@@ -11,6 +12,7 @@ public sealed class NodeHub(
     IDispatcher dispatcher,
     INodeConnectionTracker connections,
     NodeAuthFilter nodeAuth,
+    IClusterMembership membership,
     IServiceProvider services,
     ILogger<NodeHub> logger) : Hub
 {
@@ -20,6 +22,23 @@ public sealed class NodeHub(
         {
             Context.Abort();
             throw new HubException("unauthorized node");
+        }
+
+        // A standby must not accumulate a fleet it cannot dispatch to (phase 32). Refusing the
+        // handshake is what makes node failover work at all: the node's retry loop rotates to the
+        // next configured endpoint instead of sitting on a hub that will never send it a job.
+        if (!membership.IsActive)
+        {
+            logger.LogInformation(
+                "Refusing node connection {ConnectionId}: this coordinator is a standby",
+                Context.ConnectionId);
+
+            // Deliberately no Context.Abort() here, unlike the auth refusal above: aborting
+            // terminates the connection before SignalR can deliver the reason, so the node sees a
+            // bare close and cannot tell "this hub is a standby, try the next one" from "this hub
+            // is broken". Throwing alone fails the client's StartAsync with this message, which is
+            // what makes rotation immediate instead of a retry-delay away.
+            throw new HubException("coordinator is a standby");
         }
 
         connections.Track(Context.ConnectionId, Context);

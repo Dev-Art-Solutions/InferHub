@@ -26,19 +26,16 @@ public sealed class CoordinatorConnection(
     private readonly SemaphoreSlim reconnectLock = new(1, 1);
     private readonly CancellationTokenSource lifetime = new();
     private readonly string nodeId = nodeIdentity.GetOrCreateNodeId();
+    private readonly IReadOnlyList<string> endpoints = coordinatorOptions.Value.ResolvedEndpoints();
+    private int endpointIndex;
     private HubConnection? connection;
     private Task? heartbeatTask;
     private Task? modelRefreshTask;
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> activeJobs = new();
     private int inFlight;
 
-    public async Task StartAsync(CancellationToken cancellationToken)
-    {
-        connection = BuildConnection();
-        RegisterConnectionHandlers(connection);
-
-        await ConnectUntilSuccessfulAsync(cancellationToken);
-    }
+    public Task StartAsync(CancellationToken cancellationToken)
+        => ConnectUntilSuccessfulAsync(cancellationToken);
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
@@ -86,9 +83,9 @@ public sealed class CoordinatorConnection(
         }
     }
 
-    private HubConnection BuildConnection()
+    private HubConnection BuildConnection(string coordinatorUrl)
     {
-        var hubUrl = BuildHubUrl(coordinator.Url);
+        var hubUrl = BuildHubUrl(coordinatorUrl);
         var enrollmentSecret = coordinator.EnrollmentSecret;
 
         if (string.IsNullOrWhiteSpace(enrollmentSecret))
@@ -97,16 +94,25 @@ public sealed class CoordinatorConnection(
                 "Coordinator:EnrollmentSecret is not configured; the coordinator will refuse this node.");
         }
 
-        return new HubConnectionBuilder()
+        var builder = new HubConnectionBuilder()
             .WithUrl(hubUrl, options =>
             {
                 if (!string.IsNullOrWhiteSpace(enrollmentSecret))
                 {
                     options.Headers["X-Node-Enrollment-Secret"] = enrollmentSecret;
                 }
-            })
-            .WithAutomaticReconnect()
-            .Build();
+            });
+
+        // With a single coordinator, SignalR's automatic reconnect is exactly right and stays.
+        // With an HA list it is not: it would spend its backoff schedule retrying the hub that
+        // just lost the lease, while the node's own rotation is what actually finds the new
+        // active one. Reconnect there is ours (phase 32).
+        if (!coordinator.HasFailoverEndpoints())
+        {
+            builder = builder.WithAutomaticReconnect();
+        }
+
+        return builder.Build();
     }
 
     private void RegisterConnectionHandlers(HubConnection hubConnection)
@@ -138,6 +144,14 @@ public sealed class CoordinatorConnection(
                 return;
             }
 
+            // Rotation disposes the connection it replaced, which fires this. Only the *current*
+            // connection closing is a reason to reconnect; otherwise a successful failover would
+            // immediately kick off a second connect loop against the hub it just left.
+            if (!ReferenceEquals(Volatile.Read(ref connection), hubConnection))
+            {
+                return;
+            }
+
             logger.LogWarning(error, "Coordinator connection closed; retrying");
             await ConnectUntilSuccessfulAsync(lifetime.Token);
         };
@@ -145,30 +159,42 @@ public sealed class CoordinatorConnection(
 
     private async Task ConnectUntilSuccessfulAsync(CancellationToken cancellationToken)
     {
-        if (connection is null)
-        {
-            throw new InvalidOperationException("Coordinator connection has not been built.");
-        }
-
         await reconnectLock.WaitAsync(cancellationToken);
 
         try
         {
+            var attemptsSinceDelay = 0;
+
             while (!cancellationToken.IsCancellationRequested)
             {
-                if (connection.State is HubConnectionState.Connected)
+                if (connection is { State: HubConnectionState.Connected })
                 {
                     return;
                 }
 
+                var url = endpoints[endpointIndex];
+
                 try
                 {
-                    logger.LogInformation("Connecting to coordinator");
-                    await connection.StartAsync(cancellationToken);
+                    logger.LogInformation("Connecting to coordinator {CoordinatorUrl}", url);
+                    var candidate = BuildConnection(url);
+                    RegisterConnectionHandlers(candidate);
+
+                    try
+                    {
+                        await candidate.StartAsync(cancellationToken);
+                    }
+                    catch
+                    {
+                        await candidate.DisposeAsync();
+                        throw;
+                    }
+
+                    await ReplaceConnectionAsync(candidate);
                     await RegisterAsync(cancellationToken);
                     EnsureHeartbeatLoop();
                     EnsureModelRefreshLoop();
-                    logger.LogInformation("Connected to coordinator");
+                    logger.LogInformation("Connected to coordinator {CoordinatorUrl}", url);
                     return;
                 }
                 catch (OperationCanceledException)
@@ -177,6 +203,19 @@ public sealed class CoordinatorConnection(
                 }
                 catch (Exception ex)
                 {
+                    // A standby refuses the handshake, so a failure here is the normal way a node
+                    // discovers which hub is leading — try the next one immediately, and only
+                    // back off once the whole list has been tried (phase 32).
+                    endpointIndex = (endpointIndex + 1) % endpoints.Count;
+                    attemptsSinceDelay++;
+
+                    if (attemptsSinceDelay < endpoints.Count)
+                    {
+                        logger.LogWarning(ex, "Coordinator {CoordinatorUrl} did not accept this node; trying the next one", url);
+                        continue;
+                    }
+
+                    attemptsSinceDelay = 0;
                     logger.LogWarning(ex, "Could not connect to coordinator; retrying in {DelaySeconds}s", coordinator.RetryDelay.TotalSeconds);
                     await Task.Delay(coordinator.RetryDelay, cancellationToken);
                 }
@@ -185,6 +224,25 @@ public sealed class CoordinatorConnection(
         finally
         {
             reconnectLock.Release();
+        }
+    }
+
+    private async Task ReplaceConnectionAsync(HubConnection candidate)
+    {
+        var previous = Interlocked.Exchange(ref connection, candidate);
+
+        if (previous is null || ReferenceEquals(previous, candidate))
+        {
+            return;
+        }
+
+        try
+        {
+            await previous.DisposeAsync();
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Could not dispose the previous coordinator connection");
         }
     }
 

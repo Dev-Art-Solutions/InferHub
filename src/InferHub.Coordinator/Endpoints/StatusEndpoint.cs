@@ -1,3 +1,4 @@
+using InferHub.Coordinator.Cluster;
 using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
 using InferHub.Coordinator.Vector;
@@ -16,6 +17,7 @@ public static class StatusEndpoint
             Microsoft.Extensions.Options.IOptions<FallbackOptions> fallback,
             IRequestQueue queue,
             IConversationAffinity affinity,
+            IClusterMembership membership,
             IServiceProvider services) =>
         {
             var now = DateTimeOffset.UtcNow;
@@ -46,7 +48,8 @@ public static class StatusEndpoint
                 snapshot,
                 vectorBlock,
                 BuildFallbackBlock(fallback.Value, snapshot),
-                BuildQueueBlock(queue)));
+                BuildQueueBlock(queue),
+                BuildClusterBlock(membership)));
         });
 
         return app;
@@ -72,6 +75,21 @@ public static class StatusEndpoint
             snapshot.Rejected,
             snapshot.MedianWaitMs);
     }
+
+    /// <summary>
+    /// Null for a single-coordinator deployment, the same way the vector block is null when the
+    /// store is off: a status consumer that never opted into HA never sees a "cluster" key, so
+    /// <c>Cluster:Enabled=false</c> stays byte-identical to v2.13.
+    /// </summary>
+    internal static ClusterStatusBlock? BuildClusterBlock(IClusterMembership membership)
+        => membership.Enabled
+            ? new ClusterStatusBlock(
+                membership.InstanceId,
+                membership.IsActive ? ClusterRoleMiddleware.ActiveRole : ClusterRoleMiddleware.StandbyRole,
+                membership.Fence,
+                membership.ActiveSinceUtc,
+                membership.Detail)
+            : null;
 
     internal static FallbackStatusBlock BuildFallbackBlock(FallbackOptions options, MetricsSnapshot metrics)
         => new(
@@ -182,7 +200,15 @@ public static class StatusEndpoint
         MetricsSnapshot Metrics,
         VectorStatusBlock? Vector,
         FallbackStatusBlock Fallback,
-        QueueStatusBlock Queue);
+        QueueStatusBlock Queue,
+        ClusterStatusBlock? Cluster);
+
+    internal sealed record ClusterStatusBlock(
+        string Instance,
+        string Role,
+        long Fence,
+        DateTimeOffset? ActiveSinceUtc,
+        string? Detail);
 
     internal sealed record QueueStatusBlock(
         int Depth,

@@ -728,6 +728,85 @@ provisioned. An unscoped client keeps the phase-23 contract exactly — `autoPro
 
 **Rule 5 survived again.** Phase 31 added **zero** new dependencies.
 
+### Phase 32 (multi-coordinator: standby hub & warm failover) — also load-bearing
+
+**D1 — Standby and active share the *same* Postgres, so rule 4 is untouched.** There is no new
+source of truth: the lease row is a mutual-exclusion token, never state anyone reads to answer a
+request, and the vector store and usage ledger are the same external stores both hubs already
+used. The coordinators are interchangeable readers/writers of one durable store, not two
+authorities. Everything else on a hub (registry, affinity, metrics, audit) is *derived* and
+rebuilds as nodes reconnect — which is exactly why a promoted standby needs no migration step.
+**HA targets `postgres` only.** Under `local` the raw store is per-hub; clustering it is future
+work, and `Cluster:Enabled=true` over a `local` store would be two authorities wearing one name.
+
+**D2 — A lease row, not a PG advisory lock.** The obvious alternative was rejected on purpose: an
+advisory lock is scoped to a *session*, so a pooled connection dropping silently releases
+leadership with nothing to observe, and it carries no expiry and no fence a partitioned holder can
+reason about **locally**. [PostgresClusterLease](src/InferHub.Coordinator/Cluster/PostgresClusterLease.cs)
+is one conditional upsert — `ON CONFLICT DO UPDATE … WHERE holder = me OR expires_at <= now()`,
+`RETURNING` — decided entirely by the database clock, so there is no read-then-write window two
+coordinators can both walk through. The fence counter bumps only on a change of holder, never on a
+renewal: a bumped fence is how an operator knows leadership actually moved.
+
+**D3 — The split-brain guard is local, and the trade is deliberate.** A partitioned active hub
+cannot *be told* it lost the lease — by definition it cannot reach the database that knows. So
+[ClusterLeaseService](src/InferHub.Coordinator/Cluster/ClusterLeaseService.cs) demotes when this
+instance has not **proved** leadership within the TTL, measured on its own clock from the last
+successful renewal. That is the same deadline Postgres uses to hand the lease over, so the two
+windows cannot overlap with both hubs serving. The consequence — an unreachable database demotes a
+healthy primary after one TTL, taking the mesh down — is correct and is not to be softened: a
+request the mesh cannot attribute to a single leader is worse than a `503` a load balancer routes
+elsewhere. `Cluster:RenewIntervalSeconds` is validated at ≤ TTL/3 so ordinary packet loss cannot
+flap leadership. A clustered hub starts **standby** and is promoted only on a real acquisition;
+starting active would give every cold boot a two-primary window.
+
+> **The deadline is checked *before* any I/O, and the attempt is bounded by what is left of it.**
+> Found by pulling the plug on Postgres under the running stack: the round-trip itself burned
+> Npgsql's connect timeout, so demotion landed at **23s on a 15s TTL** — and the row frees at 15s.
+> That 8s gap is a window in which the standby holds the lease and the old primary still believes
+> it leads: precisely the split brain the fence exists to prevent. The loop's sleep is clamped to
+> the remaining time too, so tick granularity cannot add slack either. A fence that can be
+> outrun by its own health check is not a fence, and only running it found that —
+> `SplitBrainTests.TheFenceDoesNotWaitForTheRoundTripToComplete` pins it.
+
+**D4 — Node failover is enforced in the middleware, not in the hub, because a `HubException` from
+`OnConnectedAsync` does not fail the client's `StartAsync`.** Found live: by the time
+`OnConnectedAsync` runs the handshake has completed, so throwing (or `Context.Abort()`-ing) leaves
+the node believing it connected, only to be dropped a beat later with no reason attached — it
+cannot tell "standby, try the next endpoint" from "hub is broken". So `/hubs/node` is in
+[ClusterRoleMiddleware](src/InferHub.Coordinator/Cluster/ClusterRoleMiddleware.cs)'s refusal set and
+a standby answers the *negotiate* with the same `503` clients get. `NodeHub` keeps its own check as
+defence in depth. **Do not "simplify" the middleware entry away** — the hub check alone does not
+work, and `FailoverTests` crosses the real wire precisely so that cannot regress unnoticed.
+
+**D5 — The hub does not become a load balancer; it becomes honest.** Client failover is a TCP/HTTP
+LB or DNS in front of both hubs. What InferHub owes that front is signals: `X-InferHub-Role` on
+every response, `role` on `/health`, and a `503` + `Retry-After` on inference against a standby, in
+the caller's own dialect (OpenAI envelope on `/v1`, per phase 21/29). **`/health` stays `200` on a
+standby** — a standby *is* healthy, it just is not leading, and reporting otherwise has an
+orchestrator restart-loop the instance that is supposed to be waiting quietly. Drain on the role or
+the inference `503`. Unlike phase-25 admission (which lives in `InferenceCore` because it needs the
+model name), the role decision needs nothing from the body, so it belongs in the pipeline before
+routing, deserialization or a queue wait.
+
+**D6 — What a standby refuses is a short, explicit list, and status is not on it.** Inference,
+ingestion, search, the vector data plane and the node hub. `/health`, `/api/status`, `/metrics`,
+`/api/admin/*` and the status page stay served, because "why is nothing being served?" has to be
+answerable *from* the instance that stopped serving. A standby that goes dark is a standby nobody
+can diagnose.
+
+**D7 — `CREATE SCHEMA IF NOT EXISTS` is not atomic, and this is the first phase where that is
+reachable.** Two coordinators booting at the same instant both pass the existence check and one
+dies on `pg_namespace`'s unique index (`23505`; `42P07` for the table). Everywhere else in InferHub
+bootstrap happens once on one hub, so the race never fired; here simultaneous startup is the
+*normal* case, and an HA pair that crashes half of itself on a cold boot is not HA. The lease
+bootstrap retries those two SQL states — the other session winning is success. Found by running
+eight contenders against a real Postgres; a single-connection test could not have surfaced it. If
+the vector store or the usage ledger ever bootstrap concurrently, they need the same treatment.
+
+**Rule 5 survived again.** Phase 32 added **zero** new dependencies: the lease is `Npgsql`, already
+recorded for the `postgres` vector provider, and the standby refusal is `System.Text.Json`.
+
 ## Auth model (three independent token sets)
 
 | Scope | Config key | Guards |
