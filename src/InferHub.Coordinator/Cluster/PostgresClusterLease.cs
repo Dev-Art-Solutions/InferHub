@@ -1,3 +1,4 @@
+using InferHub.Coordinator.Postgres;
 using Microsoft.Extensions.Options;
 using Npgsql;
 
@@ -152,56 +153,28 @@ internal sealed class PostgresClusterLease : IClusterLease, IAsyncDisposable
     }
 
     /// <summary>
-    /// Create the schema and table, tolerating the case this phase makes routine: <b>two
-    /// coordinators booting at the same moment</b>.
+    /// Create the schema and table, tolerating two coordinators booting at the same moment — the
+    /// case this phase makes routine. See <see cref="ConcurrentDdl"/> for why `IF NOT EXISTS` is
+    /// not enough on its own.
     /// </summary>
-    /// <remarks>
-    /// <c>CREATE SCHEMA IF NOT EXISTS</c> is not atomic — the existence check and the insert into
-    /// <c>pg_namespace</c> are separate, so two sessions racing it can both pass the check and one
-    /// then dies on the unique index with <c>23505</c>. The same is true of
-    /// <c>CREATE TABLE IF NOT EXISTS</c> (<c>42P07</c>). Everywhere else in InferHub bootstrap
-    /// happens once, on one coordinator, so the race has never been reachable; here simultaneous
-    /// startup is the <i>normal</i> case, and an HA pair that crashes half of itself on a cold
-    /// boot is not HA. Found by running eight contenders against a real Postgres — a single-
-    /// connection test could not have surfaced it.
-    ///
-    /// The other session winning is success, not failure, so the retry simply re-runs the
-    /// statement: by then the object exists and the <c>IF NOT EXISTS</c> is a no-op.
-    /// </remarks>
-    private async Task CreateSchemaAndTableAsync(CancellationToken cancellationToken)
-    {
-        const string duplicateObject = "23505";
-        const string duplicateTable = "42P07";
-
-        for (var attempt = 0; ; attempt++)
+    private Task CreateSchemaAndTableAsync(CancellationToken cancellationToken) =>
+        ConcurrentDdl.RunAsync(async ct =>
         {
-            try
-            {
-                await using var command = dataSource.CreateCommand(
-                    $"""
-                    CREATE SCHEMA IF NOT EXISTS {Quote(options.Schema)};
-                    CREATE TABLE IF NOT EXISTS {QualifiedTable} (
-                        lease_name      text PRIMARY KEY,
-                        holder          text NOT NULL,
-                        fence           bigint NOT NULL,
-                        acquired_at_utc timestamptz NOT NULL,
-                        renewed_at_utc  timestamptz NOT NULL,
-                        expires_at_utc  timestamptz NOT NULL
-                    );
-                    """);
-                command.CommandTimeout = options.CommandTimeoutSeconds;
-                await command.ExecuteNonQueryAsync(cancellationToken);
-                return;
-            }
-            catch (PostgresException ex)
-                when (attempt < 3 && ex.SqlState is duplicateObject or duplicateTable)
-            {
-                logger.LogDebug(
-                    "Another coordinator created the lease schema concurrently ({SqlState}); retrying",
-                    ex.SqlState);
-            }
-        }
-    }
+            await using var command = dataSource.CreateCommand(
+                $"""
+                CREATE SCHEMA IF NOT EXISTS {Quote(options.Schema)};
+                CREATE TABLE IF NOT EXISTS {QualifiedTable} (
+                    lease_name      text PRIMARY KEY,
+                    holder          text NOT NULL,
+                    fence           bigint NOT NULL,
+                    acquired_at_utc timestamptz NOT NULL,
+                    renewed_at_utc  timestamptz NOT NULL,
+                    expires_at_utc  timestamptz NOT NULL
+                );
+                """);
+            command.CommandTimeout = options.CommandTimeoutSeconds;
+            await command.ExecuteNonQueryAsync(ct);
+        }, logger, "the coordinator lease table", cancellationToken);
 
     // Schema and table names are validated as ^[a-z_][a-z0-9_]*$ at startup; quoting is a second
     // belt on the same trousers, exactly as in the vector store and the usage ledger.

@@ -1,3 +1,4 @@
+using InferHub.Coordinator.Postgres;
 using Microsoft.Extensions.Options;
 using Npgsql;
 
@@ -134,24 +135,29 @@ public sealed class PostgresUsageLedger : IUsageLedger, IAsyncDisposable
                 return;
             }
 
-            await using var command = dataSource.CreateCommand(
-                $"""
-                CREATE SCHEMA IF NOT EXISTS {Quote(options.Schema)};
-                CREATE TABLE IF NOT EXISTS {QualifiedTable} (
-                    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-                    at_utc timestamptz NOT NULL,
-                    client_id text NOT NULL,
-                    model text NOT NULL,
-                    kind text NOT NULL,
-                    prompt_tokens bigint NOT NULL,
-                    completion_tokens bigint NOT NULL,
-                    fallback boolean NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS {Quote(options.Table + "_at_client_idx")}
-                    ON {QualifiedTable} (at_utc, client_id);
-                """);
-            command.CommandTimeout = options.CommandTimeoutSeconds;
-            await command.ExecuteNonQueryAsync(cancellationToken);
+            // `IF NOT EXISTS` is not atomic, and under HA (v3.0) both coordinators meter usage, so
+            // both reach this on the first request against an empty database. See ConcurrentDdl.
+            await ConcurrentDdl.RunAsync(async ct =>
+            {
+                await using var command = dataSource.CreateCommand(
+                    $"""
+                    CREATE SCHEMA IF NOT EXISTS {Quote(options.Schema)};
+                    CREATE TABLE IF NOT EXISTS {QualifiedTable} (
+                        id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                        at_utc timestamptz NOT NULL,
+                        client_id text NOT NULL,
+                        model text NOT NULL,
+                        kind text NOT NULL,
+                        prompt_tokens bigint NOT NULL,
+                        completion_tokens bigint NOT NULL,
+                        fallback boolean NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS {Quote(options.Table + "_at_client_idx")}
+                        ON {QualifiedTable} (at_utc, client_id);
+                    """);
+                command.CommandTimeout = options.CommandTimeoutSeconds;
+                await command.ExecuteNonQueryAsync(ct);
+            }, logger, "the usage ledger table", cancellationToken);
 
             bootstrapped = true;
             logger.LogInformation("Usage ledger table {Table} is ready", QualifiedTable);

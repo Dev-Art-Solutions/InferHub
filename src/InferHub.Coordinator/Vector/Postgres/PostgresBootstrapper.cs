@@ -1,3 +1,4 @@
+using InferHub.Coordinator.Postgres;
 using Microsoft.Extensions.Options;
 using Npgsql;
 
@@ -33,11 +34,16 @@ public sealed class PostgresBootstrapper(
 
         await using (conn)
         {
+            // Every statement below is `IF NOT EXISTS`, and none of them are atomic — under HA
+            // (v3.0) two coordinators bootstrap the same empty database at the same instant, and
+            // the loser used to die on a catalog unique index. See ConcurrentDdl.
             if (_pg.AutoCreateExtension)
             {
                 try
                 {
-                    await ExecuteAsync(conn, "CREATE EXTENSION IF NOT EXISTS vector", cancellationToken);
+                    await ConcurrentDdl.RunAsync(
+                        ct => ExecuteAsync(conn, "CREATE EXTENSION IF NOT EXISTS vector", ct),
+                        logger, "the vector extension", cancellationToken);
                 }
                 catch (PostgresException ex)
                 {
@@ -50,7 +56,9 @@ public sealed class PostgresBootstrapper(
 
             if (_pg.AutoCreateSchema)
             {
-                await ExecuteAsync(conn, $"CREATE SCHEMA IF NOT EXISTS {PostgresSchema.QuoteIdent(_pg.Schema)}", cancellationToken);
+                await ConcurrentDdl.RunAsync(
+                    ct => ExecuteAsync(conn, $"CREATE SCHEMA IF NOT EXISTS {PostgresSchema.QuoteIdent(_pg.Schema)}", ct),
+                    logger, $"schema '{_pg.Schema}'", cancellationToken);
             }
 
             // pgvector's types were registered on the data source builder; reload so the just-created
@@ -65,14 +73,18 @@ public sealed class PostgresBootstrapper(
                     "Install it (CREATE EXTENSION vector) or enable VectorStore:Postgres:AutoCreateExtension.");
             }
 
-            await ExecuteAsync(conn, PostgresSchema.CreateRegistryTableSql(_pg.Schema), cancellationToken);
+            await ConcurrentDdl.RunAsync(
+                ct => ExecuteAsync(conn, PostgresSchema.CreateRegistryTableSql(_pg.Schema), ct),
+                logger, "the collection registry table", cancellationToken);
 
             var count = await store.LoadRegistryCacheAsync(cancellationToken);
 
             // Bring collections created before v2.6 up to hybrid search — add the keyword column and
             // index where they're missing. Idempotent, and no re-embedding: the column is generated
             // from the payload text already stored.
-            await store.EnsureKeywordIndexesAsync(cancellationToken);
+            await ConcurrentDdl.RunAsync(
+                store.EnsureKeywordIndexesAsync,
+                logger, "the keyword indexes", cancellationToken);
 
             logger.LogInformation(
                 "Postgres vector store ready (schema={Schema}, collections={Count}, pgvector={Version})",
