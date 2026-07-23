@@ -99,7 +99,7 @@ into `appsettings.json`.
 ### Vector providers
 
 `IVectorStore` ([Vector/IVectorStore.cs](src/InferHub.Coordinator/Vector/IVectorStore.cs)) is
-the seam; two implementations sit behind it, selected by `VectorStore:Provider` and wired in
+the seam; three implementations sit behind it, selected by `VectorStore:Provider` and wired in
 [Vector/VectorStoreServiceCollectionExtensions.cs](src/InferHub.Coordinator/Vector/VectorStoreServiceCollectionExtensions.cs)
 (the single composition root — `Program.cs` and the DI-shape test both go through it):
 
@@ -107,13 +107,21 @@ the seam; two implementations sit behind it, selected by `VectorStore:Provider` 
 - **`PostgresVectorStore`** ([Vector/Postgres/](src/InferHub.Coordinator/Vector/Postgres/)) —
   table-per-collection over pgvector; publishes the two lifecycle events itself and returns the
   same score sign-conventions as `FlatIndex` (see `PostgresSchema.ScoreExpression`).
+- **`QdrantVectorStore`** ([Vector/Qdrant/](src/InferHub.Coordinator/Vector/Qdrant/), phase 33) —
+  Qdrant over a hand-rolled REST `QdrantClient` (no dependency); publishes its own lifecycle
+  events and returns the same `FlatIndex` score conventions (Qdrant reports them with no sign flip).
+
+`postgres` and `qdrant` are **external providers** — `VectorStoreProviderExtensions.IsExternal` is
+the one predicate every call site (`Program.cs`, `StatusEndpoint`, `VectorEndpoints`) branches on,
+because what matters is external-vs-local, not which external one. Do not reintroduce per-provider
+`IsPostgres` checks at those sites.
 
 Hard rule: **`ReplicationCoordinator` and `HealingService` bind to `LocalVectorStore`
 concretely** (they subscribe to its `CollectionCreated` / `RecordUpserted` events). Do **not**
-widen them to `IVectorStore` — that would drag replication concerns into the interface. Under
-`postgres` they are simply not registered; `VectorCompositionTests` fails if anyone re-couples
-them. That's why `PostgresVectorStore` publishes `vector.collection.created` / `.dropped`
-itself, and why `NullVectorQueryRouter` replaces the node-serving router.
+widen them to `IVectorStore` — that would drag replication concerns into the interface. Under any
+external provider they are simply not registered; `VectorCompositionTests` fails if anyone
+re-couples them. That's why the external stores publish `vector.collection.created` / `.dropped`
+themselves, and why `NullVectorQueryRouter` replaces the node-serving router.
 
 ## Node anatomy
 
@@ -193,6 +201,14 @@ as load-bearing:
 
    Neither is in `InferHub.Shared` or `InferHub.Node`, and the rule still holds for everything
    else. Add packages reluctantly, and record them here when you do.
+
+   **The `qdrant` vector provider (phase 33) added *no* dependency, on purpose.** Qdrant's official
+   client is gRPC and would drag `Grpc.Net.Client` + protobuf into the coordinator; its REST API is
+   plain JSON, and the house already speaks HTTP-to-a-server by hand
+   ([OpenAiUpstreamClient](src/InferHub.Shared/OpenAi/OpenAiUpstreamClient.cs)). So
+   [QdrantClient](src/InferHub.Coordinator/Vector/Qdrant/QdrantClient.cs) is a hand-rolled
+   `HttpClient` connector. A third vector backend, still zero new packages — considered the
+   dependency and declined it. Do not "upgrade" it to the gRPC client.
 6. **The node-facing job protocol is Ollama-shaped. Client-facing and upstream-facing
    dialects are translations at the boundary.** `InferenceJob.RawJson` crossing SignalR and
    `InferenceChunk.ResponseJson` coming back are both Ollama JSON, always — that is the one
@@ -816,6 +832,43 @@ that retries it — the other session winning **is** success — and **all three
 
 **Rule 5 survived again.** Phase 32 added **zero** new dependencies: the lease is `Npgsql`, already
 recorded for the `postgres` vector provider, and the standby refusal is `System.Text.Json`.
+
+### Phase 33 (Qdrant vector connector) — also load-bearing
+
+**D1 — A third `IVectorStore`, and it is an *external* provider — so it is phase-20 §2 again.** Node
+replication and self-healing are off; `NullVectorQueryRouter` stands in; the store publishes its own
+`vector.collection.created` / `.dropped`. The one predicate every call site branches on is
+`VectorStoreProviderExtensions.IsExternal` (postgres **or** qdrant), not `IsPostgres` — see "Vector
+providers". `VectorCompositionTests.QdrantProviderRegistersQdrantStoreAndNoMeshServices` pins it.
+
+**D2 — Zero dependency, by hand, on purpose.** See rule 5. `QdrantClient` is a hand-rolled REST
+connector over `HttpClient`; the gRPC client was considered and declined. Do not add it.
+
+**D3 — Qdrant point ids are UUIDs; the real id lives in the payload. This is the load-bearing
+gotcha.** Qdrant accepts **only** an unsigned int or a UUID as a point id, and InferHub ids are
+neither. So [QdrantIdMap](src/InferHub.Coordinator/Vector/Qdrant/QdrantIdMap.cs) maps each real id to
+a deterministic `UUIDv5`, and the real id — with payload and metadata — rides in the point payload
+under reserved `__*` keys (`__id`, `__payload`, `__meta`, `__seq`, `__ts`); reads unpack it, so
+nothing above the store ever sees the UUID. **Determinism is what keeps re-ingest idempotent**
+(phase 23 D5): the same real id addresses the same point and therefore *replaces*.
+`QdrantIdMapTests` asserts determinism and no collisions over a large sample. A metadata filter maps
+to a Qdrant `must` match on `__meta.<key>`, which excludes points lacking the key — the same
+"null-metadata never matches" rule `FlatIndex` honours.
+
+**D4 — Scan sorts client-side, because Qdrant scrolls by its own point id (a UUID), not by the
+InferHub id the contract promises.** `ScanAsync` materialises the filtered set and orders by real id
+in memory, then windows by `afterId` + `limit`. Correct, at the cost of reading the whole filtered
+set per call — fine for the per-document scans that dominate ingestion (small sets), and the reason
+`DeleteByFilterAsync` counts first (Qdrant's delete-by-filter returns no count, and the contract
+must). Phase 35's migration adds a with-vectors scan; keep this ordering discipline there too.
+
+**D5 — Keyword search is coarse under qdrant until v3.2, and honest about it.** Qdrant's full-text
+index is a filter, not a ranking, so `SearchKeywordAsync` scrolls a **bounded** slice
+(`KeywordScanCap`) and ranks by term-overlap in the chunk text — enough to give hybrid a real second
+branch, explicitly not BM25. Phase 34 replaces it with server-side sparse-vector fusion. Records with
+no text payload contribute nothing, the same stance `ChunkText` takes.
+
+**Rule 5 survived again.** Phase 33 added **zero** new dependencies.
 
 ## Auth model (three independent token sets)
 

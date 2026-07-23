@@ -127,18 +127,19 @@ public static class StatusEndpoint
         string provider = VectorStoreProviderExtensions.Local,
         Metrics? metrics = null)
     {
-        // Under postgres there is no node replication: placement is zeroed for every collection
-        // so the replica formula can't false-flag under-replication against zero holders.
-        var isPostgres = VectorStoreProviderExtensions.IsPostgres(provider);
-        var wire = isPostgres ? VectorStoreProviderExtensions.Postgres : VectorStoreProviderExtensions.Local;
+        // Under an external provider (postgres, qdrant) there is no node replication: placement is
+        // zeroed for every collection so the replica formula can't false-flag under-replication
+        // against zero holders. The wire string still reports which external provider is in use.
+        var isExternal = VectorStoreProviderExtensions.IsExternal(provider);
+        var wire = VectorStoreProviderExtensions.NormalizeWire(provider);
 
-        if (isPostgres)
+        if (isExternal)
         {
-            var postgresItems = collections.Select(c => new VectorStatusCollection(
+            var externalItems = collections.Select(c => new VectorStatusCollection(
                 c.Name, c.Dimension, c.Distance, c.RecordCount,
                 TargetReplicas: 0, LiveReplicas: 0, ReplicaNodes: Array.Empty<string>(), UnderReplicated: false,
                 Ingestion: IngestionOf(metrics, c.Name))).ToArray();
-            return new VectorStatusBlock(wire, postgresItems);
+            return new VectorStatusBlock(wire, externalItems);
         }
 
         var target = Math.Max(1, replicationFactor);

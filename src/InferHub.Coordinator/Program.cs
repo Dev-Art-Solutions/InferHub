@@ -122,9 +122,9 @@ builder.Services.AddInferHubVectorStore(builder.Configuration);
 var vectorSection = builder.Configuration.GetSection(VectorStoreOptions.SectionName);
 var vectorStoreEnabled = vectorSection.GetValue<bool>(nameof(VectorStoreOptions.Enabled));
 var vectorProvider = vectorSection.GetValue<string>(nameof(VectorStoreOptions.Provider)) ?? VectorStoreProviderExtensions.Local;
-// Replication / self-healing / node-served reads only exist under the local provider; postgres
-// owns its own durability, so the rebuild endpoint is not applicable there.
-var vectorSupportsReplication = vectorStoreEnabled && !VectorStoreProviderExtensions.IsPostgres(vectorProvider);
+// Replication / self-healing / node-served reads only exist under the local provider; an external
+// provider (postgres, qdrant) owns its own durability, so the rebuild endpoint is not applicable there.
+var vectorSupportsReplication = vectorStoreEnabled && !VectorStoreProviderExtensions.IsExternal(vectorProvider);
 
 var app = builder.Build();
 

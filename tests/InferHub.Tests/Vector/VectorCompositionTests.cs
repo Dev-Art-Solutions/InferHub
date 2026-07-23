@@ -2,6 +2,7 @@ using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
 using InferHub.Coordinator.Vector;
 using InferHub.Coordinator.Vector.Postgres;
+using InferHub.Coordinator.Vector.Qdrant;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -27,6 +28,7 @@ public class VectorCompositionTests
                 ["VectorStore:Provider"] = provider,
                 ["VectorStore:DataDirectory"] = Path.Combine(Path.GetTempPath(), "inferhub-comp-" + Guid.NewGuid().ToString("N")),
                 ["VectorStore:Postgres:ConnectionString"] = "Host=localhost;Port=5432;Database=inferhub;Username=x;Password=y",
+                ["VectorStore:Qdrant:Url"] = "http://localhost:6333",
             })
             .Build();
 
@@ -63,6 +65,27 @@ public class VectorCompositionTests
         // ...and none of them sneaks in as a hosted service either — except the bootstrapper.
         var hosted = sp.GetServices<IHostedService>().ToArray();
         Assert.Contains(hosted, h => h is PostgresBootstrapper);
+        Assert.DoesNotContain(hosted, h => h is ReplicationCoordinator or HealingService);
+    }
+
+    [Fact]
+    public void QdrantProviderRegistersQdrantStoreAndNoMeshServices()
+    {
+        using var sp = BuildProvider("qdrant");
+
+        Assert.IsType<QdrantVectorStore>(sp.GetRequiredService<IVectorStore>());
+        Assert.IsType<NullVectorQueryRouter>(sp.GetRequiredService<IVectorQueryRouter>());
+        Assert.NotNull(sp.GetRequiredService<RetrievalPipeline>());
+        Assert.NotNull(sp.GetRequiredService<ReplicaRegistry>()); // stays registered, kept empty
+
+        // The mesh services must not be registered under an external provider.
+        Assert.Null(sp.GetService<LocalVectorStore>());
+        Assert.Null(sp.GetService<ReplicationCoordinator>());
+        Assert.Null(sp.GetService<HealingService>());
+        Assert.Null(sp.GetService<PostgresVectorStore>());
+
+        var hosted = sp.GetServices<IHostedService>().ToArray();
+        Assert.Contains(hosted, h => h is QdrantBootstrapper);
         Assert.DoesNotContain(hosted, h => h is ReplicationCoordinator or HealingService);
     }
 

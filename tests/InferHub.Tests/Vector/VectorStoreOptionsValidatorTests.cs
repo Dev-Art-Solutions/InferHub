@@ -256,4 +256,82 @@ public class VectorStoreOptionsValidatorTests
         var options = new VectorStoreOptions { Enabled = true, Provider = "postgres", Postgres = pg };
         return new VectorStoreOptionsValidator().Validate(null, options);
     }
+
+    // --- Provider / Qdrant (phase 33) ---
+
+    [Fact]
+    public void ValidQdrantConfigPasses()
+    {
+        var validator = new VectorStoreOptionsValidator();
+        var options = new VectorStoreOptions
+        {
+            Enabled = true,
+            Provider = "qdrant",
+            DataDirectory = "", // inert under qdrant — must not fail
+            Qdrant = new QdrantStoreOptions { Url = "http://localhost:6333" }
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Succeeded, string.Join("; ", result.Failures ?? Array.Empty<string>()));
+    }
+
+    [Fact]
+    public void QdrantRequiresUrl()
+    {
+        var result = ValidateQdrant(q => q.Url = "");
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, m => m.Contains(nameof(QdrantStoreOptions.Url)));
+    }
+
+    [Theory]
+    [InlineData("localhost:6333")]
+    [InlineData("ftp://host:6333")]
+    [InlineData("not a url")]
+    public void QdrantRejectsNonHttpUrl(string url)
+    {
+        var result = ValidateQdrant(q => q.Url = url);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, m => m.Contains(nameof(QdrantStoreOptions.Url)));
+    }
+
+    [Fact]
+    public void QdrantRejectsInvalidCollectionPrefix()
+    {
+        var result = ValidateQdrant(q => q.CollectionPrefix = "Bad-Prefix");
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, m => m.Contains(nameof(QdrantStoreOptions.CollectionPrefix)));
+    }
+
+    [Fact]
+    public void QdrantRejectsEfConstructBelowM()
+    {
+        var result = ValidateQdrant(q => { q.HnswM = 32; q.HnswEfConstruct = 16; });
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, m => m.Contains(nameof(QdrantStoreOptions.HnswEfConstruct)));
+    }
+
+    [Fact]
+    public void UnknownProviderMessageNamesQdrant()
+    {
+        var validator = new VectorStoreOptionsValidator();
+        var options = new VectorStoreOptions { Enabled = true, Provider = "milvus" };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, m => m.Contains("qdrant"));
+    }
+
+    private static Microsoft.Extensions.Options.ValidateOptionsResult ValidateQdrant(Action<QdrantStoreOptions> tweak)
+    {
+        var q = new QdrantStoreOptions { Url = "http://localhost:6333" };
+        tweak(q);
+        var options = new VectorStoreOptions { Enabled = true, Provider = "qdrant", Qdrant = q };
+        return new VectorStoreOptionsValidator().Validate(null, options);
+    }
 }

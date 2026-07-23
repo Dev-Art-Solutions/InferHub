@@ -175,9 +175,9 @@ public static class VectorEndpoints
             CancellationToken cancellationToken) =>
         {
             var collections = await store.ListCollectionsAsync(cancellationToken);
-            var isPostgres = VectorStoreProviderExtensions.IsPostgres(options.Value.Provider);
+            var isExternal = VectorStoreProviderExtensions.IsExternal(options.Value.Provider);
             var placement = collections
-                .Select(c => isPostgres
+                .Select(c => isExternal
                     ? ZeroPlacement(c.Name)
                     : BuildPlacement(c.Name, replicas, nodes, options.Value.ReplicationFactor))
                 .ToArray();
@@ -219,10 +219,10 @@ public static class VectorEndpoints
                 return Error(StatusCodes.Status404NotFound, $"collection '{collection}' not found");
             }
 
-            var isPostgres = VectorStoreProviderExtensions.IsPostgres(options.Value.Provider);
+            var isExternal = VectorStoreProviderExtensions.IsExternal(options.Value.Provider);
             CollectionPlacement placement;
             bool underReplicated;
-            if (isPostgres)
+            if (isExternal)
             {
                 placement = ZeroPlacement(info.Name);
                 underReplicated = false;

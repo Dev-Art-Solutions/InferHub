@@ -297,12 +297,12 @@
     if (!tbody) return;
 
     const provider = vector?.provider ?? "local";
-    const isPostgres = provider === "postgres";
+    const isExternal = provider === "postgres" || provider === "qdrant";
     const badge = document.getElementById("vector-provider");
     if (badge) {
       badge.style.display = vector ? "" : "none";
       badge.textContent = provider;
-      badge.className = "pill " + (isPostgres ? "pill-ok" : "");
+      badge.className = "pill " + (isExternal ? "pill-ok" : "");
     }
 
     const items = vector?.collections ?? [];
@@ -312,22 +312,23 @@
     }
 
     tbody.innerHTML = items.map(c => {
-      // Postgres owns durability and has no node replicas — replica/placement columns and the
-      // Rebuild action don't apply, so we show em-dashes and disable the button with a reason.
-      const replicaCell = isPostgres
+      // An external provider (postgres, qdrant) owns durability and has no node replicas — the
+      // replica/placement columns and the Rebuild action don't apply, so we show em-dashes and
+      // disable the button with a reason.
+      const replicaCell = isExternal
         ? `<span class="empty" style="padding:0">—</span>`
         : `${c.liveReplicas} / ${c.targetReplicas} ${c.underReplicated
             ? `<span class="pill pill-warn">under-replicated</span>`
             : `<span class="pill pill-ok">at target</span>`}`;
-      const chips = isPostgres
-        ? `<span class="empty" style="padding:0">— Postgres-backed</span>`
+      const chips = isExternal
+        ? `<span class="empty" style="padding:0">— ${escapeHtml(provider)}-backed</span>`
         : (c.replicaNodes && c.replicaNodes.length > 0)
           ? `<div class="replica-list">${c.replicaNodes.map(n =>
               `<span class="replica-chip">${escapeHtml(n)}</span>`).join("")}</div>`
           : `<span class="empty" style="padding:0">— hub-local only</span>`;
       const safeName = encodeURIComponent(c.name);
-      const rebuildBtn = isPostgres
-        ? `<button data-vaction="rebuild" data-collection="${safeName}" disabled title="Not applicable when VectorStore:Provider=postgres — Postgres owns durability">Rebuild</button>`
+      const rebuildBtn = isExternal
+        ? `<button data-vaction="rebuild" data-collection="${safeName}" disabled title="Not applicable when VectorStore:Provider=${provider} — the store owns durability">Rebuild</button>`
         : `<button data-vaction="rebuild" data-collection="${safeName}">Rebuild</button>`;
       return `
         <tr>

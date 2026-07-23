@@ -106,12 +106,14 @@ byte-identical to 2.13. Still **zero new dependencies** — the lease is `Npgsql
 | 30 | Stable-node affinity + optional persistence (done) | `v2.12.0` |
 | 31 | Client-scoped collections (RAG multi-tenancy) (done) | `v2.13.0` |
 | 32 | Multi-coordinator — standby hub & warm failover (done) | `v3.0.0` |
+| 33 | Qdrant vector connector (done) | `v3.1.0` |
 
-**What's next.** 3.0 closes the roadmap that started at 2.9. What remains on the table:
-**active-active** multi-coordinator load sharing and cross-hub replication for the `local`
-vector provider, an **OTLP push** exporter behind an explicit opt-in (`/metrics` is
-scrape-only today), and a dedicated cross-encoder reranker behind the existing `IReranker`
-seam.
+**What's next.** With Qdrant behind the `IVectorStore` seam (v3.1, zero new dependencies), the
+Qdrant track continues: **server-side hybrid search** with sparse vectors (v3.2), then Qdrant
+production knobs and a **cross-provider migration tool** that finally copies a populated deployment
+between `local`, `postgres` and `qdrant` (v3.3). Also still on the table: **active-active**
+multi-coordinator load sharing, an **OTLP push** exporter behind an explicit opt-in, and a dedicated
+cross-encoder reranker behind the existing `IReranker` seam.
 
 ## Quick start
 
@@ -633,6 +635,8 @@ InferHub's vector store is **provider-backed** and off by default — flip
 - **`postgres`** (v2.2+) — an external **PostgreSQL + pgvector** database: HNSW-indexed ANN
   search, real transactions, ordinary database backups, and shared access from other apps.
   See [PostgreSQL + pgvector](#postgresql--pgvector-v22) below.
+- **`qdrant`** (v3.1+) — an external **Qdrant** database, over its REST API. HNSW search, payload
+  filtering, and Qdrant's own snapshots/backups. See [Qdrant](#qdrant-v31) below.
 
 Every endpoint, header, and client call is identical across providers. Embeddings and inline
 retrieval always run on the fleet — only the storage engine changes.
@@ -737,6 +741,56 @@ docker compose -f deploy/postgres/docker-compose.yml up -d
 export VectorStore__Enabled=true
 export VectorStore__Provider=postgres
 export VectorStore__Postgres__ConnectionString="Host=localhost;Database=inferhub;Username=inferhub;Password=inferhub"
+dotnet run --project src/InferHub.Coordinator
+
+# 3. Same API as ever — create, upsert, query
+curl -X POST http://localhost:5080/api/admin/vector/collections \
+  -d '{"name":"docs","dimension":3,"distance":"cosine"}'
+curl -X POST http://localhost:5080/api/vector/docs/upsert \
+  -d '{"id":"a","vector":[1,0,0],"metadata":{"lang":"en"}}'
+curl -X POST http://localhost:5080/api/vector/docs/query \
+  -d '{"vector":[1,0,0],"k":3}'
+```
+
+### Qdrant (v3.1+)
+
+Set `VectorStore:Provider` to `qdrant` and point the coordinator at a [Qdrant](https://qdrant.tech).
+**Pick it when** you already run Qdrant or want its payload model, filtering and quantization
+roadmap. The connector speaks Qdrant's **REST API by hand** — no client package, no gRPC — so, unlike
+the pgvector provider, Qdrant adds **zero new dependencies** to InferHub.
+
+**How records map.** Qdrant accepts only an integer or a UUID as a point id, and InferHub ids are
+neither (a chunk id is a SHA-256, a document id might be a filename). So each id becomes a
+deterministic `UUIDv5` point id, and the real id — with the payload and metadata — is stored in the
+point payload. Because the UUID is deterministic, re-ingesting a document still **replaces** its
+chunks rather than duplicating them. Nothing you send or read back ever exposes the UUID. Score
+sign-conventions match the local provider exactly, proven by a parity test that runs one dataset
+through all three engines.
+
+**Honest trade-offs.** Qdrant owns durability, so like Postgres:
+
+- **no node replication, no self-healing, no node-served vector reads** — search runs in Qdrant;
+- the **rebuild** admin endpoint returns `409`; the replica metrics stay at zero and the status
+  `vector` block reports `"provider":"qdrant"` with zeroed replica fields;
+- **keyword search is coarse in this release.** Qdrant's full-text index is a filter, not a ranking,
+  so hybrid retrieval fuses a real vector branch with a rough keyword branch and says so in its logs.
+  Server-side sparse-vector hybrid is the next release.
+
+The mesh is intact: **embeddings and inline retrieval still run on the GPU nodes.**
+
+**No migration path yet.** As with Postgres, switching providers on a populated deployment means
+re-ingesting — there is no built-in copy between backends.
+
+**Walk-through** (compose stack in [`deploy/qdrant/`](deploy/qdrant/docker-compose.yml)):
+
+```bash
+# 1. A Qdrant
+docker compose -f deploy/qdrant/docker-compose.yml up -d
+
+# 2. Point the coordinator at it (ApiKey via env, never appsettings.json)
+export VectorStore__Enabled=true
+export VectorStore__Provider=qdrant
+export VectorStore__Qdrant__Url="http://localhost:6333"
 dotnet run --project src/InferHub.Coordinator
 
 # 3. Same API as ever — create, upsert, query

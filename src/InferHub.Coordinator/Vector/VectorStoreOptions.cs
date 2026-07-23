@@ -10,7 +10,7 @@ public sealed class VectorStoreOptions
 
     public bool Enabled { get; set; } = false;
 
-    /// <summary>Storage backend for the vector store: <c>local</c> (default) or <c>postgres</c>. Case-insensitive.</summary>
+    /// <summary>Storage backend for the vector store: <c>local</c> (default), <c>postgres</c> or <c>qdrant</c>. Case-insensitive.</summary>
     public string Provider { get; set; } = VectorStoreProviderExtensions.Local;
 
     public string DataDirectory { get; set; } = "./data/vectors";
@@ -28,6 +28,51 @@ public sealed class VectorStoreOptions
     public HealingOptions Healing { get; set; } = new();
 
     public PostgresStoreOptions Postgres { get; set; } = new();
+
+    public QdrantStoreOptions Qdrant { get; set; } = new();
+}
+
+/// <summary>
+/// Qdrant provider settings. Inert unless <see cref="VectorStoreOptions.Provider"/> is <c>qdrant</c>.
+/// The connector speaks Qdrant's JSON REST API by hand over <see cref="System.Net.Http.HttpClient"/> —
+/// no client package, no gRPC — so this provider adds no dependency. Never commit
+/// <see cref="ApiKey"/> to appsettings.json; set it via env (<c>VectorStore__Qdrant__ApiKey</c>) or
+/// user-secrets.
+/// </summary>
+public sealed class QdrantStoreOptions
+{
+    /// <summary>Base URL of the Qdrant REST API, e.g. <c>http://localhost:6333</c>. Required when the provider is qdrant.</summary>
+    public string Url { get; set; } = "";
+
+    /// <summary>Qdrant API key, sent as the <c>api-key</c> header. Null/empty for a local, unauthenticated Qdrant.</summary>
+    public string? ApiKey { get; set; }
+
+    /// <summary>HTTP timeout, in seconds.</summary>
+    public int TimeoutSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Prefix applied to the InferHub collection name to form the Qdrant collection name, so a shared
+    /// Qdrant can host InferHub collections alongside another app's without a clash.
+    /// </summary>
+    public string CollectionPrefix { get; set; } = "inferhub_";
+
+    /// <summary>How many points are sent per upsert request.</summary>
+    public int UpsertBatchSize { get; set; } = 128;
+
+    /// <summary>
+    /// When a query carries a metadata filter, an HNSW scan with a selective post-filter can return
+    /// fewer than <c>k</c> rows; the connector over-fetches by this multiple and trims to <c>k</c>.
+    /// </summary>
+    public int OverFetchMultiplier { get; set; } = 4;
+
+    /// <summary>HNSW <c>m</c> build parameter for new collections.</summary>
+    public int HnswM { get; set; } = 16;
+
+    /// <summary>HNSW <c>ef_construct</c> build parameter for new collections.</summary>
+    public int HnswEfConstruct { get; set; } = 64;
+
+    /// <summary>Per-query HNSW <c>ef</c>. Higher = better recall, slower. Null uses Qdrant's own default.</summary>
+    public int? EfSearch { get; set; }
 }
 
 /// <summary>
@@ -147,23 +192,26 @@ public sealed partial class VectorStoreOptionsValidator : IValidateOptions<Vecto
 
         var failures = new List<string>();
 
-        var isPostgres = VectorStoreProviderExtensions.TryParse(options.Provider, out var provider)
-            && provider == VectorStoreProvider.Postgres;
-
-        if (!VectorStoreProviderExtensions.TryParse(options.Provider, out _))
+        var known = VectorStoreProviderExtensions.TryParse(options.Provider, out var provider);
+        if (!known)
         {
-            failures.Add($"{VectorStoreOptions.SectionName}:{nameof(VectorStoreOptions.Provider)} must be one of 'local', 'postgres' (got '{options.Provider}').");
+            failures.Add($"{VectorStoreOptions.SectionName}:{nameof(VectorStoreOptions.Provider)} must be one of 'local', 'postgres', 'qdrant' (got '{options.Provider}').");
         }
 
-        // DataDirectory only backs the local provider; postgres owns its own durability.
-        if (!isPostgres && string.IsNullOrWhiteSpace(options.DataDirectory))
+        // DataDirectory only backs the local provider; an external provider owns its own durability.
+        if (known && provider == VectorStoreProvider.Local && string.IsNullOrWhiteSpace(options.DataDirectory))
         {
             failures.Add($"{VectorStoreOptions.SectionName}:{nameof(VectorStoreOptions.DataDirectory)} must be set when {VectorStoreOptions.SectionName}:{nameof(VectorStoreOptions.Enabled)} is true and Provider=local.");
         }
 
-        if (isPostgres)
+        if (known && provider == VectorStoreProvider.Postgres)
         {
             ValidatePostgres(options.Postgres, failures);
+        }
+
+        if (known && provider == VectorStoreProvider.Qdrant)
+        {
+            ValidateQdrant(options.Qdrant, failures);
         }
 
         if (!DistanceMetricExtensions.TryParse(options.Distance, out _))
@@ -306,6 +354,55 @@ public sealed partial class VectorStoreOptionsValidator : IValidateOptions<Vecto
         if (pg.CommandTimeoutSeconds < 1)
         {
             failures.Add($"{prefix}{nameof(PostgresStoreOptions.CommandTimeoutSeconds)} must be >= 1 (got {pg.CommandTimeoutSeconds}).");
+        }
+    }
+
+    private static void ValidateQdrant(QdrantStoreOptions q, List<string> failures)
+    {
+        const string prefix = VectorStoreOptions.SectionName + ":Qdrant:";
+
+        if (string.IsNullOrWhiteSpace(q.Url))
+        {
+            failures.Add($"{prefix}{nameof(QdrantStoreOptions.Url)} must be set when Provider=qdrant (e.g. http://localhost:6333).");
+        }
+        else if (!Uri.TryCreate(q.Url, UriKind.Absolute, out var uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            failures.Add($"{prefix}{nameof(QdrantStoreOptions.Url)} must be an absolute http(s) URL (got '{q.Url}').");
+        }
+
+        if (q.TimeoutSeconds < 1)
+        {
+            failures.Add($"{prefix}{nameof(QdrantStoreOptions.TimeoutSeconds)} must be >= 1 (got {q.TimeoutSeconds}).");
+        }
+
+        if (string.IsNullOrEmpty(q.CollectionPrefix) || !SqlIdentifierRegex().IsMatch(q.CollectionPrefix))
+        {
+            failures.Add($"{prefix}{nameof(QdrantStoreOptions.CollectionPrefix)} must match ^[a-z_][a-z0-9_]*$ (got '{q.CollectionPrefix}').");
+        }
+
+        if (q.UpsertBatchSize < 1)
+        {
+            failures.Add($"{prefix}{nameof(QdrantStoreOptions.UpsertBatchSize)} must be >= 1 (got {q.UpsertBatchSize}).");
+        }
+
+        if (q.OverFetchMultiplier < 1)
+        {
+            failures.Add($"{prefix}{nameof(QdrantStoreOptions.OverFetchMultiplier)} must be >= 1 (got {q.OverFetchMultiplier}).");
+        }
+
+        if (q.HnswM < 2)
+        {
+            failures.Add($"{prefix}{nameof(QdrantStoreOptions.HnswM)} must be >= 2 (got {q.HnswM}).");
+        }
+
+        if (q.HnswEfConstruct < q.HnswM)
+        {
+            failures.Add($"{prefix}{nameof(QdrantStoreOptions.HnswEfConstruct)} must be >= HnswM ({q.HnswM}, got {q.HnswEfConstruct}).");
+        }
+
+        if (q.EfSearch is { } ef && ef < 1)
+        {
+            failures.Add($"{prefix}{nameof(QdrantStoreOptions.EfSearch)} must be >= 1 when set (got {ef}).");
         }
     }
 }

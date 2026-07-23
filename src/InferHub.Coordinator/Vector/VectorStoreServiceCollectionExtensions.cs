@@ -1,6 +1,7 @@
 using InferHub.Coordinator.Ingestion;
 using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Vector.Postgres;
+using InferHub.Coordinator.Vector.Qdrant;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -51,6 +52,24 @@ public static class VectorStoreServiceCollectionExtensions
             services.AddSingleton<IVectorStore>(sp => sp.GetRequiredService<PostgresVectorStore>());
             services.AddSingleton<IVectorQueryRouter, NullVectorQueryRouter>();
             services.AddHostedService<PostgresBootstrapper>();
+        }
+        else if (VectorStoreProviderExtensions.IsQdrant(provider))
+        {
+            // Qdrant speaks JSON over HTTP, so the connector is a hand-rolled HttpClient — no client
+            // package, no gRPC (rule 5 held for a third backend). Same "external provider" shape as
+            // postgres: NullVectorQueryRouter, no replication / healing services.
+            var qdrant = section.GetSection(nameof(VectorStoreOptions.Qdrant));
+            services.AddHttpClient(QdrantClient.HttpClientName, http => QdrantClient.Configure(
+                http,
+                qdrant.GetValue<string>(nameof(QdrantStoreOptions.Url)) ?? "",
+                qdrant.GetValue<string>(nameof(QdrantStoreOptions.ApiKey)),
+                qdrant.GetValue<int?>(nameof(QdrantStoreOptions.TimeoutSeconds)) ?? 30));
+            services.AddSingleton(sp => new QdrantClient(
+                sp.GetRequiredService<IHttpClientFactory>().CreateClient(QdrantClient.HttpClientName)));
+            services.AddSingleton<QdrantVectorStore>();
+            services.AddSingleton<IVectorStore>(sp => sp.GetRequiredService<QdrantVectorStore>());
+            services.AddSingleton<IVectorQueryRouter, NullVectorQueryRouter>();
+            services.AddHostedService<QdrantBootstrapper>();
         }
         else
         {
