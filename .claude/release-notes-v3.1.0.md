@@ -59,10 +59,19 @@ As with Postgres, switching providers on a populated deployment means re-ingesti
 built-in copy between `local`, `postgres` and `qdrant`. A cross-provider migration tool is planned for
 v3.3. Don't flip the switch expecting your data to follow.
 
+## Verified against a live Qdrant
+
+The gated suite was run against a real **Qdrant 1.12.4** (`INFERHUB_TEST_QDRANT` set): **34 Qdrant
+tests green, 0 skipped**, including the local-vs-qdrant parity arm for all three distances. Score
+parity holds to `1e-4` — in particular Qdrant's `Euclid` reports the **sqrt** euclidean distance, the
+same as `FlatIndex` and pgvector's `<->`, so `l2` rankings and scores match without a correction. The
+id-ordered scan, exclusive cursor, filtered-delete count and null-metadata exclusion all agree with
+the local store against the real engine.
+
 ## Tests
 
-635 passed, 35 skipped (the gated Postgres **and** Qdrant integration suites, which run only with
-`INFERHUB_TEST_POSTGRES` / `INFERHUB_TEST_QDRANT` set). New coverage:
+646 passed, 26 skipped with the Qdrant gate open (the 26 are the Postgres-gated suite); 635 passed /
+35 skipped with both gates closed. New coverage:
 
 - `QdrantIdMapTests` — UUIDv5 determinism, canonical form, and no collisions over 20k distinct ids;
   the distance-enum mapping (`cosine→Cosine`, `dot→Dot`, `l2→Euclid`).
