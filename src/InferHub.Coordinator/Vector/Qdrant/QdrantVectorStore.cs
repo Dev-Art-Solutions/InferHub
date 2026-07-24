@@ -25,7 +25,7 @@ namespace InferHub.Coordinator.Vector.Qdrant;
 /// composition and smoke tests must work against a dead Qdrant.
 /// </para>
 /// </summary>
-internal sealed class QdrantVectorStore : IVectorStore
+internal sealed class QdrantVectorStore : IVectorStore, IServerSideHybridSearch
 {
     // Reserved payload keys. A record's own payload and metadata are nested so they can never clash
     // with these, and so a metadata filter maps to `__meta.<key>` without ambiguity.
@@ -79,10 +79,13 @@ internal sealed class QdrantVectorStore : IVectorStore
             throw new InvalidOperationException($"collection '{name}' already exists");
         }
 
-        await _client.CreateCollectionAsync(qname, dimension, metric, _q.HnswM, _q.HnswEfConstruct, cancellationToken);
+        // Every collection created on 3.2+ is hybrid-capable: a named dense vector plus an IDF sparse
+        // vector, so keyword and hybrid retrieval can run server-side. Collections created on 3.1 stay
+        // dense-only until re-created or migrated (phase 35).
+        await _client.CreateHybridCollectionAsync(qname, dimension, metric, _q.HnswM, _q.HnswEfConstruct, cancellationToken);
 
         var wire = metric.ToWireString();
-        _cache[name] = new CollectionMeta(dimension, metric, wire);
+        _cache[name] = new CollectionMeta(dimension, metric, wire, Hybrid: true);
         _ops[name] = 0;
         _events?.Publish("vector.collection.created", name, new Dictionary<string, object?>
         {
@@ -143,8 +146,13 @@ internal sealed class QdrantVectorStore : IVectorStore
         var pointId = QdrantIdMap.ToPointId(upsert.Id);
         var payload = BuildPayload(upsert.Id, upsert.Payload, upsert.Metadata, seq, ts);
 
-        var point = new QdrantPoint(pointId, (float[])upsert.Vector.Clone(), payload);
-        await _client.UpsertPointsAsync(QdrantName(collection), [point], cancellationToken);
+        // On a hybrid-capable collection every point also carries the lexical (sparse) view of its
+        // text, computed hub-side from the chunk text — the same text keyword search reads. A point
+        // with no text simply has no sparse vector and won't match lexical queries, which is honest.
+        var sparse = meta.Hybrid ? SparseVector.Build(ChunkText.Extract(upsert.Payload)) : null;
+
+        var point = new QdrantPoint(pointId, (float[])upsert.Vector.Clone(), sparse, payload);
+        await _client.UpsertPointsAsync(QdrantName(collection), meta.Hybrid, [point], cancellationToken);
 
         return new VectorRecord(upsert.Id, (float[])upsert.Vector.Clone(), upsert.Payload, upsert.Metadata, seq, ts);
     }
@@ -156,7 +164,29 @@ internal sealed class QdrantVectorStore : IVectorStore
         if (point?.Payload is not { } stored) return null;
 
         var (realId, payload, metadata, seq, ts) = ParseStored(stored);
-        return new VectorRecord(realId, point.Vector ?? [], payload, metadata, seq, ts);
+        return new VectorRecord(realId, ExtractDense(point.Vector), payload, metadata, seq, ts);
+    }
+
+    /// <summary>Pull the dense floats out of a retrieved point's vector: a bare array on a 3.1
+    /// collection, or the <c>dense</c> entry of the named map on a hybrid-capable one.</summary>
+    private static float[] ExtractDense(JsonElement? vector)
+    {
+        if (vector is not { } v) return [];
+        var array = v.ValueKind switch
+        {
+            JsonValueKind.Array => v,
+            JsonValueKind.Object when v.TryGetProperty(QdrantClient.DenseVector, out var dense) => dense,
+            _ => default
+        };
+        if (array.ValueKind != JsonValueKind.Array) return [];
+
+        var result = new float[array.GetArrayLength()];
+        var i = 0;
+        foreach (var element in array.EnumerateArray())
+        {
+            result[i++] = element.GetSingle();
+        }
+        return result;
     }
 
     public async Task<bool> DeleteAsync(string collection, string id, CancellationToken cancellationToken = default)
@@ -191,31 +221,53 @@ internal sealed class QdrantVectorStore : IVectorStore
         var limit = hasFilter ? Math.Min(k * _q.OverFetchMultiplier, FilterOverFetchCap) : k;
 
         var scored = await _client.SearchAsync(
-            QdrantName(collection), query.Vector, limit, BuildFilter(query.Filter), _q.EfSearch, cancellationToken);
+            QdrantName(collection), query.Vector, DenseVectorName(meta), limit, BuildFilter(query.Filter), _q.EfSearch, cancellationToken);
 
         var matches = new List<VectorMatch>(Math.Min(scored.Count, k));
         foreach (var point in scored)
         {
-            if (point.Payload is not { } stored) continue;
-            var (realId, payload, metadata, _, _) = ParseStored(stored);
-            matches.Add(new VectorMatch(realId, point.Score, payload, metadata));
+            if (point.Payload is null) continue;
+            matches.Add(ToMatch(point));
             if (matches.Count == k) break;
         }
         return matches;
     }
 
+    /// <summary>The named dense vector on a hybrid-capable collection, or null (unnamed) on a 3.1 one.</summary>
+    private static string? DenseVectorName(CollectionMeta meta) => meta.Hybrid ? QdrantClient.DenseVector : null;
+
+    private static VectorMatch ToMatch(QdrantScoredPoint point)
+    {
+        var (realId, payload, metadata, _, _) = ParseStored(point.Payload ?? throw new InvalidOperationException("Qdrant point has no payload"));
+        return new VectorMatch(realId, point.Score, payload, metadata);
+    }
+
     /// <summary>
-    /// Coarse keyword search (phase 33). Qdrant's full-text index is a filter, not a ranking, so this
-    /// scrolls a bounded slice of the collection and ranks by term-overlap in the chunk text —
-    /// enough to give hybrid a real second branch, but explicitly not BM25. Phase 34 replaces this
-    /// with server-side sparse-vector fusion. Records without a text payload contribute nothing,
-    /// which is honest (the same stance <see cref="ChunkText"/> takes).
+    /// Keyword (lexical) search. On a hybrid-capable collection (v3.2+) this is a real sparse-vector
+    /// search against the collection's IDF-weighted sparse vector, ranked by Qdrant. On a dense-only
+    /// collection created on 3.1 it falls back to the coarse phase-33 path — a bounded scroll ranked
+    /// by term-overlap — because there is no sparse vector to search; such a collection stays coarse
+    /// until re-created or migrated. Records without a text payload contribute nothing either way.
     /// </summary>
     public async Task<IReadOnlyList<VectorMatch>> SearchKeywordAsync(string collection, string query, int k, CancellationToken cancellationToken = default)
     {
-        await RequireMetaAsync(collection, cancellationToken);
+        var meta = await RequireMetaAsync(collection, cancellationToken);
         if (k < 1) return Array.Empty<VectorMatch>();
 
+        if (meta.Hybrid)
+        {
+            var sparse = SparseVector.Build(query);
+            if (sparse is null) return Array.Empty<VectorMatch>();
+            var points = await _client.QuerySparseAsync(QdrantName(collection), sparse, k, filter: null, cancellationToken);
+            return points.Where(p => p.Payload is not null).Select(ToMatch).ToArray();
+        }
+
+        return await CoarseKeywordAsync(collection, query, k, cancellationToken);
+    }
+
+    // Phase-33 coarse keyword, kept for dense-only collections that predate the sparse vector.
+    private async Task<IReadOnlyList<VectorMatch>> CoarseKeywordAsync(string collection, string query, int k, CancellationToken cancellationToken)
+    {
         var terms = Tokenize(query);
         if (terms.Count == 0) return Array.Empty<VectorMatch>();
 
@@ -254,6 +306,47 @@ internal sealed class QdrantVectorStore : IVectorStore
             .Take(k)
             .Select(s => new VectorMatch(s.Id, s.Score, s.Payload, s.Meta))
             .ToArray();
+    }
+
+    public async Task<bool> SupportsServerSideHybridAsync(string collection, CancellationToken cancellationToken = default)
+    {
+        var meta = await RequireMetaAsync(collection, cancellationToken);
+        return meta.Hybrid;
+    }
+
+    /// <summary>
+    /// One fused Query API round trip: a dense prefetch and a sparse (lexical) prefetch reciprocal-
+    /// rank-fused <b>inside Qdrant</b>. The sparse vector is built hub-side from the query text with
+    /// the same tokenizer the local keyword path uses. If the query has no lexical terms, it degrades
+    /// to a pure dense search rather than returning nothing.
+    /// </summary>
+    public async Task<IReadOnlyList<VectorMatch>> SearchHybridAsync(
+        string collection,
+        float[] denseVector,
+        string queryText,
+        int k,
+        IReadOnlyDictionary<string, string>? filter,
+        CancellationToken cancellationToken = default)
+    {
+        var meta = await RequireMetaAsync(collection, cancellationToken);
+        if (denseVector.Length != meta.Dimension)
+        {
+            throw new ArgumentException($"query vector length {denseVector.Length} does not match collection dimension {meta.Dimension}", nameof(denseVector));
+        }
+        if (k < 1) return Array.Empty<VectorMatch>();
+
+        var sparse = SparseVector.Build(queryText);
+        if (sparse is null)
+        {
+            return await QueryAsync(collection, new VectorQuery(denseVector, k, filter), cancellationToken);
+        }
+
+        var hasFilter = filter is { Count: > 0 };
+        var prefetch = hasFilter ? Math.Min(k * _q.OverFetchMultiplier, FilterOverFetchCap) : k;
+        var points = await _client.QueryFusedAsync(
+            QdrantName(collection), denseVector, sparse, prefetch, k, BuildFilter(filter), cancellationToken);
+
+        return points.Where(p => p.Payload is not null).Take(k).Select(ToMatch).ToArray();
     }
 
     public async Task<IReadOnlyList<VectorEntry>> ScanAsync(
@@ -351,7 +444,7 @@ internal sealed class QdrantVectorStore : IVectorStore
         if (info is null) return null;
 
         var metric = FromQdrantDistance(info.Value.Distance);
-        var meta = new CollectionMeta(info.Value.Dimension, metric, metric.ToWireString());
+        var meta = new CollectionMeta(info.Value.Dimension, metric, metric.ToWireString(), info.Value.Hybrid);
         _cache[collection] = meta;
         return meta;
     }
@@ -460,5 +553,5 @@ internal sealed class QdrantVectorStore : IVectorStore
         return count;
     }
 
-    private readonly record struct CollectionMeta(int Dimension, DistanceMetric Metric, string DistanceWire);
+    private readonly record struct CollectionMeta(int Dimension, DistanceMetric Metric, string DistanceWire, bool Hybrid);
 }

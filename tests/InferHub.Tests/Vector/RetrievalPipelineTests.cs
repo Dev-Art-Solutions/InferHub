@@ -297,18 +297,85 @@ public class RetrievalPipelineTests
         Assert.Equal(2, reranker.LastSeenIds!.Count);
     }
 
+    [Fact]
+    public async Task HybridPrefersServerSideFusionWhenTheStoreSupportsIt()
+    {
+        var (options, inner) = NewLocalStore();
+        await inner.CreateCollectionAsync("docs", dimension: 2, distance: "cosine");
+        await SeedExactTermCorpusInto(inner);
+        var store = new HybridCapableStore(inner) { SupportsResult = true };
+        var embeddings = new FakeEmbeddings { Vector = [1f, 0f] };
+        var pipeline = NewPipelineOver(store, embeddings, options);
+
+        const string rawJson = """
+        {"model":"llama3","messages":[{"role":"user","content":"What does error E-4021 mean?"}]}
+        """;
+        var request = JsonSerializer.Deserialize<ChatRequest>(rawJson)!;
+
+        var outcome = await pipeline.AugmentChatAsync(rawJson, request, new RetrievalRequest("docs", K: 2, Model: null, Mode: "hybrid"), CancellationToken.None);
+
+        // The one fused server-side call was taken; the hub did not run two branches and RRF them.
+        Assert.True(store.HybridCalled);
+        Assert.True(outcome.WasAugmented);
+    }
+
+    [Fact]
+    public async Task HybridFallsBackToHubFusionWhenTheStoreIsDenseOnly()
+    {
+        var (options, inner) = NewLocalStore();
+        await inner.CreateCollectionAsync("docs", dimension: 2, distance: "cosine");
+        await SeedExactTermCorpusInto(inner);
+        // A store that advertises the capability interface but reports this collection dense-only.
+        var store = new HybridCapableStore(inner) { SupportsResult = false };
+        var embeddings = new FakeEmbeddings { Vector = [1f, 0f] };
+        var pipeline = NewPipelineOver(store, embeddings, options);
+
+        const string rawJson = """
+        {"model":"llama3","messages":[{"role":"user","content":"What does error E-4021 mean?"}]}
+        """;
+        var request = JsonSerializer.Deserialize<ChatRequest>(rawJson)!;
+
+        var outcome = await pipeline.AugmentChatAsync(rawJson, request, new RetrievalRequest("docs", K: 1, Model: null, Mode: "hybrid"), CancellationToken.None);
+
+        Assert.False(store.HybridCalled);
+        // Hub RRF fusion still recovers the exact-term chunk, exactly as under a plain store.
+        Assert.Equal("code", Assert.Single(outcome.Sources).Id);
+    }
+
     private static async Task<(RetrievalPipeline Pipeline, LocalVectorStore Store, FakeEmbeddings Embeddings)> SeedExactTermCorpusAsync()
     {
         var tuple = NewPipeline();
         await tuple.Store.CreateCollectionAsync("docs", dimension: 2, distance: "cosine");
-        // "prose" is semantically near the query embedding but never mentions the code.
-        await tuple.Store.UpsertAsync("docs", new VectorUpsert("prose", [1f, 0f],
-            Payload: JsonSerializer.SerializeToElement(new { text = "General information about the payment subsystem and its many features and error handling." })));
-        // "code" is semantically far but contains the literal identifier the user asked for.
-        await tuple.Store.UpsertAsync("docs", new VectorUpsert("code", [0f, 1f],
-            Payload: JsonSerializer.SerializeToElement(new { text = "Error E-4021 indicates a checksum mismatch on the uploaded batch." })));
+        await SeedExactTermCorpusInto(tuple.Store);
         return tuple;
     }
+
+    private static async Task SeedExactTermCorpusInto(LocalVectorStore store)
+    {
+        // "prose" is semantically near the query embedding but never mentions the code.
+        await store.UpsertAsync("docs", new VectorUpsert("prose", [1f, 0f],
+            Payload: JsonSerializer.SerializeToElement(new { text = "General information about the payment subsystem and its many features and error handling." })));
+        // "code" is semantically far but contains the literal identifier the user asked for.
+        await store.UpsertAsync("docs", new VectorUpsert("code", [0f, 1f],
+            Payload: JsonSerializer.SerializeToElement(new { text = "Error E-4021 indicates a checksum mismatch on the uploaded batch." })));
+    }
+
+    private static (IOptions<VectorStoreOptions> Options, LocalVectorStore Store) NewLocalStore()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "inferhub-retrieval-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var options = Options.Create(new VectorStoreOptions
+        {
+            Enabled = true,
+            DataDirectory = dir,
+            Distance = "cosine",
+            DefaultEmbeddingModel = "test-embed"
+        });
+        return (options, new LocalVectorStore(options, NullLogger<LocalVectorStore>.Instance));
+    }
+
+    private static RetrievalPipeline NewPipelineOver(IVectorStore store, IEmbeddingDispatcher embeddings, IOptions<VectorStoreOptions> options)
+        => new(options, store, embeddings, new NullQueryRouter(), new PassthroughReranker(), new Metrics(), NullLogger<RetrievalPipeline>.Instance);
 
     private static (RetrievalPipeline Pipeline, LocalVectorStore Store, FakeEmbeddings Embeddings) NewPipeline(
         Action<VectorStoreOptions>? configure = null,
@@ -379,5 +446,50 @@ public class RetrievalPipelineTests
     {
         public Task<IReadOnlyList<VectorMatch>?> TryQueryOnNodeAsync(string collection, VectorQuery query, CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<VectorMatch>?>(null);
+    }
+
+    // A store that advertises server-side hybrid fusion (like Qdrant) by wrapping a local store. It
+    // records whether the pipeline routed hybrid to SearchHybridAsync, and can report a collection as
+    // dense-only via SupportsResult to exercise the hub-fusion fallback.
+    private sealed class HybridCapableStore(IVectorStore inner) : IVectorStore, IServerSideHybridSearch
+    {
+        public bool HybridCalled { get; private set; }
+        public bool SupportsResult { get; init; } = true;
+
+        public Task<bool> SupportsServerSideHybridAsync(string collection, CancellationToken cancellationToken = default)
+            => Task.FromResult(SupportsResult);
+
+        public async Task<IReadOnlyList<VectorMatch>> SearchHybridAsync(
+            string collection, float[] denseVector, string queryText, int k,
+            IReadOnlyDictionary<string, string>? filter, CancellationToken cancellationToken = default)
+        {
+            HybridCalled = true;
+            // Stand in for engine-side fusion: the lexical branch alone is enough to prove the fork
+            // was taken and to augment the prompt.
+            return await inner.SearchKeywordAsync(collection, queryText, k, cancellationToken);
+        }
+
+        public Task<CollectionInfo> CreateCollectionAsync(string name, int dimension, string? distance, CancellationToken cancellationToken = default)
+            => inner.CreateCollectionAsync(name, dimension, distance, cancellationToken);
+        public Task<bool> DropCollectionAsync(string name, CancellationToken cancellationToken = default)
+            => inner.DropCollectionAsync(name, cancellationToken);
+        public Task<IReadOnlyList<CollectionInfo>> ListCollectionsAsync(CancellationToken cancellationToken = default)
+            => inner.ListCollectionsAsync(cancellationToken);
+        public Task<CollectionInfo?> GetCollectionAsync(string name, CancellationToken cancellationToken = default)
+            => inner.GetCollectionAsync(name, cancellationToken);
+        public Task<VectorRecord> UpsertAsync(string collection, VectorUpsert upsert, CancellationToken cancellationToken = default)
+            => inner.UpsertAsync(collection, upsert, cancellationToken);
+        public Task<VectorRecord?> GetAsync(string collection, string id, CancellationToken cancellationToken = default)
+            => inner.GetAsync(collection, id, cancellationToken);
+        public Task<bool> DeleteAsync(string collection, string id, CancellationToken cancellationToken = default)
+            => inner.DeleteAsync(collection, id, cancellationToken);
+        public Task<IReadOnlyList<VectorMatch>> QueryAsync(string collection, VectorQuery query, CancellationToken cancellationToken = default)
+            => inner.QueryAsync(collection, query, cancellationToken);
+        public Task<IReadOnlyList<VectorMatch>> SearchKeywordAsync(string collection, string query, int k, CancellationToken cancellationToken = default)
+            => inner.SearchKeywordAsync(collection, query, k, cancellationToken);
+        public Task<IReadOnlyList<VectorEntry>> ScanAsync(string collection, IReadOnlyDictionary<string, string>? filter, int limit, string? afterId = null, CancellationToken cancellationToken = default)
+            => inner.ScanAsync(collection, filter, limit, afterId, cancellationToken);
+        public Task<int> DeleteByFilterAsync(string collection, IReadOnlyDictionary<string, string> filter, CancellationToken cancellationToken = default)
+            => inner.DeleteByFilterAsync(collection, filter, cancellationToken);
     }
 }

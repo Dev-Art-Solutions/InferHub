@@ -107,10 +107,11 @@ byte-identical to 2.13. Still **zero new dependencies** — the lease is `Npgsql
 | 31 | Client-scoped collections (RAG multi-tenancy) (done) | `v2.13.0` |
 | 32 | Multi-coordinator — standby hub & warm failover (done) | `v3.0.0` |
 | 33 | Qdrant vector connector (done) | `v3.1.0` |
+| 34 | Qdrant-native hybrid search (done) | `v3.2.0` |
 
-**What's next.** With Qdrant behind the `IVectorStore` seam (v3.1, zero new dependencies), the
-Qdrant track continues: **server-side hybrid search** with sparse vectors (v3.2), then Qdrant
-production knobs and a **cross-provider migration tool** that finally copies a populated deployment
+**What's next.** With Qdrant fusing dense + sparse vectors server-side (v3.2, still zero new
+dependencies), the Qdrant track finishes with **production knobs** — quantization, on-disk vectors,
+remote auth — and a **cross-provider migration tool** that finally copies a populated deployment
 between `local`, `postgres` and `qdrant` (v3.3). Also still on the table: **active-active**
 multi-coordinator load sharing, an **OTLP push** exporter behind an explicit opt-in, and a dedicated
 cross-encoder reranker behind the existing `IReranker` seam.
@@ -771,12 +772,20 @@ through all three engines.
 
 - **no node replication, no self-healing, no node-served vector reads** — search runs in Qdrant;
 - the **rebuild** admin endpoint returns `409`; the replica metrics stay at zero and the status
-  `vector` block reports `"provider":"qdrant"` with zeroed replica fields;
-- **keyword search is coarse in this release.** Qdrant's full-text index is a filter, not a ranking,
-  so hybrid retrieval fuses a real vector branch with a rough keyword branch and says so in its logs.
-  Server-side sparse-vector hybrid is the next release.
+  `vector` block reports `"provider":"qdrant"` with zeroed replica fields.
 
 The mesh is intact: **embeddings and inline retrieval still run on the GPU nodes.**
+
+**Hybrid search runs inside Qdrant (v3.2+).** A collection created on 3.2 or later carries a named
+dense vector **and** a sparse (lexical) vector, so a `hybrid` retrieval is one Query API round trip
+that Qdrant fuses by reciprocal rank fusion — a dense embedding and an exact-term branch ranked at
+once, in the engine, instead of the hub stitching two searches together. The sparse vector is
+computed on the coordinator from the same tokenizer the local BM25 index uses (so `local` and
+`qdrant` agree on the lexical view of a chunk) and is IDF-weighted by Qdrant server-side, so it still
+adds **no dependency**. `keyword` mode is now a real sparse-vector search too, not the coarse
+phase-33 filter. Default retrieval is still `vector`, so a deployment that sends no headers is
+unchanged. A collection created on **3.1 stays dense-only** — it keeps answering vector queries after
+you upgrade, and its keyword search stays coarse until it is re-created or migrated (v3.3).
 
 **No migration path yet.** As with Postgres, switching providers on a populated deployment means
 re-ingesting — there is no built-in copy between backends.
@@ -942,7 +951,9 @@ per-request and both off by default:
   by **Reciprocal Rank Fusion** (by rank, not by blending scores that live on different
   scales). Hybrid is the one you usually want — it recovers the exact-match case without
   giving up the semantic one. Keyword search is provider-native (Postgres full-text under
-  `postgres`, an in-memory BM25 index under `local`) and added **zero dependencies**.
+  `postgres`, an in-memory BM25 index under `local`, an IDF-weighted sparse vector under
+  `qdrant`) and added **zero dependencies**. Under `qdrant` (v3.2+) the fusion itself runs
+  **server-side** — one Query API round trip instead of two branches fused on the hub.
 - **Reranking** via `X-InferHub-Rerank: true`: an opt-in pass that hands the top
   candidates to a chat model already on your fleet with a scoring prompt and reorders
   them. It costs a round trip, so it is off unless asked, hard-capped by

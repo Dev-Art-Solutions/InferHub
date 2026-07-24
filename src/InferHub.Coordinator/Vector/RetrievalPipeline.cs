@@ -122,35 +122,35 @@ public sealed class RetrievalPipeline(
         // searches only ever need k.
         var branchK = mode == RetrievalMode.Hybrid ? Math.Max(k, opts.CandidatesPerBranch) : k;
 
-        IReadOnlyList<VectorMatch> vectorMatches = Array.Empty<VectorMatch>();
-        IReadOnlyList<VectorMatch> keywordMatches = Array.Empty<VectorMatch>();
+        // Null means the vector branch had no embedding node; HandleMissing has already run and the
+        // whole retrieval passes through / errors per OnMissing.
+        IReadOnlyList<VectorMatch>? fused;
 
         var started = Stopwatch.GetTimestamp();
         try
         {
-            if (mode is RetrievalMode.Vector or RetrievalMode.Hybrid)
+            // Server-side hybrid fusion (Qdrant, hybrid-capable collections): one round trip fuses the
+            // dense and sparse branches inside the engine, instead of running two branches and RRF-ing
+            // on the hub. Keyword mode's sparse search is already internal to the store's
+            // SearchKeywordAsync, so only hybrid mode needs this fork.
+            if (mode == RetrievalMode.Hybrid
+                && store is IServerSideHybridSearch hybrid
+                && await hybrid.SupportsServerSideHybridAsync(retrieval.Collection, cancellationToken))
             {
-                var v = await VectorBranchAsync(retrieval, queryText, branchK, cancellationToken);
-                if (v is null)
-                {
-                    // Embedding was unavailable; HandleMissing already decided error vs passthrough.
-                    return null;
-                }
-                vectorMatches = v;
-            }
-
-            if (mode is RetrievalMode.Keyword or RetrievalMode.Hybrid)
-            {
-                // Keyword search is always hub-local: node replicas (phase 15) serve vector reads
-                // only, so the keyword branch runs against the hub's inverted index rather than
-                // silently dropping to vector-only. Recorded here so that fall-through is visible.
-                keywordMatches = await store.SearchKeywordAsync(retrieval.Collection, queryText, branchK, cancellationToken);
-                if (mode == RetrievalMode.Hybrid)
+                var vector = await EmbedAsync(retrieval, queryText, cancellationToken);
+                fused = vector is null
+                    ? null
+                    : await hybrid.SearchHybridAsync(retrieval.Collection, vector, queryText, branchK, filter: null, cancellationToken);
+                if (fused is not null)
                 {
                     logger.LogInformation(
-                        "Hybrid retrieval for collection {Collection}: keyword branch served hub-local (node replicas serve vector only)",
+                        "Hybrid retrieval for collection {Collection}: dense+sparse fused server-side by Qdrant",
                         retrieval.Collection);
                 }
+            }
+            else
+            {
+                fused = await BranchAndFuseAsync(retrieval, queryText, mode, branchK, cancellationToken);
             }
         }
         catch (KeyNotFoundException)
@@ -163,14 +163,65 @@ public sealed class RetrievalPipeline(
             metrics.RecordVectorQuery(retrieval.Collection, Stopwatch.GetElapsedTime(started));
         }
 
-        var fused = mode switch
+        if (fused is null) return null;
+        return await MaybeRerankAsync(retrieval, queryText, chatModel, fused, k, cancellationToken);
+    }
+
+    /// <summary>
+    /// The provider-agnostic path: run the vector and/or keyword branches on the hub and fuse hybrid
+    /// results with RRF. Returns null when the vector branch had no embedding node (HandleMissing
+    /// already ran).
+    /// </summary>
+    private async Task<IReadOnlyList<VectorMatch>?> BranchAndFuseAsync(
+        RetrievalRequest retrieval,
+        string queryText,
+        RetrievalMode mode,
+        int branchK,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<VectorMatch> vectorMatches = Array.Empty<VectorMatch>();
+        IReadOnlyList<VectorMatch> keywordMatches = Array.Empty<VectorMatch>();
+
+        if (mode is RetrievalMode.Vector or RetrievalMode.Hybrid)
+        {
+            var v = await VectorBranchAsync(retrieval, queryText, branchK, cancellationToken);
+            if (v is null) return null;
+            vectorMatches = v;
+        }
+
+        if (mode is RetrievalMode.Keyword or RetrievalMode.Hybrid)
+        {
+            // Keyword search is always hub-local: node replicas (phase 15) serve vector reads only, so
+            // the keyword branch runs against the hub rather than silently dropping to vector-only.
+            keywordMatches = await store.SearchKeywordAsync(retrieval.Collection, queryText, branchK, cancellationToken);
+            if (mode == RetrievalMode.Hybrid)
+            {
+                logger.LogInformation(
+                    "Hybrid retrieval for collection {Collection}: keyword branch served hub-local, fused on the hub (RRF)",
+                    retrieval.Collection);
+            }
+        }
+
+        return mode switch
         {
             RetrievalMode.Vector => vectorMatches,
             RetrievalMode.Keyword => keywordMatches,
             _ => HybridSearch.Fuse(vectorMatches, keywordMatches, branchK)
         };
+    }
 
-        return await MaybeRerankAsync(retrieval, queryText, chatModel, fused, k, cancellationToken);
+    /// <summary>Embed the query on a node, or null (after HandleMissing) if no embedding node is up.</summary>
+    private async Task<float[]?> EmbedAsync(RetrievalRequest retrieval, string queryText, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await embeddings.EmbedSingleAsync(queryText, retrieval.Model, cancellationToken);
+        }
+        catch (NoEmbeddingNodeException ex)
+        {
+            HandleMissing(ex.Message);
+            return null;
+        }
     }
 
     private async Task<IReadOnlyList<VectorMatch>?> VectorBranchAsync(
@@ -179,16 +230,8 @@ public sealed class RetrievalPipeline(
         int k,
         CancellationToken cancellationToken)
     {
-        float[] vector;
-        try
-        {
-            vector = await embeddings.EmbedSingleAsync(queryText, retrieval.Model, cancellationToken);
-        }
-        catch (NoEmbeddingNodeException ex)
-        {
-            HandleMissing(ex.Message);
-            return null;
-        }
+        var vector = await EmbedAsync(retrieval, queryText, cancellationToken);
+        if (vector is null) return null;
 
         var query = new VectorQuery(Vector: vector, K: k);
         var nodeMatches = await queryRouter.TryQueryOnNodeAsync(retrieval.Collection, query, cancellationToken);

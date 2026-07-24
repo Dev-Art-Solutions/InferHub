@@ -110,6 +110,8 @@ the seam; three implementations sit behind it, selected by `VectorStore:Provider
 - **`QdrantVectorStore`** ([Vector/Qdrant/](src/InferHub.Coordinator/Vector/Qdrant/), phase 33) —
   Qdrant over a hand-rolled REST `QdrantClient` (no dependency); publishes its own lifecycle
   events and returns the same `FlatIndex` score conventions (Qdrant reports them with no sign flip).
+  Since phase 34 it also fuses dense + sparse **server-side** (`IServerSideHybridSearch`) for
+  collections created on 3.2+; collections created on 3.1 stay dense-only until migrated.
 
 `postgres` and `qdrant` are **external providers** — `VectorStoreProviderExtensions.IsExternal` is
 the one predicate every call site (`Program.cs`, `StatusEndpoint`, `VectorEndpoints`) branches on,
@@ -869,6 +871,46 @@ branch, explicitly not BM25. Phase 34 replaces it with server-side sparse-vector
 no text payload contribute nothing, the same stance `ChunkText` takes.
 
 **Rule 5 survived again.** Phase 33 added **zero** new dependencies.
+
+### Phase 34 (Qdrant-native hybrid search) — also load-bearing
+
+**D1 — Under qdrant, hybrid fusion moves into the engine; the seam grows a capability, not a
+method.** Qdrant's Query API fuses a dense and a sparse (lexical) vector server-side by RRF in one
+round trip. That is a better hybrid than the hub fusing a real dense branch with the phase-33 coarse
+keyword branch — so a new capability interface,
+[IServerSideHybridSearch](src/InferHub.Coordinator/Vector/IServerSideHybridSearch.cs), carries it.
+Only `QdrantVectorStore` implements it; `RetrievalPipeline` prefers it when
+`store is IServerSideHybridSearch h && await h.SupportsServerSideHybridAsync(collection)` and **falls
+back to hub RRF otherwise** (a dense-only 3.1 collection, or `local`/`postgres`). It is deliberately
+**not** a method on `IVectorStore` — the seam already carries three engines and only one can fuse
+server-side; the other two must not grow a method they would have to fake. Same "one implementation
+behind a seam" shape as `IReranker`. Keyword mode needs no pipeline fork: the store's
+`SearchKeywordAsync` is a real sparse-vector search on a hybrid-capable collection and the coarse
+scroll on a dense-only one. `RetrievalPipelineTests` pins both the server-side fork and the fallback
+with a decorator store, crossing no wire.
+
+**D2 — The sparse vector is hub-computed and IDF is Qdrant's job, so rule 5 held again — zero
+dependencies.** [SparseVector](src/InferHub.Coordinator/Vector/Qdrant/SparseVector.cs) turns text
+into `{indices, values}` where indices are a stable FNV-1a hash of each token and values are raw term
+frequencies. The tokens are **exactly** `InvertedIndex.Tokenize`'s, so "the lexical view of a chunk"
+means the same thing under `local` and `qdrant` (`SparseVectorTests` pins that parity). No sparse
+model, no corpus statistics threaded through the hub: the collection's sparse vector is declared with
+`modifier: idf`, so **Qdrant applies the inverse-document-frequency weighting server-side**. A rare
+hash collision merely conflates two terms — acceptable and honest for a lexical branch.
+
+**D3 — Hybrid-capable collections are named-vector collections; 3.1 collections stay dense-only, by
+design.** A collection created on 3.2+ has a **named** dense vector (`"dense"`) plus a named sparse
+vector (`"sparse"`), so every points/search/retrieve call branches on `CollectionMeta.Hybrid`: a
+hybrid collection addresses `dense` by name and writes `{dense, sparse}`, a 3.1 collection uses the
+unnamed shape. `QdrantClient.GetCollectionAsync` reads both wire shapes (unnamed `vectors:{size,…}`
+vs named `vectors:{dense:{…}}` + `sparse_vectors:{sparse:{…}}`) and reports the flag. A collection
+created on 3.1 keeps answering **vector** queries after upgrade and its keyword search stays coarse
+until it is re-created or migrated (phase 35) — `QdrantVectorStoreTests` pins the dense-only
+compatibility path. The default retrieval mode is still `vector`, so a deployment that sends no
+headers and changes no config is byte-identical to 3.1.
+
+**Rule 5 survived again.** Phase 34 added **zero** new dependencies: the sparse vector is hub-computed
+over `System.Text.Json`, and the Query API is more hand-rolled REST on the existing `QdrantClient`.
 
 ## Auth model (three independent token sets)
 

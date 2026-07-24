@@ -37,7 +37,7 @@ public class QdrantClientTests
         var client = Client(stub);
 
         var filter = new QdrantFilter([new QdrantFieldCondition("__meta.documentId", new QdrantMatch("handbook"))]);
-        var results = await client.SearchAsync("inferhub_docs", [1f, 0f], limit: 5, filter, efSearch: 40, CancellationToken.None);
+        var results = await client.SearchAsync("inferhub_docs", [1f, 0f], vectorName: "dense", limit: 5, filter, efSearch: 40, CancellationToken.None);
 
         Assert.Equal("/collections/inferhub_docs/points/search", stub.LastPath);
         var body = stub.LastBody();
@@ -46,6 +46,8 @@ public class QdrantClientTests
         Assert.False(body.GetProperty("with_vector").GetBoolean());
         Assert.Equal(40, body.GetProperty("params").GetProperty("hnsw_ef").GetInt32());
         Assert.Equal("handbook", body.GetProperty("filter").GetProperty("must")[0].GetProperty("match").GetProperty("value").GetString());
+        // A hybrid-capable collection names its dense vector: {"vector":{"name":"dense","vector":[...]}}.
+        Assert.Equal("dense", body.GetProperty("vector").GetProperty("name").GetString());
 
         Assert.Single(results);
         Assert.Equal(0.91, results[0].Score, 3);
@@ -127,8 +129,69 @@ public class QdrantClientTests
         Assert.Contains("Wrong vector size", ex.Message);
     }
 
+    [Fact]
+    public async Task CreateHybridCollectionDeclaresNamedDenseAndIdfSparseVectors()
+    {
+        var stub = RecordingHandler.Ok("""{"result":true,"status":"ok"}""");
+        var client = Client(stub);
+
+        await client.CreateHybridCollectionAsync("inferhub_docs", 768, DistanceMetric.Cosine, hnswM: 16, hnswEfConstruct: 64, CancellationToken.None);
+
+        var body = stub.LastBody();
+        // Dense vector is *named* now, so hybrid queries can address it by name.
+        Assert.Equal(768, body.GetProperty("vectors").GetProperty("dense").GetProperty("size").GetInt32());
+        Assert.Equal("Cosine", body.GetProperty("vectors").GetProperty("dense").GetProperty("distance").GetString());
+        // The sparse vector is declared with modifier=idf so Qdrant weights it by IDF server-side.
+        Assert.Equal("idf", body.GetProperty("sparse_vectors").GetProperty("sparse").GetProperty("modifier").GetString());
+    }
+
+    [Fact]
+    public async Task QueryFusedSendsDenseAndSparsePrefetchWithRrfFusion()
+    {
+        var stub = RecordingHandler.Ok("""{"result":{"points":[{"score":0.5,"payload":{"__id":"a"}}]}}""");
+        var client = Client(stub);
+
+        var sparse = new QdrantSparse([7u, 42u], [1f, 2f]);
+        var results = await client.QueryFusedAsync("inferhub_docs", [1f, 0f], sparse, prefetchLimit: 20, limit: 5, filter: null, CancellationToken.None);
+
+        Assert.Equal("/collections/inferhub_docs/points/query", stub.LastPath);
+        var body = stub.LastBody();
+
+        var prefetch = body.GetProperty("prefetch");
+        Assert.Equal(2, prefetch.GetArrayLength());
+        Assert.Equal("dense", prefetch[0].GetProperty("using").GetString());
+        Assert.Equal(20, prefetch[0].GetProperty("limit").GetInt32());
+        Assert.Equal("sparse", prefetch[1].GetProperty("using").GetString());
+        Assert.Equal(7, prefetch[1].GetProperty("query").GetProperty("indices")[0].GetInt32());
+
+        Assert.Equal("rrf", body.GetProperty("query").GetProperty("fusion").GetString());
+        Assert.Equal(5, body.GetProperty("limit").GetInt32());
+
+        // Response is read from result.points (Query API), not result[] (search).
+        Assert.Equal("a", RealId(Assert.Single(results)));
+    }
+
+    [Fact]
+    public async Task QuerySparseSearchesTheSparseVectorByName()
+    {
+        var stub = RecordingHandler.Ok("""{"result":{"points":[]}}""");
+        var client = Client(stub);
+
+        var sparse = new QdrantSparse([3u], [1f]);
+        await client.QuerySparseAsync("inferhub_docs", sparse, limit: 4, filter: null, CancellationToken.None);
+
+        Assert.Equal("/collections/inferhub_docs/points/query", stub.LastPath);
+        var body = stub.LastBody();
+        Assert.Equal("sparse", body.GetProperty("using").GetString());
+        Assert.Equal(3, body.GetProperty("query").GetProperty("indices")[0].GetInt32());
+        Assert.Equal(4, body.GetProperty("limit").GetInt32());
+    }
+
     private static QdrantClient Client(RecordingHandler stub)
         => new(QdrantClient.Configure(new HttpClient(stub), "http://localhost:6333", null, 30));
+
+    private static string RealId(QdrantScoredPoint point)
+        => point.Payload!.Value.GetProperty("__id").GetString()!;
 
     private sealed class RecordingHandler : HttpMessageHandler
     {

@@ -1,6 +1,8 @@
+using System.Text.Json;
 using InferHub.Coordinator.Vector;
 using InferHub.Coordinator.Vector.Qdrant;
 using InferHub.Shared.Vector;
+using InferHub.Shared.Vector.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -222,6 +224,78 @@ public class QdrantVectorStoreTests : IAsyncLifetime
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
             store.DeleteByFilterAsync(name, new Dictionary<string, string>()));
+    }
+
+    // --- Phase 34: Qdrant-native hybrid search --------------------------------------------
+
+    [QdrantFact]
+    public async Task SparseKeywordSearchRecoversExactTermPureDenseMisses()
+    {
+        var store = NewStore("cosine");
+        var name = NewName();
+        await store.CreateCollectionAsync(name, 2, "cosine");
+        await SeedExactTermCorpusAsync(store, name);
+
+        // Pure dense search prefers the prose chunk for this query embedding.
+        var dense = await store.QueryAsync(name, new VectorQuery([1f, 0f], K: 1));
+        Assert.Equal("prose", Assert.Single(dense).Id);
+
+        // The sparse-vector keyword search (real, not the phase-33 coarse scroll) pulls the exact code.
+        var keyword = await store.SearchKeywordAsync(name, "E-4021", 1);
+        Assert.Equal("code", Assert.Single(keyword).Id);
+    }
+
+    [QdrantFact]
+    public async Task ServerSideHybridFusesDenseAndSparseAndRecoversTheExactTerm()
+    {
+        var store = NewStore("cosine");
+        var name = NewName();
+        await store.CreateCollectionAsync(name, 2, "cosine");
+        await SeedExactTermCorpusAsync(store, name);
+
+        Assert.True(await store.SupportsServerSideHybridAsync(name));
+
+        // Dense favours "prose"; the fused query must still recover "code" from the sparse branch.
+        var hybrid = await store.SearchHybridAsync(name, [1f, 0f], "error E-4021", k: 2, filter: null);
+        var ids = hybrid.Select(m => m.Id).ToArray();
+        Assert.Contains("code", ids);
+        Assert.Contains("prose", ids);
+    }
+
+    [QdrantFact]
+    public async Task DenseOnly31CollectionStillAnswersVectorQueriesAndReportsNoHybrid()
+    {
+        // Simulate a collection created on 3.1: a single unnamed dense vector, no sparse vector.
+        var name = NewName();
+        using var legacy = new HttpClient();
+        var legacyClient = new QdrantClient(QdrantClient.Configure(legacy, Url!, null, 30));
+        await legacyClient.CreateCollectionAsync(_prefix + name, 3, DistanceMetric.Cosine, 16, 64, CancellationToken.None);
+
+        var store = NewStore("cosine");
+        Assert.False(await store.SupportsServerSideHybridAsync(name));
+
+        await store.UpsertAsync(name, new VectorUpsert("x", [1f, 0f, 0f],
+            Payload: JsonSerializer.SerializeToElement(new { text = "checksum mismatch" })));
+
+        var got = await store.GetAsync(name, "x");
+        Assert.Equal([1f, 0f, 0f], got!.Vector);
+
+        var matches = await store.QueryAsync(name, new VectorQuery([1f, 0f, 0f], K: 1));
+        Assert.Equal("x", Assert.Single(matches).Id);
+
+        // Keyword falls back to the coarse phase-33 path on a dense-only collection — still answers.
+        var keyword = await store.SearchKeywordAsync(name, "checksum", 1);
+        Assert.Equal("x", Assert.Single(keyword).Id);
+    }
+
+    private static async Task SeedExactTermCorpusAsync(QdrantVectorStore store, string name)
+    {
+        // "prose" is semantically near the query embedding but never mentions the code; "code" is
+        // semantically far but carries the literal identifier — the case hybrid exists to handle.
+        await store.UpsertAsync(name, new VectorUpsert("prose", [1f, 0f],
+            Payload: JsonSerializer.SerializeToElement(new { text = "General information about the payment subsystem and its features and error handling." })));
+        await store.UpsertAsync(name, new VectorUpsert("code", [0f, 1f],
+            Payload: JsonSerializer.SerializeToElement(new { text = "Error E-4021 indicates a checksum mismatch on the uploaded batch." })));
     }
 
     private string NewName()
