@@ -108,13 +108,14 @@ byte-identical to 2.13. Still **zero new dependencies** — the lease is `Npgsql
 | 32 | Multi-coordinator — standby hub & warm failover (done) | `v3.0.0` |
 | 33 | Qdrant vector connector (done) | `v3.1.0` |
 | 34 | Qdrant-native hybrid search (done) | `v3.2.0` |
+| 35 | Qdrant production knobs + cross-provider migration (done) | `v3.3.0` |
 
-**What's next.** With Qdrant fusing dense + sparse vectors server-side (v3.2, still zero new
-dependencies), the Qdrant track finishes with **production knobs** — quantization, on-disk vectors,
-remote auth — and a **cross-provider migration tool** that finally copies a populated deployment
-between `local`, `postgres` and `qdrant` (v3.3). Also still on the table: **active-active**
-multi-coordinator load sharing, an **OTLP push** exporter behind an explicit opt-in, and a dedicated
-cross-encoder reranker behind the existing `IReranker` seam.
+**What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
+and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. Still on the
+table: **active-active** multi-coordinator load sharing, an **OTLP push** exporter behind an explicit
+opt-in, and a dedicated cross-encoder reranker behind the existing `IReranker` seam. A fourth vector
+backend (Milvus, Weaviate) is the same shape as the third and will ship on real demand rather than
+for the comparison matrix.
 
 ## Quick start
 
@@ -728,9 +729,9 @@ sign-conventions match the local provider exactly (`cosine`/`dot` higher-is-bett
 The mesh is intact: **embeddings and inline retrieval still run on the GPU nodes** — only the
 storage engine changed.
 
-**No migration path yet.** Switching providers on a populated deployment means re-ingesting;
-there is no built-in copy between `local` and `postgres`. Don't flip the switch expecting your
-data to follow.
+**Moving an existing deployment here** — see [Migrating between vector
+providers](#migrating-between-vector-providers-v33): `inferhub-migrate` copies a populated `local`
+or `qdrant` store into Postgres without re-ingesting the original documents.
 
 **Walk-through** (compose stack in [`deploy/postgres/`](deploy/postgres/docker-compose.yml)):
 
@@ -785,10 +786,35 @@ computed on the coordinator from the same tokenizer the local BM25 index uses (s
 adds **no dependency**. `keyword` mode is now a real sparse-vector search too, not the coarse
 phase-33 filter. Default retrieval is still `vector`, so a deployment that sends no headers is
 unchanged. A collection created on **3.1 stays dense-only** — it keeps answering vector queries after
-you upgrade, and its keyword search stays coarse until it is re-created or migrated (v3.3).
+you upgrade, and its keyword search stays coarse until it is re-created or re-populated through
+`inferhub-migrate` (v3.3), which creates the target collection in the current shape.
 
-**No migration path yet.** As with Postgres, switching providers on a populated deployment means
-re-ingesting — there is no built-in copy between backends.
+**Production knobs (v3.3+).** A Qdrant that is more than a demo wants three things a default
+collection does not have, and they are all `VectorStore:Qdrant:` settings applied when a collection
+is created:
+
+- **Quantization** — `scalar` stores vectors as int8 (roughly 4× less vector memory), `binary` as one
+  bit per dimension (roughly 32×, and materially lossy). This is a **memory-for-recall trade, not a
+  free win**: quantized vectors rank approximately. Measure the loss on your own corpus with the
+  [eval harness](tools/InferHub.Eval) before deciding it is acceptable — that is what it is for.
+- **On-disk vectors** — `OnDisk=true` keeps dense vectors on disk instead of in RAM. For a collection
+  larger than the memory you will give it, this is the difference between running and not; the cost
+  is disk reads on the search path. Pairs naturally with quantization, whose small vectors stay
+  resident.
+- **Payload indexing** — `PayloadIndexKeys` (default `["documentId"]`) builds a Qdrant payload index
+  per metadata key at collection creation. Ingestion's document scans and filtered deletes are all
+  payload filters, and an unindexed payload filter is a full scan: cheap on a demo collection, the
+  difference between a second and a minute on a real one.
+
+Existing collections are untouched by any of these — they apply at creation, so re-create or migrate
+a collection to adopt them.
+
+**Remote Qdrant needs a key, and InferHub says so.** Qdrant ships unauthenticated, which is fine on
+localhost and a data leak anywhere else: anything that can reach the port can read and delete your
+vectors *and the chunk text stored with them*. Point the coordinator at a non-loopback `Url` with no
+`ApiKey` and it **warns at startup** with that sentence. It is a warning and not a refusal on
+purpose — a private network with its own controls is a legitimate deployment, and refusing to boot
+would be us overruling an operator about their own network. TLS is just an `https://` `Url`.
 
 **Walk-through** (compose stack in [`deploy/qdrant/`](deploy/qdrant/docker-compose.yml)):
 
@@ -810,6 +836,64 @@ curl -X POST http://localhost:5080/api/vector/docs/upsert \
 curl -X POST http://localhost:5080/api/vector/docs/query \
   -d '{"vector":[1,0,0],"k":3}'
 ```
+
+### Migrating between vector providers (v3.3+)
+
+Every release since the store became pluggable carried the same caveat: switching providers on a
+populated deployment meant re-ingesting from the original documents — awkward advice from a system
+that deliberately **does not keep** your original documents. [`inferhub-migrate`](tools/InferHub.Migrate)
+deletes that caveat. It reads every chunk *and vector* out of one provider and writes them into
+another: `local` ↔ `postgres` ↔ `qdrant`, any pair, either direction.
+
+```bash
+# Dry run first: what would be copied, and where.
+dotnet run --project tools/InferHub.Migrate -- \
+  --from local:./data/vectors --to qdrant:http://localhost:6333 --dry-run
+
+# Then for real.
+dotnet run --project tools/InferHub.Migrate -- \
+  --from local:./data/vectors --to qdrant:http://localhost:6333
+```
+
+Each side is either a **provider shorthand** (`local:./data/vectors`, `qdrant:http://localhost:6333`,
+`postgres:Host=…`) or the **path to a JSON config file** holding a `VectorStore` section — a
+coordinator's own `appsettings.json` will do, which is the honest way to migrate with the exact
+settings the hub uses. A secret on a command line ends up in shell history, so prefer the file form
+when a connection string or an API key is involved (`--from-key` / `--to-key` exist for the Qdrant
+key when you'd rather not).
+
+| Flag | Purpose |
+|---|---|
+| `--from` / `--to` | Provider shorthand or JSON config path. **Required.** |
+| `--collection <name>` | Copy just this one collection (default: all of them). |
+| `--dry-run` | Report the plan and write nothing. |
+| `--batch-size <n>` | Records read per page (default 256). |
+| `--parallel <n>` | Concurrent upserts into the target (default 4). |
+| `--from-key` / `--to-key` | Qdrant API key for that side. |
+
+**What it does and does not do.**
+
+- It creates each collection on the target with the **same dimension and distance**, then streams
+  records across in pages. A target collection that already exists with a *different* shape is
+  **skipped with a reason**, not half-filled.
+- **Re-running is safe.** Chunk ids are deterministic (v2.5), so a second run overwrites rather than
+  duplicating, and an interrupted run is resumed by simply running it again.
+- **It never deletes.** A record in the target that is not in the source is left alone: a migration
+  tool that removes data nobody asked it to remove is a worse failure than one that leaves a stale
+  record behind.
+- It reports the target's own record count per collection at the end, and **exits non-zero** if any
+  collection was skipped or came up short. "The upserts returned" is not the same claim as "the data
+  is there."
+- It is a **separate console tool and is not in the images** — moving data between stores is an
+  operator's deliberate action, never something a running coordinator should do to itself.
+- Migrating *into* Qdrant creates collections in the current (v3.2+) hybrid shape, so this is also
+  how a dense-only collection created on v3.1 gains server-side hybrid search.
+
+**One surprise worth naming:** Qdrant stores the **unit-normalised** vector in a `cosine` collection
+(under `dot` and `l2` it stores exactly what you sent). So a cosine collection migrated *out of*
+Qdrant carries normalised vectors — same direction, length 1. That is safe, because cosine is
+scale-invariant and the target returns the same ids in the same order with the same scores; it is
+called out here only so that nobody diffing raw floats across a migration concludes the copy broke.
 
 ### Document ingestion (v2.5+)
 
@@ -986,7 +1070,7 @@ Coordinator keys (all under `VectorStore:`):
 | Key | Default | Purpose |
 |---|---|---|
 | `VectorStore:Enabled` | `false` | Master switch. Off = no persisted state, old contract. |
-| `VectorStore:Provider` | `local` | Backend: `local` (file-backed, replicated) \| `postgres` (external pgvector). **(v2.2+)** |
+| `VectorStore:Provider` | `local` | Backend: `local` (file-backed, replicated) \| `postgres` (external pgvector, **v2.2+**) \| `qdrant` (external, **v3.1+**). |
 | `VectorStore:DataDirectory` | `./data/vectors` | Raw store + snapshots on the coordinator. Local provider only. |
 | `VectorStore:Distance` | `cosine` | Default similarity metric (`cosine` \| `dot` \| `l2`). |
 | `VectorStore:ReplicationFactor` | `2` | Target node replicas per collection (capped at connected node count). Local provider only. |
@@ -1020,6 +1104,23 @@ Postgres provider keys (all under `VectorStore:Postgres:`, used only when `Provi
 | `VectorStore:Postgres:EfSearch` | `40` | Per-query `hnsw.ef_search` (higher = better recall, slower). |
 | `VectorStore:Postgres:CommandTimeoutSeconds` | `30` | Npgsql command timeout. |
 | `VectorStore:Postgres:MaxPoolSize` | `20` | Max pool size, applied if the connection string doesn't set one. |
+
+Qdrant provider keys (all under `VectorStore:Qdrant:`, used only when `Provider=qdrant`) **(v3.1+)**:
+
+| Key | Default | Purpose |
+|---|---|---|
+| `VectorStore:Qdrant:Url` | _(empty)_ | Qdrant REST base URL, e.g. `http://localhost:6333`. **Required.** `https://` for TLS. |
+| `VectorStore:Qdrant:ApiKey` | _(empty)_ | Sent as the `api-key` header. Set via env (`VectorStore__Qdrant__ApiKey`) or user-secrets — never commit it. A non-loopback `Url` without one **warns at startup**. **(v3.3+)** |
+| `VectorStore:Qdrant:TimeoutSeconds` | `30` | HTTP timeout. |
+| `VectorStore:Qdrant:CollectionPrefix` | `inferhub_` | Prefix on the Qdrant collection name, so a shared Qdrant can host other apps' collections (`^[a-z_][a-z0-9_]*$`). |
+| `VectorStore:Qdrant:UpsertBatchSize` | `128` | Points per upsert request. |
+| `VectorStore:Qdrant:OverFetchMultiplier` | `4` | Filtered-ANN over-fetch multiple, trimmed back to `k`. |
+| `VectorStore:Qdrant:HnswM` | `16` | HNSW `m` build parameter for new collections. |
+| `VectorStore:Qdrant:HnswEfConstruct` | `64` | HNSW `ef_construct` build parameter for new collections. |
+| `VectorStore:Qdrant:EfSearch` | _(Qdrant default)_ | Per-query HNSW `ef` (higher = better recall, slower). |
+| `VectorStore:Qdrant:Quantization` | `none` | `none` \| `scalar` (int8, ~4× less vector memory) \| `binary` (~32×, lossy). A memory-for-recall trade — measure it. Applied at collection creation. **(v3.3+)** |
+| `VectorStore:Qdrant:OnDisk` | `false` | Store dense vectors on disk instead of RAM. Applied at collection creation. **(v3.3+)** |
+| `VectorStore:Qdrant:PayloadIndexKeys` | `["documentId"]` | Metadata keys to build a payload index on at collection creation. Empty list = index nothing. **(v3.3+)** |
 
 Node keys (all under `Vector:`, only used when the node holds a replica — local provider):
 

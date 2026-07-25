@@ -60,12 +60,13 @@ internal sealed class QdrantClient(HttpClient http)
     /// 3.1 shape. Kept for round-tripping collections created before phase 34; new collections go
     /// through <see cref="CreateHybridCollectionAsync"/>.</summary>
     public async Task CreateCollectionAsync(
-        string qdrantName, int dimension, DistanceMetric metric, int hnswM, int hnswEfConstruct, CancellationToken cancellationToken)
+        string qdrantName, int dimension, DistanceMetric metric, QdrantCollectionBuild build, CancellationToken cancellationToken)
     {
         var body = new QdrantCreateCollection(
-            JsonSerializer.SerializeToElement(new QdrantVectorParams(dimension, ToQdrantDistance(metric)), JsonOptions),
+            JsonSerializer.SerializeToElement(VectorParams(dimension, metric, build), JsonOptions),
             SparseVectors: null,
-            new QdrantHnswConfig(hnswM, hnswEfConstruct));
+            new QdrantHnswConfig(build.HnswM, build.HnswEfConstruct),
+            QuantizationConfig(build.Quantization));
         await SendAsync(HttpMethod.Put, $"collections/{qdrantName}", body, cancellationToken);
     }
 
@@ -77,21 +78,47 @@ internal sealed class QdrantClient(HttpClient http)
     /// migrated (phase 35).
     /// </summary>
     public async Task CreateHybridCollectionAsync(
-        string qdrantName, int dimension, DistanceMetric metric, int hnswM, int hnswEfConstruct, CancellationToken cancellationToken)
+        string qdrantName, int dimension, DistanceMetric metric, QdrantCollectionBuild build, CancellationToken cancellationToken)
     {
         var vectors = JsonSerializer.SerializeToElement(
             new Dictionary<string, QdrantVectorParams>(StringComparer.Ordinal)
             {
-                [DenseVector] = new QdrantVectorParams(dimension, ToQdrantDistance(metric))
+                [DenseVector] = VectorParams(dimension, metric, build)
             },
             JsonOptions);
         var sparse = new Dictionary<string, QdrantSparseParams>(StringComparer.Ordinal)
         {
             [SparseVector] = new QdrantSparseParams("idf")
         };
-        var body = new QdrantCreateCollection(vectors, sparse, new QdrantHnswConfig(hnswM, hnswEfConstruct));
+        var body = new QdrantCreateCollection(
+            vectors, sparse, new QdrantHnswConfig(build.HnswM, build.HnswEfConstruct), QuantizationConfig(build.Quantization));
         await SendAsync(HttpMethod.Put, $"collections/{qdrantName}", body, cancellationToken);
     }
+
+    /// <summary>
+    /// Builds a Qdrant payload index over one payload path. Ingestion's document scans and filtered
+    /// deletes are payload filters, and an unindexed payload filter is a full scan — cheap on a demo
+    /// collection, the difference between a second and a minute on a real one.
+    /// </summary>
+    public async Task CreatePayloadIndexAsync(string qdrantName, string fieldName, CancellationToken cancellationToken)
+        => await SendAsync(
+            HttpMethod.Put, $"collections/{qdrantName}/index?wait=true", new QdrantPayloadIndexRequest(fieldName, "keyword"), cancellationToken);
+
+    private static QdrantVectorParams VectorParams(int dimension, DistanceMetric metric, QdrantCollectionBuild build)
+        => new(dimension, ToQdrantDistance(metric), build.OnDisk ? true : null);
+
+    /// <summary>
+    /// <c>always_ram</c> is deliberately on for both forms: quantization exists to shrink what has to
+    /// stay resident, so keeping the small quantized vectors in memory (while the originals may sit on
+    /// disk) is the arrangement that actually buys anything. <c>none</c> sends no config at all rather
+    /// than an empty object, so an unquantized collection's create body is byte-identical to 3.2's.
+    /// </summary>
+    private static QdrantQuantizationConfig? QuantizationConfig(string quantization) => quantization switch
+    {
+        "scalar" => new QdrantQuantizationConfig(new QdrantScalarQuantization("int8", 0.99, AlwaysRam: true), null),
+        "binary" => new QdrantQuantizationConfig(null, new QdrantBinaryQuantization(AlwaysRam: true)),
+        _ => null
+    };
 
     /// <summary>
     /// Collection dimension, distance and whether it is hybrid-capable (has a sparse vector), or null
@@ -330,11 +357,39 @@ internal sealed class QdrantException(int statusCode, string message) : Exceptio
 internal sealed record QdrantCreateCollection(
     [property: JsonPropertyName("vectors")] JsonElement Vectors,
     [property: JsonPropertyName("sparse_vectors")] IReadOnlyDictionary<string, QdrantSparseParams>? SparseVectors,
-    [property: JsonPropertyName("hnsw_config")] QdrantHnswConfig HnswConfig);
+    [property: JsonPropertyName("hnsw_config")] QdrantHnswConfig HnswConfig,
+    [property: JsonPropertyName("quantization_config")] QdrantQuantizationConfig? QuantizationConfig);
 
+// `on_disk` is nullable so it is omitted entirely when off — an unquantized, in-memory collection's
+// create body stays exactly what 3.2 sent.
 internal sealed record QdrantVectorParams(
     [property: JsonPropertyName("size")] int Size,
-    [property: JsonPropertyName("distance")] string Distance);
+    [property: JsonPropertyName("distance")] string Distance,
+    [property: JsonPropertyName("on_disk")] bool? OnDisk = null);
+
+/// <summary>
+/// How a new collection is built: the HNSW graph parameters plus the phase-35 production knobs. One
+/// record rather than four positional arguments, because a call site reading
+/// <c>(16, 64, "binary", true)</c> tells the reader nothing.
+/// </summary>
+internal readonly record struct QdrantCollectionBuild(int HnswM, int HnswEfConstruct, string Quantization, bool OnDisk);
+
+// Exactly one of the two is set; Qdrant reads the shape it recognises.
+internal sealed record QdrantQuantizationConfig(
+    [property: JsonPropertyName("scalar")] QdrantScalarQuantization? Scalar,
+    [property: JsonPropertyName("binary")] QdrantBinaryQuantization? Binary);
+
+internal sealed record QdrantScalarQuantization(
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("quantile")] double Quantile,
+    [property: JsonPropertyName("always_ram")] bool AlwaysRam);
+
+internal sealed record QdrantBinaryQuantization(
+    [property: JsonPropertyName("always_ram")] bool AlwaysRam);
+
+internal sealed record QdrantPayloadIndexRequest(
+    [property: JsonPropertyName("field_name")] string FieldName,
+    [property: JsonPropertyName("field_schema")] string FieldSchema);
 
 // A sparse vector declared with `modifier: idf` — Qdrant applies inverse-document-frequency
 // weighting to it server-side, so the hub ships only raw term frequencies (phase 34).

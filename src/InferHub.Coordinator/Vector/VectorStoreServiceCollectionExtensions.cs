@@ -51,7 +51,10 @@ public static class VectorStoreServiceCollectionExtensions
             services.AddSingleton<PostgresVectorStore>();
             services.AddSingleton<IVectorStore>(sp => sp.GetRequiredService<PostgresVectorStore>());
             services.AddSingleton<IVectorQueryRouter, NullVectorQueryRouter>();
-            services.AddHostedService<PostgresBootstrapper>();
+            // Registered under its own seam as well as IHostedService: the coordinator runs it as a
+            // hosted service, and inferhub-migrate resolves *only* this one (see IVectorStoreBootstrapper).
+            services.AddSingleton<IVectorStoreBootstrapper, PostgresBootstrapper>();
+            services.AddHostedService(sp => sp.GetRequiredService<IVectorStoreBootstrapper>());
         }
         else if (VectorStoreProviderExtensions.IsQdrant(provider))
         {
@@ -69,7 +72,8 @@ public static class VectorStoreServiceCollectionExtensions
             services.AddSingleton<QdrantVectorStore>();
             services.AddSingleton<IVectorStore>(sp => sp.GetRequiredService<QdrantVectorStore>());
             services.AddSingleton<IVectorQueryRouter, NullVectorQueryRouter>();
-            services.AddHostedService<QdrantBootstrapper>();
+            services.AddSingleton<IVectorStoreBootstrapper, QdrantBootstrapper>();
+            services.AddHostedService(sp => sp.GetRequiredService<IVectorStoreBootstrapper>());
         }
         else
         {

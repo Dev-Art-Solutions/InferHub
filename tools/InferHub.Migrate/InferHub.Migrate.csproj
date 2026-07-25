@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Cross-provider vector migration (phase 35). Like InferHub.Eval this is a standalone console tool
+    deliberately NOT built into the coordinator or node images: moving data between stores is an
+    operator's deliberate action, not something a running hub should ever do to itself (rule 4).
+
+    Unlike Eval it *does* reference the coordinator, because it stands up real IVectorStore
+    implementations through the one composition root rather than reimplementing three connectors.
+    The reference points one way only — nothing here ships inward.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>InferHub.Migrate</RootNamespace>
+    <AssemblyName>inferhub-migrate</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\InferHub.Coordinator\InferHub.Coordinator.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="InferHub.Tests" />
+  </ItemGroup>
+
+</Project>

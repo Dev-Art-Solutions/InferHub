@@ -155,6 +155,61 @@ public class VectorProviderParityTests : IAsyncLifetime
         Assert.Equal(["b2"], (await _pg.ScanAsync(pgName, null, limit: 10)).Select(e => e.Id).ToArray());
     }
 
+    /// <summary>
+    /// Phase 35's addition to the seam. The migration tool copies whatever this returns, so if two
+    /// providers disagreed about the records, their order or the vectors themselves, a migration
+    /// between them would silently produce a different corpus on the far side.
+    /// </summary>
+    [PostgresFact]
+    public async Task ScanWithVectorsAgreesAcrossProviders()
+    {
+        var data = new (string Id, float[] Vector, string Doc)[]
+        {
+            ("c3", [0.1f, 0.9f, 0f], "handbook"),
+            ("a1", [1f, 0f, 0f], "handbook"),
+            ("b2", [0f, 0f, 1f], "policy"),
+            ("d4", [0.5f, 0.5f, 0f], "handbook"),
+        };
+
+        using var local = NewLocal("cosine");
+        await local.CreateCollectionAsync("docs", 3, "cosine");
+
+        var pgName = "p_" + Guid.NewGuid().ToString("N")[..12];
+        _created.Add(pgName);
+        await _pg.CreateCollectionAsync(pgName, 3, "cosine");
+
+        foreach (var (id, vector, doc) in data)
+        {
+            var upsert = new VectorUpsert(id, vector, Metadata: new Dictionary<string, string> { ["documentId"] = doc });
+            await local.UpsertAsync("docs", upsert);
+            await _pg.UpsertAsync(pgName, upsert);
+        }
+
+        var localAll = await local.ScanWithVectorsAsync("docs", null, limit: 10);
+        var pgAll = await _pg.ScanWithVectorsAsync(pgName, null, limit: 10);
+
+        // Same records, same id order — and the vectors actually came back.
+        Assert.Equal(["a1", "b2", "c3", "d4"], localAll.Select(r => r.Id).ToArray());
+        Assert.Equal(localAll.Select(r => r.Id).ToArray(), pgAll.Select(r => r.Id).ToArray());
+        for (var i = 0; i < localAll.Count; i++)
+        {
+            Assert.Equal(localAll[i].Vector, pgAll[i].Vector);
+            Assert.Equal(localAll[i].Metadata, pgAll[i].Metadata);
+        }
+
+        // Same cursor and filter semantics as the vector-less scan.
+        var localPage = await local.ScanWithVectorsAsync("docs", null, limit: 2, afterId: "a1");
+        var pgPage = await _pg.ScanWithVectorsAsync(pgName, null, limit: 2, afterId: "a1");
+        Assert.Equal(["b2", "c3"], localPage.Select(r => r.Id).ToArray());
+        Assert.Equal(localPage.Select(r => r.Id).ToArray(), pgPage.Select(r => r.Id).ToArray());
+
+        var filter = new Dictionary<string, string> { ["documentId"] = "handbook" };
+        var localFiltered = await local.ScanWithVectorsAsync("docs", filter, limit: 10);
+        var pgFiltered = await _pg.ScanWithVectorsAsync(pgName, filter, limit: 10);
+        Assert.Equal(["a1", "c3", "d4"], localFiltered.Select(r => r.Id).ToArray());
+        Assert.Equal(localFiltered.Select(r => r.Id).ToArray(), pgFiltered.Select(r => r.Id).ToArray());
+    }
+
     private LocalVectorStore NewLocal(string distance)
     {
         var opts = Options.Create(new VectorStoreOptions

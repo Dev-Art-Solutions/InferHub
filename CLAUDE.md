@@ -28,6 +28,8 @@ deploy/
 plan/                     Phase build-briefs. Not shipped; lives in repo for context.
 tools/
   InferHub.Eval/          Retrieval eval harness (phase 24). Standalone console, no project refs, NOT in the images.
+  InferHub.Migrate/       Cross-provider vector migration (phase 35). Standalone console; references the
+                          Coordinator to compose real stores through the one composition root. NOT in the images.
 ```
 
 - TFM: `net10.0`, `Nullable enable`, `LangVersion latest` — set in [Directory.Build.props](Directory.Build.props).
@@ -111,7 +113,12 @@ the seam; three implementations sit behind it, selected by `VectorStore:Provider
   Qdrant over a hand-rolled REST `QdrantClient` (no dependency); publishes its own lifecycle
   events and returns the same `FlatIndex` score conventions (Qdrant reports them with no sign flip).
   Since phase 34 it also fuses dense + sparse **server-side** (`IServerSideHybridSearch`) for
-  collections created on 3.2+; collections created on 3.1 stay dense-only until migrated.
+  collections created on 3.2+; collections created on 3.1 stay dense-only until migrated. Phase 35
+  added collection-creation knobs (quantization, on-disk vectors, payload indexing).
+
+Since phase 35 there is a **migration path between providers**: `tools/InferHub.Migrate` copies a
+populated collection from any provider to any other, over `ScanWithVectorsAsync` → `UpsertAsync`. It
+is an operator tool, outside the runtime — see "Phase 35" below before changing anything about it.
 
 `postgres` and `qdrant` are **external providers** — `VectorStoreProviderExtensions.IsExternal` is
 the one predicate every call site (`Program.cs`, `StatusEndpoint`, `VectorEndpoints`) branches on,
@@ -911,6 +918,84 @@ headers and changes no config is byte-identical to 3.1.
 
 **Rule 5 survived again.** Phase 34 added **zero** new dependencies: the sparse vector is hub-computed
 over `System.Text.Json`, and the Query API is more hand-rolled REST on the existing `QdrantClient`.
+
+### Phase 35 (Qdrant in production + cross-provider migration) — also load-bearing
+
+**D1 — The migration tool is an operator action *outside* the runtime, so rule 4 is untouched.**
+[tools/InferHub.Migrate](tools/InferHub.Migrate) is a standalone console (Eval discipline: **not**
+built into either image). The coordinator never migrates itself and no second store appears at
+runtime — a hub that copied itself into another engine would be a second write path and, for as long
+as the copy ran, a second truth. Rule 7 holds: the tool moves chunk text and vectors that are already
+in a store and retains nothing beyond the copy it is making.
+
+Unlike Eval it **does** reference `InferHub.Coordinator`, and that is deliberate: it stands up real
+stores through `AddInferHubVectorStore` — the one composition root — rather than reimplementing three
+connectors. A tool with its own copy of "how a provider is built" is the copy that silently rots. It
+starts the provider's `IHostedService`s by hand, which is what creates the schema on an empty
+Postgres, warms the Qdrant cache, and fails fast with the coordinator's own message when a store is
+unreachable. The reference points one way only; nothing ships inward.
+
+**D2 — `ScanWithVectorsAsync` joined `IVectorStore`, and only because a per-id fetch is not a tool.**
+`ScanAsync` deliberately omits the embeddings (phase 23 D1), which is right for finding a document's
+chunks and useless for copying them. The alternative was `GetAsync` per record — a round trip per
+chunk against stores that answer a page in one, which nobody would run on a million chunks. So the
+seam grew a twelfth method, implemented by all three providers with **identical filter, ordering and
+`afterId` semantics** to `ScanAsync`, and pinned in `VectorProviderParityTests` /
+`QdrantVectorStoreTests`: two providers that disagreed here would give a migration between them a
+different corpus on the far side. `ScanAsync` stays the default for everything else.
+
+Qdrant keeps phase-33 D4's discipline here — it scrolls by its own UUID point id, so the filtered set
+is materialised and sorted by real id before the window is taken — and unpacks the dense floats from
+the **named** vector map a hybrid collection returns. A migration that copied an empty `float[]`
+because the wire shape changed would be the quietest possible data loss.
+
+> **Qdrant stores the unit-normalised vector under `Cosine`, and the one you sent under `Dot` and
+> `Euclid`.** Found by running the new parity arm against a real Qdrant 1.12.4 — `[0.1, 0.9, 0]` came
+> back as `[0.1104…, 0.9938…, 0]`. A stub would have echoed what it was handed and this would have
+> shipped unnoticed. It is **safe**: cosine is scale-invariant, so rankings and scores are identical
+> either way, and `ACosineRoundTripThroughQdrantKeepsTheRankingAndTheScores` pins exactly that.
+> But it is real — a cosine collection migrated *out of* Qdrant carries normalised vectors, so
+> anyone diffing raw floats across a migration will see different numbers and must not conclude the
+> copy is broken. `ScanWithVectorsMatchesTheLocalStore` therefore asserts the honest thing per
+> metric: verbatim under `dot`/`l2`, same direction and unit length under `cosine`. If a future
+> provider is added, ask what *it* does to a vector on the way in before assuming a byte-for-byte
+> round trip.
+
+**D3 — Quantization / on-disk / payload indexing are collection-*creation* options, and are honest
+about the trade.** `Quantization` (`none|scalar|binary`), `OnDisk` and `PayloadIndexKeys` are applied
+by `CreateCollectionAsync` and **do not touch existing collections** — which is why migrating is also
+how a collection adopts them. Quantization is a *memory-for-recall* trade, not a free win, and the
+docs say so with a pointer at the eval harness rather than an adjective: a store that ranks
+approximately and is described as "faster" is a store that lies about relevance. `PayloadIndexKeys`
+indexes `__meta.<key>` — the same path `BuildFilter` writes; an index on any other path would be
+built, reported healthy and never used. A refused index is logged and skipped, not fatal: the
+collection works without it, just slower, and losing a collection over an optimisation is the wrong
+trade.
+
+**D4 — A remote Qdrant with no API key warns; it does not refuse.** Qdrant ships unauthenticated —
+fine on localhost, a data leak anywhere else, since the payload holds the chunk *text*. So
+`QdrantBootstrapper` warns at startup when the `Url` is non-loopback and `ApiKey` is empty. Not a
+hard failure on purpose: a private network with its own controls is a legitimate deployment, and
+refusing to boot would be us overruling an operator about their own network. Compare phase-32 D3,
+where demoting *was* correct — there the alternative was two hubs both serving, which is a
+correctness failure; here the alternative is someone else's risk assessment.
+
+**D5 — The tool refuses a shape mismatch and never deletes.** A target collection that already exists
+with a different dimension or distance is **skipped with a reason**, not half-filled: the first fails
+per record, and the second would *succeed* and silently rank differently. Records in the target that
+are not in the source are left alone — a migration tool that removes data nobody asked it to remove
+is a worse failure than one that leaves a stale record behind. Re-running converges rather than
+duplicating (deterministic ids, phase 23 D5), so an interrupted run is resumed by running it again.
+And the summary reports the **target's own count**, exiting non-zero when it is short: "the upserts
+returned" is not the same claim as "the data is there."
+
+**The "no migration path between providers" caveat is deleted, everywhere.** It was true from v2.2 to
+v3.2 and was repeated in the README twice, the site and the release notes. A caveat that is no longer
+true is as bad as a missing one — if a future change makes it true again, put it back in all of those
+places.
+
+**Rule 5 survived again.** Phase 35 added **zero** new dependencies to the shipped projects; the
+tool references, and ships nothing inward.
 
 ## Auth model (three independent token sets)
 

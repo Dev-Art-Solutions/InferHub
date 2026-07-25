@@ -19,7 +19,7 @@ public class QdrantClientTests
         var stub = RecordingHandler.Ok("""{"result":true,"status":"ok"}""");
         var client = Client(stub);
 
-        await client.CreateCollectionAsync("inferhub_docs", 768, DistanceMetric.Cosine, hnswM: 16, hnswEfConstruct: 64, CancellationToken.None);
+        await client.CreateCollectionAsync("inferhub_docs", 768, DistanceMetric.Cosine, Build(), CancellationToken.None);
 
         Assert.Equal(HttpMethod.Put, stub.LastMethod);
         Assert.Equal("/collections/inferhub_docs", stub.LastPath);
@@ -28,6 +28,9 @@ public class QdrantClientTests
         Assert.Equal("Cosine", body.GetProperty("vectors").GetProperty("distance").GetString());
         Assert.Equal(16, body.GetProperty("hnsw_config").GetProperty("m").GetInt32());
         Assert.Equal(64, body.GetProperty("hnsw_config").GetProperty("ef_construct").GetInt32());
+        // Defaults must not change the wire: no quantization block, no on_disk flag.
+        Assert.False(body.TryGetProperty("quantization_config", out _));
+        Assert.False(body.GetProperty("vectors").TryGetProperty("on_disk", out _));
     }
 
     [Fact]
@@ -123,7 +126,7 @@ public class QdrantClientTests
         var client = Client(stub);
 
         var ex = await Assert.ThrowsAsync<QdrantException>(() =>
-            client.CreateCollectionAsync("inferhub_docs", 3, DistanceMetric.Cosine, 16, 64, CancellationToken.None));
+            client.CreateCollectionAsync("inferhub_docs", 3, DistanceMetric.Cosine, Build(), CancellationToken.None));
 
         Assert.Equal(400, ex.StatusCode);
         Assert.Contains("Wrong vector size", ex.Message);
@@ -135,7 +138,7 @@ public class QdrantClientTests
         var stub = RecordingHandler.Ok("""{"result":true,"status":"ok"}""");
         var client = Client(stub);
 
-        await client.CreateHybridCollectionAsync("inferhub_docs", 768, DistanceMetric.Cosine, hnswM: 16, hnswEfConstruct: 64, CancellationToken.None);
+        await client.CreateHybridCollectionAsync("inferhub_docs", 768, DistanceMetric.Cosine, Build(), CancellationToken.None);
 
         var body = stub.LastBody();
         // Dense vector is *named* now, so hybrid queries can address it by name.
@@ -144,6 +147,54 @@ public class QdrantClientTests
         // The sparse vector is declared with modifier=idf so Qdrant weights it by IDF server-side.
         Assert.Equal("idf", body.GetProperty("sparse_vectors").GetProperty("sparse").GetProperty("modifier").GetString());
     }
+
+    [Fact]
+    public async Task ScalarQuantizationAndOnDiskAreDeclaredOnTheDenseVector()
+    {
+        var stub = RecordingHandler.Ok("""{"result":true,"status":"ok"}""");
+        var client = Client(stub);
+
+        await client.CreateHybridCollectionAsync(
+            "inferhub_docs", 768, DistanceMetric.Cosine, Build(quantization: "scalar", onDisk: true), CancellationToken.None);
+
+        var body = stub.LastBody();
+        Assert.True(body.GetProperty("vectors").GetProperty("dense").GetProperty("on_disk").GetBoolean());
+        var scalar = body.GetProperty("quantization_config").GetProperty("scalar");
+        Assert.Equal("int8", scalar.GetProperty("type").GetString());
+        Assert.True(scalar.GetProperty("always_ram").GetBoolean());
+    }
+
+    [Fact]
+    public async Task BinaryQuantizationSendsTheBinaryConfigAndNoScalarOne()
+    {
+        var stub = RecordingHandler.Ok("""{"result":true,"status":"ok"}""");
+        var client = Client(stub);
+
+        await client.CreateHybridCollectionAsync(
+            "inferhub_docs", 768, DistanceMetric.Cosine, Build(quantization: "binary"), CancellationToken.None);
+
+        var quantization = stub.LastBody().GetProperty("quantization_config");
+        Assert.True(quantization.GetProperty("binary").GetProperty("always_ram").GetBoolean());
+        Assert.False(quantization.TryGetProperty("scalar", out _));
+    }
+
+    [Fact]
+    public async Task PayloadIndexIsCreatedOnTheStoredMetadataPath()
+    {
+        var stub = RecordingHandler.Ok("""{"result":{"status":"completed"}}""");
+        var client = Client(stub);
+
+        await client.CreatePayloadIndexAsync("inferhub_docs", "__meta.documentId", CancellationToken.None);
+
+        Assert.Equal(HttpMethod.Put, stub.LastMethod);
+        Assert.Equal("/collections/inferhub_docs/index", stub.LastPath);
+        var body = stub.LastBody();
+        Assert.Equal("__meta.documentId", body.GetProperty("field_name").GetString());
+        Assert.Equal("keyword", body.GetProperty("field_schema").GetString());
+    }
+
+    private static QdrantCollectionBuild Build(string quantization = "none", bool onDisk = false)
+        => new(HnswM: 16, HnswEfConstruct: 64, quantization, onDisk);
 
     [Fact]
     public async Task QueryFusedSendsDenseAndSparsePrefetchWithRrfFusion()

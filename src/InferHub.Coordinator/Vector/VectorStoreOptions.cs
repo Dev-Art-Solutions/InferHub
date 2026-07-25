@@ -73,6 +73,30 @@ public sealed class QdrantStoreOptions
 
     /// <summary>Per-query HNSW <c>ef</c>. Higher = better recall, slower. Null uses Qdrant's own default.</summary>
     public int? EfSearch { get; set; }
+
+    /// <summary>
+    /// Vector quantization applied to collections created from now on: <c>none</c> (default),
+    /// <c>scalar</c> (int8 — roughly 4× less vector memory) or <c>binary</c> (1 bit per dimension —
+    /// roughly 32× less, and materially lossy). This is a <b>memory-for-recall trade</b>, not a free
+    /// win: quantized vectors rank approximately, so measure the loss on your own corpus with the
+    /// eval harness before deciding it is acceptable. Existing collections are untouched.
+    /// </summary>
+    public string Quantization { get; set; } = "none";
+
+    /// <summary>
+    /// Store dense vectors on disk instead of keeping them in RAM. For a collection larger than the
+    /// memory you are willing to give it, this is the difference between running and not; the cost
+    /// is disk reads on the search path. The HNSW graph stays in memory either way.
+    /// </summary>
+    public bool OnDisk { get; set; } = false;
+
+    /// <summary>
+    /// Metadata keys to build a Qdrant payload index on when a collection is created. Ingestion's
+    /// document scans and filtered deletes all filter on <c>documentId</c>, and an unindexed payload
+    /// filter is a full scan — so that is the default. Names are InferHub metadata keys; the
+    /// connector indexes the reserved payload path it stores them under.
+    /// </summary>
+    public IList<string> PayloadIndexKeys { get; set; } = ["documentId"];
 }
 
 /// <summary>
@@ -403,6 +427,20 @@ public sealed partial class VectorStoreOptionsValidator : IValidateOptions<Vecto
         if (q.EfSearch is { } ef && ef < 1)
         {
             failures.Add($"{prefix}{nameof(QdrantStoreOptions.EfSearch)} must be >= 1 when set (got {ef}).");
+        }
+
+        if (q.Quantization is not ("none" or "scalar" or "binary"))
+        {
+            failures.Add($"{prefix}{nameof(QdrantStoreOptions.Quantization)} must be one of 'none', 'scalar', 'binary' (got '{q.Quantization}').");
+        }
+
+        if (q.PayloadIndexKeys is null)
+        {
+            failures.Add($"{prefix}{nameof(QdrantStoreOptions.PayloadIndexKeys)} must not be null (use an empty list to index nothing).");
+        }
+        else if (q.PayloadIndexKeys.Any(string.IsNullOrWhiteSpace))
+        {
+            failures.Add($"{prefix}{nameof(QdrantStoreOptions.PayloadIndexKeys)} must not contain empty entries.");
         }
     }
 }

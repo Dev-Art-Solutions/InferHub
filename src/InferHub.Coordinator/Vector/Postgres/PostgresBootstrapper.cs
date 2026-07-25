@@ -14,7 +14,7 @@ public sealed class PostgresBootstrapper(
     NpgsqlDataSource dataSource,
     PostgresVectorStore store,
     IOptions<VectorStoreOptions> options,
-    ILogger<PostgresBootstrapper> logger) : IHostedService
+    ILogger<PostgresBootstrapper> logger) : IVectorStoreBootstrapper
 {
     private readonly PostgresStoreOptions _pg = options.Value.Postgres;
 

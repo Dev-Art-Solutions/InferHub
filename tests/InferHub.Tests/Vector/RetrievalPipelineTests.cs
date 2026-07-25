@@ -489,6 +489,8 @@ public class RetrievalPipelineTests
             => inner.SearchKeywordAsync(collection, query, k, cancellationToken);
         public Task<IReadOnlyList<VectorEntry>> ScanAsync(string collection, IReadOnlyDictionary<string, string>? filter, int limit, string? afterId = null, CancellationToken cancellationToken = default)
             => inner.ScanAsync(collection, filter, limit, afterId, cancellationToken);
+        public Task<IReadOnlyList<VectorRecord>> ScanWithVectorsAsync(string collection, IReadOnlyDictionary<string, string>? filter, int limit, string? afterId = null, CancellationToken cancellationToken = default)
+            => inner.ScanWithVectorsAsync(collection, filter, limit, afterId, cancellationToken);
         public Task<int> DeleteByFilterAsync(string collection, IReadOnlyDictionary<string, string> filter, CancellationToken cancellationToken = default)
             => inner.DeleteByFilterAsync(collection, filter, cancellationToken);
     }

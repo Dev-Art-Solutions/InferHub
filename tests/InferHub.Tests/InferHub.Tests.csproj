@@ -27,6 +27,7 @@
     <ProjectReference Include="..\..\src\InferHub.Coordinator\InferHub.Coordinator.csproj" />
     <ProjectReference Include="..\..\src\InferHub.Node\InferHub.Node.csproj" />
     <ProjectReference Include="..\..\src\InferHub.Shared\InferHub.Shared.csproj" />
+    <ProjectReference Include="..\..\tools\InferHub.Migrate\InferHub.Migrate.csproj" />
   </ItemGroup>
 
 </Project>

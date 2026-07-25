@@ -82,7 +82,9 @@ internal sealed class QdrantVectorStore : IVectorStore, IServerSideHybridSearch
         // Every collection created on 3.2+ is hybrid-capable: a named dense vector plus an IDF sparse
         // vector, so keyword and hybrid retrieval can run server-side. Collections created on 3.1 stay
         // dense-only until re-created or migrated (phase 35).
-        await _client.CreateHybridCollectionAsync(qname, dimension, metric, _q.HnswM, _q.HnswEfConstruct, cancellationToken);
+        var build = new QdrantCollectionBuild(_q.HnswM, _q.HnswEfConstruct, _q.Quantization, _q.OnDisk);
+        await _client.CreateHybridCollectionAsync(qname, dimension, metric, build, cancellationToken);
+        await CreatePayloadIndexesAsync(qname, cancellationToken);
 
         var wire = metric.ToWireString();
         _cache[name] = new CollectionMeta(dimension, metric, wire, Hybrid: true);
@@ -374,6 +376,35 @@ internal sealed class QdrantVectorStore : IVectorStore, IServerSideHybridSearch
             .ToArray();
     }
 
+    /// <summary>
+    /// <see cref="ScanAsync"/> with the vectors. Same D4 ordering discipline: Qdrant scrolls by its
+    /// own UUID point id, so the filtered set is materialised and sorted by real id here before the
+    /// <c>afterId</c> + <c>limit</c> window is taken. On a hybrid-capable collection the retrieved
+    /// vector is a named map, so the dense floats are unpacked from it — a migration must copy the
+    /// embedding, not whatever wire shape the collection happened to be created in.
+    /// </summary>
+    public async Task<IReadOnlyList<VectorRecord>> ScanWithVectorsAsync(
+        string collection,
+        IReadOnlyDictionary<string, string>? filter,
+        int limit,
+        string? afterId = null,
+        CancellationToken cancellationToken = default)
+    {
+        await RequireMetaAsync(collection, cancellationToken);
+        if (limit < 1) return Array.Empty<VectorRecord>();
+
+        var all = await ScrollAllAsync(collection, BuildFilter(filter), withVector: true, cancellationToken);
+
+        return all
+            .Select(p => (Point: p, Stored: ParseStored(p)))
+            .Where(e => afterId is null || string.CompareOrdinal(e.Stored.Id, afterId) > 0)
+            .OrderBy(e => e.Stored.Id, StringComparer.Ordinal)
+            .Take(limit)
+            .Select(e => new VectorRecord(
+                e.Stored.Id, ExtractDense(e.Point.Vector), e.Stored.Payload, e.Stored.Meta, e.Stored.Seq, e.Stored.Ts))
+            .ToArray();
+    }
+
     public async Task<int> DeleteByFilterAsync(
         string collection,
         IReadOnlyDictionary<string, string> filter,
@@ -391,6 +422,32 @@ internal sealed class QdrantVectorStore : IVectorStore, IServerSideHybridSearch
 
         await _client.DeleteByFilterAsync(qname, qfilter, cancellationToken);
         return (int)count;
+    }
+
+    /// <summary>
+    /// Index the configured metadata keys on a freshly created collection. The stored path is
+    /// <c>__meta.&lt;key&gt;</c> — the same path <see cref="BuildFilter"/> writes, which is the whole
+    /// point: an index on any other path would be built, reported healthy and never used. An index
+    /// that Qdrant refuses is logged and skipped rather than failing the create: the collection is
+    /// usable without it, just slower, and losing a collection over an optimisation is the wrong trade.
+    /// </summary>
+    private async Task CreatePayloadIndexesAsync(string qname, CancellationToken cancellationToken)
+    {
+        foreach (var key in _q.PayloadIndexKeys)
+        {
+            if (string.IsNullOrWhiteSpace(key)) continue;
+            var field = $"{MetaKey}.{key}";
+            try
+            {
+                await _client.CreatePayloadIndexAsync(qname, field, cancellationToken);
+            }
+            catch (QdrantException ex)
+            {
+                _logger.LogWarning(
+                    "Qdrant refused a payload index on {Field} for collection {Collection}: {Error}. Metadata filters will scan.",
+                    field, qname, ex.Message);
+            }
+        }
     }
 
     /// <summary>Warm the metadata cache from Qdrant at startup; returns the InferHub collection count.</summary>

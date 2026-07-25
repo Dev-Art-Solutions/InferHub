@@ -393,6 +393,48 @@ public sealed class PostgresVectorStore : IVectorStore
         }
     }
 
+    public async Task<IReadOnlyList<VectorRecord>> ScanWithVectorsAsync(
+        string collection,
+        IReadOnlyDictionary<string, string>? filter,
+        int limit,
+        string? afterId = null,
+        CancellationToken cancellationToken = default)
+    {
+        await RequireMetaAsync(collection, cancellationToken);
+        if (limit < 1) return Array.Empty<VectorRecord>();
+
+        var hasFilter = filter is { Count: > 0 };
+        var table = PostgresSchema.QualifiedTable(_pg.Schema, _pg.TablePrefix, collection);
+
+        // ScanAsync's query with the embedding column added back — the one caller that genuinely
+        // needs the vectors is the migration tool, which is copying them (phase 35).
+        var sql =
+            $"SELECT id, embedding, payload, metadata, seq_no, updated_at FROM {table} " +
+            "WHERE (@filter IS NULL OR metadata @> @filter) " +
+            "AND (@after IS NULL OR id > @after) " +
+            $"ORDER BY id LIMIT {limit}";
+
+        try
+        {
+            await using var conn = await _dataSource.OpenConnectionAsync(cancellationToken);
+            await using var cmd = new NpgsqlCommand(sql, conn) { CommandTimeout = _commandTimeout };
+            cmd.Parameters.Add(JsonbParam("filter", hasFilter ? SerializeMetadata(filter) : null));
+            cmd.Parameters.Add(new NpgsqlParameter("after", NpgsqlDbType.Text) { Value = (object?)afterId ?? DBNull.Value });
+
+            var records = new List<VectorRecord>();
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                records.Add(ReadRecord(reader));
+            }
+            return records;
+        }
+        catch (PostgresException ex)
+        {
+            throw Translate(ex, collection);
+        }
+    }
+
     public async Task<int> DeleteByFilterAsync(
         string collection,
         IReadOnlyDictionary<string, string> filter,

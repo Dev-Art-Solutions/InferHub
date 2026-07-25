@@ -269,7 +269,10 @@ public class QdrantVectorStoreTests : IAsyncLifetime
         var name = NewName();
         using var legacy = new HttpClient();
         var legacyClient = new QdrantClient(QdrantClient.Configure(legacy, Url!, null, 30));
-        await legacyClient.CreateCollectionAsync(_prefix + name, 3, DistanceMetric.Cosine, 16, 64, CancellationToken.None);
+        await legacyClient.CreateCollectionAsync(
+            _prefix + name, 3, DistanceMetric.Cosine,
+            new QdrantCollectionBuild(HnswM: 16, HnswEfConstruct: 64, Quantization: "none", OnDisk: false),
+            CancellationToken.None);
 
         var store = NewStore("cosine");
         Assert.False(await store.SupportsServerSideHybridAsync(name));
@@ -286,6 +289,133 @@ public class QdrantVectorStoreTests : IAsyncLifetime
         // Keyword falls back to the coarse phase-33 path on a dense-only collection — still answers.
         var keyword = await store.SearchKeywordAsync(name, "checksum", 1);
         Assert.Equal("x", Assert.Single(keyword).Id);
+    }
+
+    /// <summary>
+    /// Phase 35's third arm of the scan parity: same ids, same order, same filter and cursor
+    /// semantics as the local store — and the vectors come back, which is the only reason the method
+    /// exists. On a hybrid-capable collection Qdrant returns a <em>named</em> vector map, so this is
+    /// also the pin that the dense floats are unpacked from it rather than handed back as an empty
+    /// array a migration would happily copy.
+    /// <para>
+    /// <b>Under <c>cosine</c>, Qdrant stores the unit-normalised vector, not the one you sent.</b>
+    /// Found by running this against a real Qdrant 1.12.4 — a stub would have handed back whatever it
+    /// was given and this would have shipped undetected. It is safe (cosine is scale-invariant, so
+    /// rankings and scores are untouched) but it is real, so the assertion is the honest one:
+    /// verbatim under <c>dot</c> and <c>l2</c>, the normalised direction under <c>cosine</c>.
+    /// </para>
+    /// </summary>
+    [QdrantTheory]
+    [InlineData("cosine")]
+    [InlineData("dot")]
+    [InlineData("l2")]
+    public async Task ScanWithVectorsMatchesTheLocalStore(string distance)
+    {
+        var data = new (string Id, float[] Vector, string Doc)[]
+        {
+            ("c3", [0.1f, 0.9f, 0f], "handbook"),
+            ("a1", [1f, 0f, 0f], "handbook"),
+            ("b2", [0f, 0f, 1f], "policy"),
+            ("d4", [0.5f, 0.5f, 0f], "handbook"),
+        };
+
+        var store = NewStore(distance);
+        var name = NewName();
+        await store.CreateCollectionAsync(name, 3, distance);
+
+        using var local = NewLocal(distance);
+        await local.CreateCollectionAsync("docs", 3, distance);
+
+        foreach (var (id, vector, doc) in data)
+        {
+            var upsert = new VectorUpsert(id, vector, Metadata: new Dictionary<string, string> { ["documentId"] = doc });
+            await store.UpsertAsync(name, upsert);
+            await local.UpsertAsync("docs", upsert);
+        }
+
+        var qdrant = await store.ScanWithVectorsAsync(name, null, limit: 10);
+        var expected = await local.ScanWithVectorsAsync("docs", null, limit: 10);
+
+        Assert.Equal(expected.Select(r => r.Id).ToArray(), qdrant.Select(r => r.Id).ToArray());
+        for (var i = 0; i < expected.Count; i++)
+        {
+            Assert.Equal(expected[i].Metadata, qdrant[i].Metadata);
+            if (distance == "cosine")
+            {
+                AssertSameDirection(expected[i].Vector, qdrant[i].Vector);
+            }
+            else
+            {
+                Assert.Equal(expected[i].Vector, qdrant[i].Vector);
+            }
+        }
+
+        Assert.Equal(["b2", "c3"], (await store.ScanWithVectorsAsync(name, null, limit: 2, afterId: "a1")).Select(r => r.Id).ToArray());
+
+        var filter = new Dictionary<string, string> { ["documentId"] = "handbook" };
+        Assert.Equal(["a1", "c3", "d4"], (await store.ScanWithVectorsAsync(name, filter, limit: 10)).Select(r => r.Id).ToArray());
+    }
+
+    /// <summary>
+    /// The consequence that actually matters for phase 35: a cosine collection copied out of Qdrant
+    /// and back into a local store carries normalised vectors — and still answers with the <b>same
+    /// ids and the same scores</b>, because that is what scale-invariance means. If this ever fails,
+    /// the normalisation has stopped being safe and the migration tool is losing information.
+    /// </summary>
+    [QdrantFact]
+    public async Task ACosineRoundTripThroughQdrantKeepsTheRankingAndTheScores()
+    {
+        var data = new (string Id, float[] Vector)[]
+        {
+            ("a", [1f, 0f, 0f]),
+            ("b", [0f, 2f, 0f]),
+            ("c", [0.9f, 0.1f, 0.1f]),
+            ("d", [0.2f, 0.8f, 0.1f]),
+            ("e", [5f, 5f, 5f]),
+        };
+
+        using var origin = NewLocal("cosine");
+        await origin.CreateCollectionAsync("docs", 3, "cosine");
+        foreach (var (id, vector) in data)
+        {
+            await origin.UpsertAsync("docs", new VectorUpsert(id, vector));
+        }
+
+        var store = NewStore("cosine");
+        var name = NewName();
+        await store.CreateCollectionAsync(name, 3, "cosine");
+        foreach (var record in await origin.ScanWithVectorsAsync("docs", null, 100))
+        {
+            await store.UpsertAsync(name, new VectorUpsert(record.Id, record.Vector, record.Payload, record.Metadata));
+        }
+
+        using var landed = NewLocal("cosine");
+        await landed.CreateCollectionAsync("docs", 3, "cosine");
+        foreach (var record in await store.ScanWithVectorsAsync(name, null, 100))
+        {
+            await landed.UpsertAsync("docs", new VectorUpsert(record.Id, record.Vector, record.Payload, record.Metadata));
+        }
+
+        var query = new VectorQuery([1f, 0f, 0f], K: 5);
+        var before = await origin.QueryAsync("docs", query);
+        var after = await landed.QueryAsync("docs", query);
+
+        Assert.Equal(before.Select(m => m.Id), after.Select(m => m.Id));
+        for (var i = 0; i < before.Count; i++)
+        {
+            Assert.Equal(before[i].Score, after[i].Score, precision: 4);
+        }
+    }
+
+    /// <summary>Same direction, unit length — what a cosine collection round-trips to.</summary>
+    private static void AssertSameDirection(float[] original, float[] stored)
+    {
+        var norm = MathF.Sqrt(original.Sum(v => v * v));
+        Assert.Equal(original.Length, stored.Length);
+        for (var i = 0; i < original.Length; i++)
+        {
+            Assert.Equal(original[i] / norm, stored[i], tolerance: 1e-5f);
+        }
     }
 
     private static async Task SeedExactTermCorpusAsync(QdrantVectorStore store, string name)

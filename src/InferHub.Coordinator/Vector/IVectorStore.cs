@@ -48,6 +48,26 @@ public interface IVectorStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// The same scan as <see cref="ScanAsync"/> — same filter semantics, same id ordering, same
+    /// exclusive <paramref name="afterId"/> cursor — but returning the embeddings too.
+    /// <para>
+    /// This exists for exactly one caller: <c>inferhub-migrate</c> (phase 35), which copies a
+    /// populated collection from one provider to another and therefore needs the vectors. The
+    /// alternative — a per-id <see cref="GetAsync"/> for every chunk — is a round trip per record
+    /// against a store that can answer a page in one, which is not a tool anybody would run on a
+    /// million chunks. <see cref="ScanAsync"/> stays the default for everything else: paying for
+    /// vectors you are about to discard is the waste <see cref="VectorEntry"/> was introduced to
+    /// avoid.
+    /// </para>
+    /// </summary>
+    Task<IReadOnlyList<VectorRecord>> ScanWithVectorsAsync(
+        string collection,
+        IReadOnlyDictionary<string, string>? filter,
+        int limit,
+        string? afterId = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Delete every record matching <paramref name="filter"/>; returns how many went. The filter
     /// must be non-empty — an empty one would mean "delete the collection's contents", which is
     /// what <see cref="DropCollectionAsync"/> is for, and is not something a caller should be able

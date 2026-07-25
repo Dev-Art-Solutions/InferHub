@@ -315,6 +315,45 @@ public class VectorStoreOptionsValidatorTests
         Assert.Contains(result.Failures!, m => m.Contains(nameof(QdrantStoreOptions.HnswEfConstruct)));
     }
 
+    // --- Qdrant production knobs (phase 35) ---
+
+    [Theory]
+    [InlineData("none")]
+    [InlineData("scalar")]
+    [InlineData("binary")]
+    public void QdrantAcceptsEveryQuantizationMode(string mode)
+    {
+        var result = ValidateQdrant(q => { q.Quantization = mode; q.OnDisk = true; });
+
+        Assert.True(result.Succeeded, string.Join("; ", result.Failures ?? Array.Empty<string>()));
+    }
+
+    [Fact]
+    public void QdrantRejectsAnUnknownQuantizationMode()
+    {
+        var result = ValidateQdrant(q => q.Quantization = "int4");
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, m => m.Contains(nameof(QdrantStoreOptions.Quantization)));
+    }
+
+    [Fact]
+    public void QdrantRejectsEmptyPayloadIndexKeys()
+    {
+        var result = ValidateQdrant(q => q.PayloadIndexKeys = ["documentId", "  "]);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, m => m.Contains(nameof(QdrantStoreOptions.PayloadIndexKeys)));
+    }
+
+    [Fact]
+    public void AnEmptyPayloadIndexListIsAllowed()
+    {
+        var result = ValidateQdrant(q => q.PayloadIndexKeys = []);
+
+        Assert.True(result.Succeeded, string.Join("; ", result.Failures ?? Array.Empty<string>()));
+    }
+
     [Fact]
     public void UnknownProviderMessageNamesQdrant()
     {

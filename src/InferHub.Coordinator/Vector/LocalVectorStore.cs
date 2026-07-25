@@ -290,6 +290,40 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
         return Task.FromResult<IReadOnlyList<VectorEntry>>(page);
     }
 
+    public Task<IReadOnlyList<VectorRecord>> ScanWithVectorsAsync(
+        string collection,
+        IReadOnlyDictionary<string, string>? filter,
+        int limit,
+        string? afterId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var entry = RequireCollection(collection);
+        if (limit < 1) return Task.FromResult<IReadOnlyList<VectorRecord>>([]);
+
+        List<VectorRecord> page;
+        lock (entry.WriteLock)
+        {
+            var live = entry.Index.EnumerateLive().AsEnumerable();
+
+            if (filter is { Count: > 0 })
+            {
+                live = live.Where(r => FlatIndex.MatchesFilter(r.Metadata, filter));
+            }
+
+            if (afterId is not null)
+            {
+                live = live.Where(r => string.CompareOrdinal(r.Id, afterId) > 0);
+            }
+
+            page = live
+                .OrderBy(r => r.Id, StringComparer.Ordinal)
+                .Take(limit)
+                .ToList();
+        }
+
+        return Task.FromResult<IReadOnlyList<VectorRecord>>(page);
+    }
+
     public async Task<int> DeleteByFilterAsync(
         string collection,
         IReadOnlyDictionary<string, string> filter,
