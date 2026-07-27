@@ -997,6 +997,107 @@ places.
 **Rule 5 survived again.** Phase 35 added **zero** new dependencies to the shipped projects; the
 tool references, and ships nothing inward.
 
+### Phase 36 (the node supervises its own Ollama) — also load-bearing
+
+**D1 — The supervisor only ever touches a *local* Ollama, and disables itself out loud otherwise.**
+It is registered only when `Ollama:Supervisor:Enabled` **and** `Backend:Type=ollama` **and**
+`Ollama:Endpoint` is loopback; any other combination registers
+[OllamaSupervisorDisabledNotice](src/InferHub.Node/Backends/Supervision/OllamaSupervisor.cs) instead,
+which logs one line naming why. This is not tidiness. A shared Ollama serving four nodes, restarted
+because *one* node's network hiccuped past `ProbeTimeout`, is a four-node outage caused by the node
+with the worst link; an OpenAI-compatible upstream is somebody else's server entirely. A process may
+only be restarted by something on the same machine that can see it actually wedged. (Compare
+phase-32 D3, where a *local* deadline was also the only honest one — but there demoting was correct
+because the alternative was two hubs serving; here the alternative is us breaking a healthy server
+for other people.) The rule covers the container case for free: a node image cannot restart an
+Ollama on its host, and its endpoint is by definition not loopback.
+`NodeCompositionTests` fails if any of the three conditions stops being enforced.
+
+**D2 — The two `HttpClient`s pointed at Ollama are NOT redundant. Do not consolidate them.**
+`Ollama:RequestTimeout` is **five minutes** on purpose — a cold 70B load blows through
+`HttpClient`'s 100s default and the coordinator waits 300s. Probing over that client would mean a
+**wedged** Ollama — the exact case this phase exists for — takes five minutes to produce one failed
+probe, and three of those to cross the threshold: a quarter of an hour before the node lifts a
+finger. So the probe has its own named client with `ProbeTimeout` (5s) against `GET /api/version`.
+If a future reader sees two clients for one server and merges them, this phase silently stops
+working while every test still passes.
+
+**D3 — Three states, not two, because the cure differs.** `Healthy` (answered) → nothing;
+`Unreachable` (the socket never opened) → **start**; `Wedged` (socket opened, nothing came back, or
+a 5xx) → **stop, then start**. `start` on a wedged process fails with the port already bound and the
+log then blames the wrong thing, while `stop` on a dead one is a no-op that hides a genuine config
+error (wrong port, wrong host) behind a cheerful "restarted Ollama". A single failed probe decides
+nothing: a state is declared only after `UnhealthyThreshold` (3) **consecutive** failures, and any
+success resets the counter.
+
+> **"Connection refused throws `HttpRequestException`, a wedge throws `TaskCanceledException`" is
+> wrong, and only a real socket found it.** On Windows a closed loopback port is silently dropped
+> rather than refused: the connect hangs to `ConnectTimeout` and surfaces as *exactly the same* bare
+> `TaskCanceledException` a wedged server produces — so the first implementation classified a
+> stopped Ollama as wedged and answered it with a stop that had nothing to stop. `OllamaProbe`
+> therefore performs the TCP connect itself in a `ConnectCallback` and stamps the request when a
+> socket is actually established, with pooling off so the stamp always describes *this* probe.
+> "Did the socket open?" is now a fact rather than an inference from an exception. A stub
+> `HttpMessageHandler` can only echo the exception a test author already believed in, which is why
+> `OllamaSupervisorTests` uses a real closed port and a real accept-and-never-answer `TcpListener`
+> for those two cases — keep it that way.
+
+**D4 — Restart is rate-limited and gives up loudly; in-flight work is deliberately not protected.**
+`MaxRestartAttempts` (3) inside `RestartWindow` (10 min), `RestartBackoff` (10s, doubling), then a
+readiness wait up to `ReadyTimeout` (2 min — a service that starts by loading a model is slow, not
+broken). Past the budget it **stops restarting**, logs once at Error, and **keeps probing**, so a
+recovery is still noticed and the node comes back on its own. A node that kills Ollama every fifteen
+seconds forever never lets a model finish loading, which replaces a fixable outage with an
+unfixable one. And a restart *does* kill a streaming job: waiting for `inFlight == 0` would let
+exactly one stuck request pin the node in a broken state forever — the failure mode this phase
+exists to end — and after three failed probes over ~45s that stream was not going to finish anyway.
+The cost is logged rather than hidden, by `CoordinatorConnection` (which owns the count) via the
+`Restarting` event.
+
+**D5 — A service manager wins over spawning, and privileges are a first-class error.** Discovery
+order is service (`Ollama` / `ollama.service`) → binary on `PATH` → nothing. Spawning `ollama serve`
+next to a service-managed install gets you **two** servers fighting over `:11434`, and the one that
+loses is the one whose logs the operator is reading. An access-denied result is returned as a typed
+`ProcessControlResult`, never thrown — "Access is denied" from a `Process.Start` deep in a hosted
+service is a support ticket, and the Windows-service host under a restricted account is exactly
+where it bites (`deploy/windows/README.md` says so).
+
+**D6 — Auto-install is a *second*, separate opt-in.** `Enabled=true` consents to restarting a
+process; it does not consent to downloading and executing an installer. So `AutoInstall` is its own
+key, default false — the phase-22 D5 shape. It fires **only** on discovery finding nothing (install
+is a diagnosis, not a retry), **once per process lifetime** (a failing install retried on a timer is
+a machine downloading the same installer every fifteen seconds), from a configurable `InstallUrl` so
+an air-gapped fleet points at its own mirror, with the exact command logged **before** it runs.
+
+**D7 — The empty model report is deliberate, and the alternative was considered and rejected.**
+A broken backend reports zero models; `NodeRegistry.ReportModels` replaces the list wholesale, so
+that is what unroutes the node. Preserving the last known good list would leave the coordinator
+happily routing inference at a node whose backend is wedged — turning a node-local fault into
+client-visible timeouts. What this phase added is the *reason* (one Warning naming the state, so
+"no models" no longer reads the same as "this box has nothing installed") and a `Recovered` event
+`CoordinatorConnection` subscribes to, so recovery pushes a fresh report instead of waiting out
+`ModelRefreshInterval` (up to 60s of a healthy node sitting out of the fleet).
+
+**D8 — One platform seam, and rule 1 is intact.** `Process`, `sc.exe`, `systemctl` and the installer
+appear in exactly one class each ([OllamaProcessControl](src/InferHub.Node/Backends/Supervision/OllamaProcessControl.cs),
+[OllamaInstaller](src/InferHub.Node/Backends/Supervision/OllamaInstaller.cs)); the supervisor is a
+state machine over three interfaces and a `TimeProvider`, with no I/O of its own and none in any
+constructor. Nothing in the node's generic path (`Worker`, `InferenceExecutor`, `IInferenceBackend`)
+learns that a supervisor exists — the one consumer, `CoordinatorConnection`, sees
+[IBackendSupervisor](src/InferHub.Node/Backends/Supervision/IBackendSupervisor.cs), which is named
+for the node rather than for Ollama and is always registered (as `NoBackendSupervisor` when
+supervision is off) so no caller branches on the feature existing.
+
+**Deliberately not in this phase:** the coordinator does **not** learn "backend unhealthy" as a
+typed signal — no `Heartbeat` field, no `/api/status` health column, no console change. That is a
+contract change plus `NodeRegistry` plus `StatusEndpoint` plus two static files and their tests, and
+the fleet already stops routing to a broken node through the empty model report. Recorded so the
+omission is a decision rather than an oversight; it is the obvious next phase if the logs turn out
+not to be enough.
+
+**Rule 5 survived again.** Phase 36 added **zero** new dependencies: `System.Diagnostics.Process`,
+`Socket` and `HttpClient` all ship in the shared framework.
+
 ## Auth model (three independent token sets)
 
 | Scope | Config key | Guards |

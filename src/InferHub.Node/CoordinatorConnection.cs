@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Collections.Concurrent;
 using InferHub.Node.Backends;
+using InferHub.Node.Backends.Supervision;
 using InferHub.Node.Configuration;
 using InferHub.Node.Vector;
 using InferHub.Shared.Contracts;
@@ -18,6 +19,7 @@ public sealed class CoordinatorConnection(
     InferenceExecutor inferenceExecutor,
     ModelCommandExecutor modelCommandExecutor,
     ReplicaStore replicaStore,
+    IBackendSupervisor supervisor,
     ILogger<CoordinatorConnection> logger) : IAsyncDisposable
 {
     private readonly CoordinatorOptions coordinator = coordinatorOptions.Value;
@@ -33,12 +35,17 @@ public sealed class CoordinatorConnection(
     private Task? modelRefreshTask;
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> activeJobs = new();
     private int inFlight;
+    private bool subscribedToSupervisor;
 
     public Task StartAsync(CancellationToken cancellationToken)
-        => ConnectUntilSuccessfulAsync(cancellationToken);
+    {
+        SubscribeToSupervisor();
+        return ConnectUntilSuccessfulAsync(cancellationToken);
+    }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        UnsubscribeFromSupervisor();
         await lifetime.CancelAsync();
 
         if (heartbeatTask is not null)
@@ -73,6 +80,7 @@ public sealed class CoordinatorConnection(
 
     public async ValueTask DisposeAsync()
     {
+        UnsubscribeFromSupervisor();
         await lifetime.CancelAsync();
         reconnectLock.Dispose();
         lifetime.Dispose();
@@ -81,6 +89,73 @@ public sealed class CoordinatorConnection(
         {
             await connection.DisposeAsync();
         }
+    }
+
+    private void SubscribeToSupervisor()
+    {
+        if (!supervisor.IsSupervising || subscribedToSupervisor)
+        {
+            return;
+        }
+
+        subscribedToSupervisor = true;
+        supervisor.Recovered += OnBackendRecovered;
+        supervisor.Restarting += OnBackendRestarting;
+    }
+
+    private void UnsubscribeFromSupervisor()
+    {
+        if (!subscribedToSupervisor)
+        {
+            return;
+        }
+
+        subscribedToSupervisor = false;
+        supervisor.Recovered -= OnBackendRecovered;
+        supervisor.Restarting -= OnBackendRestarting;
+    }
+
+    /// <summary>
+    /// A broken backend reports zero models, which is what unroutes this node — so recovery has
+    /// to push a fresh report rather than wait out <c>ModelRefreshInterval</c> (up to a minute of
+    /// a healthy node sitting out of the fleet).
+    /// </summary>
+    private void OnBackendRecovered()
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ReportModelsAsync(lifetime.Token);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Could not re-report models after the backend recovered");
+            }
+        });
+    }
+
+    /// <summary>
+    /// The in-flight count lives here, so the cost of a restart is recorded by the thing that
+    /// knows it. It is not <em>protected</em> — see the supervisor for why waiting to drain would
+    /// be worse.
+    /// </summary>
+    private void OnBackendRestarting(BackendHealth health)
+    {
+        var running = Volatile.Read(ref inFlight);
+
+        if (running == 0)
+        {
+            return;
+        }
+
+        logger.LogWarning(
+            "The backend is {Health} and about to be restarted; {InFlight} in-flight job(s) will be lost.",
+            health,
+            running);
     }
 
     private HubConnection BuildConnection(string coordinatorUrl)
@@ -529,6 +604,20 @@ public sealed class CoordinatorConnection(
 
         var report = new NodeModels(nodeId, filtered, DateTimeOffset.UtcNow);
         await activeConnection.InvokeAsync("ReportModels", report, cancellationToken);
+
+        // The empty report is the point, not an accident: the coordinator replaces this node's
+        // list wholesale, so reporting nothing is what stops it routing inference at a backend
+        // that cannot serve it. Preserving the last known good list instead would turn a
+        // node-local fault into client-visible timeouts. What was missing was the *reason* —
+        // "no models" read exactly like "this box has nothing installed".
+        if (filtered.Count == 0 && supervisor.Health is { } health and not BackendHealth.Healthy)
+        {
+            logger.LogWarning(
+                "Reported 0 models: the local backend is {Health}. This node stays unrouted until it recovers, and will re-report the moment it does.",
+                health);
+
+            return;
+        }
 
         logger.LogInformation(
             "Reported {ModelCount} of {DiscoveredCount} models from {BackendName} backend",

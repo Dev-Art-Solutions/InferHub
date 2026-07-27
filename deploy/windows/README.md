@@ -96,3 +96,50 @@ rely on the data directory for writable state:
 
 The node only makes outbound HTTP calls — SignalR to the coordinator and local Ollama
 (`http://localhost:11434`). It needs no inbound ports and no GPU access of its own.
+
+## The Ollama supervisor and service privileges (v3.4+)
+
+If you turn on `Ollama:Supervisor:Enabled`, the node restarts its local Ollama when it stops
+answering. On a box where Ollama is installed **as a service**, that means calling
+`sc.exe stop Ollama` / `sc.exe start Ollama` — and **this is exactly the deployment where the
+account matters**, because a node service running under a restricted account cannot control a
+machine-wide one.
+
+The failure is reported as a single line naming the privilege and the service, not a stack
+trace, so it is diagnosable from the Event Log:
+
+```
+Cannot start Ollama (Service 'Ollama'): the account this node runs as is not allowed to
+control the service (…). Grant this account the right to control the service, or run the node
+under one that has it — see deploy/windows/README.md.
+```
+
+Your options, in the order most people should try them:
+
+1. **Run the node service as `LocalSystem`** (the installer's default). It can control the
+   `Ollama` service; nothing further is needed.
+2. **Grant the virtual account rights on the `Ollama` service specifically** — narrower than
+   giving it administrative rights on the box. Read the current descriptor, add a start/stop
+   ACE for your account, and write it back:
+
+   ```powershell
+   sc.exe sdshow Ollama          # copy the existing SDDL first
+   # append an ACE granting RP (start), WP (stop) and LC/CC (query) to your account's SID:
+   sc.exe sdset Ollama "D:(A;;CCLCSWRPWPDTLOCRRC;;;<SID>)(…existing ACEs…)S:(…)"
+   ```
+
+   Get the SID with `(New-Object System.Security.Principal.NTAccount('NT SERVICE\InferHubNode')).Translate([System.Security.Principal.SecurityIdentifier]).Value`.
+   **Paste the existing descriptor back in** — `sdset` replaces it wholesale, and dropping the
+   ACEs that were there is how the `Ollama` service becomes uncontrollable by anyone.
+3. **Leave the supervisor off on this node.** It is off by default, and a fleet that installs
+   and repairs Ollama by policy does not need it.
+
+Where Ollama is installed as a **binary** rather than a service (the per-user Windows
+installer puts it in `%LOCALAPPDATA%\Programs\Ollama`), the node spawns `ollama serve` itself
+and needs only execute rights on that path — but note that a per-user install may not be
+visible to the service account at all. Point `Ollama:Supervisor:ExecutablePath` at it
+explicitly, or install Ollama machine-wide.
+
+`Ollama:Supervisor:AutoInstall` almost certainly needs elevation too; on a managed Windows
+fleet it is usually the wrong tool, and installing Ollama through your normal software
+distribution is the right one.

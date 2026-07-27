@@ -109,13 +109,16 @@ byte-identical to 2.13. Still **zero new dependencies** — the lease is `Npgsql
 | 33 | Qdrant vector connector (done) | `v3.1.0` |
 | 34 | Qdrant-native hybrid search (done) | `v3.2.0` |
 | 35 | Qdrant production knobs + cross-provider migration (done) | `v3.3.0` |
+| 36 | Node supervises its own Ollama (done) | `v3.4.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
-and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. Still on the
-table: **active-active** multi-coordinator load sharing, an **OTLP push** exporter behind an explicit
-opt-in, and a dedicated cross-encoder reranker behind the existing `IReranker` seam. A fourth vector
-backend (Milvus, Weaviate) is the same shape as the third and will ship on real demand rather than
-for the comparison matrix.
+and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 turned
+to the node, which until now sat in the fleet as a passive victim of a wedged backend. Still on the
+table: teaching the **coordinator** about backend health as a typed signal (a status column and an
+alert, rather than a line in the node's log), **active-active** multi-coordinator load sharing, an
+**OTLP push** exporter behind an explicit opt-in, and a dedicated cross-encoder reranker behind the
+existing `IReranker` seam. A fourth vector backend (Milvus, Weaviate) is the same shape as the third
+and will ship on real demand rather than for the comparison matrix.
 
 ## Quick start
 
@@ -563,11 +566,100 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `Backend:Type` | `ollama` | Inference backend selector: `ollama` or `openai`. See [Inference backends](#inference-backends). |
 | `Ollama:Endpoint` | `http://localhost:11434/` | Local Ollama URL (absolute http/https). Used when `Backend:Type=ollama`. |
 | `Ollama:RequestTimeout` | `00:05:00` | Timeout for a single Ollama call. Matches the coordinator's `Dispatcher:TimeoutSeconds`; raise it for very large models whose cold load is slow. |
+| `Ollama:Supervisor:*` | _(off)_ | Keeps the local Ollama alive (v3.4). See [Keeping the local Ollama alive](#keeping-the-local-ollama-alive-v34) for the full table. |
 | `OpenAi:BaseUrl` | _(empty)_ | Upstream OpenAI-compatible server, e.g. `http://localhost:8000/v1`. **Required when `Backend:Type=openai`** — the node refuses to start without it rather than booting and 500ing on every job. |
 | `OpenAi:ApiKey` | _(empty)_ | Bearer token for the upstream. Env (`OpenAi__ApiKey`) or user-secrets only. |
 | `OpenAi:TimeoutSeconds` | `300` | Timeout for a single upstream call. Same reasoning as `Ollama:RequestTimeout`. |
 | `OpenAi:Models:Include` | `[]` | Allowlist of upstream models to advertise. Effectively mandatory against a hosted provider. |
 | `OpenAi:Models:Exclude` | `[]` | Names dropped before reporting. |
+
+### Keeping the local Ollama alive (v3.4+)
+
+Ollama is a young server moving quickly, and sometimes it wedges: the process is alive, the
+port still accepts connections, and nothing ever comes back. Until v3.4 that took the whole
+node out of the fleet and left it there — connected, heartbeating, reporting no models,
+waiting for somebody to notice. The node now notices instead.
+
+```jsonc
+"Ollama": {
+  "Endpoint": "http://localhost:11434/",
+  "Supervisor": {
+    "Enabled": true,
+    "AutoInstall": false
+  }
+}
+```
+
+It probes `GET /api/version` every `ProbeInterval`, and after `UnhealthyThreshold`
+**consecutive** failures it acts. One slow answer is not a fault; a machine that reacts to a
+single missed probe spends its life reacting.
+
+| State | How it looks | What it means | What the node does |
+|---|---|---|---|
+| healthy | answered inside `ProbeTimeout` | fine | nothing |
+| unreachable | the socket never opened | not running | **start** it |
+| wedged | the socket opened, nothing came back (or a 5xx) | running but stuck | **stop**, then start |
+
+Collapsing the last two is the bug this distinction exists to avoid: `start` on a wedged
+process fails on a port that is already bound, and the log then confidently reports a restart
+that never happened.
+
+**Restarts are budgeted.** `MaxRestartAttempts` (3) inside `RestartWindow` (10 min), with
+`RestartBackoff` (10s, doubling) between them, and a wait of up to `ReadyTimeout` (2 min) for
+the restarted server to answer — a service that starts by loading a model is slow, not broken.
+Past the budget the node **stops restarting**, logs it once at Error, and **keeps probing**, so
+a recovery (a human fixing the driver, the machine finishing whatever it was choking on) is
+still noticed and the node re-reports its models on its own. A supervisor that restarts a
+server every fifteen seconds never lets a model finish loading, which replaces a fixable outage
+with an unfixable one.
+
+**Loopback only.** If `Ollama:Endpoint` is not loopback, or `Backend:Type=openai`, the
+supervisor logs one line at startup naming why and never probes again. A shared Ollama serving
+four nodes, restarted because *one* node's network hiccuped past `ProbeTimeout`, is a four-node
+outage caused by the node with the worst link — and an OpenAI-compatible upstream (vLLM, a
+hosted provider) is not ours to bounce at all. The same rule covers containers for free: a node
+image cannot restart an Ollama on its host, and its endpoint is by definition not loopback.
+
+**Auto-install is a second, separate opt-in.** `Enabled` consents to restarting a process; it
+does not consent to downloading and running an installer. `AutoInstall` fires only when
+discovery finds neither a service nor a binary — "not installed", never "not answering" —
+**once per process lifetime**, with the exact command written to the log before it runs.
+`InstallUrl` points an air-gapped or policy-managed fleet at its own mirror instead of us
+reaching the internet from their GPU box.
+
+> **A restart kills whatever was streaming through that node**, and there is no way around it.
+> Waiting for the work to drain first would be worse: a single stuck request would pin the node
+> in a broken state indefinitely, which is the exact failure this feature exists to end. By the
+> time a restart happens, Ollama has not answered a trivial version check in three quarters of
+> a minute — that stream was not going to finish. The log line says how many requests were in
+> flight, so the cost is recorded rather than hidden.
+
+While the backend is broken the node keeps reporting **zero** models. That is what stops the
+coordinator routing inference at it, and it is deliberate: preserving the last known good list
+would turn a node-local fault into client-visible timeouts. The report now says *why* it is
+empty, so "no models" no longer reads the same as "this box has nothing installed".
+
+| Key | Default | Purpose |
+|---|---|---|
+| `Ollama:Supervisor:Enabled` | `false` | Turns supervision on. Loopback + `Backend:Type=ollama` only. |
+| `Ollama:Supervisor:ProbeInterval` | `00:00:15` | How often to probe. |
+| `Ollama:Supervisor:ProbeTimeout` | `00:00:05` | The probe's own deadline. Deliberately **not** `Ollama:RequestTimeout` — that one waits five minutes for a cold 70B load, and probing over it would take a quarter of an hour to notice a wedge. |
+| `Ollama:Supervisor:UnhealthyThreshold` | `3` | Consecutive failures before acting. Any success resets the count. |
+| `Ollama:Supervisor:ReadyTimeout` | `00:02:00` | How long a restarted Ollama gets to answer. |
+| `Ollama:Supervisor:MaxRestartAttempts` | `3` | Restarts allowed per window. |
+| `Ollama:Supervisor:RestartWindow` | `00:10:00` | The window the budget applies over. |
+| `Ollama:Supervisor:RestartBackoff` | `00:00:10` | Wait before the second and later attempts; doubles each time. |
+| `Ollama:Supervisor:AutoInstall` | `false` | Install Ollama when it is genuinely absent. A separate consent. |
+| `Ollama:Supervisor:InstallUrl` | _(official)_ | Mirror to install from. |
+| `Ollama:Supervisor:ServiceName` | _(discover)_ | Override the discovered service (`Ollama` / `ollama.service`). |
+| `Ollama:Supervisor:ExecutablePath` | _(discover)_ | Override the `ollama` binary found on `PATH`. |
+
+A service manager always wins over spawning: if the `Ollama` Windows service or an
+`ollama.service` systemd unit exists, the node restarts it through `sc.exe` / `systemctl`
+rather than running `ollama serve` itself — two servers fighting over `:11434` is a worse
+outage than the one being fixed. A node running under a **restricted account cannot control a
+machine-wide service**; that is reported as one line naming the privilege rather than a stack
+trace. See [deploy/windows/README.md](deploy/windows/README.md).
 
 ### Running a node as a Windows service
 

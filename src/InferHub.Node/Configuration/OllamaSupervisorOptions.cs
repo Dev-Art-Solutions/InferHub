@@ -1,0 +1,66 @@
+namespace InferHub.Node.Configuration;
+
+/// <summary>
+/// Governs the node's supervision of its <em>own</em> Ollama (phase 36). Off by default:
+/// restarting a process on somebody's machine is a real side effect, so it is consented to
+/// with a key rather than discovered.
+/// </summary>
+public sealed class OllamaSupervisorOptions
+{
+    public const string SectionName = "Ollama:Supervisor";
+
+    /// <summary>
+    /// Consents to <em>restarting</em> a local Ollama. It does not consent to installing one —
+    /// that is <see cref="AutoInstall"/>, deliberately a second switch.
+    /// </summary>
+    public bool Enabled { get; set; }
+
+    public TimeSpan ProbeInterval { get; set; } = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// The probe's own deadline, and the whole reason this feature works.
+    /// </summary>
+    /// <remarks>
+    /// <c>Ollama:RequestTimeout</c> is five minutes on purpose (a cold 70B load). Probing over
+    /// that budget would mean a <em>wedged</em> Ollama — the exact case this exists for — takes
+    /// five minutes to produce one failed probe, and three of those to cross the threshold: a
+    /// quarter of an hour before the node lifts a finger. Hence a separate, short deadline over
+    /// a separate <c>HttpClient</c>. The two clients are not redundant; do not consolidate them.
+    /// </remarks>
+    public TimeSpan ProbeTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Consecutive failed probes before a state is declared. A GC pause, a saturated box
+    /// mid-load or a laptop waking from sleep is not a wedge; any success resets the count.
+    /// </summary>
+    public int UnhealthyThreshold { get; set; } = 3;
+
+    /// <summary>
+    /// How long to wait for a restarted Ollama to answer. Generous, because a service that
+    /// starts by loading a model is slow, not broken.
+    /// </summary>
+    public TimeSpan ReadyTimeout { get; set; } = TimeSpan.FromMinutes(2);
+
+    public int MaxRestartAttempts { get; set; } = 3;
+
+    public TimeSpan RestartWindow { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>Wait before the second and later attempts in a window; doubles each time.</summary>
+    public TimeSpan RestartBackoff { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Downloads and runs the official installer when Ollama is genuinely <em>absent</em>
+    /// (never when it is merely not answering), once per process lifetime.
+    /// </summary>
+    public bool AutoInstall { get; set; }
+
+    /// <summary>Empty = the official channel for this platform. Point it at a mirror for an
+    /// air-gapped or policy-managed fleet rather than reaching the internet from a GPU box.</summary>
+    public string InstallUrl { get; set; } = string.Empty;
+
+    /// <summary>Empty = discover (<c>Ollama</c> on Windows, <c>ollama.service</c> under systemd).</summary>
+    public string ServiceName { get; set; } = string.Empty;
+
+    /// <summary>Empty = discover <c>ollama</c> on <c>PATH</c>.</summary>
+    public string ExecutablePath { get; set; } = string.Empty;
+}

@@ -144,3 +144,73 @@ public sealed class OllamaOptionsValidator : IValidateOptions<OllamaOptions>
         return ValidateOptionsResult.Success;
     }
 }
+
+/// <summary>
+/// Only bites when the supervisor is switched on. A node that leaves it off must boot exactly
+/// as it did before the feature existed, including past a section somebody half-edited.
+/// </summary>
+public sealed class OllamaSupervisorOptionsValidator : IValidateOptions<OllamaSupervisorOptions>
+{
+    public ValidateOptionsResult Validate(string? name, OllamaSupervisorOptions options)
+    {
+        if (!options.Enabled)
+        {
+            return ValidateOptionsResult.Success;
+        }
+
+        var failures = new List<string>();
+
+        Positive(options.ProbeInterval, nameof(OllamaSupervisorOptions.ProbeInterval));
+        Positive(options.ProbeTimeout, nameof(OllamaSupervisorOptions.ProbeTimeout));
+        Positive(options.ReadyTimeout, nameof(OllamaSupervisorOptions.ReadyTimeout));
+        Positive(options.RestartWindow, nameof(OllamaSupervisorOptions.RestartWindow));
+        Positive(options.RestartBackoff, nameof(OllamaSupervisorOptions.RestartBackoff));
+
+        // A probe that outlives its own tick makes the consecutive-failure threshold meaningless:
+        // the ticks would overlap and "three in a row" would stop meaning three intervals.
+        if (options.ProbeTimeout >= options.ProbeInterval)
+        {
+            failures.Add(
+                $"{OllamaSupervisorOptions.SectionName}:{nameof(OllamaSupervisorOptions.ProbeTimeout)} must be shorter than {nameof(OllamaSupervisorOptions.ProbeInterval)} (got {options.ProbeTimeout} >= {options.ProbeInterval}).");
+        }
+
+        if (options.ReadyTimeout <= options.ProbeTimeout)
+        {
+            failures.Add(
+                $"{OllamaSupervisorOptions.SectionName}:{nameof(OllamaSupervisorOptions.ReadyTimeout)} must be longer than {nameof(OllamaSupervisorOptions.ProbeTimeout)} (got {options.ReadyTimeout} <= {options.ProbeTimeout}).");
+        }
+
+        if (options.UnhealthyThreshold < 1)
+        {
+            failures.Add(
+                $"{OllamaSupervisorOptions.SectionName}:{nameof(OllamaSupervisorOptions.UnhealthyThreshold)} must be >= 1 (got {options.UnhealthyThreshold}).");
+        }
+
+        if (options.MaxRestartAttempts < 1)
+        {
+            failures.Add(
+                $"{OllamaSupervisorOptions.SectionName}:{nameof(OllamaSupervisorOptions.MaxRestartAttempts)} must be >= 1 (got {options.MaxRestartAttempts}).");
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.InstallUrl)
+            && (!Uri.TryCreate(options.InstallUrl, UriKind.Absolute, out var installUri)
+                || (installUri.Scheme != Uri.UriSchemeHttp && installUri.Scheme != Uri.UriSchemeHttps)))
+        {
+            failures.Add(
+                $"{OllamaSupervisorOptions.SectionName}:{nameof(OllamaSupervisorOptions.InstallUrl)} must be an absolute http(s) URL when set (got '{options.InstallUrl}').");
+        }
+
+        return failures.Count == 0
+            ? ValidateOptionsResult.Success
+            : ValidateOptionsResult.Fail(failures);
+
+        void Positive(TimeSpan value, string key)
+        {
+            if (value <= TimeSpan.Zero)
+            {
+                failures.Add(
+                    $"{OllamaSupervisorOptions.SectionName}:{key} must be greater than zero (got {value}).");
+            }
+        }
+    }
+}
