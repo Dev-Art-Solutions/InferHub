@@ -377,7 +377,7 @@ public class IngestionPipelineTests
             MaxRetriesPerBatch = 3
         });
 
-        var store = new LocalVectorStore(vectorOptions, NullLogger<LocalVectorStore>.Instance);
+        var store = new LocalVectorStore(vectorOptions.Value, NullVectorLog.Instance);
         await store.CreateCollectionAsync(Collection, dimension: 2, distance: "cosine");
 
         var documents = new DocumentIndex(store);
@@ -385,8 +385,8 @@ public class IngestionPipelineTests
         var metrics = new Metrics();
         var pipeline = new IngestionPipeline(
             store, documents, new TextExtractor(pdf), embeddings,
-            ingestionOptions, vectorOptions, metrics,
-            NullLogger<IngestionPipeline>.Instance);
+            ingestionOptions.Value, vectorOptions.Value, metrics,
+            NullVectorLog.Instance);
 
         return new Harness(pipeline, store, documents, embeddings, metrics);
     }

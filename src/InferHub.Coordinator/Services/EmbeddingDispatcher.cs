@@ -99,8 +99,3 @@ public sealed class EmbeddingDispatcher(
     }
 }
 
-public sealed class NoEmbeddingNodeException(string model)
-    : InvalidOperationException($"no node is advertising embedding model '{model}'")
-{
-    public string Model { get; } = model;
-}

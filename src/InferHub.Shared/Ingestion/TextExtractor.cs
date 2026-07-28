@@ -3,7 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-namespace InferHub.Coordinator.Ingestion;
+namespace InferHub.Shared.Ingestion;
 
 /// <summary>
 /// Bytes in, readable text out. Handles the formats that need no dependency — plain text,
@@ -191,7 +191,7 @@ public sealed partial class TextExtractor(IPdfTextExtractor? pdf = null)
     }
 
     /// <summary>Collapse runs of horizontal space and blank lines; keep paragraph boundaries.</summary>
-    internal static string Normalize(string text)
+    public static string Normalize(string text)
     {
         text = text.Replace("\r\n", "\n").Replace('\r', '\n');
         text = HorizontalSpaceRegex().Replace(text, " ");

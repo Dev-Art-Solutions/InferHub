@@ -46,6 +46,11 @@ internal sealed class SoloHost : IAsyncDisposable
             "--Coordinator:Enabled=false",
             "--Node:Name=solo-test",
             $"--Node:DataDirectory={host.dataDirectory}",
+            // The corpus default is a *relative* path, so without this every test in the run would
+            // share one directory under the test working directory and see each other's documents.
+            // Later args win, so a test that wants a specific directory (to prove a corpus survives
+            // a restart) still gets one.
+            $"--LocalApi:Retrieval:DataDirectory={Path.Combine(host.dataDirectory, "retrieval")}",
             .. settings
         ]);
 
@@ -174,11 +179,26 @@ internal sealed class ScriptedBackend : IInferenceBackend
     public Task<string> ChatAsync(string requestJson, CancellationToken cancellationToken)
         => RespondAsync(requestJson, cancellationToken);
 
+    /// <summary>
+    /// When set, <c>/api/embed</c> answers with <see cref="TestEmbeddings"/> over the request's own
+    /// input rather than the canned <see cref="EmbedResponse"/> — so a corpus actually ranks, and
+    /// the hub and the node embed identically (phase 38).
+    /// </summary>
+    public bool DeterministicEmbeddings { get; set; }
+
     public async Task<string> EmbedAsync(string requestJson, CancellationToken cancellationToken)
     {
         LastRequestJson = requestJson;
         await GateAsync(cancellationToken);
-        return EmbedResponse;
+
+        if (Failure is not null)
+        {
+            throw Failure;
+        }
+
+        return DeterministicEmbeddings
+            ? TestEmbeddings.RespondTo(requestJson)
+            : EmbedResponse;
     }
 
     public async IAsyncEnumerable<string> StreamAsync(

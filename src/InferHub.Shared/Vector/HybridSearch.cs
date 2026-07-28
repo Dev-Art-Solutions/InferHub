@@ -1,11 +1,11 @@
 using InferHub.Shared.Vector;
 
-namespace InferHub.Coordinator.Vector;
+namespace InferHub.Shared.Vector;
 
 /// <summary>How a retrieval request searches the collection. Per-request via
 /// <c>X-InferHub-Retrieve-Mode</c>, defaulting to <see cref="Vector"/> so every deployment that
 /// sends no header behaves exactly as it did before v2.6.</summary>
-internal enum RetrievalMode
+public enum RetrievalMode
 {
     /// <summary>Dense vector (embedding) search only — the pre-v2.6 behaviour.</summary>
     Vector,
@@ -15,7 +15,7 @@ internal enum RetrievalMode
     Hybrid
 }
 
-internal static class RetrievalModes
+public static class RetrievalModes
 {
     public static bool TryParse(string? value, out RetrievalMode mode)
     {
@@ -47,7 +47,7 @@ internal static class RetrievalModes
 /// and fails in ways you can reason about.
 /// </para>
 /// </summary>
-internal static class HybridSearch
+public static class HybridSearch
 {
     public const int RrfK = 60;
 

@@ -4,6 +4,7 @@ using InferHub.Node.Configuration;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.Ollama;
 using InferHub.Shared.OpenAi;
+using InferHub.Shared.Vector;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
@@ -46,15 +47,6 @@ internal static class LocalOpenAiEndpoints
     {
         var logger = loggerFactory.CreateLogger("InferHub.Node.LocalApi.ChatCompletions");
 
-        if (LocalApiEndpoints.AsksForRetrieval(httpContext.Request))
-        {
-            return Error(new OpenAiRequestException(
-                LocalApiEndpoints.RetrievalRefusal,
-                StatusCodes.Status501NotImplemented,
-                OpenAiErrorTypes.ApiError,
-                code: "retrieval_unavailable"));
-        }
-
         ChatCompletionRequest request;
         string ollamaJson;
 
@@ -66,6 +58,38 @@ internal static class LocalOpenAiEndpoints
         catch (OpenAiRequestException ex)
         {
             return Error(ex);
+        }
+
+        // Retrieval runs on the *translated* Ollama body, exactly as it does on the hub: the
+        // pipeline injects a system message into an Ollama chat request, and the OpenAI surface
+        // never has a second augmenter of its own (phase-21 D3's one-path rule).
+        try
+        {
+            var (augmented, sources) = await LocalApiEndpoints.ApplyRetrievalAsync(
+                httpContext, isChat: true, ollamaJson, cancellationToken);
+
+            ollamaJson = augmented;
+
+            if (sources is not null)
+            {
+                httpContext.Response.Headers[LocalRetrievalHeader.SourcesHeader] = sources;
+            }
+        }
+        catch (LocalApiEndpoints.RetrievalNotEnabledException)
+        {
+            return Error(new OpenAiRequestException(
+                LocalApiEndpoints.RetrievalRefusal,
+                StatusCodes.Status501NotImplemented,
+                OpenAiErrorTypes.ApiError,
+                code: "retrieval_unavailable"));
+        }
+        catch (RetrievalUnavailableException ex)
+        {
+            return Error(new OpenAiRequestException(
+                ex.Message,
+                StatusCodes.Status424FailedDependency,
+                OpenAiErrorTypes.ApiError,
+                code: "retrieval_unavailable"));
         }
 
         var model = request.Model!;

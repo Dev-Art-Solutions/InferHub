@@ -371,11 +371,11 @@ public class RetrievalPipelineTests
             Distance = "cosine",
             DefaultEmbeddingModel = "test-embed"
         });
-        return (options, new LocalVectorStore(options, NullLogger<LocalVectorStore>.Instance));
+        return (options, new LocalVectorStore(options.Value, NullVectorLog.Instance));
     }
 
     private static RetrievalPipeline NewPipelineOver(IVectorStore store, IEmbeddingDispatcher embeddings, IOptions<VectorStoreOptions> options)
-        => new(options, store, embeddings, new NullQueryRouter(), new PassthroughReranker(), new Metrics(), NullLogger<RetrievalPipeline>.Instance);
+        => new(options.Value, store, embeddings, new NullQueryRouter(), new PassthroughReranker(), new Metrics(), NullVectorLog.Instance);
 
     private static (RetrievalPipeline Pipeline, LocalVectorStore Store, FakeEmbeddings Embeddings) NewPipeline(
         Action<VectorStoreOptions>? configure = null,
@@ -394,16 +394,16 @@ public class RetrievalPipelineTests
         configure?.Invoke(opts);
         var options = Options.Create(opts);
 
-        var store = new LocalVectorStore(options, NullLogger<LocalVectorStore>.Instance);
+        var store = new LocalVectorStore(options.Value, NullVectorLog.Instance);
         var embeddings = new FakeEmbeddings();
         var pipeline = new RetrievalPipeline(
-            options,
+            options.Value,
             store,
             embeddings,
             new NullQueryRouter(),
             reranker ?? new PassthroughReranker(),
             new Metrics(),
-            NullLogger<RetrievalPipeline>.Instance);
+            NullVectorLog.Instance);
 
         return (pipeline, store, embeddings);
     }

@@ -169,6 +169,6 @@ public class VectorScanTests : IDisposable
             DataDirectory = _root,
             Distance = "cosine"
         });
-        return new LocalVectorStore(opts, NullLogger<LocalVectorStore>.Instance);
+        return new LocalVectorStore(opts.Value, NullVectorLog.Instance);
     }
 }

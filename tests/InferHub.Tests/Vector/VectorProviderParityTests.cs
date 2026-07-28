@@ -219,6 +219,6 @@ public class VectorProviderParityTests : IAsyncLifetime
             Distance = distance,
             SnapshotEveryOps = 5000
         });
-        return new LocalVectorStore(opts, NullLogger<LocalVectorStore>.Instance);
+        return new LocalVectorStore(opts.Value, NullVectorLog.Instance);
     }
 }

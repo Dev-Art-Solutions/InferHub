@@ -327,14 +327,14 @@ public class MigrateTests : IAsyncLifetime
     }
 
     private LocalVectorStore NewLocal() => new(
-        Options.Create(new VectorStoreOptions
+        new VectorStoreOptions
         {
             Enabled = true,
             DataDirectory = Path.Combine(_root, Guid.NewGuid().ToString("N")),
             Distance = "cosine",
             SnapshotEveryOps = 5000
-        }),
-        NullLogger<LocalVectorStore>.Instance);
+        },
+        NullVectorLog.Instance);
 
     private static QdrantVectorStore NewQdrant(string prefix)
     {

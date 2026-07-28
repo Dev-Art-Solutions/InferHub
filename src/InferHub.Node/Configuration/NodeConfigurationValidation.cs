@@ -1,3 +1,6 @@
+using InferHub.Shared.Ingestion;
+using InferHub.Shared.Vector;
+using InferHub.Shared.Vector.Storage;
 using InferHub.Node.Backends;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
@@ -231,6 +234,187 @@ public sealed class LocalApiOptionsValidator : IValidateOptions<LocalApiOptions>
         return failures.Count == 0
             ? ValidateOptionsResult.Success
             : ValidateOptionsResult.Fail(failures);
+    }
+}
+
+/// <summary>
+/// Only bites when solo retrieval is switched on (phase 38), and the first thing it checks is the
+/// one that is not about a value at all.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <strong>Retrieval in solo mode requires that there is no coordinator.</strong> Design rule 4:
+/// <em>one source of truth per deployment, and node replicas are only ever derived from it — never
+/// a second authority.</em> A meshed node already holds derived copies of the hub's collections
+/// (phase-15 replicas, on disk, maintained by the hub pushing down). Give that same process an
+/// <em>authoritative</em> store of its own and there are two vector authorities inside one node: a
+/// locally ingested document is invisible to the fleet, a collection name that exists in both
+/// places has two different sets of chunks under it, and the hub's replication will overwrite a
+/// collection the operator believes they own.
+/// </para>
+/// <para>
+/// It refuses rather than quietly disabling, which is the opposite of what phase-36 D1 does for the
+/// supervisor — and deliberately so. A disabled supervisor costs an operational nicety; retrieval
+/// silently switched off is <em>grounding</em> silently switched off, and the node then answers
+/// confidently, fluently and ungrounded with no signal at all. That is the exact failure phase-31
+/// D4 and phase-37 D8 exist to prevent.
+/// </para>
+/// </remarks>
+public sealed class LocalRetrievalOptionsValidator(IConfiguration? configuration = null)
+    : IValidateOptions<LocalRetrievalOptions>
+{
+    public ValidateOptionsResult Validate(string? name, LocalRetrievalOptions options)
+    {
+        if (!options.Enabled)
+        {
+            return ValidateOptionsResult.Success;
+        }
+
+        var failures = new List<string>();
+
+        // Read straight from configuration rather than through IOptions<CoordinatorOptions>, for the
+        // reason CoordinatorOptionsValidator already documents: an options validator resolving
+        // another options monitor during ValidateOnStart is a cycle that only shows up at boot.
+        // Absent configuration means the default, and Coordinator:Enabled defaults to true.
+        var meshed = configuration?
+            .GetSection(CoordinatorOptions.SectionName)
+            .GetValue<bool?>(nameof(CoordinatorOptions.Enabled)) ?? true;
+
+        if (meshed)
+        {
+            failures.Add(
+                $"{LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.Enabled)} is true while {CoordinatorOptions.SectionName}:{nameof(CoordinatorOptions.Enabled)} is also true. A meshed node already holds vector replicas derived from its coordinator, and a second, authoritative store in the same process would be a second source of truth for the same collection names. Set {CoordinatorOptions.SectionName}:{nameof(CoordinatorOptions.Enabled)}=false to run this node standalone with its own corpus, or set {LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.Enabled)}=false and ingest into the coordinator instead.");
+        }
+
+        var solo = configuration?
+            .GetSection(LocalApiOptions.SectionName)
+            .GetValue<bool>(nameof(LocalApiOptions.Enabled)) ?? false;
+
+        if (!solo)
+        {
+            failures.Add(
+                $"{LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.Enabled)} is true but {LocalApiOptions.SectionName}:{nameof(LocalApiOptions.Enabled)} is false, so nothing would ever reach it — retrieval is served over the local API. Turn solo mode on.");
+        }
+
+        if (string.IsNullOrWhiteSpace(options.DataDirectory))
+        {
+            failures.Add(
+                $"{LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.DataDirectory)} must be set.");
+        }
+
+        if (!DistanceMetricExtensions.TryParse(options.Distance, out _))
+        {
+            failures.Add(
+                $"{LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.Distance)} must be one of 'cosine', 'dot', 'l2' (got '{options.Distance}').");
+        }
+
+        if (options.SnapshotEveryOps < 1)
+        {
+            failures.Add(
+                $"{LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.SnapshotEveryOps)} must be >= 1 (got {options.SnapshotEveryOps}).");
+        }
+
+        if (string.IsNullOrWhiteSpace(options.DefaultEmbeddingModel))
+        {
+            failures.Add(
+                $"{LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.DefaultEmbeddingModel)} must be set.");
+        }
+
+        ValidateRetrieval(options.Retrieval, failures);
+        ValidateIngestion(options.Ingestion, failures);
+
+        return failures.Count == 0
+            ? ValidateOptionsResult.Success
+            : ValidateOptionsResult.Fail(failures);
+    }
+
+    // The same rules and the same wording as the coordinator's VectorStoreOptionsValidator, against
+    // the same options class — only the key prefix differs. A value that is invalid on the hub must
+    // not be quietly accepted here.
+    private static void ValidateRetrieval(RetrievalOptions retrieval, List<string> failures)
+    {
+        const string prefix = LocalRetrievalOptions.SectionName + ":Retrieval:";
+
+        if (retrieval.DefaultK < 1)
+        {
+            failures.Add($"{prefix}{nameof(RetrievalOptions.DefaultK)} must be >= 1 (got {retrieval.DefaultK}).");
+        }
+
+        if (retrieval.MaxRecords < retrieval.DefaultK)
+        {
+            failures.Add($"{prefix}{nameof(RetrievalOptions.MaxRecords)} must be >= DefaultK ({retrieval.DefaultK}, got {retrieval.MaxRecords}).");
+        }
+
+        if (retrieval.OnMissing is not "error" and not "passthrough")
+        {
+            failures.Add($"{prefix}{nameof(RetrievalOptions.OnMissing)} must be 'error' or 'passthrough' (got '{retrieval.OnMissing}').");
+        }
+
+        if (string.IsNullOrWhiteSpace(retrieval.Template))
+        {
+            failures.Add($"{prefix}{nameof(RetrievalOptions.Template)} must be set.");
+        }
+        else if (!retrieval.Template.Contains("{context}", StringComparison.Ordinal))
+        {
+            failures.Add($"{prefix}{nameof(RetrievalOptions.Template)} must contain the literal '{{context}}' placeholder.");
+        }
+
+        if (!RetrievalModes.TryParse(retrieval.Mode, out _))
+        {
+            failures.Add($"{prefix}{nameof(RetrievalOptions.Mode)} must be 'vector', 'keyword' or 'hybrid' (got '{retrieval.Mode}').");
+        }
+
+        if (retrieval.CandidatesPerBranch < 1)
+        {
+            failures.Add($"{prefix}{nameof(RetrievalOptions.CandidatesPerBranch)} must be >= 1 (got {retrieval.CandidatesPerBranch}).");
+        }
+
+        if (retrieval.Rerank is not "none" and not "llm")
+        {
+            failures.Add($"{prefix}{nameof(RetrievalOptions.Rerank)} must be 'none' or 'llm' (got '{retrieval.Rerank}').");
+        }
+
+        if (retrieval.RerankCandidates < 1)
+        {
+            failures.Add($"{prefix}{nameof(RetrievalOptions.RerankCandidates)} must be >= 1 (got {retrieval.RerankCandidates}).");
+        }
+
+        if (retrieval.RerankTimeoutSeconds < 1)
+        {
+            failures.Add($"{prefix}{nameof(RetrievalOptions.RerankTimeoutSeconds)} must be >= 1 (got {retrieval.RerankTimeoutSeconds}).");
+        }
+    }
+
+    private static void ValidateIngestion(IngestionOptions ingestion, List<string> failures)
+    {
+        const string prefix = LocalRetrievalOptions.SectionName + ":Ingestion:";
+
+        if (ingestion.MaxChars < 64)
+        {
+            failures.Add($"{prefix}{nameof(IngestionOptions.MaxChars)} must be >= 64 (got {ingestion.MaxChars}).");
+        }
+
+        // Overlap at or above the chunk size means chunk N+1 starts at or before chunk N did: the
+        // chunker would never advance and a 1 MB document would spin forever.
+        if (ingestion.OverlapChars < 0 || ingestion.OverlapChars >= ingestion.MaxChars)
+        {
+            failures.Add($"{prefix}{nameof(IngestionOptions.OverlapChars)} must be >= 0 and < MaxChars ({ingestion.MaxChars}, got {ingestion.OverlapChars}).");
+        }
+
+        if (ingestion.MaxDocumentBytes < 1)
+        {
+            failures.Add($"{prefix}{nameof(IngestionOptions.MaxDocumentBytes)} must be >= 1 (got {ingestion.MaxDocumentBytes}).");
+        }
+
+        if (ingestion.EmbeddingBatchSize < 1)
+        {
+            failures.Add($"{prefix}{nameof(IngestionOptions.EmbeddingBatchSize)} must be >= 1 (got {ingestion.EmbeddingBatchSize}).");
+        }
+
+        if (ingestion.MaxRetriesPerBatch < 1)
+        {
+            failures.Add($"{prefix}{nameof(IngestionOptions.MaxRetriesPerBatch)} must be >= 1 (got {ingestion.MaxRetriesPerBatch}).");
+        }
     }
 }
 

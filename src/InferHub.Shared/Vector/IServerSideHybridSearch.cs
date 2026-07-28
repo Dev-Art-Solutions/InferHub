@@ -1,6 +1,6 @@
 using InferHub.Shared.Vector;
 
-namespace InferHub.Coordinator.Vector;
+namespace InferHub.Shared.Vector;
 
 /// <summary>
 /// A vector store that can fuse a dense (embedding) and a sparse (lexical) query <em>server-side</em>
@@ -15,7 +15,7 @@ namespace InferHub.Coordinator.Vector;
 /// <see cref="IReranker"/>.
 /// </para>
 /// </summary>
-internal interface IServerSideHybridSearch
+public interface IServerSideHybridSearch
 {
     /// <summary>
     /// True when <paramref name="collection"/> was created hybrid-capable (it has a sparse vector).

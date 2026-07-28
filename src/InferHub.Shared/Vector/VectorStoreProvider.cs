@@ -1,4 +1,4 @@
-namespace InferHub.Coordinator.Vector;
+namespace InferHub.Shared.Vector;
 
 public enum VectorStoreProvider
 {

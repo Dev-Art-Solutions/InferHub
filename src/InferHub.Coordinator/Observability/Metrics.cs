@@ -2,7 +2,7 @@ using System.Collections.Concurrent;
 
 namespace InferHub.Coordinator.Observability;
 
-public sealed class Metrics
+public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
 {
     public DateTimeOffset StartedAtUtc { get; } = DateTimeOffset.UtcNow;
 

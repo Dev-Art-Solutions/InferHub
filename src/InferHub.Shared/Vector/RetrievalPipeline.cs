@@ -3,13 +3,10 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Nodes;
-using InferHub.Coordinator.Observability;
-using InferHub.Coordinator.Services;
+
 using InferHub.Shared.Ollama;
 using InferHub.Shared.Vector;
-using Microsoft.Extensions.Options;
-
-namespace InferHub.Coordinator.Vector;
+namespace InferHub.Shared.Vector;
 
 /// <summary>
 /// Hub-level RAG pipeline: extract the query text, embed it (on a node), search the
@@ -23,13 +20,13 @@ namespace InferHub.Coordinator.Vector;
 /// of the request. The rewritten JSON is returned to the caller and forgotten.
 /// </summary>
 public sealed class RetrievalPipeline(
-    IOptions<VectorStoreOptions> options,
+    VectorStoreOptions options,
     IVectorStore store,
     IEmbeddingDispatcher embeddings,
     IVectorQueryRouter queryRouter,
     IReranker reranker,
-    Metrics metrics,
-    ILogger<RetrievalPipeline> logger)
+    IRetrievalMetrics metrics,
+    IVectorLog log)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -54,7 +51,7 @@ public sealed class RetrievalPipeline(
         {
             if (matches is { Count: 0 })
             {
-                logger.LogInformation("Retrieval for collection {Collection} returned no matches; passing request through unchanged", retrieval.Collection);
+                log.Info("Retrieval for collection {Collection} returned no matches; passing request through unchanged", retrieval.Collection);
             }
             return Passthrough(rawJson);
         }
@@ -81,7 +78,7 @@ public sealed class RetrievalPipeline(
         {
             if (matches is { Count: 0 })
             {
-                logger.LogInformation("Retrieval for collection {Collection} returned no matches; passing request through unchanged", retrieval.Collection);
+                log.Info("Retrieval for collection {Collection} returned no matches; passing request through unchanged", retrieval.Collection);
             }
             return Passthrough(rawJson);
         }
@@ -109,7 +106,7 @@ public sealed class RetrievalPipeline(
         string? chatModel,
         CancellationToken cancellationToken)
     {
-        var opts = options.Value.Retrieval;
+        var opts = options.Retrieval;
         // The header value was validated at the edge; the default comes from config. Either way it
         // parses — the false branch is unreachable and defaults to vector rather than throwing here.
         if (!RetrievalModes.TryParse(retrieval.Mode ?? opts.Mode, out var mode))
@@ -143,7 +140,7 @@ public sealed class RetrievalPipeline(
                     : await hybrid.SearchHybridAsync(retrieval.Collection, vector, queryText, branchK, filter: null, cancellationToken);
                 if (fused is not null)
                 {
-                    logger.LogInformation(
+                    log.Info(
                         "Hybrid retrieval for collection {Collection}: dense+sparse fused server-side by Qdrant",
                         retrieval.Collection);
                 }
@@ -196,7 +193,7 @@ public sealed class RetrievalPipeline(
             keywordMatches = await store.SearchKeywordAsync(retrieval.Collection, queryText, branchK, cancellationToken);
             if (mode == RetrievalMode.Hybrid)
             {
-                logger.LogInformation(
+                log.Info(
                     "Hybrid retrieval for collection {Collection}: keyword branch served hub-local, fused on the hub (RRF)",
                     retrieval.Collection);
             }
@@ -252,7 +249,7 @@ public sealed class RetrievalPipeline(
         int k,
         CancellationToken cancellationToken)
     {
-        var opts = options.Value.Retrieval;
+        var opts = options.Retrieval;
         var rerankEnabled = retrieval.Rerank ?? string.Equals(opts.Rerank, "llm", StringComparison.OrdinalIgnoreCase);
 
         if (!rerankEnabled || pool.Count <= 1)
@@ -271,12 +268,12 @@ public sealed class RetrievalPipeline(
 
     private void HandleMissing(string reason)
     {
-        var mode = options.Value.Retrieval.OnMissing;
+        var mode = options.Retrieval.OnMissing;
         if (string.Equals(mode, "error", StringComparison.OrdinalIgnoreCase))
         {
             throw new RetrievalUnavailableException(reason);
         }
-        logger.LogInformation("Retrieval unavailable ({Reason}); passing request through per OnMissing=passthrough", reason);
+        log.Info("Retrieval unavailable ({Reason}); passing request through per OnMissing=passthrough", reason);
     }
 
     private static RetrievalOutcome Passthrough(string rawJson)
@@ -328,7 +325,7 @@ public sealed class RetrievalPipeline(
             var text = ExtractMatchText(match);
             sb.Append('[').Append(match.Id).Append("] ").AppendLine(text);
         }
-        return options.Value.Retrieval.Template.Replace("{context}", sb.ToString().TrimEnd(), StringComparison.Ordinal);
+        return options.Retrieval.Template.Replace("{context}", sb.ToString().TrimEnd(), StringComparison.Ordinal);
     }
 
     internal string InjectContextIntoChat(string rawJson, IReadOnlyList<VectorMatch> matches)

@@ -131,9 +131,38 @@ at the top of this file: the container binds a wildcard, so the API is reachable
 the box, and a keyless inference endpoint hands arbitrary GPU time to whoever finds the port.
 `LocalApi__AllowAnonymous=true` is the explicit override if that network is genuinely trusted.
 
-Solo mode has no retrieval, no admin API and no console — see
+Solo mode has no admin API and no console — see
 [Solo mode](../../README.md#solo-mode--just-the-node-v35) for the full surface and what it
 deliberately refuses.
+
+### With its own corpus (v3.6+)
+
+A standalone node can also ingest documents and ground its own answers. Two extra flags and a
+volume:
+
+```bash
+docker run -d --name inferhub-solo \
+  -e LocalApi__Enabled=true \
+  -e Coordinator__Enabled=false \
+  -e LocalApi__Retrieval__Enabled=true \
+  -e LocalApi__Retrieval__DefaultEmbeddingModel=nomic-embed-text \
+  -e LocalApi__ApiKeys__0="$INFERHUB_API_KEY" \
+  -e Ollama__Endpoint=http://host.docker.internal:11434/ \
+  -v inferhub-solo-data:/data \
+  -p 5081:8080 \
+  ghcr.io/dev-art-solutions/inferhub-node:latest
+```
+
+**The volume is the part people forget.** The corpus is written to `/data/retrieval` inside the
+container; without a volume it is destroyed with the container, and every document has to be
+ingested again. The image sets the path (and `/data` is `chown`ed to the `app` user) precisely so
+this works — but nothing can make an unmounted directory survive `docker rm`.
+
+`LocalApi__Retrieval__Enabled=true` **requires** `Coordinator__Enabled=false`; with both on the
+container refuses to start and says which key to change. That is deliberate: a meshed node already
+holds replicas derived from its coordinator, and a second authoritative corpus in the same process
+would be two sources of truth for the same collection names. PDF ingestion is not available on a
+node (a clean `415`), and neither is the postgres or qdrant provider.
 
 ## Vector store
 

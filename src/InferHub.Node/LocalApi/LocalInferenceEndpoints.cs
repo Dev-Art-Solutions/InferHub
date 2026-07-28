@@ -3,6 +3,7 @@ using InferHub.Node.Backends;
 using InferHub.Node.Configuration;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.Ollama;
+using InferHub.Shared.Vector;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
@@ -35,14 +36,6 @@ internal static class LocalInferenceEndpoints
         string kind,
         CancellationToken cancellationToken)
     {
-        if (LocalApiEndpoints.AsksForRetrieval(httpContext.Request))
-        {
-            return Results.Json(
-                new { error = LocalApiEndpoints.RetrievalRefusal },
-                LocalApiEndpoints.JsonOptions,
-                statusCode: StatusCodes.Status501NotImplemented);
-        }
-
         var services = httpContext.RequestServices;
         var executor = services.GetRequiredService<InferenceExecutor>();
         var gate = services.GetService<LocalConcurrencyGate>();
@@ -52,6 +45,30 @@ internal static class LocalInferenceEndpoints
         var stream = kind == ChatKind
             ? LocalApiEndpoints.Deserialize<ChatRequest>(rawJson).Stream ?? true
             : LocalApiEndpoints.Deserialize<GenerateRequest>(rawJson).Stream ?? true;
+
+        try
+        {
+            var (augmented, sources) = await LocalApiEndpoints.ApplyRetrievalAsync(
+                httpContext, kind == ChatKind, rawJson, cancellationToken);
+
+            rawJson = augmented;
+
+            if (sources is not null)
+            {
+                httpContext.Response.Headers[LocalRetrievalHeader.SourcesHeader] = sources;
+            }
+        }
+        catch (LocalApiEndpoints.RetrievalNotEnabledException)
+        {
+            return Results.Json(
+                new { error = LocalApiEndpoints.RetrievalRefusal },
+                LocalApiEndpoints.JsonOptions,
+                statusCode: StatusCodes.Status501NotImplemented);
+        }
+        catch (RetrievalUnavailableException ex)
+        {
+            return Error(StatusCodes.Status424FailedDependency, ex.Message);
+        }
 
         httpContext.Response.Headers[LocalApiEndpoints.ServedByHeader] = LocalApiEndpoints.ServedBySolo;
 

@@ -32,11 +32,15 @@ internal sealed class HubHost : IAsyncDisposable
     /// <summary>The Ollama-shaped job body the hub handed the node, for cross-checking translation.</summary>
     public string? LastJobJson => Dispatcher.LastJobJson;
 
+    /// <summary>The corpus directory, when this hub was started with retrieval (phase 38).</summary>
+    private string? dataDirectory;
+
     public static async Task<HubHost> StartAsync(
         string blockingResponse,
         string[]? streamChunks = null,
         string? failure = null,
-        IReadOnlyList<ModelInfo>? models = null)
+        IReadOnlyList<ModelInfo>? models = null,
+        bool retrieval = false)
     {
         var host = new HubHost();
         host.Dispatcher.BlockingResponse = blockingResponse;
@@ -61,7 +65,7 @@ internal sealed class HubHost : IAsyncDisposable
         builder.Services.AddSingleton<IRouter>(new AlwaysRoutes());
         builder.Services.AddSingleton<IDispatcher>(host.Dispatcher);
         builder.Services.AddSingleton<IFallbackDispatcher>(new NoFallback());
-        builder.Services.AddSingleton<IEmbeddingDispatcher>(new ScriptedEmbeddings());
+        builder.Services.AddSingleton<IEmbeddingDispatcher>(new ScriptedEmbeddings(retrieval));
         builder.Services.AddSingleton<Metrics>();
         builder.Services.AddSingleton<AdmissionControl>();
         builder.Services.AddSingleton(services => TestUsage.Meter(
@@ -69,9 +73,21 @@ internal sealed class HubHost : IAsyncDisposable
         builder.Services.AddSingleton(services => TestUsage.Queue(
             services.GetRequiredService<INodeRegistry>()));
 
+        if (retrieval)
+        {
+            host.dataDirectory = Path.Combine(Path.GetTempPath(), "inferhub-hub-rag-" + Guid.NewGuid().ToString("N"));
+            AddRetrieval(builder, host.dataDirectory);
+        }
+
         host.app = builder.Build();
         host.app.MapInferenceEndpoints();
         host.app.MapOpenAiEndpoints();
+
+        if (retrieval)
+        {
+            host.app.MapIngestionEndpoints();
+            host.app.MapSearchEndpoints();
+        }
 
         await host.app.StartAsync();
 
@@ -80,11 +96,91 @@ internal sealed class HubHost : IAsyncDisposable
         return host;
     }
 
+    /// <summary>
+    /// Creates a collection through the store directly.
+    /// </summary>
+    /// <remarks>
+    /// On the hub, collection lifecycle is an admin action (<c>/api/admin/vector/collections</c>)
+    /// and ingesting into a name that does not exist is a 404 for an unscoped client — phase-23's
+    /// refusal to auto-create, relaxed in phase-31 D5 only for a client whose config names its
+    /// scope. A solo node auto-provisions instead, because its own config is that grant. That
+    /// difference is recorded rather than papered over, and it is why the parity suite creates the
+    /// hub's collection explicitly here and lets the node's first ingest create its own.
+    /// </remarks>
+    public Task<CollectionInfo> CreateCollectionAsync(string name, int dimension)
+        => app.Services.GetRequiredService<IVectorStore>().CreateCollectionAsync(name, dimension, distance: null);
+
+    /// <summary>
+    /// The hub's half of the phase-38 retrieval stack, composed exactly as the shipped
+    /// <c>AddInferHubVectorStore</c> composes it for the <c>local</c> provider — same store, same
+    /// pipelines, same seams. Only the fleet underneath is scripted.
+    /// </summary>
+    private static void AddRetrieval(WebApplicationBuilder builder, string dataDirectory)
+    {
+        var options = new VectorStoreOptions
+        {
+            Enabled = true,
+            DataDirectory = dataDirectory,
+            Distance = "cosine",
+            DefaultEmbeddingModel = "test-embed"
+        };
+
+        builder.Services.AddSingleton(_ => new LocalVectorStore(options, NullVectorLog.Instance));
+        builder.Services.AddSingleton<IVectorStore>(sp => sp.GetRequiredService<LocalVectorStore>());
+        builder.Services.AddSingleton<IVectorQueryRouter, NullVectorQueryRouter>();
+        builder.Services.AddSingleton<IReranker, KeepOrderReranker>();
+        builder.Services.AddSingleton<IRetrievalMetrics>(sp => sp.GetRequiredService<Metrics>());
+        builder.Services.AddSingleton(_ => new TextExtractor());
+        builder.Services.AddSingleton<DocumentIndex>();
+        builder.Services.Configure<InferHub.Shared.Ingestion.IngestionOptions>(_ => { });
+
+        builder.Services.AddSingleton(sp => new RetrievalPipeline(
+            options,
+            sp.GetRequiredService<IVectorStore>(),
+            sp.GetRequiredService<IEmbeddingDispatcher>(),
+            sp.GetRequiredService<IVectorQueryRouter>(),
+            sp.GetRequiredService<IReranker>(),
+            sp.GetRequiredService<IRetrievalMetrics>(),
+            NullVectorLog.Instance));
+
+        builder.Services.AddSingleton(sp => new IngestionPipeline(
+            sp.GetRequiredService<IVectorStore>(),
+            sp.GetRequiredService<DocumentIndex>(),
+            sp.GetRequiredService<TextExtractor>(),
+            sp.GetRequiredService<IEmbeddingDispatcher>(),
+            new InferHub.Shared.Ingestion.IngestionOptions { EmbeddingModel = "test-embed" },
+            options,
+            sp.GetRequiredService<IRetrievalMetrics>(),
+            NullVectorLog.Instance));
+    }
+
     public async ValueTask DisposeAsync()
     {
         Client.Dispose();
         await app.StopAsync();
         await app.DisposeAsync();
+
+        try
+        {
+            if (dataDirectory is not null && Directory.Exists(dataDirectory))
+            {
+                Directory.Delete(dataDirectory, recursive: true);
+            }
+        }
+        catch (IOException)
+        {
+        }
+    }
+
+    /// <summary>Reranking is not what the parity suite is measuring; keep the fused order.</summary>
+    private sealed class KeepOrderReranker : IReranker
+    {
+        public Task<IReadOnlyList<VectorMatch>> RerankAsync(
+            string query,
+            IReadOnlyList<VectorMatch> candidates,
+            string? model,
+            CancellationToken cancellationToken)
+            => Task.FromResult(candidates);
     }
 
     // ---- the scripted fleet ------------------------------------------------------------------
@@ -160,12 +256,18 @@ internal sealed class HubHost : IAsyncDisposable
             => throw new NotSupportedException();
     }
 
-    private sealed class ScriptedEmbeddings : IEmbeddingDispatcher
+    /// <summary>
+    /// The fleet's embedding path, scripted. <see cref="TestEmbeddings"/> is the same function the
+    /// node's scripted backend runs, so a difference between the two hosts can only be ours.
+    /// </summary>
+    private sealed class ScriptedEmbeddings(bool deterministic) : IEmbeddingDispatcher
     {
         public Task<string> DispatchEmbedAsync(string rawJson, string? modelOverride, CancellationToken cancellationToken)
-            => Task.FromResult("""{"model":"nomic","embeddings":[[0.1,0.2,0.3]]}""");
+            => Task.FromResult(deterministic
+                ? TestEmbeddings.RespondTo(rawJson)
+                : """{"model":"nomic","embeddings":[[0.1,0.2,0.3]]}""");
 
         public Task<float[]> EmbedSingleAsync(string text, string? model, CancellationToken cancellationToken)
-            => Task.FromResult<float[]>([0.1f, 0.2f, 0.3f]);
+            => Task.FromResult(deterministic ? TestEmbeddings.Of(text) : [0.1f, 0.2f, 0.3f]);
     }
 }

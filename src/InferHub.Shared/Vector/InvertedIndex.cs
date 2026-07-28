@@ -1,4 +1,4 @@
-namespace InferHub.Coordinator.Vector;
+namespace InferHub.Shared.Vector;
 
 /// <summary>
 /// A small in-memory BM25 inverted index over a collection's chunk text — the keyword half of
@@ -12,7 +12,7 @@ namespace InferHub.Coordinator.Vector;
 /// do around the <c>FlatIndex</c>, so the two indexes never diverge under a concurrent upsert.
 /// </para>
 /// </summary>
-internal sealed class InvertedIndex
+public sealed class InvertedIndex
 {
     // Okapi BM25 defaults. k1 controls term-frequency saturation, b controls length normalisation;
     // 1.2 / 0.75 are the values the literature has converged on and are what the brief specifies.
@@ -178,4 +178,4 @@ internal sealed class InvertedIndex
     }
 }
 
-internal readonly record struct KeywordHit(string Id, double Score);
+public readonly record struct KeywordHit(string Id, double Score);

@@ -14,9 +14,16 @@ inference backend (Ollama today, pluggable). No port forwarding on the node side
 
 ```
 src/
-  InferHub.Shared/        Contracts + Ollama DTOs + OpenAI DTOs/translators (both ends speak it).
-  InferHub.Coordinator/   ASP.NET Core web app (Sdk.Web). HTTP + SignalR hub + routing.
-  InferHub.Node/          Worker service (Sdk.Worker). SignalR client + backend driver.
+  InferHub.Shared/        Contracts + Ollama DTOs + OpenAI DTOs/translators (both ends speak it),
+                          and since phase 38 the whole *pure* retrieval core: Vector/ (IVectorStore,
+                          LocalVectorStore, InvertedIndex, HybridSearch, RetrievalPipeline) and
+                          Ingestion/ (TextExtractor, Chunker, DocumentIndex, IngestionPipeline).
+                          Still a plain class library with ZERO package references — see rule 2.
+  InferHub.Coordinator/   ASP.NET Core web app (Sdk.Web). HTTP + SignalR hub + routing. Keeps the
+                          external vector providers, replication/healing, endpoints, Metrics and
+                          PdfTextExtractor.
+  InferHub.Node/          Worker service (Sdk.Worker). SignalR client + backend driver. LocalApi/
+                          is solo mode (phase 37); Retrieval/ is solo RAG (phase 38).
   InferHub.Node.WindowsService/  Windows-service host. References InferHub.Node, adds AddWindowsService + install scripts.
 tests/
   InferHub.Tests/         xUnit. References all three projects.
@@ -100,7 +107,7 @@ into `appsettings.json`.
 
 ### Vector providers
 
-`IVectorStore` ([Vector/IVectorStore.cs](src/InferHub.Coordinator/Vector/IVectorStore.cs)) is
+`IVectorStore` ([Vector/IVectorStore.cs](src/InferHub.Shared/Vector/IVectorStore.cs)) is
 the seam; three implementations sit behind it, selected by `VectorStore:Provider` and wired in
 [Vector/VectorStoreServiceCollectionExtensions.cs](src/InferHub.Coordinator/Vector/VectorStoreServiceCollectionExtensions.cs)
 (the single composition root — `Program.cs` and the DI-shape test both go through it):
@@ -157,6 +164,12 @@ themselves, and why `NullVectorQueryRouter` replaces the node-serving router.
 - [CoordinatorConnection.cs](src/InferHub.Node/CoordinatorConnection.cs) owns the
   SignalR client, heartbeat loop, model-refresh loop, and reconnect delay — all driven
   by `CoordinatorOptions`, not constants.
+- [LocalApi/](src/InferHub.Node/LocalApi/) — solo mode (phase 37): the coordinator's client-facing
+  surface, served by the node itself. **The only place ASP.NET appears on the node** (rule 2 as
+  amended). Since phase 38 it also maps the RAG routes, but only when a corpus is configured.
+- [Retrieval/](src/InferHub.Node/Retrieval/) — solo RAG (phase 38): the three node-side seams the
+  shared pipelines need — `LocalEmbeddingDispatcher`, `LocalReranker`, `NodeVectorLog`. The store,
+  the pipelines and the extractors are `InferHub.Shared`'s; nothing is reimplemented here.
 
 ## Design rules to preserve
 
@@ -172,6 +185,15 @@ as load-bearing:
    protecting survives — the shared contracts and the options classes are still plain — and rule 5
    survives with it, because `Microsoft.AspNetCore.App` is a `FrameworkReference`, not a package.
    If you find yourself putting an `IResult` or an `HttpContext` anywhere else on the node, stop.
+
+   **Phase 38 tested the rule properly and it held.** The retrieval core moved into
+   `InferHub.Shared` so a solo node runs the same code rather than a second copy — and a plain
+   class library cannot see `ILogger` or `IOptions<T>` without taking two packages. It did not take
+   them: [IVectorLog](src/InferHub.Shared/Vector/IVectorLog.cs) is the two-method logging seam each
+   host adapts in three lines, and the pipelines take **plain options objects** while the
+   `IValidateOptions<T>` validators stay per-host. `InferHub.Shared.csproj` is still an empty
+   `<Project Sdk="Microsoft.NET.Sdk">`, and it must stay that way: the day it grows a
+   `PackageReference` is the day "the shared library is free" stops being true.
 3. **Build-free UI.** Static assets only. Reusing CSS variables across `status.html` and
    `console.html` is intentional.
 4. **No persisted state, *except* the vector store.** Registry, affinity, audit log, and
@@ -188,7 +210,11 @@ as load-bearing:
      the fleet would be a second write path and a second truth.
 
    The invariant that survives both: **one source of truth per deployment, and node replicas
-   are only ever derived from it — never a second authority.** Everything else stays in-memory;
+   are only ever derived from it — never a second authority.** This is what phase 38 refuses to
+   boot past: a node cannot run its own authoritative corpus (`LocalApi:Retrieval:Enabled`) while it
+   is also meshed, because it would then hold a derived copy *and* an authority under the same
+   collection names. See phase-38 D1 — that startup failure is this sentence, enforced.
+   Everything else stays in-memory;
    if you find yourself adding a database or on-disk format outside those directories/providers,
    stop and rethink. The default is `Enabled=false`, so deployments that don't opt in keep the
    original no-persistence contract unchanged.
@@ -359,7 +385,7 @@ just as the SSE *writer* was in phase 21.
 
 **D1 — Ingestion writes to the vector store and nowhere else.** There is no documents table, no
 blob directory, no second lifecycle. **A document *is* the set of chunks sharing a `documentId` in
-their metadata**, and [DocumentIndex](src/InferHub.Coordinator/Ingestion/DocumentIndex.cs) is the
+their metadata**, and [DocumentIndex](src/InferHub.Shared/Ingestion/DocumentIndex.cs) is the
 only thing that knows how to read that set back as a document. Rule 4 survives untouched. This is
 what phase 23's two additions to `IVectorStore` are *for*:
 
@@ -443,7 +469,7 @@ which never had a document.
 **D1 — Keyword search is provider-native; zero new dependencies.** Under `postgres` it is a
 `tsvector` generated column (`to_tsvector('english', payload text)`) with a GIN index and
 `ts_rank_cd` — Postgres full-text search, which `Npgsql` already reaches. Under `local` it is
-[InvertedIndex](src/InferHub.Coordinator/Vector/InvertedIndex.cs), a BM25 (`k1=1.2, b=0.75`)
+[InvertedIndex](src/InferHub.Shared/Vector/InvertedIndex.cs), a BM25 (`k1=1.2, b=0.75`)
 dictionary that sits beside the `FlatIndex` in every collection. **`InvertedIndex` is derived, never
 authoritative** — rebuilt from the raw store on startup and updated on every upsert/delete under the
 same collection write-lock as the `FlatIndex`, exactly so the two can never diverge. Pulling in
@@ -451,7 +477,7 @@ Lucene to rank a few thousand chunks would be the wrong trade. Rule 5 survived a
 is the seam, both providers implement it, and nothing new was added.
 
 **D2 — Fusion is Reciprocal Rank Fusion, not score blending.**
-[HybridSearch](src/InferHub.Coordinator/Vector/HybridSearch.cs) fuses the two result lists by *rank*
+[HybridSearch](src/InferHub.Shared/Vector/HybridSearch.cs) fuses the two result lists by *rank*
 (`Σ 1/(60+rank)`). Vector distances and BM25 scores live on different scales that no fixed constant
 reconciles across corpora; normalising them is a corpus-specific guess dressed up as sophistication.
 The fused RRF score replaces the branch's native score on the returned `VectorMatch`.
@@ -464,7 +490,7 @@ hybrid.
 
 **D4 — Reranking reuses a fleet model; every failure keeps the original order.**
 [LlmReranker](src/InferHub.Coordinator/Vector/LlmReranker.cs) (behind
-[IReranker](src/InferHub.Coordinator/Vector/IReranker.cs), the one implementation) hands the top
+[IReranker](src/InferHub.Shared/Vector/IReranker.cs), the one implementation) hands the top
 candidates to a chat model already on the fleet with a scoring prompt and reorders by the parsed
 scores. No node, a timeout (`RerankTimeoutSeconds`), an unparseable answer, a wrong-length score
 array — **all return the candidates untouched**. A reranker that can break retrieval is worse than
@@ -897,7 +923,7 @@ no text payload contribute nothing, the same stance `ChunkText` takes.
 method.** Qdrant's Query API fuses a dense and a sparse (lexical) vector server-side by RRF in one
 round trip. That is a better hybrid than the hub fusing a real dense branch with the phase-33 coarse
 keyword branch — so a new capability interface,
-[IServerSideHybridSearch](src/InferHub.Coordinator/Vector/IServerSideHybridSearch.cs), carries it.
+[IServerSideHybridSearch](src/InferHub.Shared/Vector/IServerSideHybridSearch.cs), carries it.
 Only `QdrantVectorStore` implements it; `RetrievalPipeline` prefers it when
 `store is IServerSideHybridSearch h && await h.SupportsServerSideHybridAsync(collection)` and **falls
 back to hub RRF otherwise** (a dense-only 3.1 collection, or `local`/`postgres`). It is deliberately
@@ -1180,6 +1206,15 @@ worse". Retrieval parity is the obvious next phase and is a non-goal here becaus
 `IngestionPipeline` and `RetrievalPipeline` live in the coordinator, and moving them would drag
 `Npgsql` and `PdfPig` into an image rule 5 scopes them out of by name.
 
+> **Superseded in phase 38 — the non-goal is now a feature, and the reasoning above was half
+> right.** A standalone node *does* retrieve, over the same headers, with the same augmented prompt
+> and the same `X-InferHub-Sources`. The pipelines moved to `InferHub.Shared` rather than being
+> copied, and neither `Npgsql` nor `PdfPig` came with them: the postgres/qdrant providers stayed in
+> the coordinator (only `local` runs on a node) and PDF is a clean **415** for exactly that reason.
+> **The 501 is still what you get with the corpus off**, which is the default, so this paragraph
+> describes a real state rather than history. See phase 38 below — and note D1 there: retrieval is
+> refused *at startup* on a node that is also meshed.
+
 **D9 — `Node:MaxConcurrency` is *enforced* in solo mode and advisory everywhere else.** One key with
 two behaviours is normally a smell; it is right here because the key's meaning — "this many at once
 is what this box can take" — is unchanged and only the enforcer moved, from the hub that is no
@@ -1219,6 +1254,102 @@ unchanged apart from the log category.
 **Rule 5 survived again.** Phase 37 added **zero** new dependencies — ASP.NET Core is a
 `FrameworkReference` — and in fact removed one: the now-redundant `Microsoft.Extensions.Hosting`
 package reference on the node.
+
+### Phase 38 (RAG in solo mode) — also load-bearing
+
+**D1 — Solo retrieval exists *only* where there is no coordinator, and the two-on case is a startup
+failure. This is rule 4, not tidiness, and it is the decision the whole phase turns on.**
+`LocalApi:Retrieval:Enabled=true` requires `Coordinator:Enabled=false`;
+[LocalRetrievalOptionsValidator](src/InferHub.Node/Configuration/NodeConfigurationValidation.cs)
+fails the host naming **both** keys otherwise. A meshed node already holds **derived** copies of the
+hub's collections — phase-15 replicas, on disk under `Vector:ReplicaDirectory`, maintained by the
+hub pushing down. Give that same process an **authoritative** store of its own and one node contains
+two vector authorities: a locally ingested document is invisible to the fleet, a collection name
+that exists in both places has two different sets of chunks under it, and `ReplicationCoordinator`
+will overwrite a collection the operator believes they own. There is no configuration of that which
+is safe, so it is not offered.
+
+**It refuses rather than silently disabling, and that asymmetry with phase-36 D1 is deliberate.**
+A disabled supervisor costs an operational nicety and one log line is enough. What is switched off
+here is *grounding*, and a node that quietly answers ungrounded is precisely the phase-31 D4 /
+phase-37 D8 failure: confident, fluent, wrong, with no signal, and a bug report three weeks later
+that starts "the model got worse". An explicit opt-in that cannot be honoured must be loud.
+
+**D2 — The retrieval core *moved* to `InferHub.Shared`. Not one line of it is reimplemented.**
+`IVectorStore`, `LocalVectorStore`, `InvertedIndex`, `HybridSearch`, `ChunkText`,
+`RetrievalPipeline` + its contracts, `IEmbeddingDispatcher`, `IReranker`, `IVectorQueryRouter`,
+`IServerSideHybridSearch`, `RerankPrompt`, the options POCOs and all of `Ingestion/` except
+`PdfTextExtractor.cs`. What stayed in the coordinator: the external providers (Postgres, Qdrant),
+`ReplicationCoordinator`/`HealingService`/`ReplicaRegistry`, `VectorQueryRouter`, `LlmReranker` and
+`EmbeddingDispatcher` (both dispatch on the fleet), `Metrics`, every endpoint, every options
+**validator**, and `PdfTextExtractor`. Two `GlobalUsings.cs` files (coordinator, tests, migrate) are
+why the move touched no consuming file.
+
+Retrieval has a dozen decisions — fusion, k clamping, `OnMissing`, rerank fallback, the context
+template, the stale-chunk sweep, the `partial` verdict, the content-hash short circuit — and every
+one of them diverging silently produces *plausible answers*, which is the failure nobody notices.
+**Rejected: a smaller reimplementation on the node.** Less churn today, and the trade this repo has
+refused four times (phase-21 D3, phase-22 D1, phase-34 D1, phase-37 D6).
+
+**D3 — The two host couplings became seams, not packages.** See rule 2 above. `IVectorLog` +
+`NullVectorLog`, and `IRetrievalMetrics` + `NullRetrievalMetrics` (the coordinator's `Metrics`
+implements it and is otherwise untouched). The **log message templates are unchanged**, so the
+hub's structured output is what it was before the code changed projects.
+
+**D4 — `local` is the only provider on a node, and `VectorStore:*` is not the key.** The node reads
+[LocalApi:Retrieval:*](src/InferHub.Node/Configuration/LocalRetrievalOptions.cs), which projects
+onto the shared `VectorStoreOptions` with `Provider` pinned to `local`. Rule 5 scopes `Npgsql` to
+the coordinator by name; a node with an external database *and* no coordinator is a shape nobody
+asked for; and a node reading `VectorStore:*` would silently pick up a coordinator's section on a
+box that has both files. **Same Docker permissions trap for the fourth time** (phase-21 D7,
+phase-30 D3): the default `./data/retrieval` resolves to `/app/data`, so the node image sets
+`ENV LocalApi__Retrieval__DataDirectory=/data/retrieval` under the existing `chown app:app /data`.
+
+**D5 — No PDF on a node, and the refusal is a 415 that names the limitation.** `PdfPig` is rule 5's
+second recorded exception, scoped to the coordinator *by name*. `TextExtractor` already delegates
+PDF to `IPdfTextExtractor` and refuses when none is registered; the node registers none, and
+`LocalIngestionEndpoints` turns that into a message saying to convert the file or use a hub.
+Phase-23 D4 refused OCR because a bad extraction *succeeds quietly* and fills a corpus with
+plausible nonsense — a PDF ingested as its raw bytes would be the same failure with fewer excuses.
+`NodeCompositionTests` fails if `IPdfTextExtractor` ever appears on the node.
+
+**D6 — Embedding runs on the node's own backend, through the seam ingestion already had.**
+[LocalEmbeddingDispatcher](src/InferHub.Node/Retrieval/LocalEmbeddingDispatcher.cs) is
+`IEmbeddingDispatcher` over `InferenceExecutor` — phase-37 D2's framing a second time. Everything
+above it is unchanged: the bounded batch fan-out, the per-batch retry that deliberately does **not**
+retry `NoEmbeddingNodeException`, the `partial` verdict, and phase-31 D5's deferred auto-provision
+that *measures* the dimension from the first embedded batch. Solo mode auto-provisions on first
+ingest because the node's own config is the grant — the same reasoning phase-31 D5 applied to a
+client's collection scope.
+
+**D7 — Reranking works and is still never a dependency.** `RerankPrompt.Build`/`ParseScores`/`Apply`
+are shared; [LocalReranker](src/InferHub.Node/Retrieval/LocalReranker.cs) runs them on the node's
+own backend. Phase-24 D4 verbatim, and it matters more here: a solo box is one wedged Ollama away
+from every rerank failing, so no model, a timeout, prose, or a wrong-length array **all return the
+candidates untouched**.
+
+**D8 — `/api/status` grows a retrieval block and still does not fake a fleet.** Phase-37 D5 stands:
+a smaller, different document. The block is what a solo operator can act on — is it on, which
+embedding model, which mode, and the collections with their record counts — and **no** replica
+counts, no under-replication gauge, no queue. `enabled: false` is the honest answer for a node with
+the corpus off, and it is what explains a 501 to whoever is reading the status page.
+
+**D9 — Two things on the node are hand-copied on purpose, and they are the parity risk.**
+`LocalRetrievalHeader` (the `X-InferHub-Retrieve*` parser, minus the hub's client-scope check —
+a node has no tenancy) and the ten lines that serialise `X-InferHub-Sources`. Same phase-37 D6 line:
+the *content* is shared, the host's own plumbing is not. `SoloRetrievalParityTests` drives the same
+corpus and question at both hosts over real Kestrel and compares the **augmented prompt**, the
+**sources header** and the **`/search` ranking in all three modes** — because those are what a
+client sees. `TheComparisonActuallyDetectsADifference` guards the guard, with `k=1` deliberately:
+at the default k the whole test corpus fits in every context block and the assertion would pass
+without comparing a *choice*.
+
+*Recorded deviation from the phase brief:* collection **lifecycle** on a node rides
+`/api/collections` (list, create, get, drop) rather than the hub's admin path, because solo mode has
+no admin surface (phase-37 D5). Most deployments never call it — the first ingest provisions.
+
+**Rule 5 survived again.** Phase 38 added **zero** new dependencies, and `InferHub.Shared.csproj`
+is unchanged. `Npgsql`, `Pgvector` and `PdfPig` appear nowhere in the node's dependency tree.
 
 ## Auth model (three independent token sets)
 

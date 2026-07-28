@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace InferHub.Coordinator.Ingestion;
+namespace InferHub.Shared.Ingestion;
 
 /// <summary>
 /// One unit of extracted text. <see cref="Page"/> is 1-based and set only by extractors that

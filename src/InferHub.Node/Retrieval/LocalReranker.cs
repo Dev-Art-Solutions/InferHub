@@ -1,28 +1,27 @@
-using System.Text;
 using System.Text.Json;
-using InferHub.Coordinator.Services;
+using InferHub.Node.Configuration;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.Ollama;
 using InferHub.Shared.Vector;
 using Microsoft.Extensions.Options;
 
-namespace InferHub.Coordinator.Vector;
+namespace InferHub.Node.Retrieval;
 
 /// <summary>
-/// The one reranker v2.6 ships: it hands the query and the candidate chunks to a chat model already
-/// running on the fleet with a scoring prompt, and reorders by the scores it returns. It costs one
-/// round trip and is honest about that — off unless a request asks for it.
-/// <para>
-/// Rule 7 holds: the query and candidate text pass through in flight to the node and nothing is
-/// retained here. And every failure mode — no node, timeout, unparseable answer — returns the
-/// candidates untouched, because a reranker that can break retrieval is worse than none.
-/// </para>
+/// Solo mode's reranker (phase-38 D8): the hub's <c>LlmReranker</c> with the routing removed. The
+/// prompt and the score parser are the shared ones (<see cref="RerankPrompt"/>), so a corpus ranks
+/// the same whichever host is in front of it.
 /// </summary>
-internal sealed class LlmReranker(
-    Services.IRouter router,
-    IDispatcher dispatcher,
-    IOptions<VectorStoreOptions> options,
-    ILogger<LlmReranker> logger) : IReranker
+/// <remarks>
+/// Phase-24 D4 survives verbatim and matters more here than on the hub: <b>every</b> failure —
+/// no model, a timeout, prose instead of an array, an array of the wrong length — returns the
+/// candidates untouched. A solo box is one wedged Ollama away from every rerank failing, and a
+/// reranker that can break retrieval is worse than no reranker.
+/// </remarks>
+public sealed class LocalReranker(
+    InferenceExecutor executor,
+    IOptions<LocalRetrievalOptions> options,
+    ILogger<LocalReranker> logger) : IReranker
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -46,26 +45,20 @@ internal sealed class LlmReranker(
             return candidates;
         }
 
-        var node = router.Route(model, conversationKey: null);
-        if (node is null)
-        {
-            logger.LogInformation("Rerank skipped: no node holds model '{Model}'; keeping original order", model);
-            return candidates;
-        }
-
         var timeout = TimeSpan.FromSeconds(Math.Max(1, options.Value.Retrieval.RerankTimeoutSeconds));
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(timeout);
 
         try
         {
-            var body = BuildRequestJson(model!, query, candidates);
-            var job = new InferenceJob(Guid.NewGuid(), "chat", body);
-            var result = await dispatcher.DispatchAsync(node, job, cts.Token);
+            var job = new InferenceJob(Guid.NewGuid(), "chat", BuildRequestJson(model!, query, candidates));
+            var result = await executor.RunAsync(job, cts.Token);
 
             if (!result.Success || string.IsNullOrEmpty(result.ResponseJson))
             {
-                logger.LogInformation("Rerank fell back to original order: node returned {Error}", result.Error ?? "no content");
+                logger.LogInformation(
+                    "Rerank fell back to original order: backend returned {Error}",
+                    NodeErrorText.Readable(result.Error) ?? "no content");
                 return candidates;
             }
 
@@ -94,14 +87,13 @@ internal sealed class LlmReranker(
 
     private static string BuildRequestJson(string model, string query, IReadOnlyList<VectorMatch> candidates)
     {
-        var prompt = RerankPrompt.Build(query, candidates);
         var request = new ChatRequest
         {
             Model = model,
             Stream = false,
             Messages =
             [
-                new ChatMessage { Role = "user", Content = prompt }
+                new ChatMessage { Role = "user", Content = RerankPrompt.Build(query, candidates) }
             ],
             Options = JsonSerializer.SerializeToElement(new { temperature = 0 })
         };

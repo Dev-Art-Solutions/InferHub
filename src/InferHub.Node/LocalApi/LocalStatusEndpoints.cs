@@ -2,6 +2,7 @@ using System.Reflection;
 using InferHub.Node.Backends;
 using InferHub.Node.Backends.Supervision;
 using InferHub.Node.Configuration;
+using InferHub.Shared.Vector;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
@@ -57,7 +58,8 @@ internal static class LocalStatusEndpoints
         CancellationToken cancellationToken)
     {
         var node = nodeOptions.Value;
-        var gate = httpContext.RequestServices.GetService<LocalConcurrencyGate>();
+        var services = httpContext.RequestServices;
+        var gate = services.GetService<LocalConcurrencyGate>();
         var models = LocalApiEndpoints.VisibleModels(
             await backend.ListModelsAsync(cancellationToken),
             node);
@@ -80,9 +82,48 @@ internal static class LocalStatusEndpoints
                 concurrency = gate is null
                     ? null
                     : new { limit = gate.Capacity, inFlight = gate.InFlight },
+                retrieval = await RetrievalBlockAsync(services, cancellationToken),
                 models = models.Select(model => new { name = model.Name, digest = model.Digest, size = model.SizeBytes })
             },
             LocalApiEndpoints.JsonOptions);
+    }
+
+    /// <summary>
+    /// Phase 38. What a solo operator can actually act on — is there a corpus, how big is it, and
+    /// which model embedded it.
+    /// </summary>
+    /// <remarks>
+    /// It still does not fake a fleet (phase-37 D5). There is no replica count, no under-replication
+    /// gauge and no queue block here, because a node with no coordinator has no concept of any of
+    /// them, and a dashboard reading a zero from a process that cannot have a non-zero is being
+    /// lied to. <c>enabled: false</c> is the honest answer for a node with retrieval off, and it is
+    /// the answer that tells somebody why their <c>X-InferHub-Retrieve</c> header got a 501.
+    /// </remarks>
+    private static async Task<object> RetrievalBlockAsync(IServiceProvider services, CancellationToken cancellationToken)
+    {
+        var store = services.GetService<IVectorStore>();
+        if (store is null)
+        {
+            return new { enabled = false };
+        }
+
+        var options = services.GetRequiredService<IOptions<LocalRetrievalOptions>>().Value;
+        var collections = await store.ListCollectionsAsync(cancellationToken);
+
+        return new
+        {
+            enabled = true,
+            embeddingModel = options.DefaultEmbeddingModel,
+            mode = options.Retrieval.Mode,
+            rerank = options.Retrieval.Rerank,
+            collections = collections.Select(c => new
+            {
+                name = c.Name,
+                dimension = c.Dimension,
+                distance = c.Distance,
+                records = c.RecordCount
+            })
+        };
     }
 
     private static string Version()

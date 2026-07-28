@@ -1,7 +1,9 @@
 using System.Text.Json;
 using InferHub.Node.Configuration;
 using InferHub.Shared.Contracts;
+using InferHub.Shared.Ollama;
 using InferHub.Shared.OpenAi;
+using InferHub.Shared.Vector;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
@@ -65,6 +67,23 @@ public static class LocalApiEndpoints
         app.MapLocalInferenceEndpoints();
         app.MapLocalOpenAiEndpoints();
 
+        // Phase 38. Mapped only when there is a corpus to serve, so a node that changes no config
+        // keeps the v3.5 surface exactly: these routes 404 and a retrieval header still gets a 501.
+        if (app.Services.GetService<RetrievalPipeline>() is not null)
+        {
+            var retrieval = app.Services.GetRequiredService<IOptions<LocalRetrievalOptions>>().Value;
+
+            logger.LogInformation(
+                "Solo retrieval is on: corpus at {DataDirectory}, embedding model {Model}, default mode {Mode}. No coordinator is configured, which is what makes this node the only authority for its collections.",
+                Path.GetFullPath(retrieval.DataDirectory),
+                retrieval.DefaultEmbeddingModel,
+                retrieval.Retrieval.Mode);
+
+            app.MapLocalCollectionEndpoints();
+            app.MapLocalIngestionEndpoints();
+            app.MapLocalSearchEndpoints();
+        }
+
         return app;
     }
 
@@ -115,8 +134,8 @@ public static class LocalApiEndpoints
     }
 
     /// <summary>
-    /// Solo mode has no vector store, so a retrieval header is refused rather than ignored
-    /// (phase-37 D8).
+    /// A retrieval header against a node whose corpus is switched off is refused rather than
+    /// ignored (phase-37 D8, still the behaviour when <c>LocalApi:Retrieval:Enabled</c> is false).
     /// </summary>
     /// <remarks>
     /// Phase-31 D4 settled this shape for a different reason and the reasoning transfers exactly:
@@ -125,14 +144,56 @@ public static class LocalApiEndpoints
     /// <em>ungrounded</em> answers files a bug three weeks later that begins "the model got worse".
     /// A 501 is a five-minute fix.
     /// </remarks>
-    internal const string RetrieveHeader = "X-InferHub-Retrieve";
-
     internal const string RetrievalRefusal =
-        "retrieval is not available in solo mode: the vector store lives on a coordinator. Remove the X-InferHub-Retrieve header, or point this client at a hub.";
+        "retrieval is not available on this node: it is off. Set LocalApi:Retrieval:Enabled=true (which requires Coordinator:Enabled=false), remove the X-InferHub-Retrieve header, or point this client at a hub.";
 
-    internal static bool AsksForRetrieval(HttpRequest request)
-        => request.Headers.TryGetValue(RetrieveHeader, out var raw)
-            && !string.IsNullOrWhiteSpace(raw.ToString());
+    /// <summary>Thrown when a request asks for retrieval and this node has no corpus to answer from.</summary>
+    internal sealed class RetrievalNotEnabledException() : InvalidOperationException(RetrievalRefusal);
+
+    /// <summary>
+    /// Applies the <c>X-InferHub-Retrieve*</c> headers to an Ollama-shaped request body, returning
+    /// the (possibly augmented) body and the serialized <c>X-InferHub-Sources</c> value.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately the same five steps, in the same order, with the same "not augmented means no
+    /// sources header" rule as the hub's <c>InferenceEndpoints.ApplyRetrievalAsync</c> — a client
+    /// that branches on the presence of the header must not need to know which host answered it.
+    /// </remarks>
+    internal static async Task<(string RawJson, string? Sources)> ApplyRetrievalAsync(
+        HttpContext httpContext,
+        bool isChat,
+        string rawJson,
+        CancellationToken cancellationToken)
+    {
+        if (!LocalRetrievalHeader.TryRead(httpContext.Request, out var retrieval))
+        {
+            return (rawJson, Sources: null);
+        }
+
+        var pipeline = httpContext.RequestServices.GetService<RetrievalPipeline>()
+            ?? throw new RetrievalNotEnabledException();
+
+        var outcome = isChat
+            ? await pipeline.AugmentChatAsync(rawJson, Deserialize<ChatRequest>(rawJson), retrieval, cancellationToken)
+            : await pipeline.AugmentGenerateAsync(rawJson, Deserialize<GenerateRequest>(rawJson), retrieval, cancellationToken);
+
+        if (!outcome.WasAugmented)
+        {
+            return (rawJson, Sources: null);
+        }
+
+        return (outcome.RawJson, Sources: JsonSerializer.Serialize(outcome.Sources, SourcesJsonOptions));
+    }
+
+    /// <summary>
+    /// The sources header is serialized with the hub's options, not the endpoint's: a stray
+    /// <c>"page":null</c> on every citation from a text file would be a visible difference between
+    /// the two hosts for the same corpus.
+    /// </summary>
+    private static readonly JsonSerializerOptions SourcesJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+    };
 
     internal static IReadOnlyList<ModelInfo> VisibleModels(
         IReadOnlyList<ModelInfo> models,

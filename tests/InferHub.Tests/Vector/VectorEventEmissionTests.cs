@@ -123,7 +123,7 @@ public class VectorEventEmissionTests : IDisposable
         });
 
         var events = new VectorEvents();
-        var store = new LocalVectorStore(options, NullLogger<LocalVectorStore>.Instance);
+        var store = new LocalVectorStore(options.Value, NullVectorLog.Instance);
         _disposables.Add(store);
         var hub = new RecordingHubContext();
         var replicas = new ReplicaRegistry();

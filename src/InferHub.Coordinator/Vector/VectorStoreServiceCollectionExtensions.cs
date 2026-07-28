@@ -77,7 +77,11 @@ public static class VectorStoreServiceCollectionExtensions
         }
         else
         {
-            services.AddSingleton<LocalVectorStore>();
+            // Constructed by hand because the store moved to InferHub.Shared in phase 38 and a plain
+            // class library cannot see IOptions<T> or ILogger<T> (D3). The seams are one line each.
+            services.AddSingleton(sp => new LocalVectorStore(
+                sp.GetRequiredService<IOptions<VectorStoreOptions>>().Value,
+                new VectorLog<LocalVectorStore>(sp.GetRequiredService<ILogger<LocalVectorStore>>())));
             services.AddSingleton<IVectorStore>(sp => sp.GetRequiredService<LocalVectorStore>());
             services.AddSingleton<ReplicationCoordinator>();
             services.AddHostedService(sp => sp.GetRequiredService<ReplicationCoordinator>());
@@ -88,7 +92,14 @@ public static class VectorStoreServiceCollectionExtensions
 
         // RAG works in both modes; keep it outside the provider branch.
         services.AddSingleton<IReranker, LlmReranker>();
-        services.AddSingleton<RetrievalPipeline>();
+        services.AddSingleton(sp => new RetrievalPipeline(
+            sp.GetRequiredService<IOptions<VectorStoreOptions>>().Value,
+            sp.GetRequiredService<IVectorStore>(),
+            sp.GetRequiredService<IEmbeddingDispatcher>(),
+            sp.GetRequiredService<IVectorQueryRouter>(),
+            sp.GetRequiredService<IReranker>(),
+            sp.GetRequiredService<Metrics>(),
+            new VectorLog<RetrievalPipeline>(sp.GetRequiredService<ILogger<RetrievalPipeline>>())));
 
         AddIngestion(services, configuration);
         return services;
@@ -106,9 +117,19 @@ public static class VectorStoreServiceCollectionExtensions
         services.AddSingleton<IValidateOptions<IngestionOptions>, IngestionOptionsValidator>();
         services.AddOptions<IngestionOptions>().ValidateOnStart();
 
+        // The one place in the solution that references the PDF package (rule 5, phase-23 D3). It is
+        // deliberately absent on a solo node, which answers a PDF upload with a 415 (phase-38 D5).
         services.AddSingleton<IPdfTextExtractor, PdfTextExtractor>();
         services.AddSingleton<TextExtractor>();
         services.AddSingleton<DocumentIndex>();
-        services.AddSingleton<IngestionPipeline>();
+        services.AddSingleton(sp => new IngestionPipeline(
+            sp.GetRequiredService<IVectorStore>(),
+            sp.GetRequiredService<DocumentIndex>(),
+            sp.GetRequiredService<TextExtractor>(),
+            sp.GetRequiredService<IEmbeddingDispatcher>(),
+            sp.GetRequiredService<IOptions<IngestionOptions>>().Value,
+            sp.GetRequiredService<IOptions<VectorStoreOptions>>().Value,
+            sp.GetRequiredService<Metrics>(),
+            new VectorLog<IngestionPipeline>(sp.GetRequiredService<ILogger<IngestionPipeline>>())));
     }
 }

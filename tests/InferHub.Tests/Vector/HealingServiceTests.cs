@@ -274,7 +274,7 @@ public class HealingServiceTests : IDisposable
             ReplicationFactor = replicationFactor
         });
 
-        var store = new LocalVectorStore(options, NullLogger<LocalVectorStore>.Instance);
+        var store = new LocalVectorStore(options.Value, NullVectorLog.Instance);
         _disposables.Add(store);
         var hub = new RecordingHubContext();
         var replicas = new ReplicaRegistry();

@@ -111,12 +111,14 @@ byte-identical to 2.13. Still **zero new dependencies** — the lease is `Npgsql
 | 35 | Qdrant production knobs + cross-provider migration (done) | `v3.3.0` |
 | 36 | Node supervises its own Ollama (done) | `v3.4.0` |
 | 37 | Solo mode — the node serves its own API (done) | `v3.5.0` |
+| 38 | RAG in solo mode — a standalone node retrieves for itself (done) | `v3.6.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
-and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 turned
-to the node, which until now sat in the fleet as a passive victim of a wedged backend. Still on the
-table: **retrieval in solo mode** (v3.5 deliberately refuses a retrieval header rather than answering
-ungrounded), teaching the **coordinator** about backend health as a typed signal (a status column and
+and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 and
+v3.5 turned to the node — first supervising its own backend, then serving the hub's API — and v3.6
+finished that arc by giving a standalone node the retrieval stack too, by *moving* it into the
+shared library rather than copying it. Still on the
+table: teaching the **coordinator** about backend health as a typed signal (a status column and
 an alert, rather than a line in the node's log), **active-active** multi-coordinator load sharing, an
 **OTLP push** exporter behind an explicit opt-in, and a dedicated cross-encoder reranker behind the
 existing `IReranker` seam. A fourth vector backend (Milvus, Weaviate) is the same shape as the third
@@ -209,21 +211,64 @@ vision and both dialects work here without being reimplemented.
 | `POST /v1/embeddings`, `GET /v1/models` | ✅ | |
 | `GET /health` | ✅ | Open and unauthenticated, like the hub's. Reports `mode: "solo"`. |
 | `GET /api/status` | ⚠️ | A **smaller, different** document with a `mode` discriminator — one node, its models, its in-flight count. No fleet metrics. |
-| `X-InferHub-Retrieve` header | ❌ | **501**, naming the limitation. See below. |
-| `/api/collections/*`, `/api/vector/*`, `/api/admin/*`, `/metrics`, `/console` | ❌ | 404 — all need a fleet or a vector store. |
+| `X-InferHub-Retrieve` header | ⚙️ | **501** unless you turn on [retrieval](#retrieval-on-a-standalone-node-v36) (v3.6+). |
+| `/api/collections/*`, `/api/vector/*` | ⚙️ | 404 unless retrieval is on (v3.6+). |
+| `/api/admin/*`, `/metrics`, `/console` | ❌ | 404 — all need a fleet. |
 
 `/api/status` deliberately does not return the hub's document with zeros in the fleet fields: a
 dashboard reading `nodesEvicted: 0` from a process that has no concept of nodes is worse than
 one that gets a 404 for a key that was never there.
 
-### Three things it deliberately will not do
+### Retrieval on a standalone node (v3.6+)
 
-**No retrieval.** RAG lives on the vector store in the coordinator, and pulling that into the
-node would mean pulling a Postgres driver and a PDF parser into an image that is deliberately
-free of both. An `X-InferHub-Retrieve` header against a solo node returns a clean **501** naming
-the limitation — and that refusal is the feature. A developer moving a working RAG app onto one
-machine and getting confident, fluent, silently **ungrounded** answers files a bug three weeks
-later that begins "the model got worse".
+A machine with a folder of documents and one GPU is the deployment that most wants RAG, so since
+v3.6 a standalone node ingests, indexes and grounds its own answers — the same headers, the same
+augmented prompt and the same `X-InferHub-Sources` citations as a coordinator, because it is the
+same code rather than a second copy of it.
+
+```jsonc
+"Coordinator": { "Enabled": false },
+"LocalApi": {
+  "Enabled": true,
+  "Retrieval": { "Enabled": true, "DefaultEmbeddingModel": "nomic-embed-text" }
+}
+```
+
+```bash
+# ingest
+curl localhost:5081/api/collections/handbook/documents \
+  -H 'content-type: application/json' \
+  -d '{"id":"leave-policy","text":"Employees accrue 25 days of annual leave each year."}'
+
+# see what retrieves, before you trust it
+curl localhost:5081/api/collections/handbook/search \
+  -H 'content-type: application/json' -d '{"query":"how much annual leave?"}'
+
+# ground an answer
+curl localhost:5081/api/chat -H 'X-InferHub-Retrieve: handbook' \
+  -H 'content-type: application/json' \
+  -d '{"model":"llama3","messages":[{"role":"user","content":"how much annual leave?"}],"stream":false}'
+```
+
+That adds `/api/collections/{c}/documents` (ingest, list, chunks, delete), the
+`/api/collections/{c}/search` playground, the `/api/vector/{c}` data plane, and
+`X-InferHub-Retrieve` on both dialects. Vector, keyword and hybrid modes all work, as does the
+optional LLM reranker.
+
+**It requires `Coordinator:Enabled=false`, and says so by refusing to start otherwise.** A node in
+a mesh already holds vector replicas *derived* from its coordinator; giving that same process an
+authoritative corpus of its own would put two sources of truth under one collection name — a
+locally ingested document invisible to the fleet, and a hub that will happily overwrite it. There
+is no safe configuration of that, so it is not offered, and it fails loudly rather than quietly
+switching grounding off.
+
+**No PDF.** The PDF text extractor ships with the coordinator only, so a PDF upload gets a clean
+**415** telling you to convert the file or use a hub — never a silently bad extraction that fills
+your corpus with plausible nonsense. **No external vector databases** either: the local store is
+the only provider on a node. The corpus lives in `LocalApi:Retrieval:DataDirectory` (in Docker,
+`/data/retrieval` — mount a volume or it is ephemeral).
+
+### Two more things it deliberately will not do
 
 **No admin API and no console.** There is one node and you are sitting at it. Model management
 stays hub-driven; in solo mode it is `ollama pull` in the terminal you already have open.
@@ -691,6 +736,12 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `LocalApi:AllowAnonymous` | `false` | Explicit consent to serve a non-loopback address with no keys. Warns on every boot. |
 | `LocalApi:RequireAuthForLoopback` | `false` | Same meaning as the coordinator's key of that name. |
 | `LocalApi:MaxWaitSeconds` | `30` | How long a request waits for a concurrency slot before `503`. Only bites when `Node:MaxConcurrency` is set. |
+| `LocalApi:Retrieval:Enabled` | `false` | v3.6. RAG on this node. **Requires `Coordinator:Enabled=false`; both on fails startup.** See [Retrieval on a standalone node](#retrieval-on-a-standalone-node-v36). |
+| `LocalApi:Retrieval:DataDirectory` | `./data/retrieval` | Where the corpus lives. `/data/retrieval` in the image — mount a volume or it is ephemeral. |
+| `LocalApi:Retrieval:Distance` | `cosine` | `cosine`, `dot` or `l2`, for collections this node creates. |
+| `LocalApi:Retrieval:DefaultEmbeddingModel` | `nomic-embed-text` | Resolved against this node's own backend. |
+| `LocalApi:Retrieval:Retrieval:*` | — | The phase-24 retrieval keys (`DefaultK`, `MaxRecords`, `OnMissing`, `Mode`, `CandidatesPerBranch`, `Rerank`, `RerankModel`, `RerankCandidates`, `RerankTimeoutSeconds`, `Template`), same names, meanings and defaults as the hub's `VectorStore:Retrieval:*`. |
+| `LocalApi:Retrieval:Ingestion:*` | — | The phase-23 ingestion keys (`MaxChars`, `OverlapChars`, `MaxDocumentBytes`, `EmbeddingBatchSize`, `EmbeddingModel`, `MaxRetriesPerBatch`), same as the hub's `Ingestion:*`. |
 | `OpenAi:BaseUrl` | _(empty)_ | Upstream OpenAI-compatible server, e.g. `http://localhost:8000/v1`. **Required when `Backend:Type=openai`** — the node refuses to start without it rather than booting and 500ing on every job. |
 | `OpenAi:ApiKey` | _(empty)_ | Bearer token for the upstream. Env (`OpenAi__ApiKey`) or user-secrets only. |
 | `OpenAi:TimeoutSeconds` | `300` | Timeout for a single upstream call. Same reasoning as `Ollama:RequestTimeout`. |

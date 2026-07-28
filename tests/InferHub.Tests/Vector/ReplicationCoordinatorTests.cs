@@ -200,8 +200,8 @@ public class ReplicationCoordinatorTests : IDisposable
         out RecordingHubContext hub)
     {
         store = new LocalVectorStore(
-            Options.Create(new VectorStoreOptions { Enabled = true, DataDirectory = _root, SnapshotEveryOps = 100, ReplicationFactor = replicationFactor }),
-            NullLogger<LocalVectorStore>.Instance);
+            new VectorStoreOptions { Enabled = true, DataDirectory = _root, SnapshotEveryOps = 100, ReplicationFactor = replicationFactor },
+            NullVectorLog.Instance);
         _disposables.Add(store);
         hub = new RecordingHubContext();
         var replicas = new ReplicaRegistry();

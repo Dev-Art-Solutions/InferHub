@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.RegularExpressions;
 
-namespace InferHub.Coordinator.Ingestion;
+namespace InferHub.Shared.Ingestion;
 
 /// <summary>
 /// Recursive splitter: paragraph → sentence → character. Text is first broken into *atoms* —

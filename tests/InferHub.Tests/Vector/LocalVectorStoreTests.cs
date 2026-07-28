@@ -168,6 +168,6 @@ public class LocalVectorStoreTests : IDisposable
             Distance = "cosine",
             SnapshotEveryOps = snapshotEveryOps
         });
-        return new LocalVectorStore(opts, NullLogger<LocalVectorStore>.Instance);
+        return new LocalVectorStore(opts.Value, NullVectorLog.Instance);
     }
 }

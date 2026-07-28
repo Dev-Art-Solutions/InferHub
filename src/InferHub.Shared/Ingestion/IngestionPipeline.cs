@@ -1,12 +1,8 @@
 using System.Globalization;
 using System.Text.Json;
-using InferHub.Coordinator.Observability;
-using InferHub.Coordinator.Services;
-using InferHub.Coordinator.Vector;
-using InferHub.Shared.Vector;
-using Microsoft.Extensions.Options;
 
-namespace InferHub.Coordinator.Ingestion;
+using InferHub.Shared.Vector;
+namespace InferHub.Shared.Ingestion;
 
 public sealed record IngestRequest(
     byte[] Content,
@@ -26,10 +22,10 @@ public sealed class IngestionPipeline(
     DocumentIndex documents,
     TextExtractor extractor,
     IEmbeddingDispatcher embeddings,
-    IOptions<IngestionOptions> options,
-    IOptions<VectorStoreOptions> vectorOptions,
-    Metrics metrics,
-    ILogger<IngestionPipeline> logger)
+    IngestionOptions options,
+    VectorStoreOptions vectorOptions,
+    IRetrievalMetrics metrics,
+    IVectorLog log)
 {
     public Task<IngestResult> IngestAsync(string collection, IngestRequest request, CancellationToken cancellationToken)
         => IngestAsync(collection, request, autoProvision: false, cancellationToken);
@@ -44,7 +40,7 @@ public sealed class IngestionPipeline(
         bool autoProvision,
         CancellationToken cancellationToken)
     {
-        var opts = options.Value;
+        var opts = options;
 
         if (request.Content.LongLength > opts.MaxDocumentBytes)
         {
@@ -77,7 +73,7 @@ public sealed class IngestionPipeline(
             // Identical bytes, and last time they landed whole. Do no work and say so — the point
             // of the hash. (A `partial` document with the same hash falls through and is retried:
             // "you already have this" would be a lie about a document that is half-missing.)
-            logger.LogInformation(
+            log.Info(
                 "Document '{DocumentId}' in '{Collection}' is unchanged ({Chunks} chunks); skipping ingest",
                 documentId, collection, existing.Chunks);
             return new IngestResult(documentId, collection, IngestResult.Unchanged,
@@ -115,7 +111,7 @@ public sealed class IngestionPipeline(
                 // caller has to be told either way.
                 failure = ex.Message;
                 metrics.RecordIngestionFailure(collection);
-                logger.LogError(ex,
+                log.Error(ex,
                     "Ingest of '{DocumentId}' into '{Collection}' failed after {Embedded}/{Total} chunks",
                     documentId, collection, embedded, chunks.Count);
                 break;
@@ -157,7 +153,7 @@ public sealed class IngestionPipeline(
             // chunks produced. Distance comes from VectorStore:Distance, exactly as it would for an
             // admin-created collection with no explicit metric.
             var created = await store.CreateCollectionAsync(collection, vectors[0].Length, distance: null, cancellationToken);
-            logger.LogInformation(
+            log.Info(
                 "Auto-provisioned collection '{Collection}' (dimension {Dimension}, model {Model}) on first ingest",
                 created.Name, created.Dimension, model);
         }
@@ -179,7 +175,7 @@ public sealed class IngestionPipeline(
 
     private async Task<float[][]> EmbedWithRetryAsync(DocumentChunk[] batch, string model, CancellationToken cancellationToken)
     {
-        var attempts = options.Value.MaxRetriesPerBatch;
+        var attempts = options.MaxRetriesPerBatch;
         for (var attempt = 1; ; attempt++)
         {
             try
@@ -192,7 +188,7 @@ public sealed class IngestionPipeline(
             {
                 // A node dying mid-batch is ordinary and worth retrying; "no node advertises this
                 // model at all" is not going to fix itself in 400 ms, so it is not retried.
-                logger.LogWarning(ex, "Embedding batch failed (attempt {Attempt}/{Attempts}); retrying", attempt, attempts);
+                log.Warn(ex, "Embedding batch failed (attempt {Attempt}/{Attempts}); retrying", attempt, attempts);
                 await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), cancellationToken);
             }
         }
@@ -214,7 +210,7 @@ public sealed class IngestionPipeline(
         foreach (var stale in present.Where(c => !live.Contains(c.Id)))
         {
             await store.DeleteAsync(collection, stale.Id, cancellationToken);
-            logger.LogDebug("Removed stale chunk {ChunkId} of '{DocumentId}'", stale.Id, documentId);
+            log.Debug("Removed stale chunk {ChunkId} of '{DocumentId}'", stale.Id, documentId);
         }
     }
 
@@ -265,8 +261,8 @@ public sealed class IngestionPipeline(
     private string ResolveModel(string? requested)
     {
         if (!string.IsNullOrWhiteSpace(requested)) return requested;
-        if (!string.IsNullOrWhiteSpace(options.Value.EmbeddingModel)) return options.Value.EmbeddingModel;
-        return vectorOptions.Value.DefaultEmbeddingModel;
+        if (!string.IsNullOrWhiteSpace(options.EmbeddingModel)) return options.EmbeddingModel;
+        return vectorOptions.DefaultEmbeddingModel;
     }
 
     private static string ResolveDocumentId(IngestRequest request)

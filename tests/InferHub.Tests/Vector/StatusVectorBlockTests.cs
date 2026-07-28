@@ -23,7 +23,7 @@ public class StatusVectorBlockTests : IDisposable
             DataDirectory = _root,
             SnapshotEveryOps = 100
         });
-        _store = new LocalVectorStore(options, NullLogger<LocalVectorStore>.Instance);
+        _store = new LocalVectorStore(options.Value, NullVectorLog.Instance);
     }
 
     public void Dispose()

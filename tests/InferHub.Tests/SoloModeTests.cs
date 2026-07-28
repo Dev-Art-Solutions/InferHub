@@ -104,7 +104,7 @@ public class SoloModeTests
         Assert.Equal(["llama3"], names);
     }
 
-    // ---- retrieval is refused, never silently skipped (D8) ---------------------------------
+    // ---- retrieval is refused, never silently skipped (D8; still true when phase 38's corpus is off) ----
 
     [Fact]
     public async Task ARetrievalHeaderIsRefusedOnTheOllamaSurface()
@@ -123,7 +123,7 @@ public class SoloModeTests
         // Answering ungrounded without saying so is the failure this prevents: a developer moving
         // a working RAG app onto a solo node would get confident, fluent, wrong answers.
         Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
-        Assert.Contains("retrieval is not available in solo mode", body.GetProperty("error").GetString());
+        Assert.Contains("retrieval is not available on this node", body.GetProperty("error").GetString());
     }
 
     [Fact]

@@ -81,7 +81,7 @@ public class InvertedIndexTests
         Directory.CreateDirectory(dir);
         var options = Options.Create(new VectorStoreOptions { Enabled = true, DataDirectory = dir, Distance = "cosine" });
 
-        using (var store = new LocalVectorStore(options, NullLogger<LocalVectorStore>.Instance))
+        using (var store = new LocalVectorStore(options.Value, NullVectorLog.Instance))
         {
             await store.CreateCollectionAsync("docs", dimension: 2, distance: "cosine");
             await store.UpsertAsync("docs", new VectorUpsert("code", [0f, 1f],
@@ -90,7 +90,7 @@ public class InvertedIndexTests
 
         // Fresh instance over the same directory: the keyword index must come back derived from the
         // raw store, exactly like the vector FlatIndex does — no separate on-disk keyword copy.
-        using (var reopened = new LocalVectorStore(options, NullLogger<LocalVectorStore>.Instance))
+        using (var reopened = new LocalVectorStore(options.Value, NullVectorLog.Instance))
         {
             var hits = await reopened.SearchKeywordAsync("docs", "E-4021", 5);
             Assert.Equal("code", Assert.Single(hits).Id);
@@ -104,7 +104,7 @@ public class InvertedIndexTests
         Directory.CreateDirectory(dir);
         var options = Options.Create(new VectorStoreOptions { Enabled = true, DataDirectory = dir, Distance = "cosine" });
 
-        using var store = new LocalVectorStore(options, NullLogger<LocalVectorStore>.Instance);
+        using var store = new LocalVectorStore(options.Value, NullVectorLog.Instance);
         await store.CreateCollectionAsync("docs", dimension: 2, distance: "cosine");
         await store.UpsertAsync("docs", new VectorUpsert("a", [1f, 0f], Payload: JsonSerializer.SerializeToElement(new { text = "checksum mismatch" })));
         await store.DeleteAsync("docs", "a");

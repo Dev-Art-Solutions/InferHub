@@ -1,6 +1,6 @@
 using InferHub.Shared.Vector;
 
-namespace InferHub.Coordinator.Vector;
+namespace InferHub.Shared.Vector;
 
 public interface IVectorStore
 {

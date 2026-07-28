@@ -2,6 +2,8 @@ using InferHub.Node;
 using InferHub.Node.Backends;
 using InferHub.Node.Backends.Supervision;
 using InferHub.Node.Configuration;
+using InferHub.Shared.Ingestion;
+using InferHub.Shared.Vector;
 using InferHub.Node.LocalApi;
 using Microsoft.AspNetCore.Builder;
 using InferHub.Node.Vector;
@@ -229,6 +231,73 @@ public class NodeCompositionTests
         // And a cap without solo mode stays advisory, exactly as it has been since phase 9.
         using var meshed = BuildNode(("Node:MaxConcurrency", "2"));
         Assert.Null(meshed.Services.GetService<LocalConcurrencyGate>());
+    }
+
+    // ---- phase 38: solo retrieval is registered only when it is on -------------------------
+
+    [Fact]
+    public void SoloRetrievalCostsTheDefaultNodeNothing()
+    {
+        using var plain = BuildNode();
+        using var solo = BuildNode(("LocalApi:Enabled", "true"));
+
+        // Solo mode alone must not acquire a document store: retrieval is a second, separate
+        // opt-in, the phase-22 D5 / phase-36 D6 shape.
+        foreach (var host in new[] { plain, solo })
+        {
+            Assert.Null(host.Services.GetService<IVectorStore>());
+            Assert.Null(host.Services.GetService<RetrievalPipeline>());
+            Assert.Null(host.Services.GetService<IngestionPipeline>());
+            Assert.Null(host.Services.GetService<IEmbeddingDispatcher>());
+        }
+    }
+
+    [Fact]
+    public void SoloRetrievalRegistersTheSharedStackAndNothingFleetShaped()
+    {
+        using var host = BuildNode(
+            ("LocalApi:Enabled", "true"),
+            ("Coordinator:Enabled", "false"),
+            ("LocalApi:Retrieval:Enabled", "true"),
+            ("LocalApi:Retrieval:DataDirectory", Path.Combine(Path.GetTempPath(), "inferhub-comp-" + Guid.NewGuid().ToString("N"))));
+
+        Assert.NotNull(host.Services.GetService<RetrievalPipeline>());
+        Assert.NotNull(host.Services.GetService<IngestionPipeline>());
+        Assert.NotNull(host.Services.GetService<DocumentIndex>());
+
+        // Nothing to route a vector query to, and nothing to replicate to: node replicas are a
+        // fleet feature and a node with retrieval on has no fleet by definition (D1).
+        Assert.IsType<NullVectorQueryRouter>(host.Services.GetRequiredService<IVectorQueryRouter>());
+
+        // The one that has to stay true for rule 5: PdfPig is scoped to the coordinator by name,
+        // so the node never registers the extractor and a PDF is a clean 415 (D5).
+        Assert.Null(host.Services.GetService<IPdfTextExtractor>());
+    }
+
+    [Fact]
+    public void SoloRetrievalConstructorsDoNoIo()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "inferhub-comp-" + Guid.NewGuid().ToString("N"));
+
+        using var host = BuildNode(
+            ("LocalApi:Enabled", "true"),
+            ("Coordinator:Enabled", "false"),
+            ("LocalApi:Retrieval:Enabled", "true"),
+            ("LocalApi:Retrieval:DataDirectory", directory));
+
+        // Building the host must not touch the disk; the store opens its corpus when it is first
+        // resolved, not when the container is composed.
+        Assert.False(Directory.Exists(directory));
+
+        try
+        {
+            Assert.NotNull(host.Services.GetRequiredService<IVectorStore>());
+            Assert.True(Directory.Exists(directory));
+        }
+        finally
+        {
+            try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
+        }
     }
 
     private static IHost BuildNode(params (string Key, string? Value)[] overrides)

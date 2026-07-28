@@ -1,6 +1,6 @@
 using InferHub.Shared.Vector;
 
-namespace InferHub.Coordinator.Vector;
+namespace InferHub.Shared.Vector;
 
 /// <summary>
 /// Reorders a candidate set by relevance to the query. The seam exists so a dedicated cross-encoder

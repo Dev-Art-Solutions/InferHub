@@ -93,7 +93,7 @@ public class RerankerTests
     [InlineData("Here are the scores: [5, 5, 5].", 3, new[] { 5.0, 5.0, 5.0 })]
     public void ParseScoresExtractsArray(string content, int expected, double[] want)
     {
-        var scores = LlmReranker.ParseScores(content, expected);
+        var scores = RerankPrompt.ParseScores(content, expected);
         Assert.NotNull(scores);
         Assert.Equal(want, scores!);
     }
@@ -104,13 +104,13 @@ public class RerankerTests
     [InlineData("[1, \"x\"]", 2)]    // non-numeric element
     public void ParseScoresRejectsAmbiguousOutput(string content, int expected)
     {
-        Assert.Null(LlmReranker.ParseScores(content, expected));
+        Assert.Null(RerankPrompt.ParseScores(content, expected));
     }
 
     [Fact]
     public void BuildPromptListsEveryPassage()
     {
-        var prompt = LlmReranker.BuildPrompt("what is x?", new[] { Chunk("a", "alpha text"), Chunk("b", "beta text") });
+        var prompt = RerankPrompt.Build("what is x?", new[] { Chunk("a", "alpha text"), Chunk("b", "beta text") });
         Assert.Contains("PASSAGE 1: alpha text", prompt);
         Assert.Contains("PASSAGE 2: beta text", prompt);
         Assert.Contains("QUESTION: what is x?", prompt);

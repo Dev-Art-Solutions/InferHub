@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace InferHub.Coordinator.Vector;
+namespace InferHub.Shared.Vector;
 
 /// <summary>
 /// Pulls the human-readable text out of a chunk's payload — the same <c>text</c>/<c>content</c>
@@ -9,7 +9,7 @@ namespace InferHub.Coordinator.Vector;
 /// through <c>/api/vector</c> with no text field simply has nothing to index for keyword search,
 /// which is honest: BM25 over an opaque blob would be noise.
 /// </summary>
-internal static class ChunkText
+public static class ChunkText
 {
     public static string Extract(JsonElement? payload)
     {

@@ -73,6 +73,17 @@ ENV Node__DataDirectory=/data
 # Inert unless LocalApi__Enabled=true: with solo off there is no web host and nothing listens.
 ENV LocalApi__Urls=http://+:8080
 
+# Phase 38 (v3.6+): solo retrieval writes its corpus to disk, and the default `./data/retrieval`
+# resolves to /app/data — which `app` cannot write, exactly as the vector store (phase-21 D7), the
+# node id (found five releases later) and the affinity store (phase-30 D3) each discovered in turn.
+# This is the fourth path in that family, so it is set here rather than being rediscovered.
+#
+# Mount a volume at /data to keep the corpus across `docker run`s; without one it is ephemeral, and
+# ephemeral is the honest outcome for a container nobody gave storage to.
+#
+# Inert unless LocalApi__Retrieval__Enabled=true, which also requires Coordinator__Enabled=false.
+ENV LocalApi__Retrieval__DataDirectory=/data/retrieval
+
 USER app
 
 ENTRYPOINT ["dotnet", "InferHub.Node.dll"]

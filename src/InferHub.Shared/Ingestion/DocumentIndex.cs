@@ -1,10 +1,9 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
-using InferHub.Coordinator.Vector;
 using InferHub.Shared.Vector;
 
-namespace InferHub.Coordinator.Ingestion;
+namespace InferHub.Shared.Ingestion;
 
 /// <summary>
 /// The document view of a collection, derived entirely from chunk metadata. Nothing here persists
@@ -100,7 +99,7 @@ public sealed class DocumentIndex(IVectorStore store)
             status);
     }
 
-    internal static string? Meta(VectorEntry entry, string key) =>
+    public static string? Meta(VectorEntry entry, string key) =>
         entry.Metadata is not null && entry.Metadata.TryGetValue(key, out var value) ? value : null;
 
     private static int? MetaInt(VectorEntry entry, string key) =>

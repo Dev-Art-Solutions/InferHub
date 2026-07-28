@@ -1,6 +1,6 @@
 using InferHub.Shared.Vector;
 
-namespace InferHub.Coordinator.Vector;
+namespace InferHub.Shared.Vector;
 
 /// <summary>
 /// The vector-query router used under the postgres provider, where there are no node

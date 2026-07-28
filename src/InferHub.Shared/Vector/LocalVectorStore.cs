@@ -1,9 +1,7 @@
 using System.Collections.Concurrent;
-using InferHub.Shared.Vector;
 using InferHub.Shared.Vector.Storage;
-using Microsoft.Extensions.Options;
 
-namespace InferHub.Coordinator.Vector;
+namespace InferHub.Shared.Vector;
 
 public sealed class LocalVectorStore : IVectorStore, IDisposable
 {
@@ -14,16 +12,16 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
     private readonly string _root;
     private readonly DistanceMetric _defaultDistance;
     private readonly int _snapshotEveryOps;
-    private readonly ILogger<LocalVectorStore> _logger;
+    private readonly IVectorLog _log;
 
     public event Action<CollectionInfo>? CollectionCreated;
     public event Action<string>? CollectionDropped;
     public event Action<string, VectorRecord>? RecordUpserted;
     public event Action<string, string, long, DateTimeOffset>? RecordDeleted;
 
-    public LocalVectorStore(IOptions<VectorStoreOptions> options, ILogger<LocalVectorStore> logger)
+    public LocalVectorStore(VectorStoreOptions options, IVectorLog? log = null)
     {
-        var opts = options.Value;
+        var opts = options;  // plain POCO: rule 2 keeps IOptions<T> out of Shared (phase-38 D3)
         if (!DistanceMetricExtensions.TryParse(opts.Distance, out _defaultDistance))
         {
             throw new InvalidOperationException($"invalid VectorStore:Distance '{opts.Distance}'");
@@ -31,7 +29,7 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
 
         _root = Path.GetFullPath(opts.DataDirectory);
         _snapshotEveryOps = Math.Max(1, opts.SnapshotEveryOps);
-        _logger = logger;
+        _log = log ?? NullVectorLog.Instance;
 
         Directory.CreateDirectory(_root);
         LoadExisting();
@@ -46,7 +44,7 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
                 var raw = RawCollection.Open(dir);
                 if (!DistanceMetricExtensions.TryParse(raw.Distance, out var metric))
                 {
-                    _logger.LogWarning("Skipping collection at {Directory}: unknown distance '{Distance}'", dir, raw.Distance);
+                    _log.Warn(null, "Skipping collection at {Directory}: unknown distance '{Distance}'", dir, raw.Distance);
                     continue;
                 }
 
@@ -55,11 +53,11 @@ public sealed class LocalVectorStore : IVectorStore, IDisposable
                 var entry = new CollectionEntry(raw, index, metric, seq);
                 PopulateKeyword(entry);
                 _collections[raw.Name] = entry;
-                _logger.LogInformation("Loaded vector collection '{Collection}' ({Count} records, lastSeq={Seq})", raw.Name, index.Count, seq);
+                _log.Info("Loaded vector collection '{Collection}' ({Count} records, lastSeq={Seq})", raw.Name, index.Count, seq);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to load vector collection at {Directory}", dir);
+                _log.Warn(ex, "Failed to load vector collection at {Directory}", dir);
             }
         }
     }
