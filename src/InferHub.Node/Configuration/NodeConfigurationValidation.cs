@@ -196,10 +196,11 @@ public sealed class LocalApiOptionsValidator : IValidateOptions<LocalApiOptions>
 
         foreach (var address in addresses)
         {
-            // Kestrel accepts + and * as hosts, which Uri.TryCreate parses happily, so this only
-            // catches genuine nonsense rather than the wildcard forms.
-            if (!Uri.TryCreate(address, UriKind.Absolute, out var uri)
-                || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            // Through LocalApiOptions.TryParse, NOT Uri.TryCreate: Kestrel accepts `http://+:8080`
+            // and `http://*:8080` and Uri does not. Validating with Uri alone refused to start the
+            // shipped container, where exactly that form is the default — see the remarks on
+            // TryParse. This check must stay Kestrel's idea of an address, not System.Uri's.
+            if (!LocalApiOptions.TryParse(address, out _, out _))
             {
                 failures.Add(
                     $"{LocalApiOptions.SectionName}:{nameof(LocalApiOptions.Urls)} must be absolute http(s) URLs (got '{address}').");

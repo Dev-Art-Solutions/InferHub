@@ -233,6 +233,50 @@ public class SoloModeTests
     }
 
     [Theory]
+    [InlineData("http://+:8080")]
+    [InlineData("http://*:8080")]
+    [InlineData("http://0.0.0.0:8080")]
+    [InlineData("http://localhost:5081;http://+:8080")]
+    public void KestrelsWildcardAddressesAreValidAddresses(string urls)
+    {
+        // v3.5.0 shipped with this validated through Uri.TryCreate, which rejects `+` and `*`.
+        // Kestrel accepts both, and `http://+:8080` is exactly what the node image sets — so solo
+        // mode could not start in Docker at all, with a message blaming the URL format. Found by
+        // running the published image (D7), fixed in v3.5.1. If this goes red, that is back.
+        var result = Validate(new LocalApiOptions
+        {
+            Enabled = true,
+            Urls = urls,
+            ApiKeys = { "secret" }
+        });
+
+        Assert.True(result.Succeeded, result.FailureMessage);
+    }
+
+    [Fact]
+    public void AWildcardAddressIsStillTreatedAsExposedForTheKeyCheck()
+    {
+        // Parsing it and permitting it are different questions, and conflating them is what caused
+        // the v3.5.0 bug in the first place: a wildcard is the *most* exposed address there is.
+        var result = Validate(new LocalApiOptions { Enabled = true, Urls = "http://+:8080" });
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("LocalApi:ApiKeys", result.FailureMessage);
+    }
+
+    [Theory]
+    [InlineData("not-a-url")]
+    [InlineData("ftp://localhost:5081")]
+    [InlineData("localhost:5081")]
+    public void GenuineNonsenseIsStillRejected(string urls)
+    {
+        var result = Validate(new LocalApiOptions { Enabled = true, Urls = urls, ApiKeys = { "secret" } });
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("must be absolute http(s) URLs", result.FailureMessage);
+    }
+
+    [Theory]
     [InlineData("http://localhost:5081", true)]
     [InlineData("http://127.0.0.1:5081", true)]
     [InlineData("http://[::1]:5081", true)]

@@ -56,22 +56,65 @@ public sealed class LocalApiOptions
 
         // No parseable address is not "loopback"; it is a broken config, and the validator says so.
         // Answering true here would let it through as if it were safe.
-        return addresses.Count > 0 && addresses.All(IsLoopback);
+        return addresses.Count > 0 && addresses.All(url => TryParse(url, out var uri, out var wildcard) && !wildcard && uri!.IsLoopback);
     }
 
     public IReadOnlyList<string> SplitUrls()
         => Urls.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-    private static bool IsLoopback(string url)
+    /// <summary>
+    /// Parses a listen address the way <em>Kestrel</em> accepts one, not the way <see cref="Uri"/>
+    /// does.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong><c>Uri.TryCreate</c> rejects <c>http://+:8080</c> and <c>http://*:8080</c>.</strong>
+    /// Kestrel accepts both — they mean "every interface on this box" and are the standard
+    /// container form, which is exactly what the node image sets. Validating with <c>Uri</c> alone
+    /// therefore refused to start the shipped container with a bogus "must be an absolute http(s)
+    /// URL" message, and solo mode was dead on arrival in Docker for the whole of v3.5.0. Found by
+    /// running the published image, which is the only way this class of bug is ever found.
+    /// </para>
+    /// <para>
+    /// So the wildcard host is swapped for a placeholder before parsing, and reported back through
+    /// <paramref name="isWildcard"/> — because "did this parse?" and "is this loopback?" are two
+    /// different questions and conflating them is how the bug happened.
+    /// </para>
+    /// </remarks>
+    public static bool TryParse(string url, out Uri? parsed, out bool isWildcard)
     {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        isWildcard = false;
+        parsed = null;
+
+        if (string.IsNullOrWhiteSpace(url))
         {
             return false;
         }
 
-        // Kestrel's wildcards mean "every interface on this box", which is the opposite of loopback
-        // and is exactly the container case. Uri.IsLoopback does not recognise them as hosts, so
-        // they have to be named.
-        return uri.Host is not ("+" or "*" or "0.0.0.0" or "[::]") && uri.IsLoopback;
+        var candidate = url.Trim();
+
+        foreach (var wildcard in (ReadOnlySpan<string>)["://+:", "://*:"])
+        {
+            var index = candidate.IndexOf(wildcard, StringComparison.Ordinal);
+
+            if (index >= 0)
+            {
+                isWildcard = true;
+                candidate = string.Concat(candidate.AsSpan(0, index), "://0.0.0.0:", candidate.AsSpan(index + wildcard.Length));
+                break;
+            }
+        }
+
+        if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            return false;
+        }
+
+        // 0.0.0.0 and [::] are wildcards spelled out, and mean the same exposure.
+        isWildcard |= uri.Host is "0.0.0.0" or "[::]" or "::";
+
+        parsed = uri;
+        return true;
     }
 }
