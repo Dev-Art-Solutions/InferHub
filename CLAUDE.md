@@ -1200,6 +1200,22 @@ belongs there — and concretely, the parity suite must compare the **real** hub
 node's, which it cannot do for a route that only exists inside the composition root. Behaviour is
 unchanged apart from the log category.
 
+> **v3.5.0 shipped with solo mode dead on arrival in Docker, and v3.5.1 fixed it the same day.**
+> `docker run -e LocalApi__Enabled=true` failed at boot with *"LocalApi:Urls must be absolute
+> http(s) URLs (got 'http://+:8080')"* — the image's own default. **Kestrel accepts `http://+:port`
+> and `http://*:port`; `Uri.TryCreate` does not**, and the validator used `Uri` alone. Listen
+> addresses now go through `LocalApiOptions.TryParse`, which parses them the way Kestrel accepts
+> them and reports "is this a wildcard?" **separately** from "did this parse?" — conflating those
+> two questions is exactly how it shipped. A wildcard is still the most exposed address there is,
+> so D4's keyless refusal is unchanged.
+>
+> The galling part: the wildcard forms were handled correctly in `BindsLoopbackOnly` **one method
+> away**, and simply forgotten in the validator beside it. The unit suite, the parity suite and a
+> live from-source solo node answering real inference from a real Ollama were all green, and none
+> of them touched the one address the container ships. Same shape as v2.5.1 and v3.0.1:
+> [[verify-published-artifact-not-just-tests]] — pull the image and run it, every time.
+> `KestrelsWildcardAddressesAreValidAddresses` pins the container's exact configuration.
+
 **Rule 5 survived again.** Phase 37 added **zero** new dependencies — ASP.NET Core is a
 `FrameworkReference` — and in fact removed one: the now-redundant `Microsoft.Extensions.Hosting`
 package reference on the node.
