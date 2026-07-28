@@ -7,25 +7,39 @@ namespace InferHub.Node;
 public class Worker(
     IOptions<CoordinatorOptions> coordinatorOptions,
     IOptions<NodeOptions> nodeOptions,
+    IOptions<LocalApiOptions> localApiOptions,
     IInferenceBackend backend,
     CoordinatorConnection coordinatorConnection,
     ILogger<Worker> logger) : BackgroundService
 {
     private readonly CoordinatorOptions coordinator = coordinatorOptions.Value;
     private readonly NodeOptions node = nodeOptions.Value;
+    private readonly LocalApiOptions localApi = localApiOptions.Value;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         logger.LogInformation(
             "Node {NodeName} starting, coordinator={CoordinatorUrl}, backend={BackendName}, endpoint={BackendEndpoint}, maxConcurrency={MaxConcurrency}, labels={LabelCount}",
             node.Name,
-            coordinator.Url,
+            coordinator.Enabled ? coordinator.Url : "(disabled)",
             backend.Name,
             backend.Endpoint,
             node.MaxConcurrency,
             node.Labels.Count);
 
-        await coordinatorConnection.StartAsync(stoppingToken);
+        // Solo (phase 37): no hub to dial, so no connection, no heartbeat, no reconnect loop —
+        // and no coordinator URL was ever required. The local API is a hosted service of its own.
+        if (!coordinator.Enabled)
+        {
+            logger.LogInformation(
+                "{Key}=false — this node is not joining a mesh and is serving its own clients on {Urls}.",
+                $"{CoordinatorOptions.SectionName}:{nameof(CoordinatorOptions.Enabled)}",
+                localApi.Urls);
+        }
+        else
+        {
+            await coordinatorConnection.StartAsync(stoppingToken);
+        }
 
         try
         {
@@ -38,7 +52,11 @@ public class Worker(
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        await coordinatorConnection.StopAsync(cancellationToken);
+        if (coordinator.Enabled)
+        {
+            await coordinatorConnection.StopAsync(cancellationToken);
+        }
+
         await base.StopAsync(cancellationToken);
     }
 }

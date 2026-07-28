@@ -1,6 +1,7 @@
 using InferHub.Node.Backends;
 using InferHub.Node.Backends.Supervision;
 using InferHub.Node.Configuration;
+using InferHub.Node.LocalApi;
 using InferHub.Node.Vector;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
@@ -41,6 +42,12 @@ public static class NodeHostBuilderExtensions
             .Bind(builder.Configuration.GetSection(OllamaSupervisorOptions.SectionName))
             .ValidateOnStart();
         builder.Services.AddSingleton<IValidateOptions<OllamaSupervisorOptions>, OllamaSupervisorOptionsValidator>();
+
+        builder.Services
+            .AddOptions<LocalApiOptions>()
+            .Bind(builder.Configuration.GetSection(LocalApiOptions.SectionName))
+            .ValidateOnStart();
+        builder.Services.AddSingleton<IValidateOptions<LocalApiOptions>, LocalApiOptionsValidator>();
 
         builder.Services.Configure<BackendOptions>(builder.Configuration.GetSection(BackendOptions.SectionName));
 
@@ -95,8 +102,37 @@ public static class NodeHostBuilderExtensions
         builder.Services.AddHostedService<Worker>();
 
         AddOllamaSupervision(builder, ollamaOptions);
+        AddLocalApi(builder);
 
         return builder;
+    }
+
+    /// <summary>
+    /// Phase 37. Registers only what solo mode needs, and only when it is on — a node with the
+    /// feature off must be the v3.4 worker exactly: no Kestrel, no listening socket, no middleware.
+    /// The host <em>shape</em> is chosen by <see cref="NodeHostFactory"/>; this is the services half.
+    /// </summary>
+    private static void AddLocalApi(IHostApplicationBuilder builder)
+    {
+        var localApi = builder.Configuration
+            .GetSection(LocalApiOptions.SectionName)
+            .Get<LocalApiOptions>() ?? new LocalApiOptions();
+
+        if (!localApi.Enabled)
+        {
+            return;
+        }
+
+        var node = builder.Configuration
+            .GetSection(NodeOptions.SectionName)
+            .Get<NodeOptions>() ?? new NodeOptions();
+
+        // Unbounded means no gate object at all rather than a gate nobody can exhaust: a semaphore
+        // with an infinite count is still a lock every request takes (phase-37 D9).
+        if (node.MaxConcurrency is not null)
+        {
+            builder.Services.AddSingleton<LocalConcurrencyGate>();
+        }
     }
 
     /// <summary>

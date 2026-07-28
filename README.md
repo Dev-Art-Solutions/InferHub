@@ -110,12 +110,14 @@ byte-identical to 2.13. Still **zero new dependencies** — the lease is `Npgsql
 | 34 | Qdrant-native hybrid search (done) | `v3.2.0` |
 | 35 | Qdrant production knobs + cross-provider migration (done) | `v3.3.0` |
 | 36 | Node supervises its own Ollama (done) | `v3.4.0` |
+| 37 | Solo mode — the node serves its own API (done) | `v3.5.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 turned
 to the node, which until now sat in the fleet as a passive victim of a wedged backend. Still on the
-table: teaching the **coordinator** about backend health as a typed signal (a status column and an
-alert, rather than a line in the node's log), **active-active** multi-coordinator load sharing, an
+table: **retrieval in solo mode** (v3.5 deliberately refuses a retrieval header rather than answering
+ungrounded), teaching the **coordinator** about backend health as a typed signal (a status column and
+an alert, rather than a line in the node's log), **active-active** multi-coordinator load sharing, an
 **OTLP push** exporter behind an explicit opt-in, and a dedicated cross-encoder reranker behind the
 existing `IReranker` seam. A fourth vector backend (Milvus, Weaviate) is the same shape as the third
 and will ship on real demand rather than for the comparison matrix.
@@ -150,6 +152,121 @@ curl http://your-coordinator:5080/api/chat \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{"model":"llama3","messages":[{"role":"user","content":"Hello!"}],"stream":false}'
 ```
+
+### Just a node — solo mode (v3.5+)
+
+Both of the above run two processes so that one client can reach one backend. On a single
+machine that is all ceremony and no routing, so since v3.5 the node can serve the same API
+itself — no coordinator, no enrollment secret, no internet.
+
+```bash
+dotnet run --project src/InferHub.Node \
+  --LocalApi:Enabled=true --Coordinator:Enabled=false
+```
+
+```python
+# before — the fleet
+client = OpenAI(base_url="http://hub.example:5080/v1", api_key=KEY)
+# after — just the node
+client = OpenAI(base_url="http://localhost:5081/v1", api_key=KEY)
+```
+
+That is the whole migration. Same request bodies, same responses, same streaming, same errors,
+both dialects. Full details, and what solo mode deliberately does *not* do, are in
+[Solo mode](#solo-mode--just-the-node-v35).
+
+## Solo mode — just the node (v3.5+)
+
+InferHub had exactly one shape until v3.5: a coordinator somewhere always-on, and nodes on GPU
+machines dialling out to it. That shape is right when you have a fleet and it is overhead when
+you have one machine — and one machine is how most people start.
+
+```jsonc
+// src/InferHub.Node/appsettings.json
+{
+  "Coordinator": { "Enabled": false },
+  "LocalApi": {
+    "Enabled": true,
+    "Urls": "http://localhost:5081"
+  }
+}
+```
+
+A solo node is the hub's formatting layer sitting directly on the node's executor, with the
+routing layer removed — the hub translates a request, routes it, queues it, dispatches it over
+SignalR and formats what comes back; solo does the first and last and skips the middle, because
+there is nothing to route to. Both ends were already shared code, which is why tool calls,
+vision and both dialects work here without being reimplemented.
+
+### What it serves
+
+| Route | Solo | Notes |
+|---|:--:|---|
+| `POST /api/generate`, `/api/chat` | ✅ | Blocking and streaming (NDJSON). |
+| `POST /api/embed`, `/api/embeddings` | ✅ | |
+| `GET /api/tags`, `/api/version` | ✅ | `/api/tags` honours `Node:Models:Include/Exclude`, the same filter the node reports to a hub. |
+| `POST /v1/chat/completions`, `/v1/completions` | ✅ | Blocking and streaming (SSE). |
+| `POST /v1/embeddings`, `GET /v1/models` | ✅ | |
+| `GET /health` | ✅ | Open and unauthenticated, like the hub's. Reports `mode: "solo"`. |
+| `GET /api/status` | ⚠️ | A **smaller, different** document with a `mode` discriminator — one node, its models, its in-flight count. No fleet metrics. |
+| `X-InferHub-Retrieve` header | ❌ | **501**, naming the limitation. See below. |
+| `/api/collections/*`, `/api/vector/*`, `/api/admin/*`, `/metrics`, `/console` | ❌ | 404 — all need a fleet or a vector store. |
+
+`/api/status` deliberately does not return the hub's document with zeros in the fleet fields: a
+dashboard reading `nodesEvicted: 0` from a process that has no concept of nodes is worse than
+one that gets a 404 for a key that was never there.
+
+### Three things it deliberately will not do
+
+**No retrieval.** RAG lives on the vector store in the coordinator, and pulling that into the
+node would mean pulling a Postgres driver and a PDF parser into an image that is deliberately
+free of both. An `X-InferHub-Retrieve` header against a solo node returns a clean **501** naming
+the limitation — and that refusal is the feature. A developer moving a working RAG app onto one
+machine and getting confident, fluent, silently **ungrounded** answers files a bug three weeks
+later that begins "the model got worse".
+
+**No admin API and no console.** There is one node and you are sitting at it. Model management
+stays hub-driven; in solo mode it is `ollama pull` in the terminal you already have open.
+
+**It is not a second kind of coordinator.** A solo node serves its own clients and nothing else.
+Nothing about the fleet changes: the coordinator gained no code, meshed nodes behave exactly as
+before, and the outbound-only rule that lets a GPU box sit behind NAT with no inbound rule is
+untouched — solo mode adds a surface for *your own* clients, which is why it needs no hub at all.
+
+### Auth, and the one place it refuses to boot
+
+Off by default, and loopback when on. Loopback callers need no key (matching the hub's
+`Auth:RequireAuthForLoopback`), so local `curl` just works.
+
+**A non-loopback address with no keys fails startup, naming the key.** That is stricter than
+InferHub usually is about somebody else's network, and the asymmetry is intentional: an
+unauthenticated inference endpoint hands arbitrary compute on your GPU to anyone who can reach
+the port, and the first sign of it is a bill or a melted card. `LocalApi:AllowAnonymous=true` is
+the explicit override for a trusted network, and it warns on every boot.
+
+This bites in a container, by design — the image binds a wildcard, so a containerised solo node
+needs a key:
+
+```bash
+docker run -e LocalApi__Enabled=true -e Coordinator__Enabled=false \
+           -e LocalApi__ApiKeys__0=your-key \
+           -e Ollama__Endpoint=http://host.docker.internal:11434/ \
+           -p 5081:8080 ghcr.io/dev-art-solutions/inferhub-node
+```
+
+### Concurrency
+
+`Node:MaxConcurrency` has always been *advisory* — a number the coordinator's router respects.
+In solo mode nobody is respecting it, so it is **enforced locally**: over the cap a request waits
+up to `LocalApi:MaxWaitSeconds` and then gets `503` + `Retry-After`, the same status and header
+as the hub's queue, so existing client retry logic behaves identically. Unset means unbounded,
+exactly as it does today.
+
+### Both at once
+
+`Coordinator:Enabled` and `LocalApi:Enabled` are independent. A fleet node with the local API on
+is legitimate — useful for curling a node directly while debugging. Both **off** is a startup
+failure naming both keys: a node that neither joins a mesh nor serves anyone is a typo.
 
 ## OpenAI-compatible API
 
@@ -551,7 +668,8 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 
 | Key | Default | Purpose |
 |---|---|---|
-| `Coordinator:Url` | `http://localhost:5080/` | Coordinator base URL (must be absolute http/https). |
+| `Coordinator:Enabled` | `true` | v3.5. `false` runs the node with no mesh at all — no connection, no heartbeat, and **no required URL**. Off together with `LocalApi:Enabled` fails startup. See [Solo mode](#solo-mode--just-the-node-v35). |
+| `Coordinator:Url` | `http://localhost:5080/` | Coordinator base URL (must be absolute http/https). Not required when `Coordinator:Enabled=false`. |
 | `Coordinator:Endpoints` | `[]` | HA coordinator list (v3.0). Empty = just `Url`. The node walks the list on each failed connect; a standby refuses the handshake, so rotation is how it finds the leader. See [High availability](#high-availability-v30). |
 | `Coordinator:EnrollmentSecret` | _(empty)_ | Shared secret matching the coordinator's `Auth:NodeEnrollmentSecret`. |
 | `Coordinator:HeartbeatInterval` | `00:00:10` | How often the node pings the coordinator. |
@@ -567,6 +685,12 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `Ollama:Endpoint` | `http://localhost:11434/` | Local Ollama URL (absolute http/https). Used when `Backend:Type=ollama`. |
 | `Ollama:RequestTimeout` | `00:05:00` | Timeout for a single Ollama call. Matches the coordinator's `Dispatcher:TimeoutSeconds`; raise it for very large models whose cold load is slow. |
 | `Ollama:Supervisor:*` | _(off)_ | Keeps the local Ollama alive (v3.4). See [Keeping the local Ollama alive](#keeping-the-local-ollama-alive-v34) for the full table. |
+| `LocalApi:Enabled` | `false` | v3.5. Serve the hub's client-facing API from this node. See [Solo mode](#solo-mode--just-the-node-v35). |
+| `LocalApi:Urls` | `http://localhost:5081` | Where the local API listens. Not 5080, so a hub and a node can share a laptop. |
+| `LocalApi:ApiKeys` | `[]` | Bearer tokens for the local API. **Required** on a non-loopback address unless `AllowAnonymous`. |
+| `LocalApi:AllowAnonymous` | `false` | Explicit consent to serve a non-loopback address with no keys. Warns on every boot. |
+| `LocalApi:RequireAuthForLoopback` | `false` | Same meaning as the coordinator's key of that name. |
+| `LocalApi:MaxWaitSeconds` | `30` | How long a request waits for a concurrency slot before `503`. Only bites when `Node:MaxConcurrency` is set. |
 | `OpenAi:BaseUrl` | _(empty)_ | Upstream OpenAI-compatible server, e.g. `http://localhost:8000/v1`. **Required when `Backend:Type=openai`** — the node refuses to start without it rather than booting and 500ing on every job. |
 | `OpenAi:ApiKey` | _(empty)_ | Bearer token for the upstream. Env (`OpenAi__ApiKey`) or user-secrets only. |
 | `OpenAi:TimeoutSeconds` | `300` | Timeout for a single upstream call. Same reasoning as `Ollama:RequestTimeout`. |

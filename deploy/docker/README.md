@@ -110,6 +110,31 @@ To run the containerized coordinator without the bundled node at all:
 docker compose -f deploy/docker/docker-compose.yml up -d coordinator
 ```
 
+## The small sibling — a node on its own (v3.5+)
+
+This whole stack exists to route between clients and a *fleet*. If you have one machine, solo
+mode drops the coordinator entirely and the node serves the same API itself:
+
+```bash
+docker run -d --name inferhub-solo \
+  -e LocalApi__Enabled=true \
+  -e Coordinator__Enabled=false \
+  -e LocalApi__ApiKeys__0="$INFERHUB_API_KEY" \
+  -e Ollama__Endpoint=http://host.docker.internal:11434/ \
+  -p 5081:8080 \
+  ghcr.io/dev-art-solutions/inferhub-node:latest
+```
+
+Then point any OpenAI client at `http://localhost:5081/v1` — same bodies, same responses, same
+streaming as the hub. **The key is not optional here**, and for the same reason as the warning
+at the top of this file: the container binds a wildcard, so the API is reachable from outside
+the box, and a keyless inference endpoint hands arbitrary GPU time to whoever finds the port.
+`LocalApi__AllowAnonymous=true` is the explicit override if that network is genuinely trusted.
+
+Solo mode has no retrieval, no admin API and no console — see
+[Solo mode](../../README.md#solo-mode--just-the-node-v35) for the full surface and what it
+deliberately refuses.
+
 ## Vector store
 
 Disabled by default. Set `INFERHUB_VECTORS_ENABLED=true` in `.env` to turn on the local

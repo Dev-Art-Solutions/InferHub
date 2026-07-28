@@ -3,9 +3,25 @@
 #
 #   docker build -f src/InferHub.Node/Dockerfile -t inferhub-node .
 #
-# No EXPOSE and no healthcheck port: the node never accepts a connection. It dials out to
-# the coordinator over SignalR and out to a local Ollama, which is the whole point — a GPU
-# box behind NAT needs no inbound rule.
+# The *mesh* protocol is outbound-only and always will be: the coordinator never dials a node,
+# so a GPU box behind NAT needs no inbound rule for the fleet to work. It dials out to the
+# coordinator over SignalR and out to a local Ollama.
+#
+# Since v3.5 the node can also serve its own clients — solo mode, off by default. That is a
+# client-facing surface, not a mesh one (phase-37 D1), and it exists so a deployment with no
+# coordinator at all is possible:
+#
+#   docker run -e LocalApi__Enabled=true -e Coordinator__Enabled=false \
+#              -e LocalApi__ApiKeys__0=your-key \
+#              -e Ollama__Endpoint=http://host.docker.internal:11434/ \
+#              -p 5081:8080 ghcr.io/dev-art-solutions/inferhub-node
+#
+# then point any OpenAI client at http://localhost:5081/v1.
+#
+# The key is not optional here and that is deliberate. In a container the API binds a wildcard
+# (see LocalApi__Urls below), so it is reachable from outside the box; phase-37 D4 refuses to
+# start a keyless non-loopback listener rather than hand arbitrary GPU time to whoever finds the
+# port. `LocalApi__AllowAnonymous=true` is the explicit override for a trusted network.
 #
 # Reaching Ollama on the *host* from inside this container:
 #   Docker Desktop (Windows/macOS):  Ollama__Endpoint=http://host.docker.internal:11434/
@@ -47,6 +63,15 @@ ENV Vector__ReplicaDirectory=/data/vector-replicas
 # `UnauthorizedAccessException: /app/.inferhub-node-id` before it ever reached the coordinator.
 # Found the only way this class of bug is ever found — by running the container (D7).
 ENV Node__DataDirectory=/data
+
+# Solo mode binds loopback by default, which inside a container means nothing reaches it through
+# `-p`. Set the address here rather than relying on ASPNETCORE_URLS: phase-21 D6 is the third
+# feature to walk into that trap — an appsettings.json value overrides the ASPNETCORE_-prefixed
+# provider, so a container honouring only ASPNETCORE_URLS binds loopback and answers nobody.
+# NodeHostFactory applies LocalApi:Urls to the web host directly, so this wins.
+#
+# Inert unless LocalApi__Enabled=true: with solo off there is no web host and nothing listens.
+ENV LocalApi__Urls=http://+:8080
 
 USER app
 

@@ -12,8 +12,20 @@
       Do not go back to 2.0.0.
     -->
     <PackageReference Include="OllamaClient" Version="2.0.1" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.8" />
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.8" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Solo mode (phase 37) hosts the coordinator's client-facing API on the node. This is a
+      FrameworkReference, NOT a PackageReference: ASP.NET Core ships in the shared framework, so
+      design rule 5 ("no new heavy dependencies") is untouched and `git diff` on this file shows no
+      new package. The node image already finals on mcr.microsoft.com/dotnet/aspnet, as it always
+      has, so the published size does not move either.
+
+      Everything ASP.NET lives under LocalApi/ and nowhere else — rule 2 as amended by phase-37 D3.
+    -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
   <ItemGroup>

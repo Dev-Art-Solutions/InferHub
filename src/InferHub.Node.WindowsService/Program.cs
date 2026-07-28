@@ -1,6 +1,8 @@
 using InferHub.Node;
 
-var builder = Host.CreateApplicationBuilder(args);
+// Same factory the console host uses (phase 37), so the two cannot drift on host shape any more
+// than they can on services: a web host when solo mode is on, the plain worker host otherwise.
+var builder = NodeHostFactory.Create(args);
 
 // Windows-service lifetime: sets ContentRoot to AppContext.BaseDirectory when run as a
 // service (so appsettings.json and the node-id file resolve next to the exe, not
@@ -17,4 +19,4 @@ builder.Services.Configure<HostOptions>(o =>
 
 builder.AddInferHubNode();
 
-builder.Build().Run();
+NodeHostFactory.Build(builder).Run();

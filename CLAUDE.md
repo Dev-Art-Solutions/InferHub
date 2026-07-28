@@ -166,8 +166,12 @@ as load-bearing:
 1. **Pluggable backends stay backend-agnostic.** Anything Ollama-specific belongs in
    `Backends/OllamaBackend.cs` or behind `IInferenceBackend`. Do not let
    `OllamaClient` types leak into `Worker`, `CoordinatorConnection`, or the coordinator.
-2. **Core stays host-agnostic.** No ASP.NET types in node config or shared contracts.
-   `InferHub.Shared` is a plain class library.
+2. **Core stays host-agnostic.** `InferHub.Shared` is a plain class library and no ASP.NET types
+   go in it, or in node *configuration*. **Amended in phase 37:** ASP.NET now appears in
+   `InferHub.Node`, confined to `LocalApi/` and only when solo mode is on. What the rule was
+   protecting survives — the shared contracts and the options classes are still plain — and rule 5
+   survives with it, because `Microsoft.AspNetCore.App` is a `FrameworkReference`, not a package.
+   If you find yourself putting an `IResult` or an `HttpContext` anywhere else on the node, stop.
 3. **Build-free UI.** Static assets only. Reusing CSS variables across `status.html` and
    `console.html` is intentional.
 4. **No persisted state, *except* the vector store.** Registry, affinity, audit log, and
@@ -532,12 +536,20 @@ answer in seconds, not a place in line. Queue depth and median wait are on `/api
 
 ### Phase 26 (fleet operations: model management & measured routing) — also load-bearing
 
-**D1 — Model management is a hub → node command, not a new API on the node.** The node has no
-inbound surface and never will — that is the whole point of the outbound SignalR design. Model
+**D1 — Model management is a hub → node command, not a new API on the node.** The **mesh protocol is
+outbound-only**: the coordinator never dials a node, and no deployment ever requires an inbound rule
+on a GPU box for the fleet to work — that is the whole point of the outbound SignalR design. Model
 commands travel down the existing connection: the coordinator sends `ExecuteModelCommand` to a node,
 and the node streams `ModelCommandProgress` back via `StreamModelCommandProgress` — a client-to-server
 stream, so like `StreamChunks` **it must never declare a `CancellationToken` parameter** (same binder
 trap; use `Context.ConnectionAborted`). Nothing about the NAT story changes.
+
+> **Amended in phase 37.** This paragraph used to read "the node has no inbound surface and never
+> will". Solo mode gives the node a **client-facing** listener, and the distinction is the whole
+> reason that is not a reversal: the hub still never connects to a node, and solo mode exists
+> precisely so a deployment with *no coordinator at all* is possible. No job, model command or
+> replica op ever arrives over it. See phase 37 D1 — and note that model management deliberately
+> stayed hub-driven rather than being exposed on the local API "since we're here".
 
 **D2 — Progress streams on the existing SSE channel.** A pull takes minutes, so it is not
 request/response. [ModelCommandCoordinator](src/InferHub.Coordinator/Services/ModelCommandCoordinator.cs)
@@ -1097,6 +1109,100 @@ not to be enough.
 
 **Rule 5 survived again.** Phase 36 added **zero** new dependencies: `System.Diagnostics.Process`,
 `Socket` and `HttpClient` all ship in the shared framework.
+
+### Phase 37 (solo mode — the node serves its own API) — also load-bearing
+
+**D1 — Phase-26 D1 is amended, narrowly, and the amendment is written *there* as well as here.**
+The mesh protocol is still outbound-only; what solo mode adds is a **client-facing** surface, the
+same category as the coordinator's `/v1`, serving the node's own clients. The hub never dials a
+node, no job or model command arrives over the local API, and the two surfaces share no prefix, no
+token set and no handler. **`ModelCommandExecutor` stayed hub-driven on purpose** — model management
+in solo mode is `ollama pull` in the terminal you are already sitting at, and exposing it would
+double the surface that has to stay in parity for nothing.
+
+**D2 — Solo mode is the hub's formatting layer over the node's executor, with routing removed.**
+The coordinator does `HTTP → translate → [admit → route → queue → dispatch → SignalR] → node →
+InferenceExecutor`; solo is the same line with the bracket deleted. Both ends were already shared:
+the translators live in `InferHub.Shared/OpenAi/` (phase-22 D1) and `InferenceExecutor` already
+consumes an Ollama-shaped job — **which is only true because rule 6 made the internal protocol
+Ollama JSON from the start.** That decision has looked pedantic more than once; it is the reason
+this phase was small. **Do not grow routing, admission, queueing or failover into `LocalApi/`.**
+*Rejected on purpose:* running the coordinator in-process as an "embedded hub" with a loopback
+self-node. It reuses more code and inverts the project dependency, dragging `Npgsql` and `PdfPig`
+into the node image to serve a fleet of one.
+
+**D3 — Rule 2 amended, rule 5 intact, image size unchanged.** See rule 2 above.
+`WebApplicationBuilder` implements `IHostApplicationBuilder`, so `AddInferHubNode` needed **no
+signature change** and `NodeCompositionTests` still guards one composition root;
+[NodeHostFactory](src/InferHub.Node/NodeHostFactory.cs) picks the builder for both hosts so the
+console and Windows-service entry points cannot drift on host shape either. The node image already
+finalled on `mcr.microsoft.com/dotnet/aspnet`, so nothing grew.
+
+**D4 — Off by default, loopback by default, and it refuses to serve a LAN anonymously.** A
+non-loopback bind with no `LocalApi:ApiKeys` and no `AllowAnonymous` **fails startup naming the
+keys**. That is deliberately stricter than phase-35 D4 (a keyless remote Qdrant only warns), and
+the asymmetry is the point: there the exposure was data the operator had already chosen to store
+and refusing would have been us overruling them about their own network; here it is **arbitrary
+compute on somebody's GPU**, the default is safe, and the first sign of trouble is a bill. Note
+that the **container binds a wildcard** (`ENV LocalApi__Urls=http://+:8080`), so a containerised
+solo node needs a key or the explicit override — by design.
+
+**D5 — The surface is defined by subtraction, and `/api/status` does not fake a fleet.** Solo serves
+the client-facing routes and nothing that needs a fleet or a store; admin, console, `/metrics`,
+ingestion and the vector data plane are 404. `/api/status` returns a **smaller, different document**
+with a `mode: "solo"` discriminator rather than the hub's document with zeros in the fleet fields —
+a dashboard reading `nodesEvicted: 0` from a process with no concept of nodes is worse than one that
+gets nothing.
+
+**D6 — What may move to `InferHub.Shared` is decided by one line: is it ASP.NET?** The frame
+*bodies* are shared ([IOpenAiStreamFormatter](src/InferHub.Shared/OpenAi/OpenAiStreamFormatters.cs),
+`OpenAiSse`, `OllamaNdjson`, `OpenAiErrorEnvelope`,
+[NodeErrorText](src/InferHub.Shared/Contracts/NodeErrorText.cs)); the ten lines that write them to a
+response and flush are **duplicated on purpose**, per host. A divergent `finish_reason` is a bug
+users hit; a divergent `WriteAsync` call is not. `InferenceCore.ReadableNodeError` now delegates to
+`NodeErrorText` — solo is the deployment most likely to surface a raw Ollama error, since there is
+no hub between the user and the backend.
+
+**D7 — `SoloParityTests` is the point of the test suite, and it must cross the wire on both sides.**
+It drives the same request bodies through a real Kestrel hub and a real Kestrel solo node over the
+same scripted payloads and compares what a client actually receives, normalising only the ids and
+timestamps that are minted per request. Handler-level comparison would prove the handlers agree and
+say nothing about the response — the same lesson as `NodeHubStreamingTests`. It covers both dialects
+× blocking/streaming plus tool calls, vision, an unwrapped upstream refusal and an unknown model,
+and `TheComparisonActuallyDetectsADifference` guards the guard. **Verified by breaking the node's
+SSE terminator on purpose: four parity tests went red.**
+
+**D8 — A retrieval header in solo mode is a 501 that names the limitation, never a plain answer.**
+Phase-31 D4's reasoning transfers exactly: answering without the context the caller asked for,
+silently, is the wrong failure. A developer moving a working RAG app onto a solo node and getting
+confident, fluent, **ungrounded** answers files a bug three weeks later that starts "the model got
+worse". Retrieval parity is the obvious next phase and is a non-goal here because the vector store,
+`IngestionPipeline` and `RetrievalPipeline` live in the coordinator, and moving them would drag
+`Npgsql` and `PdfPig` into an image rule 5 scopes them out of by name.
+
+**D9 — `Node:MaxConcurrency` is *enforced* in solo mode and advisory everywhere else.** One key with
+two behaviours is normally a smell; it is right here because the key's meaning — "this many at once
+is what this box can take" — is unchanged and only the enforcer moved, from the hub that is no
+longer there to the node that is. Over the cap: wait `LocalApi:MaxWaitSeconds`, then **503 +
+`Retry-After`**, the same status and header as the hub's `RequestQueue` (phase-25 D5), so a client's
+retry logic behaves identically against either. Unset means **no gate object at all**, not a gate
+nobody can exhaust.
+
+**D10 — The coordinator connection is optional, and "neither" fails loudly.** `Coordinator:Enabled`
+(default true) off means no `HubConnection`, no heartbeat, no reconnect loop — and no required
+coordinator URL, which today's validator demands unconditionally. A solo node on a train must not
+need a URL it will never dial. Both off is a **startup failure naming both keys**: a node that
+neither joins a mesh nor serves anyone is a process burning a GPU box for nothing.
+
+*Recorded deviation from the phase brief:* `/api/tags` moved from an inline lambda in the
+coordinator's `Program.cs` into `MapInferenceEndpoints`. It is an inference-surface route and
+belongs there — and concretely, the parity suite must compare the **real** hub handler against the
+node's, which it cannot do for a route that only exists inside the composition root. Behaviour is
+unchanged apart from the log category.
+
+**Rule 5 survived again.** Phase 37 added **zero** new dependencies — ASP.NET Core is a
+`FrameworkReference` — and in fact removed one: the now-redundant `Microsoft.Extensions.Hosting`
+package reference on the node.
 
 ## Auth model (three independent token sets)
 

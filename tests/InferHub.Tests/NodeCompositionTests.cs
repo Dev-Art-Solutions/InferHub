@@ -2,6 +2,8 @@ using InferHub.Node;
 using InferHub.Node.Backends;
 using InferHub.Node.Backends.Supervision;
 using InferHub.Node.Configuration;
+using InferHub.Node.LocalApi;
+using Microsoft.AspNetCore.Builder;
 using InferHub.Node.Vector;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -175,6 +177,58 @@ public class NodeCompositionTests
         using var host = BuildNode(("Ollama:Supervisor:ProbeTimeout", "-00:00:30"));
 
         Assert.NotNull(host.Services.GetRequiredService<IOptions<OllamaSupervisorOptions>>().Value);
+    }
+
+    // ---- phase 37: solo mode is registered only when it is on ------------------------------
+
+    [Fact]
+    public void SoloModeCostsTheDefaultNodeNothing()
+    {
+        using var host = BuildNode();
+
+        // No web host, no concurrency gate, and — the part that matters — no listening socket.
+        Assert.IsNotType<WebApplication>(host);
+        Assert.Null(host.Services.GetService<LocalConcurrencyGate>());
+        Assert.False(host.Services.GetRequiredService<IOptions<LocalApiOptions>>().Value.Enabled);
+    }
+
+    [Fact]
+    public void TheSharedCompositionRootStillWorksUnderAWebHost()
+    {
+        // The pleasant half of D3: WebApplicationBuilder implements IHostApplicationBuilder, so
+        // AddInferHubNode needed no signature change and one composition root still guards both
+        // hosts. If this ever needs a second overload, that property has been lost.
+        var builder = WebApplication.CreateBuilder();
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Coordinator:Url"] = "http://localhost:5080/",
+            ["Ollama:Endpoint"] = "http://localhost:11434/",
+            ["Node:Name"] = "test-node",
+            ["LocalApi:Enabled"] = "true",
+        });
+
+        builder.AddInferHubNode();
+        using var app = builder.Build();
+
+        Assert.NotNull(app.Services.GetRequiredService<IInferenceBackend>());
+        Assert.NotNull(app.Services.GetRequiredService<InferenceExecutor>());
+        Assert.NotNull(app.Services.GetRequiredService<CoordinatorConnection>());
+    }
+
+    [Fact]
+    public void TheConcurrencyGateExistsOnlyWhenBothSoloAndACapAreSet()
+    {
+        using var capped = BuildNode(("LocalApi:Enabled", "true"), ("Node:MaxConcurrency", "2"));
+        Assert.NotNull(capped.Services.GetService<LocalConcurrencyGate>());
+
+        // Unbounded means no gate object at all, not a gate nobody can exhaust: a semaphore with
+        // an infinite count is still a lock every request takes.
+        using var uncapped = BuildNode(("LocalApi:Enabled", "true"));
+        Assert.Null(uncapped.Services.GetService<LocalConcurrencyGate>());
+
+        // And a cap without solo mode stays advisory, exactly as it has been since phase 9.
+        using var meshed = BuildNode(("Node:MaxConcurrency", "2"));
+        Assert.Null(meshed.Services.GetService<LocalConcurrencyGate>());
     }
 
     private static IHost BuildNode(params (string Key, string? Value)[] overrides)

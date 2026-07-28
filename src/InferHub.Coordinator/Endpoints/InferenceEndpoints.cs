@@ -8,6 +8,7 @@ using InferHub.Coordinator.Services;
 using InferHub.Coordinator.Vector;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.Ollama;
+using InferHub.Shared.OpenAi;
 using Microsoft.AspNetCore.Http.Features;
 
 namespace InferHub.Coordinator.Endpoints;
@@ -33,7 +34,20 @@ public static class InferenceEndpoints
         app.MapPost("/api/chat", HandleChatAsync);
         app.MapPost("/api/embed", HandleEmbedAsync);
         app.MapPost("/api/embeddings", HandleLegacyEmbeddingsAsync);
+        app.MapGet("/api/tags", HandleTags);
         return app;
+    }
+
+    /// <remarks>
+    /// Moved here from an inline lambda in <c>Program.cs</c> in phase 37. It is an inference-surface
+    /// route and belongs with the rest of them — and, concretely, <c>SoloParityTests</c> compares
+    /// the <em>real</em> hub handler against the node's, which it cannot do for a route that only
+    /// exists inside the composition root.
+    /// </remarks>
+    private static IResult HandleTags(INodeRegistry registry, ILoggerFactory loggerFactory)
+    {
+        loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Tags").LogInformation("Model tags requested");
+        return Results.Ok(new OllamaTagsResponse(registry.DistinctModels().ToArray()));
     }
 
     private static async Task<IResult> HandleEmbedAsync(
@@ -477,19 +491,22 @@ public static class InferenceEndpoints
         return Results.Json(new { error = message }, statusCode: statusCode);
     }
 
+    /// <remarks>
+    /// The line bodies come from <see cref="OllamaNdjson"/> in <c>InferHub.Shared</c> (phase 37),
+    /// so a solo node frames its stream identically; the writing and flushing stay here.
+    /// </remarks>
     private sealed class StreamingInferenceResult(ChannelReader<InferenceChunk> chunks) : IResult
     {
         public async Task ExecuteAsync(HttpContext httpContext)
         {
             httpContext.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
-            httpContext.Response.ContentType = "application/x-ndjson";
+            httpContext.Response.ContentType = OllamaNdjson.ContentType;
 
             try
             {
                 await foreach (var chunk in chunks.ReadAllAsync(httpContext.RequestAborted))
                 {
-                    await httpContext.Response.WriteAsync(chunk.ResponseJson, httpContext.RequestAborted);
-                    await httpContext.Response.WriteAsync("\n", httpContext.RequestAborted);
+                    await httpContext.Response.WriteAsync(OllamaNdjson.Line(chunk.ResponseJson), httpContext.RequestAborted);
                     await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted);
 
                     if (chunk.Done)
@@ -514,9 +531,7 @@ public static class InferenceEndpoints
         {
             try
             {
-                var payload = JsonSerializer.Serialize(new { error = message, done = true }, JsonOptions);
-                await httpContext.Response.WriteAsync(payload, httpContext.RequestAborted);
-                await httpContext.Response.WriteAsync("\n", httpContext.RequestAborted);
+                await httpContext.Response.WriteAsync(OllamaNdjson.ErrorLine(message), httpContext.RequestAborted);
                 await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted);
             }
             catch (Exception)

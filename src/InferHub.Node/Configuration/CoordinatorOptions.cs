@@ -4,6 +4,19 @@ public sealed class CoordinatorOptions
 {
     public const string SectionName = "Coordinator";
 
+    /// <summary>
+    /// Whether this node joins a mesh at all (phase 37). Default <c>true</c>, so every existing
+    /// config behaves exactly as it did.
+    /// </summary>
+    /// <remarks>
+    /// Turned off, the node builds no <c>HubConnection</c>, starts no heartbeat or model-refresh
+    /// loop, and — the part that matters on a machine with no network — <em>stops requiring a
+    /// coordinator URL at all</em>. A solo node on a train must not need a URL it will never dial.
+    /// Off together with <c>LocalApi:Enabled</c> is a startup failure: a node that neither joins a
+    /// mesh nor serves anyone is a process burning a GPU box for nothing, and the config is a typo.
+    /// </remarks>
+    public bool Enabled { get; set; } = true;
+
     public string Url { get; set; } = "http://localhost:5080/";
 
     /// <summary>

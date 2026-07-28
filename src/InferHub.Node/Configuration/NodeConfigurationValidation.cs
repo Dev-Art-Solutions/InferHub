@@ -1,13 +1,41 @@
 using InferHub.Node.Backends;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 
 namespace InferHub.Node.Configuration;
 
-public sealed class CoordinatorOptionsValidator : IValidateOptions<CoordinatorOptions>
+/// <remarks>
+/// The configuration is optional so the validator can be unit-tested on its own; absent, nothing
+/// has turned solo mode on, which is exactly what the both-off check below wants to know.
+/// </remarks>
+public sealed class CoordinatorOptionsValidator(IConfiguration? configuration = null)
+    : IValidateOptions<CoordinatorOptions>
 {
     public ValidateOptionsResult Validate(string? name, CoordinatorOptions options)
     {
         var failures = new List<string>();
+
+        if (!options.Enabled)
+        {
+            // A node that neither joins a mesh nor serves its own clients does nothing at all, and
+            // nothing is never what was meant. Read straight from configuration rather than through
+            // IOptions<LocalApiOptions>: an options validator resolving another options monitor
+            // during ValidateOnStart is how you get a cycle that only shows up at boot.
+            var solo = configuration?
+                .GetSection(LocalApiOptions.SectionName)
+                .GetValue<bool>(nameof(LocalApiOptions.Enabled)) ?? false;
+
+            if (!solo)
+            {
+                failures.Add(
+                    $"{CoordinatorOptions.SectionName}:{nameof(CoordinatorOptions.Enabled)} and {LocalApiOptions.SectionName}:{nameof(LocalApiOptions.Enabled)} are both false, so this node would neither join a mesh nor serve anyone. Turn one of them on.");
+            }
+
+            // Everything below is about reaching a coordinator. There isn't one.
+            return failures.Count == 0
+                ? ValidateOptionsResult.Success
+                : ValidateOptionsResult.Fail(failures);
+        }
 
         // Endpoints falls back to Url, so validating the resolved list covers both shapes and
         // cannot let a typo in an HA list boot a node that then silently only ever reaches one hub.
@@ -142,6 +170,66 @@ public sealed class OllamaOptionsValidator : IValidateOptions<OllamaOptions>
         }
 
         return ValidateOptionsResult.Success;
+    }
+}
+
+/// <summary>
+/// Only bites when solo mode is switched on, for the same reason the supervisor's validator does.
+/// </summary>
+public sealed class LocalApiOptionsValidator : IValidateOptions<LocalApiOptions>
+{
+    public ValidateOptionsResult Validate(string? name, LocalApiOptions options)
+    {
+        if (!options.Enabled)
+        {
+            return ValidateOptionsResult.Success;
+        }
+
+        var failures = new List<string>();
+        var addresses = options.SplitUrls();
+
+        if (addresses.Count == 0)
+        {
+            failures.Add(
+                $"{LocalApiOptions.SectionName}:{nameof(LocalApiOptions.Urls)} must be set when solo mode is on.");
+        }
+
+        foreach (var address in addresses)
+        {
+            // Kestrel accepts + and * as hosts, which Uri.TryCreate parses happily, so this only
+            // catches genuine nonsense rather than the wildcard forms.
+            if (!Uri.TryCreate(address, UriKind.Absolute, out var uri)
+                || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            {
+                failures.Add(
+                    $"{LocalApiOptions.SectionName}:{nameof(LocalApiOptions.Urls)} must be absolute http(s) URLs (got '{address}').");
+            }
+        }
+
+        // The one that matters. A keyless inference API reachable from a LAN hands arbitrary
+        // compute on somebody's GPU to anyone who can reach the port, and the first sign of it is a
+        // bill or a melted card. Deliberately stricter than phase-35 D4's warn-don't-refuse: there
+        // the alternative was overruling an operator about their own network and the exposure was
+        // data they had already chosen to store; here the default is safe and the dangerous
+        // configuration has to be asked for by name.
+        if (addresses.Count > 0
+            && !options.BindsLoopbackOnly()
+            && options.ApiKeys.Count(key => !string.IsNullOrWhiteSpace(key)) == 0
+            && !options.AllowAnonymous)
+        {
+            failures.Add(
+                $"{LocalApiOptions.SectionName}:{nameof(LocalApiOptions.Urls)} is not loopback ('{options.Urls}'), so the local API would serve inference to anything that can reach it. Set {LocalApiOptions.SectionName}:{nameof(LocalApiOptions.ApiKeys)}, or set {LocalApiOptions.SectionName}:{nameof(LocalApiOptions.AllowAnonymous)}=true if that network is genuinely trusted.");
+        }
+
+        if (options.MaxWaitSeconds <= 0)
+        {
+            failures.Add(
+                $"{LocalApiOptions.SectionName}:{nameof(LocalApiOptions.MaxWaitSeconds)} must be greater than zero (got {options.MaxWaitSeconds}).");
+        }
+
+        return failures.Count == 0
+            ? ValidateOptionsResult.Success
+            : ValidateOptionsResult.Fail(failures);
     }
 }
 

@@ -51,66 +51,12 @@ internal static class InferenceCore
     /// The innermost human sentence in a node's error, for the client-facing envelope.
     /// </summary>
     /// <remarks>
-    /// Ollama stuffs its own backend's JSON error into its <c>error</c> field as a *string*, so a
-    /// llama.cpp refusal arrives already double-encoded and lands in our envelope triple-escaped:
-    /// an SDK reads <c>error.message</c> and shows the user a wall of backslashes instead of the
-    /// one sentence that says what to fix. Found live in phase 29, where "this model does not
-    /// support multimodal requests" is the error a vision user hits first.
-    ///
-    /// This is **presentation only**: nothing is inferred from the text and the status code is
-    /// untouched. Unwrapping is not the same as interpreting — do not grow this into a function
-    /// that decides what an upstream error *means*.
+    /// The implementation moved to <see cref="NodeErrorText"/> in phase 37, because a solo node has
+    /// to unwrap its own backend's errors too — and solo is the deployment most likely to surface a
+    /// raw one, with no hub between the user and Ollama. This stays as the coordinator's name for
+    /// it: one dispatch path, so both client dialects still get the same unwrapping (phase-29 D6).
     /// </remarks>
-    internal static string ReadableNodeError(string? error)
-    {
-        const string fallback = "node failed to run inference";
-
-        var message = error;
-
-        // Bounded: Ollama + llama.cpp produce two levels, and an unbounded loop over
-        // caller-influenced text is not something to leave lying around.
-        for (var depth = 0; depth < 4; depth++)
-        {
-            if (message is null || message.TrimStart() is not ['{', ..] trimmed)
-            {
-                break;
-            }
-
-            try
-            {
-                using var document = System.Text.Json.JsonDocument.Parse(trimmed);
-
-                if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object
-                    || !document.RootElement.TryGetProperty("error", out var inner))
-                {
-                    break;
-                }
-
-                if (inner.ValueKind == System.Text.Json.JsonValueKind.String)
-                {
-                    message = inner.GetString();
-                    continue;
-                }
-
-                if (inner.ValueKind == System.Text.Json.JsonValueKind.Object
-                    && inner.TryGetProperty("message", out var sentence)
-                    && sentence.ValueKind == System.Text.Json.JsonValueKind.String)
-                {
-                    message = sentence.GetString();
-                    continue;
-                }
-
-                break;
-            }
-            catch (System.Text.Json.JsonException)
-            {
-                // Not JSON after all — what we already have is the best available text.
-                break;
-            }
-        }
-
-        return string.IsNullOrWhiteSpace(message) ? fallback : message;
-    }
+    internal static string ReadableNodeError(string? error) => NodeErrorText.Readable(error);
 
     /// <summary>The per-request services phase 25 added, bundled so the endpoint signatures stay sane.</summary>
     internal readonly record struct ClientContext(

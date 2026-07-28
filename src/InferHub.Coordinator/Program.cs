@@ -168,12 +168,6 @@ app.MapGet("/health", (IClusterMembership membership, ILogger<Program> logger) =
         : Results.Ok(new { status = "ok", version });
 });
 
-app.MapGet("/api/tags", (INodeRegistry registry, ILogger<Program> logger) =>
-{
-    logger.LogInformation("Model tags requested");
-    return Results.Ok(new OllamaTagsResponse(registry.DistinctModels().ToArray()));
-});
-
 app.MapGet("/api/nodes", (INodeRegistry registry) =>
 {
     return Results.Ok(registry.Snapshot(DateTimeOffset.UtcNow));

@@ -12,17 +12,20 @@ namespace InferHub.Coordinator.OpenAi;
 /// discipline, different framing. Written by hand rather than pulled from a package —
 /// server-sent events are three lines of string formatting and rule 5 still holds.
 /// </summary>
+/// <remarks>
+/// The <em>frame bodies</em> come from <see cref="IOpenAiStreamFormatter"/> in
+/// <c>InferHub.Shared</c> (phase 37) so a solo node cannot format them differently; what stays here
+/// is only the writing and flushing. See the remarks on that interface for where the line is.
+/// </remarks>
 internal sealed class OpenAiStreamingResult(
     ChannelReader<InferenceChunk> chunks,
     IOpenAiStreamFormatter formatter,
     ILogger logger) : IResult
 {
-    private const string DoneFrame = "data: [DONE]\n\n";
-
     public async Task ExecuteAsync(HttpContext httpContext)
     {
         httpContext.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
-        httpContext.Response.ContentType = "text/event-stream";
+        httpContext.Response.ContentType = OpenAiSse.ContentType;
         httpContext.Response.Headers.CacheControl = "no-cache";
 
         var isFirst = true;
@@ -76,7 +79,7 @@ internal sealed class OpenAiStreamingResult(
     {
         try
         {
-            await httpContext.Response.WriteAsync($"data: {json}\n\n", httpContext.RequestAborted);
+            await httpContext.Response.WriteAsync(OpenAiSse.Frame(json), httpContext.RequestAborted);
             await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted);
         }
         catch (OperationCanceledException)
@@ -89,128 +92,11 @@ internal sealed class OpenAiStreamingResult(
     {
         try
         {
-            await httpContext.Response.WriteAsync(DoneFrame, httpContext.RequestAborted);
+            await httpContext.Response.WriteAsync(OpenAiSse.DoneFrame, httpContext.RequestAborted);
             await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted);
         }
         catch (OperationCanceledException)
         {
         }
-    }
-}
-
-internal interface IOpenAiStreamFormatter
-{
-    /// <summary>Renders one Ollama chunk as an SSE data payload, or null to skip it.</summary>
-    string? FormatChunk(string ollamaJson, bool isFirst);
-
-    /// <summary>
-    /// The usage-only frame emitted just before <c>[DONE]</c>. Null unless the caller set
-    /// <c>stream_options.include_usage</c>.
-    /// </summary>
-    string? FormatUsage(string terminalOllamaJson);
-
-    /// <summary>A synthetic terminal frame for a stream that died mid-flight.</summary>
-    string FormatTruncation();
-}
-
-internal sealed class ChatStreamFormatter(
-    string id,
-    long created,
-    string model,
-    bool includeUsage) : IOpenAiStreamFormatter
-{
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-
-    // Ollama streams the tool call on a non-terminal chunk, but the terminal chunk must still
-    // resolve finish_reason=tool_calls — so once we've seen a call we carry that forward.
-    private bool _sawToolCalls;
-
-    public string? FormatChunk(string ollamaJson, bool isFirst)
-    {
-        var ollama = ResponseTranslator.ParseChat(ollamaJson);
-        if (ollama is null)
-        {
-            return null;
-        }
-
-        var chunk = ResponseTranslator.ToChatChunk(ollama, id, created, model, isFirst, _sawToolCalls);
-
-        if (chunk.Choices is [{ Delta.ToolCalls: { Count: > 0 } }, ..])
-        {
-            _sawToolCalls = true;
-        }
-
-        return JsonSerializer.Serialize(chunk, JsonOptions);
-    }
-
-    public string? FormatUsage(string terminalOllamaJson)
-    {
-        if (!includeUsage)
-        {
-            return null;
-        }
-
-        var ollama = ResponseTranslator.ParseChat(terminalOllamaJson);
-        var usage = ResponseTranslator.BuildUsage(ollama?.PromptEvalCount, ollama?.EvalCount);
-        if (usage is null)
-        {
-            return null;
-        }
-
-        var chunk = ResponseTranslator.ToUsageChunk(usage, id, created, model);
-        return JsonSerializer.Serialize(chunk, JsonOptions);
-    }
-
-    public string FormatTruncation()
-        => JsonSerializer.Serialize(ResponseTranslator.ToTruncationChunk(id, created, model), JsonOptions);
-}
-
-internal sealed class CompletionStreamFormatter(
-    string id,
-    long created,
-    string model,
-    bool includeUsage) : IOpenAiStreamFormatter
-{
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-
-    public string? FormatChunk(string ollamaJson, bool isFirst)
-    {
-        var ollama = ResponseTranslator.ParseGenerate(ollamaJson);
-        if (ollama is null)
-        {
-            return null;
-        }
-
-        var chunk = ResponseTranslator.ToCompletionChunk(ollama, id, created, model);
-        return JsonSerializer.Serialize(chunk, JsonOptions);
-    }
-
-    public string? FormatUsage(string terminalOllamaJson)
-    {
-        if (!includeUsage)
-        {
-            return null;
-        }
-
-        var ollama = ResponseTranslator.ParseGenerate(terminalOllamaJson);
-        var usage = ResponseTranslator.BuildUsage(ollama?.PromptEvalCount, ollama?.EvalCount);
-        if (usage is null)
-        {
-            return null;
-        }
-
-        var chunk = new CompletionResponse(id, created, model, [], usage);
-        return JsonSerializer.Serialize(chunk, JsonOptions);
-    }
-
-    public string FormatTruncation()
-    {
-        var chunk = new CompletionResponse(
-            id,
-            created,
-            model,
-            [new CompletionChoice(0, string.Empty, ResponseTranslator.StopReason)],
-            Usage: null);
-        return JsonSerializer.Serialize(chunk, JsonOptions);
     }
 }
