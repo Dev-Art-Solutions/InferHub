@@ -130,6 +130,46 @@ public sealed class OllamaProcessControl(
         }
     }
 
+    public Task<ProcessControlResult> StopSpawnedAsync(CancellationToken cancellationToken)
+    {
+        // Only ours, and by handle rather than by name. A shutdown is not a diagnosis: anything
+        // running that we did not start is somebody else's, and stopping it is not tidying up.
+        if (spawned is not { } mine)
+        {
+            return Task.FromResult(ProcessControlResult.Ok);
+        }
+
+        spawned = null;
+
+        try
+        {
+            if (!mine.HasExited)
+            {
+                mine.Kill(entireProcessTree: true);
+                mine.WaitForExit((int)CommandTimeout.TotalMilliseconds);
+            }
+
+            return Task.FromResult(ProcessControlResult.Ok);
+        }
+        catch (Win32Exception ex) when (ex.NativeErrorCode == 5)
+        {
+            return Task.FromResult(ProcessControlResult.Denied($"Access denied stopping ollama (pid {mine.Id})."));
+        }
+        catch (InvalidOperationException)
+        {
+            // Exited between the check and the kill. That is the outcome we wanted.
+            return Task.FromResult(ProcessControlResult.Ok);
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult(ProcessControlResult.Failed($"Could not stop the spawned ollama: {ex.Message}"));
+        }
+        finally
+        {
+            mine.Dispose();
+        }
+    }
+
     // ---- service manager -------------------------------------------------------------------
 
     private async Task<bool> ServiceExistsAsync(string name, CancellationToken cancellationToken)

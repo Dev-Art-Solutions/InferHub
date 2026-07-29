@@ -92,6 +92,70 @@ public sealed class OllamaSupervisor : IHostedService, IBackendSupervisor, IDisp
             {
             }
         }
+
+        if (!options.StopOnShutdown)
+        {
+            return;
+        }
+
+        // Only what we spawned (phase 39, D4). In a container the child would be SIGKILLed the
+        // instant PID 1 exits, and a stop mid-`ollama pull` leaves a partial blob in the volume.
+        var stopped = await processControl.StopSpawnedAsync(cancellationToken);
+
+        if (!stopped.Success)
+        {
+            logger.LogWarning("Could not stop the Ollama this node started: {Error}", stopped.Error);
+        }
+    }
+
+    /// <summary>
+    /// One probe before the loop's first tick, so a container that owns its Ollama does not idle
+    /// for three probe intervals waiting to discover what it already knows (phase 39, D4).
+    /// </summary>
+    /// <remarks>
+    /// <strong>Unreachable only.</strong> <see cref="OllamaSupervisorOptions.UnhealthyThreshold"/>
+    /// exists to avoid misdiagnosing a process that is running-but-slow, and skipping it for a
+    /// wedge would mean starting something that is already holding the port.
+    /// </remarks>
+    public async Task StartAtBootAsync(CancellationToken cancellationToken)
+    {
+        var health = await probe.CheckAsync(cancellationToken);
+
+        if (health is not BackendHealth.Unreachable)
+        {
+            if (health is BackendHealth.Healthy)
+            {
+                MarkHealthy();
+            }
+
+            return;
+        }
+
+        var installation = await processControl.DiscoverAsync(cancellationToken);
+
+        if (installation.Kind is OllamaInstallKind.Missing)
+        {
+            await HandleMissingAsync(cancellationToken);
+            return;
+        }
+
+        logger.LogInformation(
+            "Nothing is listening at {Endpoint} at startup; starting Ollama via {Kind} '{Target}' now rather than after {Threshold} probes ({Key} is on).",
+            endpoint,
+            installation.Kind,
+            installation.Target,
+            options.UnhealthyThreshold,
+            $"{OllamaSupervisorOptions.SectionName}:{nameof(OllamaSupervisorOptions.StartAtBoot)}");
+
+        var start = await processControl.StartAsync(installation, cancellationToken);
+
+        if (!start.Success)
+        {
+            LogControlFailure("start", start, installation);
+            return;
+        }
+
+        await WaitForReadyAsync(cancellationToken);
     }
 
     public void Dispose()
@@ -102,7 +166,24 @@ public sealed class OllamaSupervisor : IHostedService, IBackendSupervisor, IDisp
     private async Task RunAsync(CancellationToken cancellationToken)
     {
         // The first probe is one interval in: a node and its Ollama usually boot together, and
-        // reporting a cold start as a fault would be the supervisor's first act.
+        // reporting a cold start as a fault would be the supervisor's first act. StartAtBoot is
+        // the deployment where that reasoning does not hold — see StartAtBootAsync.
+        if (options.StartAtBoot)
+        {
+            try
+            {
+                await StartAtBootAsync(cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Starting Ollama at boot failed; the probe loop will retry.");
+            }
+        }
+
         using var timer = new PeriodicTimer(options.ProbeInterval);
 
         while (!cancellationToken.IsCancellationRequested)

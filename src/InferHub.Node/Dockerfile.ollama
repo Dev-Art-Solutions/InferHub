@@ -1,0 +1,145 @@
+# The bundled node image (phase 39): a node *and* its Ollama in one container.
+#
+#   docker build -f src/InferHub.Node/Dockerfile.ollama -t inferhub-node:ollama .
+#
+# The sibling Dockerfile in this folder is the plain node — ~100 MB, multi-arch, no inference
+# engine, and it stays exactly that. This one is ~4 GB and amd64-only, which is why it is a second
+# artifact rather than a flag on the first: nobody running a coordinator + node compose stack
+# should pay for an Ollama they already have on the host.
+#
+# THREE MODES, ONE IMAGE. None of them refuses to start.
+#
+#   1. GPU inference:      docker run --gpus all ...
+#   2. CPU inference:      the same line with --gpus left off. Right for embedding models,
+#                          small models, and any box without a card.
+#   3. Vector store only:  -e Ollama__Supervisor__Enabled=false — nothing ever starts Ollama,
+#                          the node serves the corpus, and /api/vector takes your own vectors.
+#
+# Full solo example:
+#
+#   docker run -d --name inferhub --gpus all \
+#     -e LocalApi__Enabled=true -e Coordinator__Enabled=false \
+#     -e LocalApi__ApiKeys__0=your-key \
+#     -v inferhub:/data -p 5081:8080 \
+#     ghcr.io/dev-art-solutions/inferhub-node:ollama
+#   docker exec inferhub ollama pull llama3.2
+#
+# The key is not optional: in a container the API binds a wildcard (see LocalApi__Urls below) and
+# phase-37 D4 refuses to start a keyless non-loopback listener rather than hand arbitrary GPU time
+# to whoever finds the port. LocalApi__AllowAnonymous=true is the explicit override.
+#
+# Models are NOT baked in and NOT pulled at boot (D7): an image with a model is a 9 GB image that
+# is wrong for everyone who wanted a different one, and pulling at boot means reaching the internet
+# from a GPU box nobody said it could. `docker exec … ollama pull` is the interface, and
+# OLLAMA_MODELS below is why it survives the container.
+#
+# Every OLLAMA_* environment variable passes straight through to the server, because the supervisor
+# spawns a child that inherits this process's environment: OLLAMA_KEEP_ALIVE, OLLAMA_NUM_PARALLEL,
+# OLLAMA_FLASH_ATTENTION and the rest are one -e away and are not mirrored into our config surface.
+
+ARG OLLAMA_VERSION=0.32.5
+
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+ARG TARGETARCH
+WORKDIR /src
+
+COPY Directory.Build.props nuget.config ./
+COPY src/InferHub.Shared/InferHub.Shared.csproj  src/InferHub.Shared/
+COPY src/InferHub.Node/InferHub.Node.csproj      src/InferHub.Node/
+RUN dotnet restore src/InferHub.Node/InferHub.Node.csproj -a "$TARGETARCH"
+
+COPY src/InferHub.Shared/ src/InferHub.Shared/
+COPY src/InferHub.Node/   src/InferHub.Node/
+RUN dotnet publish src/InferHub.Node/InferHub.Node.csproj \
+        -c Release -a "$TARGETARCH" --no-restore -o /app
+
+# ---------------------------------------------------------------------------------------------
+# Ollama, in its own stage so a rebuild of the node does not re-download 1.4 GB.
+#
+# The version is PINNED and the download is checksummed (D9). A floating `latest` would mean two
+# builds of the same InferHub tag contain different inference engines, which makes "it worked in
+# 3.7.0" a question nobody can answer.
+#
+# Bumping it: change OLLAMA_VERSION above and OLLAMA_SHA256 below, from
+# https://github.com/ollama/ollama/releases/download/v<version>/sha256sum.txt
+# ---------------------------------------------------------------------------------------------
+FROM debian:trixie-slim AS ollama
+ARG OLLAMA_VERSION
+ARG OLLAMA_SHA256=f7d6bdbcf71b83aa8670c4e7dc4b6936c0952fcf8b114eaf6a11cbadb9684214
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl zstd \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp/ollama
+RUN curl -fsSL -o ollama.tar.zst \
+        "https://ollama.com/download/ollama-linux-amd64.tar.zst?version=${OLLAMA_VERSION}" \
+ && echo "${OLLAMA_SHA256}  ollama.tar.zst" | sha256sum -c - \
+ && mkdir -p /opt/ollama \
+ && zstd -d -c ollama.tar.zst | tar -x -C /opt/ollama \
+ && rm ollama.tar.zst
+
+# Do NOT prune /opt/ollama/lib/ollama to save space. It ships more than one CUDA major so it can
+# match old and new drivers, and a pruned bundle does not fail loudly — it falls back to the CPU on
+# somebody's older driver and looks like a slow model. The pruning that matters (the ROCm and MLX
+# bundles, ~1.8 GB we never download) is already done by not asking for them.
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
+WORKDIR /app
+COPY --from=build /app .
+COPY --from=ollama /opt/ollama/bin/ /usr/local/bin/
+COPY --from=ollama /opt/ollama/lib/ /usr/local/lib/
+
+# ---------------------------------------------------------------------------------------------
+# THE TRAP OF THIS PHASE. Read before touching either line.
+#
+# A container gets CUDA from two different places: the *driver* (libcuda.so.1, libnvidia-ml.so.1)
+# is injected at `docker run` by the NVIDIA container runtime, and the *runtime* (libcudart,
+# libcublas, libggml-cuda) ships inside Ollama's own tarball above. That split is why this image
+# finals on the stock aspnet base rather than nvidia/cuda — an nvidia/cuda base would add a third
+# copy of a runtime Ollama does not load, at ~2 GB, and pin us to a CUDA minor we do not choose.
+#
+# What the runtime injects is decided by NVIDIA_DRIVER_CAPABILITIES, and **its default is
+# `utility`** — which gives you a working `nvidia-smi` and NO libcuda. That is the worst possible
+# failure: every diagnostic looks right, nvidia-smi lists the card, and inference runs on the CPU
+# at a fiftieth of the speed with no error anywhere. `compute` is what makes CUDA reachable.
+#
+# BundledNodeTests reads this file and fails if `compute` disappears from this line.
+# ---------------------------------------------------------------------------------------------
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+# Everything below this point mirrors the plain node Dockerfile; see it for the long version of
+# why each one exists. `USER app` cannot write /app, so every path the node writes to has to be
+# pointed at /data, and /data has to exist in the image and be owned by app — Docker seeds a fresh
+# named volume's ownership from the image's mount point, and a mount point the image does not
+# contain is created root-owned.
+RUN mkdir -p /data /data/ollama && chown -R app:app /data
+ENV Vector__ReplicaDirectory=/data/vector-replicas
+ENV Node__DataDirectory=/data
+ENV LocalApi__Urls=http://+:8080
+ENV LocalApi__Retrieval__DataDirectory=/data/retrieval
+
+# The fifth path in that family, and the one that costs the most when it is wrong: without this,
+# a pulled model lands in the container's own layer and every `docker run` re-downloads gigabytes.
+ENV OLLAMA_MODELS=/data/ollama
+
+# The Ollama this node manages is its own child, on loopback, inside this network namespace — it
+# cannot be anyone else's server, which is the hazard phase-36 D1's consent switch was protecting
+# against. With supervision off nothing would ever start it, which is exactly how mode 3 works.
+ENV Ollama__Endpoint=http://127.0.0.1:11434/
+ENV Ollama__Supervisor__Enabled=true
+ENV Ollama__Supervisor__StartAtBoot=true
+ENV Ollama__Supervisor__StopOnShutdown=true
+
+# Ollama__RequireGpu is deliberately NOT set (D6). This image runs on the CPU on purpose, and the
+# node logs what it can see either way in its first lines. Pass -e Ollama__RequireGpu=true if you
+# want a missing --gpus to be a startup failure instead of a slow box.
+
+# No EXPOSE 11434 and no OLLAMA_HOST override (D8): the container's surface is InferHub's API, and
+# publishing Ollama's own port would put an unauthenticated inference endpoint next to the one that
+# refuses to start without a key. -e OLLAMA_HOST=0.0.0.0 -p 11434:11434 is yours to decide.
+
+USER app
+
+ENTRYPOINT ["dotnet", "InferHub.Node.dll"]

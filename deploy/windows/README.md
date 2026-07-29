@@ -97,6 +97,13 @@ rely on the data directory for writable state:
 The node only makes outbound HTTP calls — SignalR to the coordinator and local Ollama
 (`http://localhost:11434`). It needs no inbound ports and no GPU access of its own.
 
+> **An alternative on Windows since v3.7:** if you already run Docker Desktop, the bundled image
+> (`ghcr.io/dev-art-solutions/inferhub-node:ollama`) carries its own Ollama and reaches the card
+> through WSL2 with `--gpus all` — no install, no service, one container. This service host is
+> still the leaner path for a dedicated GPU box, and the one that does not depend on WSL2. Note
+> that under WSL2 there are no `/dev/nvidia*` device nodes; InferHub detects the GPU by loading
+> the driver rather than by looking for them, so a passed-through card is found either way.
+
 ## The Ollama supervisor and service privileges (v3.4+)
 
 If you turn on `Ollama:Supervisor:Enabled`, the node restarts its local Ollama when it stops

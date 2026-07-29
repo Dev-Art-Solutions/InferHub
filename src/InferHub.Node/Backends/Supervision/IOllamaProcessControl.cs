@@ -54,5 +54,13 @@ public interface IOllamaProcessControl
 
     Task<ProcessControlResult> StopAsync(OllamaInstallation installation, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Stops <em>only</em> the process this control spawned, and is a no-op when it spawned none
+    /// (phase 39, D4). Used on shutdown, where tidying up after ourselves is right and sweeping by
+    /// name would mean killing somebody else's server on the way out — the opposite of what
+    /// <see cref="StopAsync"/> deliberately does when remedying a wedge.
+    /// </summary>
+    Task<ProcessControlResult> StopSpawnedAsync(CancellationToken cancellationToken);
+
     Task<bool> IsInstalledAsync(CancellationToken cancellationToken);
 }

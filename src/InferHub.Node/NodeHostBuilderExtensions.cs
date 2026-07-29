@@ -111,6 +111,10 @@ public static class NodeHostBuilderExtensions
         builder.Services.AddSingleton<CoordinatorConnection>();
         builder.Services.AddHostedService<Worker>();
 
+        // Always registered, and it logs one line either way (phase 39, D6). A node that cannot
+        // see a GPU is a supported deployment; a node that cannot *tell you* is the bug.
+        builder.Services.AddHostedService<GpuReport>();
+
         AddOllamaSupervision(builder, ollamaOptions);
         AddLocalApi(builder);
 
@@ -238,9 +242,11 @@ public static class NodeHostBuilderExtensions
     /// <item><c>Ollama:Endpoint</c> is loopback — a shared Ollama serving four nodes, bounced
     /// because <em>one</em> node's link hiccuped past the probe timeout, is a four-node outage
     /// caused by the node with the worst network. A process may only be restarted by something on
-    /// the same machine that can see it actually wedged. (This also covers the container case for
-    /// free: a node image cannot restart an Ollama on its host, and its endpoint is by definition
-    /// not loopback.)</item>
+    /// the same machine that can see it actually wedged. (Amended in phase 39: the bundled image
+    /// runs Ollama <em>inside</em> the container on <c>127.0.0.1</c>, which satisfies this gate
+    /// naturally — that address is inside the network namespace, so it cannot be anyone else's
+    /// server. Before phase 39 the container case was covered for free by having no local Ollama
+    /// to reach at all.)</item>
     /// </list>
     /// </summary>
     private static void AddOllamaSupervision(IHostApplicationBuilder builder, OllamaOptions ollamaOptions)

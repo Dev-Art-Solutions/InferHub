@@ -82,10 +82,40 @@ internal static class LocalStatusEndpoints
                 concurrency = gate is null
                     ? null
                     : new { limit = gate.Capacity, inFlight = gate.InFlight },
+                gpu = GpuBlock(),
                 retrieval = await RetrievalBlockAsync(services, cancellationToken),
                 models = models.Select(model => new { name = model.Name, digest = model.Digest, size = model.SizeBytes })
             },
             LocalApiEndpoints.JsonOptions);
+    }
+
+    /// <summary>
+    /// Phase 39. "Is it using my card" is the single most actionable fact about a bundled node, so
+    /// it is on the status document rather than only in the boot log.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Deliberately <em>not</em> on <c>/health</c>, which is unauthenticated (phase-37 D5): the
+    /// hardware inventory of a box is not something to hand to anyone who can reach the port.
+    /// </para>
+    /// <para>
+    /// It reports what <em>this process</em> can see, which is the question a missing
+    /// <c>--gpus all</c> turns on. It does not claim to know where a given model ended up:
+    /// <c>ollama ps</c> knows the CPU/VRAM split and reaching it would mean an Ollama-specific
+    /// method on <c>IInferenceBackend</c>, which is design rule 1. The docs point at
+    /// <c>docker exec … ollama ps</c> for that.
+    /// </para>
+    /// </remarks>
+    private static object GpuBlock()
+    {
+        var devices = Backends.CudaDeviceProbe.Current;
+
+        return new
+        {
+            cuda = devices.Available,
+            devices = devices.Count,
+            names = devices.Names
+        };
     }
 
     /// <summary>

@@ -83,6 +83,37 @@ public class NodeCompositionTests
         Assert.Equal("http://localhost:8000/v1", backend.Endpoint);
     }
 
+    // ---- phase 39: the GPU report ----------------------------------------------------------
+
+    [Fact]
+    public void TheGpuReportIsAlwaysRegisteredAndDoesNoIoToBuild()
+    {
+        using var host = BuildNode();
+
+        // Unlike the supervisor, this one is unconditional: every node says what it can see. A
+        // node that cannot use a GPU is a supported deployment; a node that cannot *tell you* is
+        // the bug the phase exists to prevent. The probe itself runs in StartAsync, so resolving
+        // it — here, on a build agent with no driver — must be free.
+        Assert.Contains(host.Services.GetServices<IHostedService>(), service => service is GpuReport);
+    }
+
+    [Fact]
+    public void TheVectorStoreOnlyModeStartsNoInferenceProcess()
+    {
+        // Phase-39 D10, in DI: mode 3 works precisely because the supervisor is the only thing in
+        // the bundled image that would ever start Ollama. If anything else ever acquires that
+        // job, this mode silently grows a process it was chosen to avoid.
+        using var host = BuildNode(
+            ("Ollama:Supervisor:Enabled", "false"),
+            ("LocalApi:Enabled", "true"),
+            ("LocalApi:Retrieval:Enabled", "true"),
+            ("Coordinator:Enabled", "false"));
+
+        Assert.IsType<NoBackendSupervisor>(host.Services.GetRequiredService<IBackendSupervisor>());
+        Assert.DoesNotContain(host.Services.GetServices<IHostedService>(), service => service is OllamaSupervisor);
+        Assert.Null(host.Services.GetService<IOllamaProcessControl>());
+    }
+
     // ---- phase 36: the Ollama supervisor's three-part registration guard -------------------
 
     [Fact]

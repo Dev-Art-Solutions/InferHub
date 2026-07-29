@@ -23,7 +23,9 @@ src/
                           external vector providers, replication/healing, endpoints, Metrics and
                           PdfTextExtractor.
   InferHub.Node/          Worker service (Sdk.Worker). SignalR client + backend driver. LocalApi/
-                          is solo mode (phase 37); Retrieval/ is solo RAG (phase 38).
+                          is solo mode (phase 37); Retrieval/ is solo RAG (phase 38). Two
+                          Dockerfiles: the plain one (multi-arch, ~100 MB) and Dockerfile.ollama
+                          (phase 39 — amd64, ~4 GB, Ollama inside the container).
   InferHub.Node.WindowsService/  Windows-service host. References InferHub.Node, adds AddWindowsService + install scripts.
 tests/
   InferHub.Tests/         xUnit. References all three projects.
@@ -1051,6 +1053,13 @@ for other people.) The rule covers the container case for free: a node image can
 Ollama on its host, and its endpoint is by definition not loopback.
 `NodeCompositionTests` fails if any of the three conditions stops being enforced.
 
+> **Amended in phase 39.** That last sentence described the only node image that existed. The
+> **bundled** image (`:ollama`) runs Ollama *inside* the container on `127.0.0.1`, so the loopback
+> gate is satisfied — and satisfied for exactly the right reason rather than by luck: an address
+> inside the container's own network namespace **cannot** be somebody else's server, which is the
+> hazard the gate was written against. The rule is unchanged and now covers a case it was not
+> written for. See phase 39 D3.
+
 **D2 — The two `HttpClient`s pointed at Ollama are NOT redundant. Do not consolidate them.**
 `Ollama:RequestTimeout` is **five minutes** on purpose — a cold 70B load blows through
 `HttpClient`'s 100s default and the coordinator waits 300s. Probing over that client would mean a
@@ -1350,6 +1359,117 @@ no admin surface (phase-37 D5). Most deployments never call it — the first ing
 
 **Rule 5 survived again.** Phase 38 added **zero** new dependencies, and `InferHub.Shared.csproj`
 is unchanged. `Npgsql`, `Pgvector` and `PdfPig` appear nowhere in the node's dependency tree.
+
+### Phase 39 (the bundled node image) — also load-bearing
+
+**D1 — A container needs the *driver*, not a CUDA toolkit, so the base image did not change.**
+`libcuda.so.1` / `libnvidia-ml.so.1` are the **driver**, injected at `docker run` by the NVIDIA
+container runtime when `--gpus` is passed; `libcudart` / `libcublas` / `libggml-cuda` are the
+**runtime**, and they already ship inside Ollama's own tarball. So
+[Dockerfile.ollama](src/InferHub.Node/Dockerfile.ollama) finals on the same
+`mcr.microsoft.com/dotnet/aspnet:10.0` as the plain node image. **`nvidia/cuda` as a base was
+considered and rejected**: a third copy of a runtime Ollama does not load, ~2 GB, and a CUDA minor
+version we do not choose. The split is also what makes CPU mode free — the same tarball carries the
+CPU kernels, so "no card" is the same image with nothing injected into it.
+
+**D2 — It is a *second image*, which is the only shape in which rule 5 survives.** A 1.4 GB
+compressed Ollama bundle fails "no new heavy dependencies" in every form except an opt-in artifact
+nobody else pulls. `inferhub-node` is unchanged — multi-arch, ~100 MB, no Ollama;
+`inferhub-node:ollama` is amd64 and ~4 GB. **One image with a bundled-mode flag is rejected**: the
+layers are there whether the flag is on or not, so every coordinator+node compose stack would grow
+by 4 GB for a feature it does not use. No `.csproj` changed — this dependency is a `curl` in a
+Dockerfile, not a package anything compiles against. `BundledNodeTests` fails if the bundle ever
+leaks into the plain Dockerfile. **The tag is `:ollama`, not `:gpu`**, because the image runs
+perfectly well with no card and naming it after the accelerator would make the majority of its uses
+look like a workaround; `:gpu` is published as an alias of the same digest.
+
+**D3 — The supervisor *is* the init system, and restarting the bundled Ollama is the point.** The
+container runs `dotnet InferHub.Node.dll` as PID 1 and `ollama serve` as its child. No s6, no
+supervisord, no entrypoint script — phase 36's `OllamaProcessControl` already discovers the binary,
+spawns it, pumps its output into the node's log and restarts it (`Unreachable` → start, `Wedged` →
+stop-then-start) under a budget. A wedged Ollama *inside* a container is worse than on a host,
+because nobody is sitting at a terminal on it: the container looks alive, `/health` answers, and
+every request hangs. Phase-36 D1's loopback gate is satisfied naturally here and **its container
+sentence is corrected in place above** — do not re-simplify it.
+
+**D4 — Two supervisor gaps only a container exposes, both behind keys that default to today's
+behaviour.** `Ollama:Supervisor:StartAtBoot` — probe once at startup and, **only on `Unreachable`**,
+start immediately instead of idling three probe intervals waiting to discover what we already know.
+Never on `Wedged`: the threshold exists to avoid misdiagnosing running-but-slow, and starting
+something that already holds the port fails in a way that makes the log blame the wrong thing.
+`Ollama:Supervisor:StopOnShutdown` — `IOllamaProcessControl.StopSpawnedAsync` kills **only what this
+supervisor spawned**, by handle, never the by-name sweep `StopAsync` deliberately does when
+remedying a wedge. Off by default because on a desktop the operator may still be using that Ollama;
+on in the image, where the child is SIGKILLed the instant PID 1 exits and a `docker stop` mid-pull
+leaves a partial blob.
+
+**D5 — "Is there a GPU?" is answered by loading `libcuda.so.1`, and this is the finding a future
+reader will otherwise undo.** Every recipe on the internet checks for `/dev/nvidia*`. **Under WSL2 —
+Docker Desktop on Windows, the most common GPU-with-Docker setup there is — those device nodes do
+not exist**; the GPU arrives via `/dev/dxg` and the driver libraries are injected from
+`/usr/lib/wsl/lib`. Observed directly:
+`docker run --rm --gpus all …/runtime-deps:10.0 sh -c 'ls /dev | grep -i nvidia'` prints nothing
+while `libcuda.so.1` is present. A device-node check would report "no GPU" on a machine about to run
+CUDA happily. So [CudaDeviceProbe](src/InferHub.Node/Backends/CudaDeviceProbe.cs) `TryLoad`s the
+driver and calls `cuInit` / `cuDeviceGetCount` / `cuDeviceGetName` through `NativeLibrary` (never a
+class-scope `DllImport`, which would fault the first time anything touched the type on a machine
+with no driver). Every failure path returns "no devices" and **nothing throws** — this runs on every
+node at startup and must never be why one fails to boot. Rule 1 holds: it is a *machine* capability,
+not an Ollama one.
+
+**D6 — The image announces what it found; it does not refuse. Refusing is opt-in.** An earlier draft
+of the phase had it fail to start without a GPU. **That was reversed.** CPU is a legitimate mode —
+embedding models, small models, a vector-store-only box — and refusing would have made two of the
+image's three documented modes impossible. The danger was never CPU, it was **silence**: four
+gigabytes of CUDA runtime, a dropped `--gpus` flag, two tokens a second, and an afternoon spent
+blaming the model. So [GpuReport](src/InferHub.Node/Backends/GpuReport.cs) logs what it saw in both
+directions in the first lines of `docker logs`, solo `/api/status` carries a `gpu` block, and
+`Ollama:RequireGpu` (**default false, including in the image**) is there for the operator who wants
+the guarantee. This follows **phase-35 D4** (warn — a keyless remote Qdrant is the operator's own
+risk) rather than **phase-37 D4** (refuse — a keyless LAN inference port is everyone's). The line is
+whether the bad outcome is the operator's own: a slow box is theirs, an open GPU is not. The `gpu`
+block stays **off `/health`**, which is unauthenticated (phase-37 D5) — a box's hardware inventory is
+not for anyone who can reach the port. *Considered and declined:* reporting which device Ollama
+actually chose per model; `ollama ps` knows, but reaching it means an Ollama-specific method on
+`IInferenceBackend`, which is rule 1. The docs point at `docker exec … ollama ps`.
+
+**D7 — No model is baked in, pulled at boot, or managed by a new key.** An image with a model is a
+9 GB image that is wrong for everyone who wanted a different one; pulling at boot reaches the
+internet from a GPU box nobody said it could (phase-36 D6 refused that shape for the installer); and
+a `PreloadModels` key is model management on the node, which phase-37 D1 declined. `docker exec …
+ollama pull` is the interface, and `OLLAMA_MODELS=/data/ollama` is why the pull survives the
+container — **the difference between a multi-GB re-download per `docker run` and none**, which is
+why the volume is documented as required rather than optional. In a *mesh*, the bundled node reports
+`SupportsModelManagement=true` (phase-26 D3) over an Ollama it genuinely controls, so
+`/api/admin/models/{model}/ensure` pulls into it from the console — the first time that has been
+true of a container.
+
+**D8 — The container's surface is InferHub's API.** No `EXPOSE 11434`, no `OLLAMA_HOST` override:
+publishing Ollama's own port would put an unauthenticated inference endpoint beside one that refuses
+to start without a key (phase-37 D4), on the same GPU. Every `OLLAMA_*` env var **passes through
+with no config surface of ours**, because the supervisor spawns a child that inherits the
+environment — do not mirror them into `OllamaOptions`.
+
+**D9 — amd64 only, NVIDIA only, Ollama pinned and checksummed.** `ARG OLLAMA_VERSION` +
+`ARG OLLAMA_SHA256`, verified at build; a floating `latest` would mean two builds of the same
+InferHub tag contain different inference engines, making "it worked in 3.7.0" unanswerable.
+`-rocm` and `-mlx` are not downloaded; arm64 is excluded because CUDA-in-a-container there means
+Jetson, which needs the jetpack bundles and hardware to test on. **Do not prune `lib/ollama/`** — it
+ships more than one CUDA major to match old and new drivers, and a pruned bundle does not fail
+loudly, it falls back to CPU on somebody's older driver and looks like a slow model, which is D6's
+failure with the evidence removed.
+
+**D10 — Vector-store-only is a supported mode and one key, not a fourth image.**
+`Ollama:Supervisor:Enabled=false` and nothing ever starts the bundled binary, because the supervisor
+is the only thing in the image that would. The node serves the corpus, `/api/vector/{c}` takes
+**client-supplied vectors** (so no embedder is needed at all), and it reports zero models — the
+honest answer, which makes a chat request fail cleanly rather than hang. Two limits stated in the
+docs rather than discovered: document *ingestion* needs an embedder (bring vectors, or point
+`Backend:Type=openai` at one elsewhere), and it is still the 4 GB image — somebody who only ever
+wants this should use the plain one, which does solo retrieval identically at 100 MB.
+
+**Rule 5 survived again** — in the only way it could. Zero new `PackageReference`s, no `.csproj`
+touched, `InferHub.Shared.csproj` still empty, and the plain images unchanged in size.
 
 ## Auth model (three independent token sets)
 

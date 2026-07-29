@@ -84,14 +84,39 @@ The compose file ships a node container so `up -d` gives you something that work
 It reaches Ollama on your host via `host.docker.internal` (Docker Desktop) or the bridge
 gateway `172.17.0.1` (plain Linux) — set `OLLAMA_ENDPOINT` in `.env` accordingly.
 
-For anything real, **run the node natively on the GPU box instead.** It wants to sit next to a
-local Ollama with direct access to the GPU, and passing a GPU into a container buys you
-nothing here because the node itself does no compute — it shells out to Ollama. On Windows,
-the phase-19 service host is the supported path (`deploy/windows/`).
+There are three honest answers, and which is right depends on what is already on the box.
 
-The shape most deployments land on is a containerized coordinator on a small always-on box
-plus native nodes on the GPU machines that dial out to it. Nothing about that needs an inbound
-firewall rule on the node side:
+**1. Natively, next to a local Ollama.** Leanest, and still the recommendation for a Windows GPU
+box — the phase-19 service host (`deploy/windows/`) gives you auto-start on boot and
+restart-on-failure with nothing else installed.
+
+**2. This node container, reaching an Ollama on the host.** What the compose file above does.
+Note that the *node* does no compute in this shape — it shells out to Ollama over HTTP — so
+passing a GPU into this particular container buys nothing.
+
+**3. The bundled image, which has its own Ollama inside it (v3.7+).** One `docker run`, nothing
+installed on the host, and a GPU worth passing in because now something in there uses it:
+
+```bash
+docker run -d --name inferhub --gpus all \
+  -e LocalApi__Enabled=true -e Coordinator__Enabled=false \
+  -e LocalApi__ApiKeys__0="$INFERHUB_API_KEY" \
+  -v inferhub:/data -p 5081:8080 \
+  ghcr.io/dev-art-solutions/inferhub-node:ollama
+
+docker exec inferhub ollama pull llama3.2
+```
+
+Leave `--gpus all` off and it runs on the CPU; set `Ollama__Supervisor__Enabled=false` and it is a
+vector store with no inference process at all. It is ~4 GB against the plain image's ~100 MB,
+amd64-only and NVIDIA-only, and the volume is required in practice, because pulled models live in
+it. `:gpu` is an alias for the same image. See
+[A node and its Ollama in one container](../../README.md#a-node-and-its-ollama-in-one-container-v37)
+and `compose.ollama.yml` beside this file.
+
+The shape most fleets land on is a containerized coordinator on a small always-on box plus nodes
+on the GPU machines that dial out to it — native, or bundled, as above. Nothing about that needs
+an inbound firewall rule on the node side:
 
 ```jsonc
 // appsettings.json on the GPU box

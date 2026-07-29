@@ -1,0 +1,58 @@
+# The bundled node — a node and its Ollama in one container (phase 39, v3.7+).
+#
+#   docker compose -f deploy/docker/compose.ollama.yml up -d
+#   docker compose -f deploy/docker/compose.ollama.yml exec node ollama pull llama3.2
+#
+# This is a standalone stack, not an overlay on docker-compose.yml: it is the *small sibling* of
+# that one. There is no coordinator here — the node serves the OpenAI and Ollama APIs itself
+# (solo mode, phase 37) and grounds its own answers if you turn retrieval on (phase 38).
+#
+# Then: http://localhost:5081/v1 with any OpenAI client.
+
+name: inferhub-bundled
+
+services:
+  node:
+    image: ghcr.io/dev-art-solutions/inferhub-node:ollama
+    container_name: inferhub-node-bundled
+    restart: unless-stopped
+    ports:
+      - "5081:8080"
+    environment:
+      LocalApi__Enabled: "true"
+      Coordinator__Enabled: "false"
+
+      # NOT optional. The container binds a wildcard, so this API is reachable from outside the
+      # box, and a keyless inference endpoint hands arbitrary GPU time to whoever finds the port
+      # (phase-37 D4). Put INFERHUB_API_KEY in deploy/docker/.env.
+      LocalApi__ApiKeys__0: "${INFERHUB_API_KEY:?set INFERHUB_API_KEY in .env}"
+
+      # Solo RAG (phase 38). Ingest documents, ground answers, all in this container. Needs an
+      # embedding model — `ollama pull nomic-embed-text` — which runs happily on a CPU.
+      LocalApi__Retrieval__Enabled: "true"
+
+      # Uncomment to make a missing GPU a startup failure instead of a CPU fallback.
+      # Ollama__RequireGpu: "true"
+
+      # MODE 3 — vector store only. Uncomment and nothing ever starts Ollama: the node serves the
+      # corpus and /api/vector takes your own vectors. Ingesting *documents* needs an embedder, so
+      # in this mode either bring your own vectors or point Backend__Type=openai at one elsewhere.
+      # Ollama__Supervisor__Enabled: "false"
+
+    volumes:
+      # Required in practice rather than optional: pulled models live here, and without it every
+      # `docker compose up` re-downloads them. The corpus and the node id live here too.
+      - node-data:/data
+
+    # MODE 1 — the GPU. Delete this whole `deploy:` block to run on the CPU; nothing else changes,
+    # and the node will say in its first log lines which one it got.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  node-data:

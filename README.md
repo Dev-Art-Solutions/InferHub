@@ -112,12 +112,13 @@ byte-identical to 2.13. Still **zero new dependencies** — the lease is `Npgsql
 | 36 | Node supervises its own Ollama (done) | `v3.4.0` |
 | 37 | Solo mode — the node serves its own API (done) | `v3.5.0` |
 | 38 | RAG in solo mode — a standalone node retrieves for itself (done) | `v3.6.0` |
+| 39 | Bundled node image — Ollama in the container, GPU or CPU (done) | `v3.7.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
-and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 and
-v3.5 turned to the node — first supervising its own backend, then serving the hub's API — and v3.6
-finished that arc by giving a standalone node the retrieval stack too, by *moving* it into the
-shared library rather than copying it. Still on the
+and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
+v3.7 turned to the node — supervising its own backend, serving the hub's API, retrieving for itself,
+and now shipping as [one container](#a-node-and-its-ollama-in-one-container-v37) that carries its own
+Ollama and uses your card, your CPU, or neither. Still on the
 table: teaching the **coordinator** about backend health as a typed signal (a status column and
 an alert, rather than a line in the node's log), **active-active** multi-coordinator load sharing, an
 **OTLP push** exporter behind an explicit opt-in, and a dedicated cross-encoder reranker behind the
@@ -176,6 +177,24 @@ client = OpenAI(base_url="http://localhost:5081/v1", api_key=KEY)
 That is the whole migration. Same request bodies, same responses, same streaming, same errors,
 both dialects. Full details, and what solo mode deliberately does *not* do, are in
 [Solo mode](#solo-mode--just-the-node-v35).
+
+### One container, with or without a GPU (v3.7+)
+
+The same thing again with nothing installed on the host — the bundled image carries Ollama
+inside it:
+
+```bash
+docker run -d --name inferhub --gpus all \
+  -e LocalApi__Enabled=true -e Coordinator__Enabled=false \
+  -e LocalApi__ApiKeys__0="$INFERHUB_API_KEY" \
+  -v inferhub:/data -p 5081:8080 \
+  ghcr.io/dev-art-solutions/inferhub-node:ollama
+
+docker exec inferhub ollama pull llama3.2
+```
+
+Drop `--gpus all` and it runs on the CPU instead. See
+[A node and its Ollama in one container](#a-node-and-its-ollama-in-one-container-v37).
 
 ## Solo mode — just the node (v3.5+)
 
@@ -312,6 +331,84 @@ exactly as it does today.
 `Coordinator:Enabled` and `LocalApi:Enabled` are independent. A fleet node with the local API on
 is legitimate — useful for curling a node directly while debugging. Both **off** is a startup
 failure naming both keys: a node that neither joins a mesh nor serves anyone is a typo.
+
+## A node and its Ollama in one container (v3.7+)
+
+Solo mode removed the coordinator. This removes the other half: the Ollama you had to install on
+the host, reach through `host.docker.internal` or `172.17.0.1`, and keep alive yourself.
+
+```bash
+docker run -d --name inferhub --gpus all \
+  -e LocalApi__Enabled=true -e Coordinator__Enabled=false \
+  -e LocalApi__ApiKeys__0="$INFERHUB_API_KEY" \
+  -v inferhub:/data -p 5081:8080 \
+  ghcr.io/dev-art-solutions/inferhub-node:ollama
+
+docker exec inferhub ollama pull llama3.2
+```
+
+Then point any OpenAI client at `http://localhost:5081/v1`.
+
+### Three modes, one image
+
+**None of them refuses to start**, and the node says in its first log lines which one it is in.
+
+| | How | What runs |
+|---|---|---|
+| **GPU inference** (+ RAG) | `--gpus all` | node + Ollama on CUDA |
+| **CPU inference** (+ RAG) | leave `--gpus` off | node + Ollama on the CPU — right for embedding models and small ones |
+| **Vector store only** | `-e Ollama__Supervisor__Enabled=false` | node + corpus, **no Ollama process at all** |
+
+The third is worth explaining: `/api/vector/{collection}` takes **client-supplied vectors**, so a
+node with no inference process is still a complete vector store. It reports zero models, which is
+the honest answer — a chat request fails cleanly instead of hanging. Ingesting *documents* does
+need an embedder, so in that mode either bring your own vectors or point `Backend:Type=openai` at
+an embedding upstream elsewhere. And it is still the 4 GB image: if you only ever want this, the
+plain `inferhub-node` image does solo retrieval identically at 100 MB.
+
+### Did it get the card?
+
+The node answers that in its first log lines, both ways:
+
+```
+info: CUDA: 1 device(s) visible to this process — NVIDIA GeForce RTX 3090 Ti.
+info: CUDA: no devices visible to this process; inference will run on the CPU.
+      In a container, pass '--gpus all' to use a card.
+```
+
+and on `/api/status` as a `gpu` block. For which device a *loaded model* actually ended up on,
+`docker exec inferhub ollama ps` is the ground truth — that is Ollama's own accounting and it is
+not something InferHub second-guesses.
+
+`Ollama:RequireGpu=true` turns a missing card into a **startup failure** naming `--gpus all`. It
+is off by default, including in this image, because CPU is a supported mode rather than a
+misconfiguration. Turn it on for a node whose whole purpose is the card, so a `--gpus` flag
+falling out of a unit file is not a silent fiftyfold slowdown.
+
+### What is in it, and what is not
+
+- **~4 GB** (the plain `inferhub-node` image is ~100 MB and does not change). **amd64 only**, and
+  **NVIDIA only** — no ROCm, no Intel, no Apple, and arm64 would mean Jetson-specific bundles.
+- **No model is baked in and none is pulled at boot.** `docker exec … ollama pull` is the
+  interface. **Mount a volume at `/data`** or every `docker run` re-downloads them.
+- **Ollama's own port is not published.** The container's surface is InferHub's API, which
+  requires a key. `-e OLLAMA_HOST=0.0.0.0 -p 11434:11434` is yours to decide.
+- **Every `OLLAMA_*` variable passes through** — `OLLAMA_KEEP_ALIVE`, `OLLAMA_NUM_PARALLEL`,
+  `OLLAMA_FLASH_ATTENTION` and the rest are one `-e` away.
+- **The node keeps its Ollama alive**, using the [supervisor](#keeping-the-local-ollama-alive-v34):
+  it starts it at boot, probes it, and restarts it if it dies or wedges. That matters more in a
+  container than on a host, because nothing else in there is watching.
+- On **Windows with Docker Desktop** this works through WSL2 — note that `/dev/nvidia*` does not
+  exist there, so InferHub detects the GPU by loading the driver rather than by looking for device
+  nodes.
+
+It is also a good **mesh** node: set `Coordinator__Url` instead of `Coordinator__Enabled=false`,
+and the hub can pull models into it from the console, because the Ollama it manages is genuinely
+its own.
+
+```bash
+docker compose -f deploy/docker/compose.ollama.yml up -d
+```
 
 ## OpenAI-compatible API
 

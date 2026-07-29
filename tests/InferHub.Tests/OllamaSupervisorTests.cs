@@ -551,6 +551,12 @@ public class OllamaSupervisorTests
             return Task.FromResult(StopResult);
         }
 
+        public Task<ProcessControlResult> StopSpawnedAsync(CancellationToken cancellationToken)
+        {
+            Calls.Add("stop-spawned");
+            return Task.FromResult(StopResult);
+        }
+
         public Task<bool> IsInstalledAsync(CancellationToken cancellationToken)
             => Task.FromResult(Installation.Kind is not OllamaInstallKind.Missing);
     }
