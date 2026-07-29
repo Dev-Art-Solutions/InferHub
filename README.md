@@ -364,7 +364,7 @@ node with no inference process is still a complete vector store. It reports zero
 the honest answer — a chat request fails cleanly instead of hanging. Ingesting *documents* does
 need an embedder, so in that mode either bring your own vectors or point `Backend:Type=openai` at
 an embedding upstream elsewhere. And it is still the 4 GB image: if you only ever want this, the
-plain `inferhub-node` image does solo retrieval identically at 100 MB.
+plain `inferhub-node` image does solo retrieval identically at 340 MB.
 
 ### Did it get the card?
 
@@ -387,7 +387,7 @@ falling out of a unit file is not a silent fiftyfold slowdown.
 
 ### What is in it, and what is not
 
-- **~4 GB** (the plain `inferhub-node` image is ~100 MB and does not change). **amd64 only**, and
+- **~4 GB** (the plain `inferhub-node` image is ~340 MB and does not change). **amd64 only**, and
   **NVIDIA only** — no ROCm, no Intel, no Apple, and arm64 would mean Jetson-specific bundles.
 - **No model is baked in and none is pulled at boot.** `docker exec … ollama pull` is the
   interface. **Mount a volume at `/data`** or every `docker run` re-downloads them.

@@ -24,7 +24,7 @@ src/
                           PdfTextExtractor.
   InferHub.Node/          Worker service (Sdk.Worker). SignalR client + backend driver. LocalApi/
                           is solo mode (phase 37); Retrieval/ is solo RAG (phase 38). Two
-                          Dockerfiles: the plain one (multi-arch, ~100 MB) and Dockerfile.ollama
+                          Dockerfiles: the plain one (multi-arch, ~340 MB) and Dockerfile.ollama
                           (phase 39 — amd64, ~4 GB, Ollama inside the container).
   InferHub.Node.WindowsService/  Windows-service host. References InferHub.Node, adds AddWindowsService + install scripts.
 tests/
@@ -1374,7 +1374,7 @@ CPU kernels, so "no card" is the same image with nothing injected into it.
 
 **D2 — It is a *second image*, which is the only shape in which rule 5 survives.** A 1.4 GB
 compressed Ollama bundle fails "no new heavy dependencies" in every form except an opt-in artifact
-nobody else pulls. `inferhub-node` is unchanged — multi-arch, ~100 MB, no Ollama;
+nobody else pulls. `inferhub-node` is unchanged — multi-arch, ~340 MB, no Ollama;
 `inferhub-node:ollama` is amd64 and ~4 GB. **One image with a bundled-mode flag is rejected**: the
 layers are there whether the flag is on or not, so every coordinator+node compose stack would grow
 by 4 GB for a feature it does not use. No `.csproj` changed — this dependency is a `curl` in a
@@ -1466,7 +1466,7 @@ is the only thing in the image that would. The node serves the corpus, `/api/vec
 honest answer, which makes a chat request fail cleanly rather than hang. Two limits stated in the
 docs rather than discovered: document *ingestion* needs an embedder (bring vectors, or point
 `Backend:Type=openai` at one elsewhere), and it is still the 4 GB image — somebody who only ever
-wants this should use the plain one, which does solo retrieval identically at 100 MB.
+wants this should use the plain one, which does solo retrieval identically at 340 MB.
 
 **Rule 5 survived again** — in the only way it could. Zero new `PackageReference`s, no `.csproj`
 touched, `InferHub.Shared.csproj` still empty, and the plain images unchanged in size.

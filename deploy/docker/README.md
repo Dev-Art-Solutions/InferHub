@@ -108,7 +108,7 @@ docker exec inferhub ollama pull llama3.2
 ```
 
 Leave `--gpus all` off and it runs on the CPU; set `Ollama__Supervisor__Enabled=false` and it is a
-vector store with no inference process at all. It is ~4 GB against the plain image's ~100 MB,
+vector store with no inference process at all. It is ~4 GB against the plain image's ~340 MB,
 amd64-only and NVIDIA-only, and the volume is required in practice, because pulled models live in
 it. `:gpu` is an alias for the same image. See
 [A node and its Ollama in one container](../../README.md#a-node-and-its-ollama-in-one-container-v37)

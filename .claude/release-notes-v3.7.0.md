@@ -103,7 +103,7 @@ the driver instead, which is the same question the inference engine asks a momen
 
 ## What is in it, and what is not
 
-- **~4 GB.** The plain `inferhub-node` image is unchanged at ~100 MB, still multi-arch, still with
+- **~4 GB.** The plain `inferhub-node` image is unchanged at ~340 MB, still multi-arch, still with
   no Ollama in it. That is deliberate: a bundled flag on one image would have grown every
   coordinator+node stack by 4 GB for a feature it does not use.
 - **amd64 and NVIDIA only.** No ROCm, no Intel, no Apple; arm64 would mean Jetson-specific bundles
