@@ -1,3 +1,4 @@
+using InferHub.Shared.Contracts;
 using InferHub.Shared.Ingestion;
 using InferHub.Shared.Vector;
 using InferHub.Shared.Vector.Storage;
@@ -100,6 +101,29 @@ public sealed class NodeOptionsValidator : IValidateOptions<NodeOptions>
         {
             failures.Add(
                 $"{NodeOptions.SectionName}:{nameof(NodeOptions.MaxConcurrency)} must be >= 1 when set (got {cap}).");
+        }
+
+        // A typo here is silent by construction — capability kinds are open strings on the wire
+        // (phase-40 D1), so "chatt" disables nothing and the box quietly keeps taking the traffic
+        // the operator meant to move off it. Names are checked; the wire is still not.
+        foreach (var disabled in options.Capabilities.Disabled)
+        {
+            if (!CapabilityKinds.IsWellKnown(disabled?.Trim()))
+            {
+                failures.Add(
+                    $"{NodeOptions.SectionName}:Capabilities:Disabled contains '{disabled}', which is not a capability this release knows. Expected one of: {CapabilityKinds.Chat}, {CapabilityKinds.Embed}, {CapabilityKinds.Transcribe}, {CapabilityKinds.Speak}.");
+            }
+        }
+
+        // Disabling both of the backend's kinds leaves a node that can be routed for nothing —
+        // the phase-37 D10 shape. Note this is not the same as a node with no models (a
+        // vector-store-only node, phase-39 D10): that one declares nothing because it holds
+        // nothing, which is honest. This one holds models and refuses every use of them.
+        if (options.Capabilities.IsDisabled(CapabilityKinds.Chat)
+            && options.Capabilities.IsDisabled(CapabilityKinds.Embed))
+        {
+            failures.Add(
+                $"{NodeOptions.SectionName}:Capabilities:Disabled turns off both '{CapabilityKinds.Chat}' and '{CapabilityKinds.Embed}', which is every kind of work this node's backend can do. Leave one on.");
         }
 
         return failures.Count == 0

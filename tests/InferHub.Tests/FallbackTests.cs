@@ -345,6 +345,7 @@ public class FallbackTests
             conversationKey: null,
             TestUsage.Context(new NodeRegistry()),
             new StubRouter(node),
+            new NodeRegistry(),
             new StubDispatcher(),
             fallback,
             new Metrics(),
@@ -371,7 +372,7 @@ public class FallbackTests
 
     private sealed class StubRouter(RoutableNode? node) : InferHub.Coordinator.Services.IRouter
     {
-        public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null)
+        public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null, string? capability = null)
             => node;
     }
 

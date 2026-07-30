@@ -24,6 +24,14 @@ internal static class InferenceCore
 
     public const string ServedByHeader = "X-InferHub-Served-By";
 
+    /// <summary>
+    /// <c>Retry-After</c> on the phase-40 D5 "nobody provides this capability" 503. A hint, not a
+    /// promise — a node that can do the work may connect at any time, or never. Thirty seconds is
+    /// the same order as the queue's bound, so a client's backoff behaves the same against either
+    /// 503 rather than needing to know which kind it got.
+    /// </summary>
+    private const int CapabilityRetryAfterSeconds = 30;
+
     internal readonly record struct DispatchOutcome(
         ChannelReader<InferenceChunk>? Stream,
         string? ResponseJson,
@@ -84,6 +92,7 @@ internal static class InferenceCore
         string? conversationKey,
         ClientContext context,
         Services.IRouter router,
+        Services.INodeRegistry registry,
         IDispatcher dispatcher,
         IFallbackDispatcher fallback,
         Metrics metrics,
@@ -94,6 +103,10 @@ internal static class InferenceCore
         {
             return DispatchOutcome.Failure(StatusCodes.Status400BadRequest, "model is required");
         }
+
+        // What kind of work this surface is asking for (phase 40). Derived from the job kind
+        // rather than passed in, so the two client dialects cannot disagree about it.
+        var capability = CapabilityKinds.ForJobKind(kind);
 
         // Admission first: a client over its limits must not consume routing, queue capacity
         // or an upstream call. Everything after this point holds the client's concurrency
@@ -116,7 +129,7 @@ internal static class InferenceCore
 
         try
         {
-            var node = router.Route(model, conversationKey);
+            var node = router.Route(model, conversationKey, capability: capability);
 
             // Cloud burst. Off by default, and when off this is a single false — the 404 below is
             // byte-for-byte what every release since 1.0 has returned. With Trigger=no-node-or-saturated
@@ -163,6 +176,24 @@ internal static class InferenceCore
 
             if (node is null)
             {
+                // Phase-40 D5. "This model exists on the fleet but nobody will do *this* with it"
+                // is a fleet-state answer, the same category as saturation, so it is a 503 with
+                // Retry-After rather than the 404 that means "no such model". Authorization has
+                // already run (admission, above), so this can never be used to probe for a model
+                // a client is not allowed to see: it only ever reflects models it already reaches.
+                if (capability is not null && registry.FindNodesWithModel(model).Count > 0)
+                {
+                    logger.LogInformation(
+                        "No node provides capability {Capability} for model {Model}",
+                        capability,
+                        model);
+
+                    return DispatchOutcome.Failure(
+                        StatusCodes.Status503ServiceUnavailable,
+                        $"no node currently provides '{capability}' for model '{model}'",
+                        CapabilityRetryAfterSeconds);
+                }
+
                 return DispatchOutcome.Failure(StatusCodes.Status404NotFound, $"model '{model}' not found");
             }
 
@@ -184,7 +215,7 @@ internal static class InferenceCore
                 }
 
                 // A slot freed somewhere — route again so the request lands on the node that has it.
-                node = router.Route(model, conversationKey) ?? node;
+                node = router.Route(model, conversationKey, capability: capability) ?? node;
             }
 
             if (conversationKey is not null)
@@ -204,6 +235,7 @@ internal static class InferenceCore
                 var outcome = await DispatchWithFailoverAsync(
                     kind,
                     model,
+                    capability,
                     stream,
                     conversationKey,
                     node,
@@ -257,6 +289,7 @@ internal static class InferenceCore
     private static async Task<DispatchOutcome> DispatchWithFailoverAsync(
         string kind,
         string model,
+        string? capability,
         bool? stream,
         string? conversationKey,
         RoutableNode node,
@@ -293,7 +326,7 @@ internal static class InferenceCore
                 "Node {NodeId} dropped before the job started — attempting failover",
                 node.NodeId);
 
-            var retryNode = router.Route(model, conversationKey, excludeConnectionId: ex.ConnectionId);
+            var retryNode = router.Route(model, conversationKey, excludeConnectionId: ex.ConnectionId, capability: capability);
 
             if (retryNode is null)
             {

@@ -10,9 +10,16 @@ public sealed class Router(
 {
     private int cursor;
 
-    public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null)
+    public RoutableNode? Route(
+        string model,
+        string? conversationKey = null,
+        string? excludeConnectionId = null,
+        string? capability = null)
     {
-        var candidates = registry.FindNodesWithModel(model);
+        // Phase 40: the capability filter runs first and everything after it — least-busy,
+        // throughput, sticky affinity, the cordon skip — is untouched. A node that cannot do this
+        // kind of work is not a candidate to be balanced against.
+        var candidates = registry.FindNodesWithModel(model, capability);
 
         if (!string.IsNullOrEmpty(excludeConnectionId))
         {

@@ -250,8 +250,13 @@ as load-bearing:
    [QdrantClient](src/InferHub.Coordinator/Vector/Qdrant/QdrantClient.cs) is a hand-rolled
    `HttpClient` connector. A third vector backend, still zero new packages — considered the
    dependency and declined it. Do not "upgrade" it to the gRPC client.
-6. **The node-facing job protocol is Ollama-shaped. Client-facing and upstream-facing
-   dialects are translations at the boundary.** `InferenceJob.RawJson` crossing SignalR and
+6. **The node-facing *inference* job protocol is Ollama-shaped. Client-facing and upstream-facing
+   dialects are translations at the boundary.**
+   > **The word "inference" was added in phase 40, and it is a bounding, not a weakening.**
+   > `InferenceJob` still carries Ollama JSON, always. What phase 40 settled is that work with no
+   > Ollama shape to be — a transcription, a synthesis — travels as its own contract rather than as
+   > an `InferenceJob.Kind` with a foreign body, which would have made this rule true of *some*
+   > jobs and left every later reader to discover which. See phase-40 D3. `InferenceJob.RawJson` crossing SignalR and
    `InferenceChunk.ResponseJson` coming back are both Ollama JSON, always — that is the one
    shape the mesh's internals (dispatcher, router, affinity, retrieval) know. Request/response
    DTOs in `InferHub.Shared/Ollama/` track what real Ollama clients send; do not invent custom
@@ -1471,6 +1476,73 @@ wants this should use the plain one, which does solo retrieval identically at 34
 **Rule 5 survived again** — in the only way it could. Zero new `PackageReference`s, no `.csproj`
 touched, `InferHub.Shared.csproj` still empty, and the plain images unchanged in size.
 
+### Phase 40 (the capability seam) — also load-bearing
+
+**D1 — The unit of routing is `(capability, model)`, and a node that declares nothing is read as
+today's node.** `NodeCapability(Kind, Models)` rides on `NodeRegistration` and `NodeModels`, both
+optional. **Null means "not declared" and resolves to `chat` + `embed` over every reported model —
+byte-for-byte the pre-v3.8 semantics.** An *empty* list is a declaration that this node serves
+nothing, and the two must never be conflated. The default is materialised in exactly one place,
+[NodeCapabilityResolver](src/InferHub.Coordinator/Services/NodeCapabilityResolver.cs), and cached on
+the registry entry, which is why **no call site anywhere branches on "is this an old node"**. A
+required field with a migration was rejected for phase-33 D3's reason: a fleet is upgraded one box
+at a time, and a contract that only works when everything is on the new version has an outage in it.
+`CapabilityRoutingTests.ANodeThatDeclaresNothingIsRoutedExactlyAsBefore` is the load-bearing test in
+the suite — not the new behaviour, the old one.
+
+**D2 — Capabilities are declared by composition, never guessed, and the only knob is subtractive.**
+[BackendCapabilities](src/InferHub.Node/Capabilities/BackendCapabilities.cs) derives them from the
+backend's own model list; `Node:Capabilities:Disabled` narrows it. **Nothing infers what a model is
+*for*.** Ollama's `/api/tags` does not say, and a name heuristic ("it has 'embed' in it") is
+phase-29 D5's capability registry by the back door — built, believed, and wrong for somebody. So an
+embedding-only box is expressible in one line of config and is not detected. A hand-maintained
+*additive* list was rejected too: it drifts the day someone runs `ollama pull`, and a node that
+claims a capability it does not have is worse than one that claims none, because the hub routes to
+it and the client gets the error.
+
+**D3 — Work with no Ollama shape gets its own contract; rule 6 is bounded rather than weakened.**
+See rule 6 above. `InferenceJob.Kind` with a foreign body was rejected — two lines today, and every
+future reader has to discover which jobs the rule is true of. What is *not* duplicated is the
+machinery: when phase 41 dispatches a `ToolJob` it goes through the same job registry, the same
+stream plumbing and the same failover, and its hub method **must not declare a `CancellationToken`
+parameter** (the client-to-server binder trap that hung every stream for several releases). *The
+`ToolJob`/`ToolResult` records themselves are deliberately **not** in 3.8 — see the deviation note
+below.*
+
+**D4 — A capability nobody provides is a `503` with `Retry-After`; a model nobody holds is still the
+`404`.** Phase-25 D4 makes "not allowed" and "does not exist" indistinguishable, and that is an
+*authorization* answer. "This model is here but nobody will chat with it" is a *fleet-state* answer,
+the same category as saturation — so it gets the saturation shape. Admission runs first, so the 503
+can never be used to probe for a model a client's scope hides: it only ever reflects models the
+caller already reaches. `Retry-After: 30` is a hint and is documented as one — a node with the
+capability may connect at any time, or never.
+
+**D5 — Solo mode enforces the same key at the edge, because one key must not mean two things.**
+Phase-37 D9's shape (`Node:MaxConcurrency` is advisory in a mesh and enforced in solo): the meaning
+is unchanged and only the enforcer moves, from the router that is not there to the node that is.
+Same 503, same `Retry-After`, in both dialects. **Edge only** — solo retrieval still embeds its own
+corpus with `embed` disabled, because the node's own corpus is not somebody sending it work.
+
+*Recorded deviations from the phase brief, on purpose:*
+- **The `ToolJob` / `ToolChunk` / `ToolResult` / `ToolAttachment` records are deferred to phase 41.**
+  The brief listed them here as "contracts only, nothing dispatches them". That is the same category
+  the phase's own non-goals refuse for the audio endpoints ("a documented feature that does not
+  work"), and a *shipped* wire contract is harder to reshape than one that never shipped — phase 41
+  will have a real consumer to shape it. D3's reasoning stands and is recorded above; only the
+  records wait.
+- **`NodeCapability` carries `Kind` + `Models` and not the brief's `Streaming` / `MaxConcurrency`.**
+  Nothing in this phase reads either, and a wire field nobody reads is a field that is wrong by the
+  time somebody does.
+- **The node declares on the model report, not at registration.** At registration it has not asked
+  the backend what it holds, and asking first would mean a node with a dead backend never registers
+  at all — the opposite of phase-36 D7, which exists so a broken box is *visible* and unrouted. The
+  field is on `NodeRegistration` too, for a node whose capabilities do not follow from a backend.
+  A message that carries no declaration never erases one, so the re-register-then-re-report order of
+  a reconnect cannot open a window where an embed-only node takes chat.
+
+**Rule 5 survived again.** Phase 40 added **zero** new dependencies and `InferHub.Shared.csproj` is
+still empty.
+
 ## Auth model (three independent token sets)
 
 | Scope | Config key | Guards |
@@ -1499,6 +1571,59 @@ mini-release with a strict shape:
 
 When asked to start a phase, read its plan file first — the scope, file list, and
 acceptance criteria are already written.
+
+## Writing a plan (the shape every file in `plan/` has)
+
+**When asked for a new plan, write it in this shape without being told.** One phase →
+`plan/phase-NN-short-slug.md`. A multi-phase track → one roadmap file,
+`plan/roadmap-vX.Y-to-vX.Z-slug.md`, with a `Status:` line *per phase* inside it. Either way index it
+in `plan/00-overview.md`. Plans are written for whoever implements them next with no memory of this
+conversation, so a decision without its rejected alternative is a decision that gets undone.
+
+**Header block** — title `# Phase NN — <the claim, in a sentence> (vX.Y.Z)`, then `Status: TODO`,
+target version, **Size** (S/M/L + days), repo link, the file's own path, and a `>` callout naming the
+prior `CLAUDE.md` decisions to read first (by number: "phase-36 D1/D3", not "the supervisor phase").
+
+**§1 Goal** — what is true today and why it is not enough, in the repo's own words, with the file
+paths. Then the shape of the change, with real commands or payloads a reader can run. Then
+**Non-goals**, each written as *a decision with its reason*, never a bare list.
+
+**§2 Design decisions** — `### D1 — <a full sentence that states the claim>`, numbered, each with:
+the reasoning, the **alternative that was considered and rejected** and why, and — where it applies —
+which rule (1–7) it brushes and what keeps the rule true. Mark the load-bearing one out loud ("this
+is the decision the phase turns on"). The heading is the claim, so a reader skimming only headings
+gets the design.
+
+**§3 Tasks** — `- [ ]` checkboxes in dependency order, each naming a **real path** and what goes in
+it. Order them so a failure is attributable: the thing that can break in isolation lands first.
+Always include the CLAUDE.md block, the `appsettings.json` commented keys, README, and the
+`plan/00-overview.md` row as tasks.
+
+**§4 Acceptance criteria** — checkboxes, and they must include: *a deployment that changes no config
+behaves identically to the previous version*, **zero new `PackageReference` / `InferHub.Shared.csproj`
+still empty**, and `dotnet test` green. Anything that cannot be established from source says so and
+points at §5.
+
+**§5 Release ritual** — bump `<Version>` → `.claude/release-notes-vX.Y.Z.md` → tag → GitHub release
+→ **pull the published image and run it** (an enumerated list of what to check on the target box —
+this is not optional, see the D7 note in "Phase 21") → flip `Status:` + the overview row → static
+site `inferhub.devart.solutions` (`#idocs_*` anchors, changelog row, "What's next") → blog post
+(**slug, EN title, excerpt angle, draft-first**, `list_posts` before creating — the connector is
+insert-only and the slug locks) → FB + X.
+
+**§6** — appended *after* the release run: the verification results, with the observed numbers, the
+exact host, and anything that did not run said out loud rather than omitted.
+
+**A roadmap file adds**, before the phases: *Where we are* (shipped phases, current `<Version>`, the
+seam being extended), *Overview* table (phase | version | theme | size | status), *What this
+delivers*, *Why this order* (a paragraph per adjacency, arguing the dependency), *Invariants that
+survive all phases*; and after them: *Sequencing notes* and *Deferred (tracked, not in this track)*.
+Each phase inside it keeps §1–§5 as `###` subsections and is a **separate release** — separate tag,
+notes, site edit, post. Do not batch them.
+
+**House voice**: state the failure the decision prevents, concretely ("a client reads `error.message`
+and gets a wall of backslashes"). Prefer a rejected alternative to an adjective. Never write a caveat
+that a later phase makes false without deleting it everywhere — see the phase-35 note.
 
 ## Testing notes
 

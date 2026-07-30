@@ -194,6 +194,7 @@ public class QueueTests
             conversationKey: null,
             TestUsage.Context(registry, queueOptions: queueOptions),
             new StubRouter(new RoutableNode("conn-a", "node-a", "alpha")),
+            registry,
             new StubDispatcher(),
             fallback,
             new Metrics(),
@@ -202,7 +203,7 @@ public class QueueTests
 
     private sealed class StubRouter(RoutableNode? node) : InferHub.Coordinator.Services.IRouter
     {
-        public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null)
+        public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null, string? capability = null)
             => node;
     }
 

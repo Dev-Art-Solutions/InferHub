@@ -201,6 +201,44 @@ public static class LocalApiEndpoints
         => ModelFilter.Apply(models, node.Models);
 
     /// <summary>
+    /// <c>Retry-After</c> on a capability refusal, matching the hub's (phase-40 D5) so a client's
+    /// backoff behaves the same against either host.
+    /// </summary>
+    internal const int CapabilityRetryAfterSeconds = 30;
+
+    /// <summary>
+    /// Whether <c>Node:Capabilities:Disabled</c> covers this kind of work — and if so, the sentence
+    /// to refuse with.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The key means the same thing here as it does in a mesh — "do not send me this kind of work"
+    /// — and only the enforcer moves, from the hub that is not there to the node that is. That is
+    /// phase-37 D9's shape (<c>Node:MaxConcurrency</c>), and the alternative is worse than an
+    /// asymmetry: a key that is honoured in one mode and silently ignored in the other.
+    /// </para>
+    /// <para>
+    /// It is refused at the <em>edge</em> only. Solo retrieval still embeds its own corpus with a
+    /// disabled <c>embed</c> capability, because the node's own corpus is not somebody sending it
+    /// work.
+    /// </para>
+    /// </remarks>
+    internal static bool CapabilityDisabled(HttpContext httpContext, string capability, out string refusal)
+    {
+        var node = httpContext.RequestServices.GetRequiredService<IOptions<NodeOptions>>().Value;
+
+        if (!node.Capabilities.IsDisabled(capability))
+        {
+            refusal = string.Empty;
+            return false;
+        }
+
+        httpContext.Response.Headers.RetryAfter = CapabilityRetryAfterSeconds.ToString();
+        refusal = $"this node does not serve '{capability}' ({NodeOptions.SectionName}:Capabilities:Disabled)";
+        return true;
+    }
+
+    /// <summary>
     /// Runs the job under the concurrency gate when there is one, rendering the caller's own 503
     /// when the wait expires.
     /// </summary>

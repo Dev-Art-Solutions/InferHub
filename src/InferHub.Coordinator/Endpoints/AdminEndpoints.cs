@@ -536,6 +536,9 @@ public static class AdminEndpoints
         int? MaxConcurrency,
         bool Cordoned,
         bool SupportsModelManagement,
+        // Resolved capabilities (phase 40) — what this node will actually be routed for, which is
+        // the question an operator staring at a node that is "up but idle" is really asking.
+        IReadOnlyList<string> Capabilities,
         AdminNodeAction? LastAction)
     {
         public static AdminNode From(NodeSnapshot node, AuditEntry? lastAction)
@@ -555,6 +558,7 @@ public static class AdminEndpoints
                 node.MaxConcurrency,
                 node.Cordoned,
                 node.SupportsModelManagement,
+                (node.Capabilities ?? []).Select(capability => capability.Kind).ToArray(),
                 lastAction is null
                     ? null
                     : new AdminNodeAction(lastAction.Action, lastAction.AtUtc, lastAction.By));

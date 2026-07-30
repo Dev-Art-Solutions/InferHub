@@ -46,7 +46,7 @@ internal sealed class LlmReranker(
             return candidates;
         }
 
-        var node = router.Route(model, conversationKey: null);
+        var node = router.Route(model, conversationKey: null, capability: CapabilityKinds.Chat);
         if (node is null)
         {
             logger.LogInformation("Rerank skipped: no node holds model '{Model}'; keeping original order", model);

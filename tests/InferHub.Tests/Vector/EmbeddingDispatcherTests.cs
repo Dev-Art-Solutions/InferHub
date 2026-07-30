@@ -102,7 +102,7 @@ public class EmbeddingDispatcherTests
     {
         public string? LastModelRouted { get; private set; }
 
-        public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null)
+        public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null, string? capability = null)
         {
             LastModelRouted = model;
             return route(model);

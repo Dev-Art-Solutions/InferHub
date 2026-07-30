@@ -107,6 +107,7 @@ public static class OpenAiEndpoints
             conversationKey,
             InferenceCore.ClientContext.From(httpContext),
             router,
+            httpContext.RequestServices.GetRequiredService<INodeRegistry>(),
             dispatcher,
             fallback,
             metrics,
@@ -183,6 +184,7 @@ public static class OpenAiEndpoints
             conversationKey: null,
             InferenceCore.ClientContext.From(httpContext),
             router,
+            httpContext.RequestServices.GetRequiredService<INodeRegistry>(),
             dispatcher,
             fallback,
             metrics,
@@ -296,8 +298,9 @@ public static class OpenAiEndpoints
         metrics.RecordOpenAiRequest();
 
         var created = ResponseTranslator.UnixNow();
+        var capabilities = CapabilitiesByModel(registry);
         var models = registry.DistinctModels()
-            .Select(model => new OpenAiModel(model.Name, created, "inferhub"))
+            .Select(model => new OpenAiModel(model.Name, created, "inferhub", Capabilities(capabilities, model.Name)))
             .ToArray();
 
         return Results.Json(new ModelList(models), JsonOptions);
@@ -320,7 +323,33 @@ public static class OpenAiEndpoints
                 code: "model_not_found"));
         }
 
-        return Results.Json(new OpenAiModel(match.Name, ResponseTranslator.UnixNow(), "inferhub"), JsonOptions);
+        return Results.Json(
+            new OpenAiModel(
+                match.Name,
+                ResponseTranslator.UnixNow(),
+                "inferhub",
+                Capabilities(CapabilitiesByModel(registry), match.Name)),
+            JsonOptions);
+    }
+
+    /// <summary>
+    /// Model → the kinds of work the fleet will actually do with it (phase 40). The registry
+    /// reports capability → models, which is the shape routing wants; a client asking about one
+    /// model wants the inverse, and inverting it here keeps the registry's answer single-purpose.
+    /// </summary>
+    private static ILookup<string, string> CapabilitiesByModel(INodeRegistry registry)
+        => registry
+            .CapabilitySummary()
+            .SelectMany(summary => summary.Models.Select(model => (Model: model, summary.Capability)))
+            .ToLookup(pair => pair.Model, pair => pair.Capability, StringComparer.OrdinalIgnoreCase);
+
+    private static IReadOnlyList<string>? Capabilities(ILookup<string, string> lookup, string model)
+    {
+        var kinds = lookup[model].OrderBy(capability => capability, StringComparer.OrdinalIgnoreCase).ToArray();
+
+        // Null, not an empty array: the field is omitted entirely for a model nothing can serve,
+        // so a client that has never heard of it sees exactly the object it always saw.
+        return kinds.Length == 0 ? null : kinds;
     }
 
     /// <summary>

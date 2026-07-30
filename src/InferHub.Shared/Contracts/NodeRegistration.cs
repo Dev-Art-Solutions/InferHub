@@ -15,7 +15,17 @@ public sealed record NodeRegistration(
     /// Whether this node's backend can pull/delete/warm models (phase 26). Ollama can; an
     /// OpenAI-compatible upstream cannot. Reported at registration so the coordinator can gate the
     /// model-management endpoints and the console can grey out controls a node cannot honour.
-    bool SupportsModelManagement = false);
+    bool SupportsModelManagement = false,
+    /// What this node can *do* (phase 40). **Null means "not declared"**, which the coordinator
+    /// reads as chat + embed over every reported model — exactly the pre-v3.8 semantics, so a
+    /// v3.7 node against a v3.8 hub is routed as it always was. An empty list is a declaration
+    /// that this node serves nothing.
+    ///
+    /// The node itself declares on the model report rather than here (it has not asked its
+    /// backend what it holds at registration time, and asking first would mean a node with a dead
+    /// backend never registers at all — phase-36 D7). The field exists because registration is
+    /// where a node with a fixed, backend-independent capability set would declare it.
+    IReadOnlyList<NodeCapability>? Capabilities = null);
 
 /// <summary>
 /// One row of a node's on-disk vector replica inventory, reported at registration so the

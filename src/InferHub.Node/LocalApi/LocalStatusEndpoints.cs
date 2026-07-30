@@ -83,6 +83,13 @@ internal static class LocalStatusEndpoints
                     ? null
                     : new { limit = gate.Capacity, inFlight = gate.InFlight },
                 gpu = GpuBlock(),
+                // Phase 40. In solo mode this is what the node will and will not answer — the
+                // same declaration a meshed node sends the hub, enforced here at the edge instead
+                // of by a router that is not there.
+                capabilities = Capabilities.BackendCapabilities
+                    .Declare(models, node.Capabilities)
+                    .Select(capability => capability.Kind)
+                    .ToArray(),
                 retrieval = await RetrievalBlockAsync(services, cancellationToken),
                 models = models.Select(model => new { name = model.Name, digest = model.Digest, size = model.SizeBytes })
             },

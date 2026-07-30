@@ -64,6 +64,7 @@
           <th>Status</th>
           <th>In-flight (local / reported)</th>
           <th>Models</th>
+          <th>Capabilities</th>
           <th title="Measured throughput — EWMA of tokens/second across this node's models (v2.8+)">tok/s</th>
           <th>Last seen</th>
         </tr>
@@ -139,7 +140,7 @@
     const renderNodes = (nodes) => {
       const tbody = document.getElementById("nodes");
       if (!nodes || nodes.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" class="empty">No nodes connected.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" class="empty">No nodes connected.</td></tr>`;
         return;
       }
       tbody.innerHTML = nodes.map(n => `
@@ -151,6 +152,7 @@
           <td>${statusPill(n.ageSeconds)}</td>
           <td>${n.localInFlight} / ${n.inFlight}</td>
           <td>${n.modelCount}</td>
+          <td>${!n.capabilities || n.capabilities.length === 0 ? "—" : n.capabilities.join(", ")}</td>
           <td>${n.tokensPerSecond == null ? "—" : n.tokensPerSecond.toFixed(1)}</td>
           <td>${fmtSeconds(n.ageSeconds)} ago</td>
         </tr>

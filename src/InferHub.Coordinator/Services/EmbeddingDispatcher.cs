@@ -24,7 +24,7 @@ public sealed class EmbeddingDispatcher(
         var model = ResolveModel(rawJson, modelOverride)
             ?? throw new InvalidOperationException("embed request is missing 'model'");
 
-        var node = router.Route(model, conversationKey: null)
+        var node = router.Route(model, conversationKey: null, capability: CapabilityKinds.Embed)
             ?? throw new NoEmbeddingNodeException(model);
 
         var job = new InferenceJob(Guid.NewGuid(), "embed", rawJson);

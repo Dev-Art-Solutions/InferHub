@@ -394,6 +394,7 @@ public static class InferenceEndpoints
             conversationKey,
             InferenceCore.ClientContext.From(httpContext),
             router,
+            httpContext.RequestServices.GetRequiredService<Services.INodeRegistry>(),
             dispatcher,
             fallback,
             metrics,

@@ -12,7 +12,13 @@ public sealed record ModelList(
 public sealed record OpenAiModel(
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("created")] long Created,
-    [property: JsonPropertyName("owned_by")] string OwnedBy)
+    [property: JsonPropertyName("owned_by")] string OwnedBy,
+    /// What the fleet will do with this model (phase 40) — an InferHub extension, additive to the
+    /// OpenAI object. Omitted when empty rather than sent as <c>[]</c>: a client that has never
+    /// heard of it should see the object it has always seen.
+    [property: JsonPropertyName("capabilities")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    IReadOnlyList<string>? Capabilities = null)
 {
     [JsonPropertyName("object")]
     public string Object => "model";

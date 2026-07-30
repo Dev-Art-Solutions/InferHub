@@ -43,8 +43,10 @@ public static class StatusEndpoint
                     node.LocalInFlight,
                     node.ModelCount,
                     node.Cordoned,
-                    throughput?.NodeAverage(node.NodeId))).ToArray(),
+                    throughput?.NodeAverage(node.NodeId),
+                    (node.Capabilities ?? []).Select(capability => capability.Kind).ToArray())).ToArray(),
                 models,
+                registry.CapabilitySummary(),
                 snapshot,
                 vectorBlock,
                 BuildFallbackBlock(fallback.Value, snapshot),
@@ -198,6 +200,9 @@ public static class StatusEndpoint
         int AffinityEntries,
         IReadOnlyList<StatusNode> Nodes,
         IReadOnlyCollection<ModelInfo> Models,
+        // What the fleet can do, and with which models (phase 40). Always present — an empty
+        // array on a fleet with no nodes is a statement, not an absence.
+        IReadOnlyCollection<CapabilitySummary> Capabilities,
         MetricsSnapshot Metrics,
         VectorStatusBlock? Vector,
         FallbackStatusBlock Fallback,
@@ -238,7 +243,10 @@ public static class StatusEndpoint
         int LocalInFlight,
         int ModelCount,
         bool Cordoned,
-        double? TokensPerSecond);
+        double? TokensPerSecond,
+        // Resolved, so this is what the router will actually match on for this node — not what
+        // it declared (phase-40 D1). A node that declared nothing shows chat + embed.
+        IReadOnlyList<string> Capabilities);
 
     internal sealed record VectorStatusBlock(
         string Provider,

@@ -36,6 +36,11 @@ internal static class LocalInferenceEndpoints
         string kind,
         CancellationToken cancellationToken)
     {
+        if (LocalApiEndpoints.CapabilityDisabled(httpContext, CapabilityKinds.Chat, out var refusal))
+        {
+            return Error(StatusCodes.Status503ServiceUnavailable, refusal);
+        }
+
         var services = httpContext.RequestServices;
         var executor = services.GetRequiredService<InferenceExecutor>();
         var gate = services.GetService<LocalConcurrencyGate>();
@@ -105,6 +110,11 @@ internal static class LocalInferenceEndpoints
         InferenceExecutor executor,
         CancellationToken cancellationToken)
     {
+        if (LocalApiEndpoints.CapabilityDisabled(httpContext, CapabilityKinds.Embed, out var refusal))
+        {
+            return Error(StatusCodes.Status503ServiceUnavailable, refusal);
+        }
+
         var rawJson = await LocalApiEndpoints.ReadBodyAsync(httpContext.Request, cancellationToken);
         httpContext.Response.Headers[LocalApiEndpoints.ServedByHeader] = LocalApiEndpoints.ServedBySolo;
 
@@ -120,6 +130,11 @@ internal static class LocalInferenceEndpoints
         InferenceExecutor executor,
         CancellationToken cancellationToken)
     {
+        if (LocalApiEndpoints.CapabilityDisabled(httpContext, CapabilityKinds.Embed, out var refusal))
+        {
+            return Error(StatusCodes.Status503ServiceUnavailable, refusal);
+        }
+
         var rawJson = await LocalApiEndpoints.ReadBodyAsync(httpContext.Request, cancellationToken);
         var legacy = LocalApiEndpoints.Deserialize<EmbeddingsRequest>(rawJson);
 

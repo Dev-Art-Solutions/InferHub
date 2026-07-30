@@ -27,12 +27,24 @@ public sealed class NodeRegistry : INodeRegistry
 
         nodes.AddOrUpdate(
             connectionId,
-            _ => new NodeRegistryEntry(normalized, now, 0, Array.Empty<ModelInfo>(), null, false),
-            (_, existing) => existing with
+            _ => Resolved(new NodeRegistryEntry(
+                normalized,
+                now,
+                0,
+                Array.Empty<ModelInfo>(),
+                null,
+                false,
+                normalized.Capabilities,
+                Array.Empty<NodeCapability>())),
+            (_, existing) => Resolved(existing with
             {
                 Registration = normalized,
-                LastSeenUtc = now
-            });
+                LastSeenUtc = now,
+                // A message that does not carry a declaration does not erase one. The node
+                // declares on the model report (see NodeRegistration.Capabilities), and a
+                // reconnect re-registers before it re-reports.
+                DeclaredCapabilities = normalized.Capabilities ?? existing.DeclaredCapabilities
+            }));
 
         localInFlight.GetOrAdd(connectionId, _ => new StrongBox<int>(0));
         RaiseChanged();
@@ -66,12 +78,13 @@ public sealed class NodeRegistry : INodeRegistry
             .Select(model => model with { Name = model.Name.Trim() })
             .ToArray();
 
-        nodes[connectionId] = existing with
+        nodes[connectionId] = Resolved(existing with
         {
             LastSeenUtc = now,
             Models = normalizedModels,
-            ModelsRefreshedAt = models.RefreshedAt
-        };
+            ModelsRefreshedAt = models.RefreshedAt,
+            DeclaredCapabilities = models.Capabilities ?? existing.DeclaredCapabilities
+        });
 
         RaiseChanged();
         return true;
@@ -197,7 +210,26 @@ public sealed class NodeRegistry : INodeRegistry
             .ToArray();
     }
 
-    public IReadOnlyCollection<RoutableNode> FindNodesWithModel(string model)
+    public IReadOnlyCollection<CapabilitySummary> CapabilitySummary()
+    {
+        return nodes
+            .Values
+            .Where(entry => !entry.Cordoned)
+            .SelectMany(entry => entry.Capabilities)
+            .GroupBy(capability => capability.Kind, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new CapabilitySummary(
+                group.Key,
+                group.Count(),
+                group
+                    .SelectMany(capability => capability.Models)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(model => model, StringComparer.OrdinalIgnoreCase)
+                    .ToArray()))
+            .OrderBy(summary => summary.Capability, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    public IReadOnlyCollection<RoutableNode> FindNodesWithModel(string model, string? capability = null)
     {
         if (string.IsNullOrWhiteSpace(model))
         {
@@ -206,7 +238,9 @@ public sealed class NodeRegistry : INodeRegistry
 
         return nodes
             .Where(pair => !pair.Value.Cordoned
-                && pair.Value.Models.Any(candidate => ModelNamesMatch(candidate.Name, model)))
+                && (capability is null
+                    ? pair.Value.Models.Any(candidate => ModelNamesMatch(candidate.Name, model))
+                    : NodeCapabilityResolver.Provides(pair.Value.Capabilities, capability, model)))
             .Select(pair => new RoutableNode(
                 pair.Key,
                 pair.Value.Registration.NodeId,
@@ -295,8 +329,19 @@ public sealed class NodeRegistry : INodeRegistry
             entry.Registration.Labels ?? EmptyLabels,
             entry.Registration.MaxConcurrency,
             entry.Cordoned,
-            entry.Registration.SupportsModelManagement);
+            entry.Registration.SupportsModelManagement,
+            entry.Capabilities);
     }
+
+    /// <summary>
+    /// Recomputes the resolved capability set. Called on every write that can change either half
+    /// of the input — the declaration or the model list — so the resolved set is never stale and
+    /// nothing downstream resolves it a second time (phase-40 D1).
+    /// </summary>
+    private static NodeRegistryEntry Resolved(NodeRegistryEntry entry) => entry with
+    {
+        Capabilities = NodeCapabilityResolver.Resolve(entry.DeclaredCapabilities, entry.Models)
+    };
 
     private static readonly IReadOnlyDictionary<string, string> EmptyLabels =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -345,5 +390,9 @@ public sealed class NodeRegistry : INodeRegistry
         int InFlight,
         IReadOnlyList<ModelInfo> Models,
         DateTimeOffset? ModelsRefreshedAt,
-        bool Cordoned);
+        bool Cordoned,
+        /// What the node said, verbatim — null when it said nothing (phase 40).
+        IReadOnlyList<NodeCapability>? DeclaredCapabilities,
+        /// What the router asks. Derived from the two fields above by <see cref="Resolved"/>.
+        IReadOnlyList<NodeCapability> Capabilities);
 }

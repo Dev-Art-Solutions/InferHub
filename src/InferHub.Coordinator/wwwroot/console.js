@@ -89,6 +89,14 @@
       `<span class="label-chip">${escapeHtml(k)}=${escapeHtml(v)}</span>`).join("")}</div>`;
   };
 
+  // Phase 40. What this node is routed for. "—" is a real state and it means the node holds no
+  // models, or its operator turned every kind off — either way, nothing will be sent to it.
+  const capabilityChips = (capabilities) => {
+    if (!capabilities || capabilities.length === 0) return "—";
+    return `<div class="labels">${capabilities.map(c =>
+      `<span class="label-chip">${escapeHtml(c)}</span>`).join("")}</div>`;
+  };
+
   const lastActionCell = (node) => {
     if (!node.lastAction) return "—";
     const by = node.lastAction.by ? ` by ${escapeHtml(node.lastAction.by)}` : "";
@@ -251,7 +259,7 @@
   const renderNodes = (nodes) => {
     const tbody = document.getElementById("nodes");
     if (!nodes || nodes.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="10" class="empty">No nodes connected.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="11" class="empty">No nodes connected.</td></tr>`;
       return;
     }
 
@@ -269,6 +277,7 @@
           <td>${statePill(n)}</td>
           <td>${n.localInFlight} / ${n.inFlight}</td>
           <td>${max}</td>
+          <td>${capabilityChips(n.capabilities)}</td>
           <td>${labelChips(n.labels)}</td>
           <td>${fmtSeconds(n.ageSeconds)} ago</td>
           <td>${lastActionCell(n)}</td>

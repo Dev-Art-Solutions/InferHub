@@ -113,17 +113,22 @@ byte-identical to 2.13. Still **zero new dependencies** — the lease is `Npgsql
 | 37 | Solo mode — the node serves its own API (done) | `v3.5.0` |
 | 38 | RAG in solo mode — a standalone node retrieves for itself (done) | `v3.6.0` |
 | 39 | Bundled node image — Ollama in the container, GPU or CPU (done) | `v3.7.0` |
+| 40 | Capabilities — a node declares what it can *do* (done) | `v3.8.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
 v3.7 turned to the node — supervising its own backend, serving the hub's API, retrieving for itself,
 and now shipping as [one container](#a-node-and-its-ollama-in-one-container-v37) that carries its own
-Ollama and uses your card, your CPU, or neither. Still on the
-table: teaching the **coordinator** about backend health as a typed signal (a status column and
-an alert, rather than a line in the node's log), **active-active** multi-coordinator load sharing, an
-**OTLP push** exporter behind an explicit opt-in, and a dedicated cross-encoder reranker behind the
-existing `IReranker` seam. A fourth vector backend (Milvus, Weaviate) is the same shape as the third
-and will ship on real demand rather than for the comparison matrix.
+Ollama and uses your card, your CPU, or neither. v3.8 starts a new track: routing now asks *what a
+node can do*, not just *what it holds* — which is the seam a node needs before it can run something
+other than a language model. Next on that track: a tool runtime that lets a node drive a supervised
+subprocess (Python, in practice), and then speech-to-text and text-to-speech behind the OpenAI audio
+API. Still on the table: teaching the **coordinator** about backend health as a typed signal (a
+status column and an alert, rather than a line in the node's log), **active-active**
+multi-coordinator load sharing, an **OTLP push** exporter behind an explicit opt-in, and a dedicated
+cross-encoder reranker behind the existing `IReranker` seam. A fourth vector backend (Milvus,
+Weaviate) is the same shape as the third and will ship on real demand rather than for the comparison
+matrix.
 
 ## Quick start
 
@@ -409,6 +414,52 @@ its own.
 ```bash
 docker compose -f deploy/docker/compose.ollama.yml up -d
 ```
+
+## What a node is for (v3.8+)
+
+Until v3.8 a node advertised **a list of model names**, and the coordinator routed on that alone.
+That is a routing key with one dimension, and it quietly assumes every model on a node does the same
+kind of work. It does not: a box holding only `nomic-embed-text` was a perfectly good candidate for
+a chat request naming that model, and the error arrived from the backend, after a dispatch.
+
+Since v3.8 a node also declares **capabilities** — what it can *do* — and the unit of routing is the
+pair `(capability, model)`:
+
+```bash
+curl -s localhost:5080/api/status | jq '.capabilities, .nodes[] | {name, capabilities}'
+# { "capability": "chat",  "nodes": 2, "models": ["llama3.2", "qwen2.5"] }
+# { "capability": "embed", "nodes": 3, "models": ["llama3.2", "nomic-embed-text", "qwen2.5"] }
+
+curl -s localhost:5080/v1/models | jq '.data[] | {id, capabilities}'
+# { "id": "nomic-embed-text", "capabilities": ["embed"] }
+```
+
+**Nothing is guessed.** Ollama does not say what a model is for, and inferring it from the name
+would be a lookup table that is wrong for somebody. A node declares `chat` + `embed` over everything
+its backend reports, and the one thing it cannot work out for itself — that this box is *for*
+embeddings — is one line of config:
+
+```jsonc
+// src/InferHub.Node/appsettings.json, or Node__Capabilities__Disabled__0=chat
+"Node": { "Capabilities": { "Disabled": ["chat"] } }
+```
+
+That node then never receives a chat job. A client that asks for one anyway gets a **`503` with
+`Retry-After`** naming the capability — not a `404`, because the model is there and this is a fact
+about the fleet right now, the same category as every node being busy. A model that genuinely is not
+on the fleet is still the `404` it has always been.
+
+In **solo mode** the same key is enforced by the node itself, with the same status and the same
+header, because one key must not mean two different things depending on how the node is deployed.
+(Its own corpus is exempt: solo RAG still embeds with `embed` disabled, since the node's own
+documents are not somebody sending it work.)
+
+**A v3.7 node against a v3.8 coordinator is routed exactly as before** — no declaration means chat
+and embed over everything, which is precisely the old behaviour, so a fleet can be upgraded one box
+at a time.
+
+This is the seam the next few releases need: a node that can run a speech model, or anything else
+that is not a language model, has to be able to say so before anything can be routed to it.
 
 ## OpenAI-compatible API
 
@@ -823,6 +874,7 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `Node:Labels` | `{}` | Free-form key/value pairs surfaced on `GET /api/nodes`. |
 | `Node:Models:Include` | `[]` | Whitelist of model names to advertise (empty = all). |
 | `Node:Models:Exclude` | `[]` | Names dropped before reporting. |
+| `Node:Capabilities:Disabled` | `[]` | v3.8. What this node is **not** routed for — `["chat"]` makes it an embeddings-only box. Subtractive only; disabling both `chat` and `embed` fails startup. See [What a node is for](#what-a-node-is-for-v38). |
 | `Backend:Type` | `ollama` | Inference backend selector: `ollama` or `openai`. See [Inference backends](#inference-backends). |
 | `Ollama:Endpoint` | `http://localhost:11434/` | Local Ollama URL (absolute http/https). Used when `Backend:Type=ollama`. |
 | `Ollama:RequestTimeout` | `00:05:00` | Timeout for a single Ollama call. Matches the coordinator's `Dispatcher:TimeoutSeconds`; raise it for very large models whose cold load is slow. |

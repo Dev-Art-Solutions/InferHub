@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Collections.Concurrent;
 using InferHub.Node.Backends;
 using InferHub.Node.Backends.Supervision;
+using InferHub.Node.Capabilities;
 using InferHub.Node.Configuration;
 using InferHub.Node.Vector;
 using InferHub.Shared.Contracts;
@@ -602,7 +603,13 @@ public sealed class CoordinatorConnection(
             return;
         }
 
-        var report = new NodeModels(nodeId, filtered, DateTimeOffset.UtcNow);
+        // Capabilities ride the model report rather than the registration (phase 40): this is
+        // where the model list is refreshed, and at registration the node has not asked its
+        // backend what it holds. Asking first would mean a node with a dead backend never
+        // registers at all — the opposite of phase-36 D7, which exists so a broken box is
+        // visible and unrouted rather than invisible.
+        var capabilities = BackendCapabilities.Declare(filtered, node.Capabilities);
+        var report = new NodeModels(nodeId, filtered, DateTimeOffset.UtcNow, capabilities);
         await activeConnection.InvokeAsync("ReportModels", report, cancellationToken);
 
         // The empty report is the point, not an accident: the coordinator replaces this node's
@@ -620,10 +627,11 @@ public sealed class CoordinatorConnection(
         }
 
         logger.LogInformation(
-            "Reported {ModelCount} of {DiscoveredCount} models from {BackendName} backend",
+            "Reported {ModelCount} of {DiscoveredCount} models from {BackendName} backend as {Capabilities}",
             filtered.Count,
             models.Count,
-            backend.Name);
+            backend.Name,
+            capabilities.Count == 0 ? "no capability" : string.Join(", ", capabilities.Select(c => c.Kind)));
     }
 
     private static Uri BuildHubUrl(string coordinatorUrl)

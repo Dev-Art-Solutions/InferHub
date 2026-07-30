@@ -47,6 +47,11 @@ internal static class LocalOpenAiEndpoints
     {
         var logger = loggerFactory.CreateLogger("InferHub.Node.LocalApi.ChatCompletions");
 
+        if (CapabilityRefusal(httpContext, CapabilityKinds.Chat) is { } refused)
+        {
+            return refused;
+        }
+
         ChatCompletionRequest request;
         string ollamaJson;
 
@@ -151,6 +156,11 @@ internal static class LocalOpenAiEndpoints
     {
         var logger = loggerFactory.CreateLogger("InferHub.Node.LocalApi.Completions");
 
+        if (CapabilityRefusal(httpContext, CapabilityKinds.Chat) is { } refused)
+        {
+            return refused;
+        }
+
         CompletionRequest request;
         string ollamaJson;
 
@@ -220,6 +230,11 @@ internal static class LocalOpenAiEndpoints
         InferenceExecutor executor,
         CancellationToken cancellationToken)
     {
+        if (CapabilityRefusal(httpContext, CapabilityKinds.Embed) is { } refused)
+        {
+            return refused;
+        }
+
         OpenAiEmbeddingsRequest request;
         string ollamaJson;
 
@@ -277,8 +292,12 @@ internal static class LocalOpenAiEndpoints
             await backend.ListModelsAsync(cancellationToken),
             nodeOptions.Value);
 
+        // Phase 40, and the parity that matters: a client pointed at a solo node sees the same
+        // `capabilities` field it sees on the hub, meaning the same thing.
+        var capabilities = SoloCapabilities(models, nodeOptions.Value);
+
         return Results.Json(
-            new ModelList([.. models.Select(model => new OpenAiModel(model.Name, created, "inferhub"))]),
+            new ModelList([.. models.Select(model => new OpenAiModel(model.Name, created, "inferhub", capabilities))]),
             LocalApiEndpoints.JsonOptions);
     }
 
@@ -305,8 +324,29 @@ internal static class LocalOpenAiEndpoints
         }
 
         return Results.Json(
-            new OpenAiModel(match.Name, ResponseTranslator.UnixNow(), "inferhub"),
+            new OpenAiModel(
+                match.Name,
+                ResponseTranslator.UnixNow(),
+                "inferhub",
+                SoloCapabilities(models, nodeOptions.Value)),
             LocalApiEndpoints.JsonOptions);
+    }
+
+    /// <summary>
+    /// A solo node serves every model it holds with every capability it has not disabled, so the
+    /// list is the same for each of them — unlike the hub, where the answer is per model because
+    /// it is assembled from what different nodes declared.
+    /// </summary>
+    private static IReadOnlyList<string>? SoloCapabilities(
+        IReadOnlyList<ModelInfo> models,
+        NodeOptions node)
+    {
+        var kinds = Capabilities.BackendCapabilities
+            .Declare(models, node.Capabilities)
+            .Select(capability => capability.Kind)
+            .ToArray();
+
+        return kinds.Length == 0 ? null : kinds;
     }
 
     private static async Task<T> ReadRequestAsync<T>(HttpRequest httpRequest, CancellationToken cancellationToken)
@@ -329,6 +369,19 @@ internal static class LocalOpenAiEndpoints
             throw new OpenAiRequestException($"invalid JSON: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// The phase-40 capability refusal in this dialect. Same status and same <c>Retry-After</c> as
+    /// the Ollama surface's, because it is the same fact about the node.
+    /// </summary>
+    private static IResult? CapabilityRefusal(HttpContext httpContext, string capability)
+        => LocalApiEndpoints.CapabilityDisabled(httpContext, capability, out var refusal)
+            ? Error(new OpenAiRequestException(
+                refusal,
+                StatusCodes.Status503ServiceUnavailable,
+                OpenAiErrorTypes.ApiError,
+                code: "capability_not_served"))
+            : null;
 
     private static IResult Saturated(int retryAfterSeconds)
         => Error(new OpenAiRequestException(
