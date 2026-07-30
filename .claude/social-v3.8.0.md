@@ -30,19 +30,39 @@ Zero new dependencies, tenth phase running.
 This is the first release of a track: routing had to learn that "which model" and "what kind of work" are two different questions before a node can run anything that isn't a language model. Next up — a tool runtime that lets a node drive a supervised subprocess, and then speech-to-text and text-to-speech.
 👉 https://github.com/Dev-Art-Solutions/InferHub/releases/tag/v3.8.0
 
-## X / Twitter
+## X / Twitter — single post (276/280 incl. the link)
 
-InferHub 3.8 — a node now says what it can *do*, not just which models it holds.
+InferHub 3.8: a node now says what it can *do*, not just which models it holds.
 
-Routing asks (capability, model). Your embedding-only box stops getting chat traffic.
+Routing asks (capability, model) — your embedding-only box stops getting chat traffic.
 
-Nothing guesses what a model is for: Ollama doesn't say, and a name heuristic is a lookup table that's wrong for somebody. One subtractive key instead:
+Nothing guesses what a model is for. One subtractive key instead.
+
+Zero new deps.
+https://github.com/Dev-Art-Solutions/InferHub/releases/tag/v3.8.0
+
+## X / Twitter — thread (each tweet under 280; link only on 3/3)
+
+**1/3** (272)
+
+InferHub 3.8: a node now says what it can *do*, not just which models it holds.
+
+A box holding only nomic-embed-text was a fine candidate for a chat request naming it. The router had no way to know otherwise, so it dispatched — and the error came back from the backend.
+
+**2/3** (278)
+
+Routing now asks (capability, model).
+
+Nothing guesses what a model is for. Ollama doesn't say, and a name heuristic ("it has embed in it") is a lookup table that gets built, believed, and is wrong for somebody.
+
+So: one subtractive key.
 
   Node:Capabilities:Disabled: ["chat"]
 
-A capability nobody has → 503 + Retry-After. A model nobody holds → still the old 404.
+**3/3** (276 incl. the link)
 
-A 3.7 node against a 3.8 hub routes exactly as before, so you upgrade one box at a time. Zero new deps.
+A capability nobody provides → 503 + Retry-After, same shape as "everyone is busy".
+A model nobody holds → still the old 404. "Not found" must not start meaning "not right now".
 
-First release of a track: next is a tool runtime, then STT/TTS.
+A 3.7 node against a 3.8 hub routes exactly as before. Zero new deps.
 https://github.com/Dev-Art-Solutions/InferHub/releases/tag/v3.8.0
