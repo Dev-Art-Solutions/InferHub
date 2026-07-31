@@ -120,8 +120,12 @@ ENV Node__DataDirectory=/data
 ENV LocalApi__Urls=http://+:8080
 ENV LocalApi__Retrieval__DataDirectory=/data/retrieval
 
-# The fifth path in that family, and the one that costs the most when it is wrong: without this,
-# a pulled model lands in the container's own layer and every `docker run` re-downloads gigabytes.
+# Phase 41 (v3.9+). Inert unless Tools__Enabled=true; set here so the tool runtime's scratch
+# directory is not the sixth rediscovery of the /app-is-not-writable trap.
+ENV Tools__ScratchDirectory=/data/tools/scratch
+
+# The path in that family that costs the most when it is wrong: without this, a pulled model lands
+# in the container's own layer and every `docker run` re-downloads gigabytes.
 ENV OLLAMA_MODELS=/data/ollama
 
 # The Ollama this node manages is its own child, on loopback, inside this network namespace — it

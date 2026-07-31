@@ -114,6 +114,7 @@ byte-identical to 2.13. Still **zero new dependencies** — the lease is `Npgsql
 | 38 | RAG in solo mode — a standalone node retrieves for itself (done) | `v3.6.0` |
 | 39 | Bundled node image — Ollama in the container, GPU or CPU (done) | `v3.7.0` |
 | 40 | Capabilities — a node declares what it can *do* (done) | `v3.8.0` |
+| 41 | Tool runtime — supervised subprocess workers (done) | `v3.9.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -121,9 +122,10 @@ v3.7 turned to the node — supervising its own backend, serving the hub's API, 
 and now shipping as [one container](#a-node-and-its-ollama-in-one-container-v37) that carries its own
 Ollama and uses your card, your CPU, or neither. v3.8 starts a new track: routing now asks *what a
 node can do*, not just *what it holds* — which is the seam a node needs before it can run something
-other than a language model. Next on that track: a tool runtime that lets a node drive a supervised
-subprocess (Python, in practice), and then speech-to-text and text-to-speech behind the OpenAI audio
-API. Still on the table: teaching the **coordinator** about backend health as a typed signal (a
+other than a language model, and v3.9 is that something: a [tool runtime](#tools-on-a-node-v39) that
+lets a node drive **supervised child processes** (Python, in practice) with two consents, a restart
+budget and no new dependencies. Next on that track: speech-to-text and text-to-speech behind the
+OpenAI audio API, on a `:tools` image, in v3.10. Still on the table: teaching the **coordinator** about backend health as a typed signal (a
 status column and an alert, rather than a line in the node's log), **active-active**
 multi-coordinator load sharing, an **OTLP push** exporter behind an explicit opt-in, and a dedicated
 cross-encoder reranker behind the existing `IReranker` seam. A fourth vector backend (Milvus,
@@ -460,6 +462,90 @@ at a time.
 
 This is the seam the next few releases need: a node that can run a speech model, or anything else
 that is not a language model, has to be able to say so before anything can be routed to it.
+
+## Tools on a node (v3.9+)
+
+A **tool worker** is a child process a node starts, supervises, talks to over a line protocol, and
+restarts when it dies. It is how a node does work its inference backend cannot — transcription,
+speech, OCR, whatever you write — and it is off by default.
+
+```jsonc
+// the manifest, in Tools:ManifestDirectory
+{
+  "id": "whisper",
+  "capabilities": [ { "kind": "transcribe", "models": ["whisper-small"] } ],
+  "command": ["/opt/inferhub/venv/bin/python", "-u", "/opt/inferhub/tools/whisper_worker.py"],
+  "env": { "HF_HOME": "/data/tools/hf" },
+  "maxWorkers": 1
+}
+```
+
+```jsonc
+// and the two consents on the node
+"Tools": { "Enabled": true, "Allowed": [ "whisper" ] }
+```
+
+The node then declares `transcribe` as a capability, the coordinator routes
+`(transcribe, whisper-small)` to it, and it is reachable the same way on a hub and on a solo node:
+
+```bash
+curl localhost:5080/api/tools/transcribe -H "Authorization: Bearer $KEY" \
+  -F model=whisper-small -F file=@meeting.m4a
+```
+
+**`python/README.md` is the worker author's document** — the protocol, the manifest reference, and
+what the node does when a worker misbehaves. `python/inferhub_worker/` is a ~150-line reference
+implementation you copy or vendor; it is deliberately not a package.
+
+### Why a subprocess and not a library
+
+Because the libraries are Python, and the alternative — Python.NET, CSnakes, an embedded interpreter
+— is a **native binding**: it pins the node to a CPython ABI, and **one bad `import` takes the node
+down**, because a segfault in a native extension loaded into this process is not an exception you
+catch, it is a process that vanishes mid-stream taking every in-flight inference job with it. A child
+process that segfaults is a log line and a restart. It also means a tool that is a Go binary, an
+`ffmpeg` invocation or a vendor's CLI works here for free.
+
+InferHub added **zero** dependencies for this. The node knows how to start a process, write a line,
+read a line and kill it. It does not know what Python is.
+
+### Opt in twice
+
+`Tools:Enabled` consents to the feature. `Tools:Allowed` names the manifest ids that may actually
+run — a manifest on disk that is not in the list is loaded, logged and never started. The two are
+not redundant: from v3.11 a coordinator will be able to turn a node's capabilities on and off, and
+**`Tools:Allowed` is the ceiling it can never raise.** A single switch would make "the operator
+enabled tools" and "the hub may run any tool present on this box" the same consent.
+
+### This is not a sandbox
+
+Said plainly, because the alternative is implying safety by listing mitigations.
+
+A worker runs **as the node's user, with the node's filesystem and the node's network.** The node
+drops its own environment before spawning — a worker gets `PATH`, `HOME`, `LANG`, `LC_ALL`, `TMPDIR`,
+`USER`, `SHELL` and whatever the manifest's `env` names, and never
+`Coordinator__EnrollmentSecret` or `LocalApi__ApiKeys__0` — and that is the honest extent of the
+isolation. **A tool you did not write and did not read has your box.**
+
+If you want real isolation, run the tool in its own container and point a manifest at it: a
+"process" that is `docker exec` is still a process, and the protocol does not care.
+
+### What happens when a tool misbehaves
+
+| | |
+|---|---|
+| Never finishes starting | Killed at `startTimeoutSeconds`, counted against the restart budget |
+| Overruns `requestTimeoutSeconds` | Killed; the **job** fails; the node keeps serving inference |
+| Dies mid-request | Clean error; the next request starts a fresh worker |
+| Fails to start 3× in 10 minutes | The pool gives up, logs once at Error, **withdraws its capabilities from the node's registration** so the coordinator stops routing that work here — and keeps probing every minute, so a fix is noticed without a restart |
+| Every worker busy | Waits `Tools:QueueMaxWaitSeconds`, then **503 + `Retry-After`** — the same shape as every other saturation refusal here |
+
+A tool failure is a failed **job**, never a failed node. Attachments are capped at 25 MB
+(`Tools:MaxAttachmentBytes`, a 413 at the edge), written to a per-request scratch directory that is
+deleted in a `finally` — after success and after failure — and never logged.
+
+**v3.9 ships the machinery and no tool.** The test suite drives a real child process that echoes;
+Whisper and Piper arrive in v3.10, onto something already proven.
 
 ## OpenAI-compatible API
 
@@ -896,6 +982,17 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `OpenAi:TimeoutSeconds` | `300` | Timeout for a single upstream call. Same reasoning as `Ollama:RequestTimeout`. |
 | `OpenAi:Models:Include` | `[]` | Allowlist of upstream models to advertise. Effectively mandatory against a hosted provider. |
 | `OpenAi:Models:Exclude` | `[]` | Names dropped before reporting. |
+| `Tools:Enabled` | `false` | v3.9. Consents to the tool runtime existing. See [Tools on a node](#tools-on-a-node-v39). |
+| `Tools:Allowed` | `[]` | v3.9. Manifest ids that may actually run — the second consent, and the ceiling a coordinator can never raise. A manifest not named here is loaded, logged and never started. Naming tools while `Tools:Enabled` is false **fails startup**. |
+| `Tools:ManifestDirectory` | `tools` | Where `*.json` manifests are read from. A manifest that fails to load is logged and skipped, never fatal. |
+| `Tools:ScratchDirectory` | `data/tools/scratch` | Per-request working directories, deleted in a `finally` — after success and after failure. `/data/tools/scratch` in the images. |
+| `Tools:MaxAttachmentBytes` | `26214400` | 25 MB, matching the OpenAI audio API. Over it is a `413` at the edge naming the limit. Also read by the **coordinator** for its own edge. |
+| `Tools:QueueMaxWaitSeconds` | `30` | How long a request waits for a free worker before `503` + `Retry-After`. |
+| `Tools:MaxStartAttempts` | `3` | Start attempts per `RestartWindow` before a tool's pool gives up, withdraws its capabilities and drops to probing. |
+| `Tools:RestartWindow` | `00:10:00` | The budget's window. |
+| `Tools:RestartBackoff` | `00:00:10` | Wait before the second and later attempts; doubles each time. |
+| `Tools:RecoveryProbeInterval` | `00:01:00` | How often a pool that gave up tries one worker anyway. A success restores its capabilities without a restart. |
+| `Tools:MaintenanceInterval` | `00:00:30` | How often idle workers are retired and given-up pools are probed. |
 
 ### Keeping the local Ollama alive (v3.4+)
 

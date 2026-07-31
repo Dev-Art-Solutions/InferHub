@@ -67,6 +67,11 @@ public static class LocalApiEndpoints
         app.MapLocalInferenceEndpoints();
         app.MapLocalOpenAiEndpoints();
 
+        // Phase 41. Mapped unconditionally, like the inference routes: with tools off the runtime
+        // is NoToolRuntime and the route answers a 503 naming the capability, which is a better
+        // answer than a 404 for something this node genuinely could serve if it were configured to.
+        app.MapLocalToolEndpoints();
+
         // Phase 38. Mapped only when there is a corpus to serve, so a node that changes no config
         // keeps the v3.5 surface exactly: these routes 404 and a retrieval header still gets a 501.
         if (app.Services.GetService<RetrievalPipeline>() is not null)

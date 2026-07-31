@@ -30,7 +30,8 @@ public static class BackendCapabilities
 
     public static IReadOnlyList<NodeCapability> Declare(
         IReadOnlyList<ModelInfo> models,
-        CapabilityOptions options)
+        CapabilityOptions options,
+        IReadOnlyList<NodeCapability>? toolCapabilities = null)
     {
         var names = models
             .Where(model => !string.IsNullOrWhiteSpace(model.Name))
@@ -39,16 +40,53 @@ public static class BackendCapabilities
             .OrderBy(model => model, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        if (names.Length == 0)
+        // No models is already how a node is unrouted (phase-36 D7). Declaring backend
+        // capabilities over nothing would say the same thing twice, less clearly — but a node with
+        // no Ollama models and a running tool is a real deployment from phase 41 (a box that only
+        // transcribes), so the tool half is folded in regardless.
+        var backend = names.Length == 0
+            ? Array.Empty<NodeCapability>()
+            : BackendKinds
+                .Where(kind => !options.IsDisabled(kind))
+                .Select(kind => new NodeCapability(kind, names))
+                .ToArray();
+
+        if (toolCapabilities is not { Count: > 0 })
         {
-            // No models is already how a node is unrouted (phase-36 D7). Declaring capabilities
-            // over nothing would say the same thing twice, less clearly.
-            return Array.Empty<NodeCapability>();
+            return backend;
         }
 
-        return BackendKinds
-            .Where(kind => !options.IsDisabled(kind))
-            .Select(kind => new NodeCapability(kind, names))
+        // Tools declare their own kinds, and the subtractive key narrows them the same way it
+        // narrows the backend's. Note that Node:Capabilities:Disabled only knows the kinds this
+        // release names; the way to switch off a tool that invents its own kind is to take it out
+        // of Tools:Allowed, which is the grant it needed to run in the first place.
+        var merged = backend.ToDictionary(
+            capability => capability.Kind,
+            capability => capability.Models.ToList(),
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var capability in toolCapabilities.Where(c => !options.IsDisabled(c.Kind)))
+        {
+            if (!merged.TryGetValue(capability.Kind, out var existing))
+            {
+                merged[capability.Kind] = capability.Models
+                    .OrderBy(model => model, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                continue;
+            }
+
+            foreach (var model in capability.Models.Where(m => !existing.Contains(m, StringComparer.OrdinalIgnoreCase)))
+            {
+                existing.Add(model);
+            }
+
+            existing.Sort(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return merged
+            .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(pair => new NodeCapability(pair.Key, pair.Value))
             .ToArray();
     }
 }

@@ -133,6 +133,40 @@ public sealed class NodeHub(
         }
     }
 
+    public Task ToolJobResult(ToolResult result)
+    {
+        var tools = services.GetService(typeof(IToolDispatcher)) as IToolDispatcher;
+
+        if (tools?.CompleteTool(result) is not true)
+        {
+            logger.LogWarning(
+                "Node connection {ConnectionId} returned result for unknown tool job {JobId}",
+                Context.ConnectionId,
+                result.JobId);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    // Node → hub upload of tool chunks (phase 41). The THIRD method to hit the binder trap, so it
+    // is written out once more rather than left to the reader: this must NOT declare a
+    // CancellationToken parameter — see StreamChunks above. Use Context.ConnectionAborted.
+    public async Task StreamToolChunks(IAsyncEnumerable<ToolChunk> chunks)
+    {
+        var tools = services.GetService(typeof(IToolDispatcher)) as IToolDispatcher;
+
+        await foreach (var chunk in chunks.WithCancellation(Context.ConnectionAborted))
+        {
+            if (tools?.WriteToolChunk(chunk) is not true)
+            {
+                logger.LogWarning(
+                    "Node connection {ConnectionId} streamed a chunk for unknown tool job {JobId}",
+                    Context.ConnectionId,
+                    chunk.JobId);
+            }
+        }
+    }
+
     // Node → hub upload of model-command progress (phase 26). Like StreamChunks this is a
     // client-to-server stream, so it must NOT declare a CancellationToken parameter — see the
     // StreamChunks comment above for why. Use Context.ConnectionAborted instead.

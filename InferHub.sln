@@ -23,6 +23,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InferHub.Eval", "tools\Infe
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InferHub.Migrate", "tools\InferHub.Migrate\InferHub.Migrate.csproj", "{07AF6D87-F422-4197-9039-417D1E6C84D8}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InferHub.ToolWorker.Echo", "tools\InferHub.ToolWorker.Echo\InferHub.ToolWorker.Echo.csproj", "{F7BBA0D2-9A63-42F8-BA94-60B0AA68822F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -117,6 +119,18 @@ Global
 		{07AF6D87-F422-4197-9039-417D1E6C84D8}.Release|x64.Build.0 = Release|Any CPU
 		{07AF6D87-F422-4197-9039-417D1E6C84D8}.Release|x86.ActiveCfg = Release|Any CPU
 		{07AF6D87-F422-4197-9039-417D1E6C84D8}.Release|x86.Build.0 = Release|Any CPU
+		{F7BBA0D2-9A63-42F8-BA94-60B0AA68822F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F7BBA0D2-9A63-42F8-BA94-60B0AA68822F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F7BBA0D2-9A63-42F8-BA94-60B0AA68822F}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{F7BBA0D2-9A63-42F8-BA94-60B0AA68822F}.Debug|x64.Build.0 = Debug|Any CPU
+		{F7BBA0D2-9A63-42F8-BA94-60B0AA68822F}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{F7BBA0D2-9A63-42F8-BA94-60B0AA68822F}.Debug|x86.Build.0 = Debug|Any CPU
+		{F7BBA0D2-9A63-42F8-BA94-60B0AA68822F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F7BBA0D2-9A63-42F8-BA94-60B0AA68822F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F7BBA0D2-9A63-42F8-BA94-60B0AA68822F}.Release|x64.ActiveCfg = Release|Any CPU
+		{F7BBA0D2-9A63-42F8-BA94-60B0AA68822F}.Release|x64.Build.0 = Release|Any CPU
+		{F7BBA0D2-9A63-42F8-BA94-60B0AA68822F}.Release|x86.ActiveCfg = Release|Any CPU
+		{F7BBA0D2-9A63-42F8-BA94-60B0AA68822F}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -129,5 +143,6 @@ Global
 		{3344CA7F-10DF-4C65-910B-CBB19C3B1555} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{27846318-1DD7-4AA1-A2E9-10B0A38CA798} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
 		{07AF6D87-F422-4197-9039-417D1E6C84D8} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
+		{F7BBA0D2-9A63-42F8-BA94-60B0AA68822F} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
 	EndGlobalSection
 EndGlobal

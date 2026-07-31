@@ -31,4 +31,14 @@
   <ItemGroup>
     <ProjectReference Include="..\InferHub.Shared\InferHub.Shared.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Phase 41. The tool runtime is internal by default (Tools/ is node plumbing, not a contract),
+      and the suite that matters most for it drives real child processes through the pool, the
+      manifest loader and the restart budget. The coordinator has had this since phase 9 for the
+      same reason.
+    -->
+    <InternalsVisibleTo Include="InferHub.Tests" />
+  </ItemGroup>
 </Project>

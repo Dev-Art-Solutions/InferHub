@@ -2,6 +2,7 @@ using InferHub.Node;
 using InferHub.Node.Backends;
 using InferHub.Node.Backends.Supervision;
 using InferHub.Node.Configuration;
+using InferHub.Node.Tools;
 using InferHub.Shared.Ingestion;
 using InferHub.Shared.Vector;
 using InferHub.Node.LocalApi;
@@ -329,6 +330,53 @@ public class NodeCompositionTests
         {
             try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
         }
+    }
+
+    // ---- phase 41: the tool runtime is registered only when it is on -----------------------
+
+    [Fact]
+    public void ANodeThatChangesNoConfigGetsTheNoOpToolRuntimeAndSpawnsNothing()
+    {
+        using var host = BuildNode();
+
+        // The seam is always there so no caller branches on the feature existing (phase-36 D8's
+        // IBackendSupervisor shape) — but it is the stand-in, and nothing hosted comes with it.
+        Assert.IsType<NoToolRuntime>(host.Services.GetRequiredService<IToolRuntime>());
+        Assert.Null(host.Services.GetService<ProcessToolRuntime>());
+        Assert.DoesNotContain(
+            host.Services.GetServices<IHostedService>(),
+            service => service is ProcessToolRuntime);
+
+        // The executor is registered either way, over the stand-in. It answers every job with
+        // "this node does not provide it" rather than being a null both hosts have to check.
+        Assert.NotNull(host.Services.GetService<ToolExecutor>());
+        Assert.Empty(host.Services.GetRequiredService<IToolRuntime>().Capabilities);
+    }
+
+    [Fact]
+    public void ToolsEnabledRegistersTheRealRuntimeAsAHostedService()
+    {
+        using var host = BuildNode(("Tools:Enabled", "true"), ("Tools:Allowed:0", "echo"));
+
+        Assert.IsType<ProcessToolRuntime>(host.Services.GetRequiredService<IToolRuntime>());
+        Assert.Contains(
+            host.Services.GetServices<IHostedService>(),
+            service => service is ProcessToolRuntime);
+    }
+
+    /// <summary>
+    /// Opt in twice. <c>Tools:Allowed</c> is the ceiling phase 43's coordinator can never raise, so
+    /// naming tools without enabling the feature must not read as "it is on".
+    /// </summary>
+    [Fact]
+    public void AllowingToolsWithoutEnablingThemFailsTheHostNamingBothKeys()
+    {
+        var failure = Assert.Throws<OptionsValidationException>(() =>
+            BuildNode(("Tools:Allowed:0", "whisper")).Services
+                .GetRequiredService<IOptions<ToolOptions>>().Value);
+
+        Assert.Contains("Tools:Allowed", failure.Message);
+        Assert.Contains("Tools:Enabled", failure.Message);
     }
 
     private static IHost BuildNode(params (string Key, string? Value)[] overrides)

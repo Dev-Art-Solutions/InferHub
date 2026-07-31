@@ -84,6 +84,15 @@ ENV LocalApi__Urls=http://+:8080
 # Inert unless LocalApi__Retrieval__Enabled=true, which also requires Coordinator__Enabled=false.
 ENV LocalApi__Retrieval__DataDirectory=/data/retrieval
 
+# Phase 41 (v3.9+): the tool runtime writes a per-request scratch directory, and the default
+# `data/tools/scratch` resolves to /app/data — the FIFTH member of the family above (phase-21 D7,
+# the node id, phase-30 D3, phase-38 D4). Set here so it is not rediscovered a sixth time.
+#
+# Inert unless Tools__Enabled=true, which is off by default. The directory is created per request
+# and deleted in a finally, so nothing accumulates and a volume is not required for it — mount one
+# only if a worker keeps model weights under /data.
+ENV Tools__ScratchDirectory=/data/tools/scratch
+
 USER app
 
 ENTRYPOINT ["dotnet", "InferHub.Node.dll"]

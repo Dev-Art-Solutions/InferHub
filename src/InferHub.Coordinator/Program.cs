@@ -49,7 +49,12 @@ builder.Services.AddSingleton<IConversationAffinity>(sp => new ConversationAffin
     sp.GetRequiredService<IAffinityStore>(),
     TimeProvider.System));
 builder.Services.AddSingleton<InferHub.Coordinator.Services.IRouter, Router>();
-builder.Services.AddSingleton<IDispatcher, Dispatcher>();
+builder.Services.Configure<InferHub.Coordinator.Endpoints.ToolEdgeOptions>(
+    builder.Configuration.GetSection(InferHub.Coordinator.Endpoints.ToolEdgeOptions.SectionName));
+builder.Services.AddSingleton<Dispatcher>();
+builder.Services.AddSingleton<IDispatcher>(sp => sp.GetRequiredService<Dispatcher>());
+// Phase 41: the same instance, a second capability. One job registry, one failover path.
+builder.Services.AddSingleton<IToolDispatcher>(sp => sp.GetRequiredService<Dispatcher>());
 builder.Services.AddSingleton<INodeConnectionTracker, NodeConnectionTracker>();
 builder.Services.AddSingleton<IEmbeddingDispatcher, EmbeddingDispatcher>();
 builder.Services.AddSingleton<ModelCommandCoordinator>();
@@ -177,6 +182,7 @@ app.MapStatusEndpoint(version);
 app.MapMetricsEndpoint(version);
 app.MapInferenceEndpoints();
 app.MapOpenAiEndpoints();
+app.MapToolEndpoints();
 app.MapAdminEndpoints();
 
 if (vectorStoreEnabled)

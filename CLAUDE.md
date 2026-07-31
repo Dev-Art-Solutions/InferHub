@@ -1543,6 +1543,144 @@ corpus with `embed` disabled, because the node's own corpus is not somebody send
 **Rule 5 survived again.** Phase 40 added **zero** new dependencies and `InferHub.Shared.csproj` is
 still empty.
 
+### Phase 41 (the tool runtime) — also load-bearing
+
+**D1 — The node speaks a *process protocol*, not Python. This is rule 5 in its strongest form, and
+it is the decision the phase exists to get right.** The obvious move is Python.NET or CSnakes: call
+`faster-whisper` in-process, no serialisation, no child to supervise. It was rejected on three
+grounds, and the second is the one that would have hurt. It is a **native binding** — the heaviest
+class of dependency there is — pinning `InferHub.Node`, a project whose dependency list is *two*
+packages, to a CPython ABI. **One bad `import` takes the node down**: a segfault in a native
+extension loaded into this process is not an exception you catch, it is a process that vanishes
+mid-stream taking every in-flight inference job with it, whereas a child process that segfaults is a
+log line and a restart. And it **forecloses the general case** — a tool that is a Go binary, an
+`ffmpeg` invocation or a vendor's CLI is free here and impossible there. So
+[ToolWorkerProcess](src/InferHub.Node/Tools/ToolWorkerProcess.cs) knows how to start a process,
+write a line, read a line and kill it, and nothing in the node knows what language a worker is in.
+`python/` exists because that is where the libraries are, not because the runtime is.
+
+**D2 — Opt in twice, and the second key is a list rather than a boolean.** `Tools:Enabled` (default
+**false**) consents to the feature; `Tools:Allowed` names the manifest ids that may start. A
+manifest on disk that is not in the list is **loaded, logged and never run** — nothing is
+discovered-and-executed, and `ToolSecurityTests` asserts the log line, because "I put the file there
+and nothing happened" is otherwise a silent afternoon. This is phase-36 D6's shape (`Enabled` ≠
+`AutoInstall`) with a sharper reason: **phase 43 lets a coordinator turn a node's capabilities on
+and off, and `Tools:Allowed` is the ceiling it can never raise.** One boolean would collapse "the
+operator enabled tools" and "the hub may run any tool present on this box" into a single consent,
+which is a coordinator compromise away from fleet-wide RCE. The list *is* the grant, exactly as
+phase-31 D1's `Collections` scope and phase-22 D5's `Fallback:ModelMap` are.
+
+**D3 — The manifest declares capability, command and limits; `command` is an argv array and there is
+no shell, ever.** A command line assembled by concatenation is one quoting bug away from being an
+injection point, and the values around it (model names) come from requests — so
+`ProcessStartInfo.ArgumentList` only, and **nothing from a request ever reaches the argv**: model,
+options and paths all travel in the protocol, over stdin, after the process is running. A manifest
+whose `command` is a *string* is refused **by name**, because every shell, CI config and Docker
+`CMD` accepts one and a `JsonException` about a token type would never tell an operator which field.
+
+**The child's environment is built, not inherited.** `ProcessStartInfo.Environment` is pre-populated
+from this process, so it is **cleared** first and a short list added back (`PATH`, `HOME`, `LANG`,
+`LC_ALL`, `TMPDIR`, `USER`, `SHELL`, plus what Windows needs to start a process at all) followed by
+the manifest's `env`. The node's environment holds `Auth__NodeEnrollmentSecret`,
+`LocalApi__ApiKeys__0` and whatever else the deployment set; handing all of it to a third-party
+script is a credential leak wearing a convenience's clothes, and unlike most leaks it is invisible
+because the script never has to *do* anything for the exposure to be real.
+`ToolSecurityTests.AWorkerDoesNotInheritAVariableTheNodeHasAndTheManifestDidNotName` runs a real
+child process and asks it; a stubbed `Process` would echo whatever the test author already believed.
+
+**D4 — Workers are warm and pooled, not spawned per request, and `MaxWorkers` defaults to 1.**
+`faster-whisper` spends seconds loading weights; per-request spawn would put that on every
+transcription and thrash a card. The default of **1** is deliberate: a second Whisper process on the
+same GPU is two copies of the weights and a memory error at the worst possible moment, so
+parallelism is raised knowingly. Requests past the cap **wait** up to `Tools:QueueMaxWaitSeconds`
+and then get **503 + `Retry-After`** — the same status and header as phase-25 D5's `RequestQueue`
+and phase-37 D9's local gate, so a client's retry logic behaves identically whichever limit it hit.
+
+**D5 — One JSON object per line, and bytes go through files rather than the pipe.** Frames are
+`hello`/`ready`/`request`/`chunk`/`result`/`error`/`log`/`ping`/`pong` on stdin/stdout;
+[ToolProtocol](src/InferHub.Shared/Contracts/ToolProtocol.cs) is the whole of it. **`stderr` is not
+protocol** — it is pumped into the node's log under the tool's id, because that is where a Python
+traceback goes and a traceback is the single most useful thing a tool author ever sees. Binary is
+written to a per-request scratch directory and the frame carries a **path**; base64 over stdio was
+rejected because it is 4/3 the bytes and materialises the payload as a string in *both* runtimes at
+once (a 25 MB audio file → ~33 MB of .NET string + ~33 MB of Python `str` + the decoded copies), for
+a handoff both sides' libraries would rather do with a path anyway.
+
+The scratch directory is deleted in a `finally`, **always** — after success and after every failure
+— and a worker that names an output file **outside** it is refused and logged rather than read: that
+would turn "a tool ran" into "a tool exfiltrated a file through the client-facing API".
+
+> **`Tools:ScratchDirectory` is the fifth instance of the container permissions trap** (phase-21 D7,
+> the node id, phase-30 D3, phase-38 D4). The default stays relative so bare metal and Windows work,
+> and **both** node Dockerfiles set `Tools__ScratchDirectory=/data/tools/scratch` under the existing
+> `chown app:app /data`.
+
+**D6 — A tool failure is a failed job, never a failed node, and never a hung one.** Every level has a
+deadline and a bound: `startTimeoutSeconds` for `hello`→`ready`, `requestTimeoutSeconds` per request,
+a `ping`/`pong` probe for idle workers, kill on timeout, and a restart budget with backoff **lifted
+from `OllamaSupervisor` rather than re-derived** (3 attempts per 10 minutes, 10s doubling — phase-36
+D4). Past the budget the pool **stops starting workers, logs once at Error, withdraws its
+capabilities, and keeps probing** every `RecoveryProbeInterval`, so a tool that recovers is noticed
+without a restart and one that does not cannot spin.
+
+The withdrawal is the phase-36 D7 mechanism reused, not a health field invented: empty capabilities
+in the next model report is what unroutes the node, and `IToolRuntime.CapabilitiesChanged` pushes
+that report immediately the way `IBackendSupervisor.Recovered` does — otherwise the hub keeps routing
+transcriptions at a node that stopped transcribing for up to `ModelRefreshInterval`.
+
+**A worker that failed its request is terminated, not disposed politely.** The five-second grace on
+`DisposeAsync` exists so a *cooperative* worker can close a half-written file; one that blew its
+deadline is by definition not cooperating, and the pool's slot is released only once the process is
+gone — so a polite wait is five seconds of the *next* caller's queue budget. Found by the test: the
+follow-up request after a wedge failed until `TerminateAsync` existed.
+
+**D7 — This is process isolation, not a sandbox, and the docs say so in those words.** A worker runs
+as the node's user, with the node's filesystem and the node's network. Dropping the environment (D3)
+removes the most obvious credential leak and that is the honest extent of it. **A tool you did not
+write and did not read has your box.** Stating that plainly *is* the decision — the alternative,
+implying safety by listing mitigations, is how somebody ends up running a random
+`whisper-plus-telemetry.py` from a gist on a machine holding their fleet's enrollment secret. Real
+isolation (a container per tool, seccomp, a user namespace) is deferred and named; the current answer
+is to run untrusted tools in their own container and point a manifest at it, which the protocol
+permits because a "process" that is `docker exec` is still a process.
+
+**D8 — Solo mode gets tools on the same day, because it is the same executor.** Phase-37 D2's framing
+a third time: the hub's endpoints are a formatting layer over the node's executor with routing
+deleted. `ToolExecutor` is driven by `CoordinatorConnection` in a mesh and by `LocalApi/` in solo, and
+neither knows about the other. A solo bundled node that transcribes with one `docker run` is where
+this track is heading; splitting the local path across releases would mean building it twice.
+
+*Recorded deviations from the phase brief, on purpose:*
+
+- **A client-facing `POST /api/tools/{capability}` shipped on the hub too, not only in solo mode.**
+  The brief named the solo route and left the mesh with dispatch but no way to invoke it, which is a
+  tool runtime that is furniture — and the phase's own acceptance criterion says the echo worker
+  round-trips "to a client". It is **generic on purpose** and phase 42's `/v1/audio/*` will sit
+  *beside* it rather than replace it: an operator who writes their own tool needs a call InferHub did
+  not have to know about in advance. It is under `/api`, which `BearerApiKeyMiddleware` already
+  guards — *verified*, not assumed (phase-21 D2).
+- **`ToolResult` carries `RetryAfterSeconds`.** Without it the edge would have to *sniff the error
+  text* to choose between a 502 and a 503, which is precisely the inference phase-29 D6 refuses to
+  make. The node states the fact; the edge renders it. It has a reader in both hosts today.
+- **`IToolDispatcher` is a second interface on the same `Dispatcher`**, not four more methods on
+  `IDispatcher`. Phase-34 D1's shape: one implementation, and nine existing test doubles are not made
+  to fake methods they never call. Tool jobs go through the same job registry, the same in-flight
+  accounting and the same `FailForConnection`.
+- **A worker may *narrow* its manifest's capabilities at handshake and may never widen them.** A
+  Whisper worker that finds one of the two model files it was promised should stop advertising the
+  other; a script that could *add* capabilities to its own node would be deciding what traffic the
+  fleet sends it. Same ceiling logic as D2.
+- **The generic route refuses more than one returned file with a 501 naming the limitation**, rather
+  than returning the first and dropping the rest — a lie with a 200 on it. One attachment is returned
+  as bytes; none is returned as JSON.
+- **`ToolEndpoints` asks the *capability declarations*, not the backend model list, whether a model
+  exists at all.** A tools-only node reports zero Ollama models, so the phase-40 D5 "503 vs 404"
+  split would have called every one of its models non-existent.
+
+**Rule 5 survived again.** Phase 41 added **zero** new dependencies: `System.Diagnostics.Process` and
+`System.Text.Json` ship in the shared framework, `InferHub.Shared.csproj` is still empty, and there is
+no Python in any `.csproj` — the reference library in `python/` is copied or vendored, never packaged.
+
 ## Auth model (three independent token sets)
 
 | Scope | Config key | Guards |

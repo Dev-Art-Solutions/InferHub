@@ -3,6 +3,7 @@ using InferHub.Node.Backends.Supervision;
 using InferHub.Node.Configuration;
 using InferHub.Node.LocalApi;
 using InferHub.Node.Retrieval;
+using InferHub.Node.Tools;
 using InferHub.Node.Vector;
 using InferHub.Shared.Ingestion;
 using InferHub.Shared.Vector;
@@ -58,6 +59,12 @@ public static class NodeHostBuilderExtensions
             .ValidateOnStart();
         builder.Services.AddSingleton<IValidateOptions<LocalRetrievalOptions>>(
             _ => new LocalRetrievalOptionsValidator(builder.Configuration));
+
+        builder.Services
+            .AddOptions<ToolOptions>()
+            .Bind(builder.Configuration.GetSection(ToolOptions.SectionName))
+            .ValidateOnStart();
+        builder.Services.AddSingleton<IValidateOptions<ToolOptions>, ToolOptionsValidator>();
 
         builder.Services.Configure<BackendOptions>(builder.Configuration.GetSection(BackendOptions.SectionName));
 
@@ -116,9 +123,50 @@ public static class NodeHostBuilderExtensions
         builder.Services.AddHostedService<GpuReport>();
 
         AddOllamaSupervision(builder, ollamaOptions);
+        AddToolRuntime(builder);
         AddLocalApi(builder);
 
         return builder;
+    }
+
+    /// <summary>
+    /// Phase 41. The node's second kind of engine: supervised subprocess workers.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Off by default, and the seam is registered either way</b> — <c>NoToolRuntime</c> when
+    /// <c>Tools:Enabled</c> is false, so nothing downstream branches on the feature existing
+    /// (phase-36 D8's <c>IBackendSupervisor</c> shape). A node that changes no config on upgrading
+    /// to v3.9 registers that stand-in, spawns no process, reads no manifest directory and declares
+    /// no tool capability.
+    /// </para>
+    /// <para>
+    /// <c>Tools:Allowed</c> is applied inside the runtime rather than here, on purpose: a manifest
+    /// that is present but not allowed has to be <em>loaded and logged</em> so "I put the file there
+    /// and nothing happened" is answerable, and a composition root that filtered it out would have
+    /// nothing to report.
+    /// </para>
+    /// </remarks>
+    private static void AddToolRuntime(IHostApplicationBuilder builder)
+    {
+        var tools = builder.Configuration
+            .GetSection(ToolOptions.SectionName)
+            .Get<ToolOptions>() ?? new ToolOptions();
+
+        // Registered either way, so CoordinatorConnection and LocalApi hold one shape rather than a
+        // nullable. Over NoToolRuntime it answers every job with "this node does not provide it".
+        builder.Services.AddSingleton<ToolExecutor>();
+
+        if (!tools.Enabled)
+        {
+            builder.Services.TryAddSingleton<IToolRuntime, NoToolRuntime>();
+            return;
+        }
+
+        builder.Services.TryAddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<ProcessToolRuntime>();
+        builder.Services.AddSingleton<IToolRuntime>(services => services.GetRequiredService<ProcessToolRuntime>());
+        builder.Services.AddSingleton<IHostedService>(services => services.GetRequiredService<ProcessToolRuntime>());
     }
 
     /// <summary>

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The test fixture for the phase-41 tool runtime. A standalone console worker with NO project
+    references and deliberately NOT built into any image — the InferHub.Eval / InferHub.Migrate
+    discipline.
+
+    It re-implements the frame shapes rather than referencing InferHub.Shared, and that is the
+    point twice over: the test suite drives a *real* child process (a mocked Process proves only
+    that the mock behaves), and a second independent implementation of the protocol is the only
+    evidence that the protocol can be implemented from its documentation, which is what every
+    worker author will actually have.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>InferHub.ToolWorker.Echo</RootNamespace>
+    <AssemblyName>inferhub-echo-worker</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+</Project>

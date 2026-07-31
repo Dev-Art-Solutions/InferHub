@@ -14,10 +14,16 @@ public sealed class Dispatcher(
     Metrics metrics,
     ThroughputTracker throughput,
     IOptions<DispatcherOptions> options,
-    ILogger<Dispatcher> logger) : IDispatcher
+    ILogger<Dispatcher> logger) : IDispatcher, IToolDispatcher
 {
-    private readonly ConcurrentDictionary<Guid, PendingResult> pendingResults = new();
-    private readonly ConcurrentDictionary<Guid, PendingStream> pendingStreams = new();
+    private readonly ConcurrentDictionary<Guid, PendingResult<InferenceResult>> pendingResults = new();
+    private readonly ConcurrentDictionary<Guid, PendingStream<InferenceChunk>> pendingStreams = new();
+
+    // Phase 41. Separate maps, one dispatcher: a tool job and an inference job share the job id
+    // space but not the result type, and a single map of `object` would trade a compile error for
+    // a cast that only fails in production.
+    private readonly ConcurrentDictionary<Guid, PendingResult<ToolResult>> pendingToolResults = new();
+    private readonly ConcurrentDictionary<Guid, PendingStream<ToolChunk>> pendingToolStreams = new();
 
     public async Task<InferenceResult> DispatchAsync(
         RoutableNode node,
@@ -25,7 +31,7 @@ public sealed class Dispatcher(
         CancellationToken cancellationToken)
     {
         var tcs = new TaskCompletionSource<InferenceResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var pending = new PendingResult(node.ConnectionId, node.NodeId, tcs);
+        var pending = new PendingResult<InferenceResult>(node.ConnectionId, node.NodeId, tcs);
 
         if (!pendingResults.TryAdd(job.JobId, pending))
         {
@@ -76,25 +82,7 @@ public sealed class Dispatcher(
         InferenceJob job,
         CancellationToken cancellationToken)
     {
-        var channel = Channel.CreateUnbounded<InferenceChunk>(new UnboundedChannelOptions
-        {
-            SingleReader = true,
-            SingleWriter = false
-        });
-        var pending = new PendingStream(node.ConnectionId, node.NodeId, channel);
-        pending.CancellationRegistration = cancellationToken.Register(
-            static state =>
-            {
-                var (dispatcher, connectionId, jobId) = ((Dispatcher, string, Guid))state!;
-                dispatcher.CancelStream(connectionId, jobId, new OperationCanceledException("inference request was canceled"));
-            },
-            (this, node.ConnectionId, job.JobId));
-
-        if (!pendingStreams.TryAdd(job.JobId, pending))
-        {
-            pending.CancellationRegistration.Dispose();
-            throw new InvalidOperationException($"Job '{job.JobId}' is already pending.");
-        }
+        var pending = CreatePendingStream(node, job.JobId, pendingStreams, cancellationToken);
 
         registry.IncrementInFlight(node.ConnectionId);
         metrics.RecordRequestStart(node.NodeId);
@@ -108,7 +96,7 @@ public sealed class Dispatcher(
                 node.NodeId,
                 node.Name);
 
-            WatchStreamTimeout(job.JobId, node.ConnectionId);
+            WatchStreamTimeout(job.JobId, node.ConnectionId, pendingStreams);
             await hubContext.Clients.Client(node.ConnectionId).SendAsync("RunStreamingJob", job, cancellationToken);
 
             // Wait until either the first chunk arrives (stream is "live") or we get a
@@ -117,11 +105,104 @@ public sealed class Dispatcher(
             // surfaces its error through the channel reader.
             await pending.StreamReady.Task.WaitAsync(cancellationToken);
 
-            return channel.Reader;
+            return pending.Channel.Reader;
         }
         catch
         {
             if (pendingStreams.TryRemove(job.JobId, out var removed))
+            {
+                registry.DecrementInFlight(removed.ConnectionId);
+                removed.CancellationRegistration.Dispose();
+                removed.Channel.Writer.TryComplete();
+            }
+
+            throw;
+        }
+    }
+
+    public async Task<ToolResult> DispatchToolAsync(
+        RoutableNode node,
+        ToolJob job,
+        CancellationToken cancellationToken)
+    {
+        var tcs = new TaskCompletionSource<ToolResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = new PendingResult<ToolResult>(node.ConnectionId, node.NodeId, tcs);
+
+        if (!pendingToolResults.TryAdd(job.JobId, pending))
+        {
+            throw new InvalidOperationException($"Job '{job.JobId}' is already pending.");
+        }
+
+        registry.IncrementInFlight(node.ConnectionId);
+        metrics.RecordRequestStart(node.NodeId);
+
+        using var registration = cancellationToken.Register(
+            static state =>
+            {
+                var (dispatcher, connectionId, jobId) = ((Dispatcher, string, Guid))state!;
+                dispatcher.SendCancelJob(connectionId, jobId);
+            },
+            (this, node.ConnectionId, job.JobId));
+
+        try
+        {
+            // The capability, the model and the node — never the payload and never an attachment.
+            logger.LogInformation(
+                "Dispatching {Capability} tool job {JobId} to node {NodeId} ({NodeName})",
+                job.Capability,
+                job.JobId,
+                node.NodeId,
+                node.Name);
+
+            await hubContext.Clients.Client(node.ConnectionId).SendAsync("ExecuteToolJob", job, cancellationToken);
+
+            var timeout = TimeSpan.FromSeconds(Math.Max(1, options.Value.TimeoutSeconds));
+            return await tcs.Task.WaitAsync(timeout, cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            SendCancelJob(node.ConnectionId, job.JobId);
+            throw;
+        }
+        finally
+        {
+            if (pendingToolResults.TryRemove(job.JobId, out _))
+            {
+                registry.DecrementInFlight(node.ConnectionId);
+            }
+        }
+    }
+
+    public async Task<ChannelReader<ToolChunk>> DispatchToolStreamAsync(
+        RoutableNode node,
+        ToolJob job,
+        CancellationToken cancellationToken)
+    {
+        var pending = CreatePendingStream(node, job.JobId, pendingToolStreams, cancellationToken);
+
+        registry.IncrementInFlight(node.ConnectionId);
+        metrics.RecordRequestStart(node.NodeId);
+
+        try
+        {
+            logger.LogInformation(
+                "Dispatching streaming {Capability} tool job {JobId} to node {NodeId} ({NodeName})",
+                job.Capability,
+                job.JobId,
+                node.NodeId,
+                node.Name);
+
+            WatchStreamTimeout(job.JobId, node.ConnectionId, pendingToolStreams);
+            await hubContext.Clients.Client(node.ConnectionId)
+                .SendAsync("ExecuteStreamingToolJob", job, cancellationToken);
+
+            await pending.StreamReady.Task.WaitAsync(cancellationToken);
+
+            return pending.Channel.Reader;
+        }
+        catch
+        {
+            if (pendingToolStreams.TryRemove(job.JobId, out var removed))
             {
                 registry.DecrementInFlight(removed.ConnectionId);
                 removed.CancellationRegistration.Dispose();
@@ -156,6 +237,32 @@ public sealed class Dispatcher(
         return pending.Completion.TrySetResult(result);
     }
 
+    public bool CompleteTool(ToolResult result)
+    {
+        if (!pendingToolResults.TryRemove(result.JobId, out var pending))
+        {
+            logger.LogWarning("Received tool result for unknown or expired job {JobId}", result.JobId);
+            return false;
+        }
+
+        registry.DecrementInFlight(pending.ConnectionId);
+
+        // No ThroughputTracker call, deliberately: it reads Ollama's eval_count / eval_duration,
+        // which a transcription does not have and must not be asked to invent. Tools are metered
+        // in their own unit from phase 42.
+        if (result.Success)
+        {
+            metrics.RecordRequestComplete(pending.NodeId);
+        }
+        else
+        {
+            metrics.RecordRequestFail(pending.NodeId);
+        }
+
+        logger.LogInformation("Completed tool job {JobId}; success={Success}", result.JobId, result.Success);
+        return pending.Completion.TrySetResult(result);
+    }
+
     public bool WriteChunk(InferenceChunk chunk)
     {
         if (!pendingStreams.TryGetValue(chunk.JobId, out var pending))
@@ -184,11 +291,45 @@ public sealed class Dispatcher(
         return written;
     }
 
+    public bool WriteToolChunk(ToolChunk chunk)
+    {
+        if (!pendingToolStreams.TryGetValue(chunk.JobId, out var pending))
+        {
+            logger.LogWarning("Received tool chunk for unknown or expired job {JobId}", chunk.JobId);
+            return false;
+        }
+
+        var written = pending.Channel.Writer.TryWrite(chunk);
+        pending.MarkStarted();
+
+        if (chunk.Done && pendingToolStreams.TryRemove(chunk.JobId, out var completed))
+        {
+            registry.DecrementInFlight(completed.ConnectionId);
+            metrics.RecordRequestComplete(completed.NodeId);
+            completed.CancellationRegistration.Dispose();
+            completed.Channel.Writer.TryComplete();
+            logger.LogInformation("Completed streaming tool job {JobId}", chunk.JobId);
+        }
+
+        return written;
+    }
+
     public void FailForConnection(string connectionId, Exception? exception)
     {
-        foreach (var (jobId, pending) in pendingResults)
+        FailPendingResults(pendingResults, connectionId, exception);
+        FailPendingResults(pendingToolResults, connectionId, exception);
+        FailPendingStreams(pendingStreams, connectionId, exception);
+        FailPendingStreams(pendingToolStreams, connectionId, exception);
+    }
+
+    private void FailPendingResults<T>(
+        ConcurrentDictionary<Guid, PendingResult<T>> pendings,
+        string connectionId,
+        Exception? exception)
+    {
+        foreach (var (jobId, pending) in pendings)
         {
-            if (pending.ConnectionId == connectionId && pendingResults.TryRemove(jobId, out var removed))
+            if (pending.ConnectionId == connectionId && pendings.TryRemove(jobId, out var removed))
             {
                 registry.DecrementInFlight(removed.ConnectionId);
                 metrics.RecordRequestFail(removed.NodeId);
@@ -201,10 +342,16 @@ public sealed class Dispatcher(
                 removed.Completion.TrySetException(error);
             }
         }
+    }
 
-        foreach (var (jobId, pending) in pendingStreams)
+    private void FailPendingStreams<T>(
+        ConcurrentDictionary<Guid, PendingStream<T>> pendings,
+        string connectionId,
+        Exception? exception)
+    {
+        foreach (var (jobId, pending) in pendings)
         {
-            if (pending.ConnectionId == connectionId && pendingStreams.TryRemove(jobId, out var removed))
+            if (pending.ConnectionId == connectionId && pendings.TryRemove(jobId, out var removed))
             {
                 registry.DecrementInFlight(removed.ConnectionId);
                 metrics.RecordRequestFail(removed.NodeId);
@@ -235,7 +382,42 @@ public sealed class Dispatcher(
         }
     }
 
-    private void WatchStreamTimeout(Guid jobId, string connectionId)
+    private PendingStream<T> CreatePendingStream<T>(
+        RoutableNode node,
+        Guid jobId,
+        ConcurrentDictionary<Guid, PendingStream<T>> pendings,
+        CancellationToken cancellationToken)
+    {
+        var channel = Channel.CreateUnbounded<T>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false
+        });
+
+        var pending = new PendingStream<T>(node.ConnectionId, node.NodeId, channel);
+
+        // The client walking away has to reach the node, or a cancelled request leaves a GPU
+        // finishing an answer nobody will read.
+        pending.CancellationRegistration = cancellationToken.Register(
+            () => CancelStream(
+                pendings,
+                node.ConnectionId,
+                jobId,
+                new OperationCanceledException("request was canceled")));
+
+        if (!pendings.TryAdd(jobId, pending))
+        {
+            pending.CancellationRegistration.Dispose();
+            throw new InvalidOperationException($"Job '{jobId}' is already pending.");
+        }
+
+        return pending;
+    }
+
+    private void WatchStreamTimeout<T>(
+        Guid jobId,
+        string connectionId,
+        ConcurrentDictionary<Guid, PendingStream<T>> pendings)
     {
         var timeout = TimeSpan.FromSeconds(Math.Max(1, options.Value.TimeoutSeconds));
 
@@ -243,7 +425,7 @@ public sealed class Dispatcher(
         {
             await Task.Delay(timeout);
 
-            if (pendingStreams.TryRemove(jobId, out var pending))
+            if (pendings.TryRemove(jobId, out var pending))
             {
                 registry.DecrementInFlight(pending.ConnectionId);
                 metrics.RecordRequestFail(pending.NodeId);
@@ -257,9 +439,13 @@ public sealed class Dispatcher(
         });
     }
 
-    private void CancelStream(string connectionId, Guid jobId, Exception exception)
+    private void CancelStream<T>(
+        ConcurrentDictionary<Guid, PendingStream<T>> pendings,
+        string connectionId,
+        Guid jobId,
+        Exception exception)
     {
-        if (pendingStreams.TryRemove(jobId, out var pending))
+        if (pendings.TryRemove(jobId, out var pending))
         {
             registry.DecrementInFlight(pending.ConnectionId);
             metrics.RecordRequestFail(pending.NodeId);
@@ -281,12 +467,12 @@ public sealed class Dispatcher(
                 TaskScheduler.Default);
     }
 
-    private sealed record PendingResult(
+    private sealed record PendingResult<T>(
         string ConnectionId,
         string NodeId,
-        TaskCompletionSource<InferenceResult> Completion);
+        TaskCompletionSource<T> Completion);
 
-    private sealed class PendingStream(string connectionId, string nodeId, Channel<InferenceChunk> channel)
+    private sealed class PendingStream<T>(string connectionId, string nodeId, Channel<T> channel)
     {
         private int started;
 
@@ -294,7 +480,7 @@ public sealed class Dispatcher(
 
         public string NodeId { get; } = nodeId;
 
-        public Channel<InferenceChunk> Channel { get; } = channel;
+        public Channel<T> Channel { get; } = channel;
 
         public CancellationTokenRegistration CancellationRegistration { get; set; }
 

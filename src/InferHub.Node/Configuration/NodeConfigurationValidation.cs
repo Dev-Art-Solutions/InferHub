@@ -133,6 +133,88 @@ public sealed class NodeOptionsValidator : IValidateOptions<NodeOptions>
 }
 
 /// <summary>
+/// Guards the tool runtime's keys (phase 41). Everything here is inert while
+/// <c>Tools:Enabled</c> is false, which is the default and therefore almost every deployment.
+/// </summary>
+public sealed class ToolOptionsValidator : IValidateOptions<ToolOptions>
+{
+    public ValidateOptionsResult Validate(string? name, ToolOptions options)
+    {
+        var failures = new List<string>();
+
+        if (options.MaxAttachmentBytes < 1)
+        {
+            failures.Add(
+                $"{ToolOptions.SectionName}:{nameof(ToolOptions.MaxAttachmentBytes)} must be positive (got {options.MaxAttachmentBytes}).");
+        }
+
+        if (options.QueueMaxWaitSeconds < 0)
+        {
+            failures.Add(
+                $"{ToolOptions.SectionName}:{nameof(ToolOptions.QueueMaxWaitSeconds)} must be zero or more (got {options.QueueMaxWaitSeconds}).");
+        }
+
+        if (options.MaxStartAttempts < 1)
+        {
+            failures.Add(
+                $"{ToolOptions.SectionName}:{nameof(ToolOptions.MaxStartAttempts)} must be >= 1 (got {options.MaxStartAttempts}).");
+        }
+
+        foreach (var (key, value) in new[]
+                 {
+                     (nameof(ToolOptions.RestartWindow), options.RestartWindow),
+                     (nameof(ToolOptions.RestartBackoff), options.RestartBackoff),
+                     (nameof(ToolOptions.RecoveryProbeInterval), options.RecoveryProbeInterval),
+                     (nameof(ToolOptions.MaintenanceInterval), options.MaintenanceInterval)
+                 })
+        {
+            if (value <= TimeSpan.Zero)
+            {
+                failures.Add($"{ToolOptions.SectionName}:{key} must be positive (got {value}).");
+            }
+        }
+
+        if (!options.Enabled)
+        {
+            // Allowing tools without enabling them is a common half-configuration, and it is
+            // silent: the operator reads their own Allowed list back and concludes it is on.
+            if (options.Allowed.Count > 0)
+            {
+                failures.Add(
+                    $"{ToolOptions.SectionName}:{nameof(ToolOptions.Allowed)} names {options.Allowed.Count} tool(s) but {ToolOptions.SectionName}:{nameof(ToolOptions.Enabled)} is false, so none of them can run. Turn it on, or remove the list.");
+            }
+
+            return Result(failures);
+        }
+
+        if (string.IsNullOrWhiteSpace(options.ManifestDirectory))
+        {
+            failures.Add($"{ToolOptions.SectionName}:{nameof(ToolOptions.ManifestDirectory)} must be set.");
+        }
+
+        if (string.IsNullOrWhiteSpace(options.ScratchDirectory))
+        {
+            failures.Add($"{ToolOptions.SectionName}:{nameof(ToolOptions.ScratchDirectory)} must be set.");
+        }
+
+        if (options.Allowed.Any(string.IsNullOrWhiteSpace))
+        {
+            failures.Add(
+                $"{ToolOptions.SectionName}:{nameof(ToolOptions.Allowed)} contains an empty entry. A blank id matches no manifest and hides a typo behind an index.");
+        }
+
+        // Deliberately NOT a failure: an enabled runtime with an empty Allowed list runs nothing,
+        // and that is a legitimate way to stage a rollout — the runtime is registered, the
+        // manifests on disk are read and reported, and the operator turns tools on one id at a
+        // time. ProcessToolRuntime says so at startup rather than the host refusing to boot.
+        return Result(failures);
+    }
+
+    private static ValidateOptionsResult Result(List<string> failures) =>
+        failures.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
+}
+
+/// <summary>
 /// Only bites when <c>Backend:Type=openai</c> — an Ollama node has no upstream to configure.
 /// A node that boots and then 500s on every job it is handed is worse than a node that refuses
 /// to boot and says which key is missing.

@@ -4,6 +4,7 @@ using InferHub.Node.Backends;
 using InferHub.Node.Backends.Supervision;
 using InferHub.Node.Capabilities;
 using InferHub.Node.Configuration;
+using InferHub.Node.Tools;
 using InferHub.Node.Vector;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.Vector.Replication;
@@ -19,6 +20,8 @@ public sealed class CoordinatorConnection(
     IInferenceBackend backend,
     InferenceExecutor inferenceExecutor,
     ModelCommandExecutor modelCommandExecutor,
+    ToolExecutor toolExecutor,
+    IToolRuntime toolRuntime,
     ReplicaStore replicaStore,
     IBackendSupervisor supervisor,
     ILogger<CoordinatorConnection> logger) : IAsyncDisposable
@@ -37,16 +40,19 @@ public sealed class CoordinatorConnection(
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> activeJobs = new();
     private int inFlight;
     private bool subscribedToSupervisor;
+    private bool subscribedToTools;
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
         SubscribeToSupervisor();
+        SubscribeToTools();
         return ConnectUntilSuccessfulAsync(cancellationToken);
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         UnsubscribeFromSupervisor();
+        UnsubscribeFromTools();
         await lifetime.CancelAsync();
 
         if (heartbeatTask is not null)
@@ -82,6 +88,7 @@ public sealed class CoordinatorConnection(
     public async ValueTask DisposeAsync()
     {
         UnsubscribeFromSupervisor();
+        UnsubscribeFromTools();
         await lifetime.CancelAsync();
         reconnectLock.Dispose();
         lifetime.Dispose();
@@ -114,6 +121,52 @@ public sealed class CoordinatorConnection(
         subscribedToSupervisor = false;
         supervisor.Recovered -= OnBackendRecovered;
         supervisor.Restarting -= OnBackendRestarting;
+    }
+
+    private void SubscribeToTools()
+    {
+        if (!toolRuntime.Enabled || subscribedToTools)
+        {
+            return;
+        }
+
+        subscribedToTools = true;
+        toolRuntime.CapabilitiesChanged += OnToolCapabilitiesChanged;
+    }
+
+    private void UnsubscribeFromTools()
+    {
+        if (!subscribedToTools)
+        {
+            return;
+        }
+
+        subscribedToTools = false;
+        toolRuntime.CapabilitiesChanged -= OnToolCapabilitiesChanged;
+    }
+
+    /// <summary>
+    /// A tool pool that has given up withdraws its capabilities, and a pool that recovers restores
+    /// them. Either way the coordinator has to be told at once rather than on the next model
+    /// refresh — phase-36 D7's <c>Recovered</c> event, for the same reason: up to a minute of the
+    /// hub routing transcriptions at a node that stopped transcribing.
+    /// </summary>
+    private void OnToolCapabilitiesChanged()
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ReportModelsAsync(lifetime.Token);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Could not re-report capabilities after a tool changed state");
+            }
+        });
     }
 
     /// <summary>
@@ -196,6 +249,8 @@ public sealed class CoordinatorConnection(
         hubConnection.On<InferenceJob>("RunJob", RunJobAsync);
         hubConnection.On<InferenceJob>("RunStreamingJob", RunStreamingJobAsync);
         hubConnection.On<ModelCommand>("ExecuteModelCommand", RunModelCommandAsync);
+        hubConnection.On<ToolJob>("ExecuteToolJob", RunToolJobAsync);
+        hubConnection.On<ToolJob>("ExecuteStreamingToolJob", RunStreamingToolJobAsync);
         hubConnection.On<Guid>("CancelJob", CancelJob);
         hubConnection.On<VectorReplicaAssignment>("AssignVectorReplica", OnAssignVectorReplica);
         hubConnection.On<VectorReplicaOp>("ApplyVectorOp", OnApplyVectorOp);
@@ -519,6 +574,101 @@ public sealed class CoordinatorConnection(
         }
     }
 
+    /// <summary>
+    /// A tool job arrives on the same outbound connection every other hub → node instruction uses
+    /// (phase-26 D1). No inbound port appears on a GPU box because a node grew a second kind of
+    /// engine.
+    /// </summary>
+    private async Task RunToolJobAsync(ToolJob job)
+    {
+        var activeConnection = connection;
+
+        if (activeConnection is not { State: HubConnectionState.Connected })
+        {
+            logger.LogWarning("Received tool job {JobId} while not connected to coordinator", job.JobId);
+            return;
+        }
+
+        Interlocked.Increment(ref inFlight);
+        using var jobCts = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+
+        try
+        {
+            activeJobs[job.JobId] = jobCts;
+
+            // The capability and the model, never the payload and never an attachment: a tool
+            // request may be a recording of somebody's voice (rule 7).
+            logger.LogInformation(
+                "Running {Capability} tool job {JobId} for model {Model}",
+                job.Capability,
+                job.JobId,
+                job.Model);
+
+            var result = await toolExecutor.RunAsync(job, jobCts.Token);
+
+            if (activeConnection.State is HubConnectionState.Connected)
+            {
+                await activeConnection.InvokeAsync("ToolJobResult", result, jobCts.Token);
+            }
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Could not return result for tool job {JobId}", job.JobId);
+        }
+        finally
+        {
+            activeJobs.TryRemove(job.JobId, out _);
+            Interlocked.Decrement(ref inFlight);
+        }
+    }
+
+    private async Task RunStreamingToolJobAsync(ToolJob job)
+    {
+        var activeConnection = connection;
+
+        if (activeConnection is not { State: HubConnectionState.Connected })
+        {
+            logger.LogWarning("Received streaming tool job {JobId} while not connected", job.JobId);
+            return;
+        }
+
+        Interlocked.Increment(ref inFlight);
+        using var jobCts = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+
+        try
+        {
+            activeJobs[job.JobId] = jobCts;
+            logger.LogInformation(
+                "Running streaming {Capability} tool job {JobId} for model {Model}",
+                job.Capability,
+                job.JobId,
+                job.Model);
+
+            // Uploaded as a client-to-server stream, exactly like StreamChunks — which is why the
+            // hub method must not declare a CancellationToken parameter.
+            await activeConnection.InvokeAsync(
+                "StreamToolChunks",
+                toolExecutor.StreamAsync(job, jobCts.Token),
+                jobCts.Token);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested || jobCts.IsCancellationRequested)
+        {
+            logger.LogInformation("Streaming tool job {JobId} was canceled", job.JobId);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Could not stream result for tool job {JobId}", job.JobId);
+        }
+        finally
+        {
+            activeJobs.TryRemove(job.JobId, out _);
+            Interlocked.Decrement(ref inFlight);
+        }
+    }
+
     private void CancelJob(Guid jobId)
     {
         if (activeJobs.TryGetValue(jobId, out var jobCts))
@@ -608,7 +758,10 @@ public sealed class CoordinatorConnection(
         // backend what it holds. Asking first would mean a node with a dead backend never
         // registers at all — the opposite of phase-36 D7, which exists so a broken box is
         // visible and unrouted rather than invisible.
-        var capabilities = BackendCapabilities.Declare(filtered, node.Capabilities);
+        // Phase 41 folds the tool runtime's *live* list in here. A pool that gave up has emptied
+        // its own, so the very next report unroutes this node for that capability — the phase-36
+        // D7 mechanism reused rather than a health field invented.
+        var capabilities = BackendCapabilities.Declare(filtered, node.Capabilities, toolRuntime.Capabilities);
         var report = new NodeModels(nodeId, filtered, DateTimeOffset.UtcNow, capabilities);
         await activeConnection.InvokeAsync("ReportModels", report, cancellationToken);
 
