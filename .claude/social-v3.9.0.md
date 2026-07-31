@@ -33,24 +33,24 @@ One bug that only running it could find: a failed worker is killed on a backgrou
 Off by default, zero new dependencies, eleventh phase running.
 👉 https://github.com/Dev-Art-Solutions/InferHub/releases/tag/v3.9.0
 
-## X / Twitter — single post (275/280 incl. the link)
+## X / Twitter — single post (270/280; the link counts as 23 under t.co, not its real length)
 
-InferHub 3.9: a node can run your Python — as a subprocess, on purpose.
+InferHub 3.9: a node can run your Python — as a subprocess.
 
-We declined the in-process binding. One bad import is not an exception you catch, it's a process that vanishes mid-stream taking every in-flight job with it.
+We declined the in-process binding. One bad import isn't an exception you catch, it's a process that vanishes mid-stream with every in-flight job.
 
 A child that segfaults is a log line.
 https://github.com/Dev-Art-Solutions/InferHub/releases/tag/v3.9.0
 
 ## X / Twitter — thread (each tweet under 280; link only on 4/4)
 
-**1/4** (271)
+**1/4** (217)
 
 InferHub 3.9: a node can now start, supervise and talk to child processes that do work its inference backend can't — transcription, speech, whatever you write.
 
 The interesting part is what we didn't do: embed Python.
 
-**2/4** (277)
+**2/4** (276)
 
 Python.NET / CSnakes is the obvious move. faster-whisper in-process, no serialisation, no child to supervise.
 
@@ -64,7 +64,7 @@ Which means a tool that's a Go binary, an ffmpeg call or a vendor CLI is free.
 
 Opt in twice: Tools:Enabled, then Tools:Allowed. The second is a ceiling.
 
-**4/4** (269 incl. the link)
+**4/4** (260 incl. the link)
 
 It is NOT a sandbox and we say so in those words. A worker runs as the node's user with the node's network.
 
