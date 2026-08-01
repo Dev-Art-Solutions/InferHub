@@ -1681,6 +1681,131 @@ this track is heading; splitting the local path across releases would mean build
 `System.Text.Json` ship in the shared framework, `InferHub.Shared.csproj` is still empty, and there is
 no Python in any `.csproj` — the reference library in `python/` is copied or vendored, never packaged.
 
+### Phase 42 (STT and TTS for real) — also load-bearing
+
+**D1 — The client surface is OpenAI's audio API, exactly, and this is the phase-21 argument again.**
+`POST /v1/audio/transcriptions` (multipart) and `POST /v1/audio/speech` (JSON). Every SDK in every
+language already speaks it, so pointing an existing app at your own GPU is a base-URL change;
+inventing `/api/tts` would be a second dialect whose only merit is that we designed it. Unlike chat
+and embeddings there is **no Ollama dialect for audio**, so there is exactly one client shape and
+the node-facing side is a `ToolJob` (phase-40 D3) rather than a translation.
+
+**A worker always answers with the verbose shape — text, segments, duration — and the edge formats
+every `response_format` out of it.** `srt` and `vtt` are string formatting on the hub
+([TranscriptFormatter](src/InferHub.Shared/Audio/Transcript.cs)), phase-28 D1's Prometheus reasoning
+applied to two subtitle formats that are forty lines between them. The alternative — telling the
+worker which format to produce — would put SRT timestamp arithmetic inside every worker anybody ever
+writes, in whatever language they wrote it in, and the day two workers disagreed about a comma the
+bug would look like a model problem. `CultureInfo.InvariantCulture` on the timestamps is
+load-bearing for the same reason it is in `PrometheusFormatter`: a decimal comma makes a WebVTT file
+silently invalid on exactly the machines nobody runs CI on.
+
+**A format that cannot be produced is a `400` naming the ones that can, never a substitution.** A
+caller who asked for mp3 and got a wav has a corrupted file with a confident content type and finds
+out in a media player three days later. The edge refuses an unknown value up front; a worker that
+cannot encode (no `ffmpeg` on the box) answers with `ToolErrorCodes.UnsupportedFormat` and the edge
+renders the 400 **from the code, never from the message** — phase-29 D6's refusal, and the same
+shape as phase-41's `RetryAfterSeconds`. That is why `ToolFrame` grew a `code` field.
+
+**D2 — `faster-whisper` for STT, `piper` for TTS, pinned, both CPU-viable.** Chosen for the reason
+phase 39 shipped a CPU mode: most boxes that will run this have no spare card, and a TTS that needs
+one is a TTS most of this project's users cannot run. Both are permissively licensed, self-hosted,
+and phone nowhere. **Pinned by version rather than by hash**, which is a deliberate step down from
+phase-39 D9's checksummed tarball and is argued in `python/requirements-tools.txt` at the pins: one
+URL with an upstream sha256 is a different shape from a per-platform transitive closure, and a hash
+list that is subtly wrong fails a build with something that reads like a network error, after which
+the next person deletes the hashes.
+
+**D3 — A third image, not a flag, and the other three are untouched.** `inferhub-node:tools` =
+`:ollama` + a Python venv + the two workers (~6 GB). Phase-39 D2 verbatim: the wheels are in a layer
+whether a flag is on or off, so a flag would grow every existing coordinator+node stack by ~1.5 GB
+for a feature it does not use. `BundledNodeTests.NeitherOfTheOlderImagesLearnedAboutPython` fails if
+that leaks, and `TheToolsImagePinsTheSameOllamaAsTheBundledOne` fails if the two images drift on
+engine version. An operator on the plain image installs Python themselves and points a manifest at
+it — the runtime does not care where the interpreter came from.
+
+**D4 — Weights download on first use, behind a *third* opt-in.** `Tools:AllowModelDownload`, default
+**false**, `true` in the `:tools` image. It is not redundant with the other two for the same reason
+the second was not redundant with the first (phase-41 D2, phase-36 D6): `Enabled` consents to
+running tools, `Allowed` consents to running *these* tools, and this consents to one of them
+**reaching the internet from a box whose operator may have deliberately air-gapped it** — the reach
+phase-39 D7 refused to do at boot. Choosing the `:tools` image *is* that consent, exactly as
+choosing `:ollama` is the consent to run an Ollama. With it off, a worker that needs missing weights
+fails the **job** naming the key and the exact pre-fetch command, and the node keeps serving
+everything else. The cache is under `/data`, on the volume, so it happens once rather than once per
+`docker run`.
+
+The flag reaches the worker as `INFERHUB_ALLOW_MODEL_DOWNLOAD`, **stated** into the child's
+environment rather than inherited — which is the only way it could, since phase-41 D3 clears that
+environment first. `ToolSecurityTests` drives a real child process and asks it.
+
+**Voices are not fetched at all.** There is no default voice that is right for everyone, and a
+confident answer in the wrong language is worse than a refusal.
+
+**D5 — Audio is content, and none of it is kept.** Rule 7 in its most literal form yet: a
+transcription request is a recording of somebody's voice and the result is what they said. The hub
+buffers the upload for the dispatch and drops it — no temp file, no cache; the node writes it into
+the per-request scratch directory deleted in a `finally` (phase-41 D5); **nothing containing audio
+bytes or transcript text is logged at any level**, and the line that *is* written carries the model,
+the duration and the outcome — not the filename the caller chose, which is metadata about somebody's
+day. `AudioPrivacyTests` runs a transcription through a real mesh with a capturing logger at `Trace`
+and fails if a known phrase from the fixture appears anywhere in the log or the ledger — the harder
+version of `UsageLedgerTests.NoPromptOrCompletionTextExistsAnywhereInTheUsagePath`, which asks
+whether a field exists rather than whether a phrase leaked.
+
+**D6 — Concurrency is the tool's, not the fleet's.** `maxWorkers` defaults to 1 (phase-41 D4), so a
+node transcribes one file at a time unless an operator raises it knowingly. Because routing is per
+`(capability, model)` since phase 40, **a node busy transcribing is still a candidate for chat** —
+"my chat got slow when someone uploaded a podcast" is the failure phase 40 landing first prevents,
+and it is worth saying in the release notes because nobody can see it working.
+
+**D7 — Usage is metered in the unit the work is actually in.** `UsageRecord` grew `Units` (a double)
+and `UnitKind` (`tokens` | `audio_seconds` | `characters`), appended with defaults that describe
+today's rows, so every existing consumer and every row already in a Postgres ledger keeps meaning
+what it meant. Transcription meters **audio seconds** measured off the decoded file by the worker
+(not derived from the upload's byte count, which a variable-bitrate encoding would make a guess);
+speech meters **input characters**, counted at the edge because the edge already knows and should
+not have to trust a third-party script for a number that appears on somebody's bill.
+
+Phase-25 D3 is unchanged and is why this is safe: these are counts computed from what was processed,
+and there is deliberately no field that could hold a sample. Client limits gained
+`AudioSecondsPerDay` and `CharactersPerDay` — **separate budgets, each consuming only its own unit**,
+because a client whose only limit is `TokensPerDay` could otherwise transcribe a library for free.
+
+> **The Postgres migration is additive and must stay that way.** `ADD COLUMN … DEFAULT` has not
+> rewritten a table since PostgreSQL 11, so a ledger with two years of chat in it gains two columns
+> in milliseconds — and it runs through `ConcurrentDdl` because two hubs may boot together
+> (phase-32 D7). Old rows get `units = 0, unit_kind = 'tokens'`, which is why `UsageAggregate` reads
+> the **token columns** for tokens and `units` only for the two new kinds. `UsageAggregate` also
+> gained two separate columns rather than one `units` sum: a client that chatted and transcribed has
+> rows in two units under one model grouping, and a single sum would add seconds to tokens and
+> produce a number wrong in a way no reader can detect.
+
+*Recorded deviations from the phase brief, on purpose:*
+
+- **The worker error `code` field is new machinery the brief did not name.** The brief asked for a
+  400 on an unproducible format without saying how the edge would know, and the only alternatives
+  were sniffing the error text (phase-29 D6 refuses it) or hard-coding the format matrix on the hub
+  (which would be wrong the day a worker gains `ffmpeg`). The node states the kind; the edge renders
+  it. Deliberately a very short list — a code nobody renders is a code that is wrong by the time
+  somebody reads it.
+- **A manifest capability with an empty `models` list is an open set** — the one widening anywhere
+  in the tool runtime, and it is bounded: the **kind** is still the manifest's to grant, and every
+  name a worker reports for it corresponds to a file the operator put on the box. Piper's models are
+  voice files dropped into a directory, and no list written in advance survives the first new voice
+  — the drift phase-40 D2 refuses for backend models. `models` *omitted* is still a mistake, so the
+  two are distinguished by null-versus-empty rather than collapsed.
+- **`/v1/audio/*` sits beside `/api/tools/{capability}`, not over it.** The generic route stays for
+  the operator who writes their own tool, exactly as phase 41's deviation note promised.
+- **The requirements are version-pinned, not hash-pinned.** See D2.
+- **No `/v1/audio/translations`.** One flag on the same worker; shipping an untested surface to look
+  complete is how a feature list starts lying.
+
+**Rule 5 survived again.** Phase 42 added **zero** new `PackageReference`s, `InferHub.Shared.csproj`
+is still empty, and there is no Python in any `.csproj` — the Python is a `pip install` in one
+Dockerfile, which is the same category as phase-39's `curl`.
+`BundledNodeTests.NoProjectReferencesPythonAndTheSharedProjectIsStillEmpty` asserts both.
+
 ## Auth model (three independent token sets)
 
 | Scope | Config key | Guards |

@@ -18,6 +18,10 @@ public class OpenAiAuthTests
     [InlineData("/v1/completions")]
     [InlineData("/v1/embeddings")]
     [InlineData("/v1/models")]
+    // Phase 42. These two accept a 25 MB upload and spend GPU time on it, so they are the worst
+    // possible route to add under a prefix nobody guards.
+    [InlineData("/v1/audio/transcriptions")]
+    [InlineData("/v1/audio/speech")]
     public async Task OpenAiRoutesRejectMissingToken(string path)
     {
         var middleware = NewBearerMiddleware(out var nextCalled, apiKeys: ["secret"]);

@@ -1,0 +1,172 @@
+# The tools node image (phase 42): the bundled node, plus a Python venv, plus a speech-to-text and
+# a text-to-speech worker.
+#
+#   docker build -f src/InferHub.Node/Dockerfile.tools -t inferhub-node:tools .
+#
+# A THIRD IMAGE, NOT A FLAG (D3) — phase-39 D2's argument verbatim. The Python, the ONNX runtime and
+# CTranslate2 are ~1.5–2 GB, and they are in the image whether a flag is on or off. A flag would
+# grow every existing coordinator+node compose stack by two gigabytes for a feature it does not use.
+# So:
+#
+#   inferhub-node          ~340 MB, multi-arch, no engine at all      — UNCHANGED
+#   inferhub-node:ollama   ~4 GB,   amd64, Ollama inside              — UNCHANGED
+#   inferhub-node:tools    ~6 GB,   amd64, Ollama + Whisper + Piper   — this file
+#
+# Solo, one line, with speech in and speech out:
+#
+#   docker run -d --name inferhub --gpus all \
+#     -e LocalApi__Enabled=true -e Coordinator__Enabled=false \
+#     -e LocalApi__ApiKeys__0=your-key \
+#     -v inferhub:/data -p 5081:8080 \
+#     ghcr.io/dev-art-solutions/inferhub-node:tools
+#
+#   curl http://localhost:5081/v1/audio/transcriptions -H "Authorization: Bearer your-key" \
+#        -F file=@meeting.m4a -F model=whisper-small
+#
+# It runs with no card. `--gpus` left off is CPU Whisper, which is roughly real time for `small` on
+# a modern core, and the worker's first log line says `cpu` — phase-39 D6's silence argument, which
+# is the whole reason that line exists.
+#
+# NO WEIGHTS ARE BAKED IN. Whisper fetches on first use into /data/tools/hf, on the volume, so it
+# happens once rather than once per `docker run` — the same reasoning as OLLAMA_MODELS below it.
+# That fetch is a reach onto the internet from a GPU box, which phase-36 D6 refuses to do without
+# consent; here the consent is having chosen an image whose entire purpose is this, which is why
+# Tools__AllowModelDownload is true HERE and false everywhere else (D4).
+#
+# VOICES ARE NOT FETCHED, because there is no default voice that is right for everyone and a wrong
+# language is worse than none. Drop a Piper .onnx + .onnx.json pair into /data/tools/voices:
+#
+#   docker exec inferhub sh -c 'mkdir -p /data/tools/voices && cd /data/tools/voices && \
+#     curl -fsSLO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx && \
+#     curl -fsSLO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx.json'
+#   docker restart inferhub
+
+ARG OLLAMA_VERSION=0.32.5
+
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+ARG TARGETARCH
+WORKDIR /src
+
+COPY Directory.Build.props nuget.config ./
+COPY src/InferHub.Shared/InferHub.Shared.csproj  src/InferHub.Shared/
+COPY src/InferHub.Node/InferHub.Node.csproj      src/InferHub.Node/
+RUN dotnet restore src/InferHub.Node/InferHub.Node.csproj -a "$TARGETARCH"
+
+COPY src/InferHub.Shared/ src/InferHub.Shared/
+COPY src/InferHub.Node/   src/InferHub.Node/
+RUN dotnet publish src/InferHub.Node/InferHub.Node.csproj \
+        -c Release -a "$TARGETARCH" --no-restore -o /app
+
+# ---------------------------------------------------------------------------------------------
+# Ollama, pinned and checksummed. Identical to Dockerfile.ollama on purpose — if you bump it there,
+# bump it here, and BundledNodeTests asserts the two stay in step rather than leaving it to
+# somebody noticing.
+# ---------------------------------------------------------------------------------------------
+FROM debian:trixie-slim AS ollama
+ARG OLLAMA_VERSION
+ARG OLLAMA_SHA256=f7d6bdbcf71b83aa8670c4e7dc4b6936c0952fcf8b114eaf6a11cbadb9684214
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl zstd \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp/ollama
+RUN curl -fsSL -o ollama.tar.zst \
+        "https://ollama.com/download/ollama-linux-amd64.tar.zst?version=${OLLAMA_VERSION}" \
+ && echo "${OLLAMA_SHA256}  ollama.tar.zst" | sha256sum -c - \
+ && mkdir -p /opt/ollama \
+ && zstd -d -c ollama.tar.zst | tar -x -C /opt/ollama \
+ && rm ollama.tar.zst
+
+# ---------------------------------------------------------------------------------------------
+# The Python venv, in its own stage so a rebuild of the node does not re-resolve ~1.5 GB of wheels.
+#
+# The versions are pinned in python/requirements-tools.txt — read the header there before changing
+# anything, including why they are pinned by version rather than by hash.
+#
+# There is no CUDA toolkit here and there does not need to be one: ctranslate2 reaches CUDA through
+# libcuda.so.1, which the NVIDIA container runtime injects at `docker run` (phase-39 D1). An
+# nvidia/cuda base would add a third copy of a runtime nothing loads.
+# ---------------------------------------------------------------------------------------------
+FROM debian:trixie-slim AS python
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-venv python3-dev build-essential \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY python/requirements-tools.txt /tmp/requirements-tools.txt
+
+RUN python3 -m venv /opt/inferhub/venv \
+ && /opt/inferhub/venv/bin/pip install --no-cache-dir --upgrade pip \
+ && /opt/inferhub/venv/bin/pip install --no-cache-dir -r /tmp/requirements-tools.txt
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
+WORKDIR /app
+COPY --from=build /app .
+COPY --from=ollama /opt/ollama/bin/ /usr/local/bin/
+COPY --from=ollama /opt/ollama/lib/ /usr/local/lib/
+
+# python3 is the interpreter the venv was built against; ffmpeg is what turns wav into mp3/opus/flac
+# (D1). Without ffmpeg the TTS worker still answers, in wav and pcm, and REFUSES the rest by name —
+# it never substitutes, because an mp3 that is really a wav is a corrupted file with a confident
+# content type.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=python /opt/inferhub/venv /opt/inferhub/venv
+COPY python/inferhub_worker/ /opt/inferhub/inferhub_worker/
+COPY python/tools/           /opt/inferhub/tools/
+COPY python/manifests/       /opt/inferhub/tools/manifests/
+
+ENV NVIDIA_VISIBLE_DEVICES=all
+# `compute` is not decoration. The container runtime's default is `utility`, which gives a working
+# nvidia-smi and NO libcuda — every diagnostic looks right and everything runs on the CPU at a
+# fiftieth of the speed with no error anywhere. See the long version in Dockerfile.ollama.
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+# THE PERMISSIONS TRAP, for the sixth time (phase-21 D7, the node id, phase-30 D3, phase-38 D4,
+# phase-41 D5). `USER app` cannot write /app, and Docker seeds a fresh named volume's ownership
+# from the image's mount point — so a directory the image does not contain is created root-owned
+# and the first write fails at runtime, on somebody else's machine, after the release.
+#
+# Every path below is one this image writes to: scratch per request, Whisper weights, Piper voices,
+# Ollama models, vector replicas, the node id, the corpus.
+RUN mkdir -p /data /data/ollama /data/tools/scratch /data/tools/hf /data/tools/voices \
+ && chown -R app:app /data
+ENV Vector__ReplicaDirectory=/data/vector-replicas
+ENV Node__DataDirectory=/data
+ENV LocalApi__Urls=http://+:8080
+ENV LocalApi__Retrieval__DataDirectory=/data/retrieval
+ENV OLLAMA_MODELS=/data/ollama
+
+ENV Ollama__Endpoint=http://127.0.0.1:11434/
+ENV Ollama__Supervisor__Enabled=true
+ENV Ollama__Supervisor__StartAtBoot=true
+ENV Ollama__Supervisor__StopOnShutdown=true
+
+# The two opt-ins, both satisfied here and NEITHER of them collapsible into the other (phase-41 D2).
+# `Enabled` consents to the feature; `Allowed` names the manifests that may start, and it is the
+# ceiling phase 43's coordinator-driven profiles can never raise. An operator who wants only
+# transcription removes `piper` from the list — the manifest stays on disk, is logged, and is not
+# started.
+ENV Tools__Enabled=true
+ENV Tools__Allowed__0=whisper
+ENV Tools__Allowed__1=piper
+ENV Tools__ManifestDirectory=/opt/inferhub/tools/manifests
+ENV Tools__ScratchDirectory=/data/tools/scratch
+
+# D4. True HERE and nowhere else: choosing this image *is* the consent to fetch a model, exactly as
+# choosing :ollama is the consent to run an Ollama. The worker logs what it is fetching and from
+# where before it starts, and the cache is on the volume so it happens once.
+ENV Tools__AllowModelDownload=true
+
+# PYTHONPATH is how the workers find inferhub_worker without it being a package: it is a reference
+# implementation that is copied or vendored, never released to PyPI (phase 41) — a published
+# package is a support surface this repository has not agreed to.
+ENV PYTHONPATH=/opt/inferhub
+ENV PYTHONUNBUFFERED=1
+
+USER app
+
+ENTRYPOINT ["dotnet", "InferHub.Node.dll"]

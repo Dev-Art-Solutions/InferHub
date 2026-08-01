@@ -1,0 +1,44 @@
+# The Python for the :tools image (phase 42). Nothing here is a .csproj dependency — design rule 5
+# is intact and `InferHub.Shared.csproj` is still empty. The node speaks a *process* protocol and
+# does not know what language a worker is in (phase-41 D1); this file is what the image happens to
+# install so that the two shipped workers have their libraries.
+#
+# PINNED, for phase-39 D9's reason: two builds of the same InferHub tag containing different
+# inference engines makes "it worked in 3.10.0" a question nobody can answer. Bump deliberately,
+# rebuild, and re-run the published-image checks — not because a resolver picked something newer
+# overnight.
+#
+# PINNED BY VERSION, NOT BY HASH, and that is a deliberate step down from what phase 39 did to the
+# Ollama tarball. There the artifact is one URL and one sha256 published by upstream; here it is a
+# transitive closure that differs per platform and per Python minor, and the only honest way to
+# produce the hash set is `pip-compile --generate-hashes` on the target image. A hash list that is
+# subtly wrong does not fail loudly — it fails the image build with something that reads like a
+# network error, and the next person deletes the hashes. What version pins already buy is the thing
+# D9 was protecting: "which engine is in 3.10.0" has one answer. The published image's own digest
+# is the byte-level anchor. If this ever moves to hashes, generate them in CI against the image,
+# never by hand.
+#
+# Installing these outside the image is supported and is how you get audio on the plain node:
+#
+#   python -m venv /opt/inferhub/venv
+#   /opt/inferhub/venv/bin/pip install -r requirements-tools.txt
+#
+# The CPU wheels are what pip resolves by default. faster-whisper reaches CUDA through
+# ctranslate2, which loads the *driver* the container runtime injects — the same split phase-39 D1
+# relies on, which is why there is no CUDA toolkit in this list and none in the image.
+
+# Speech to text. CTranslate2 under the hood: `small` runs at roughly real time on a modern CPU
+# core and uses the GPU when one is reachable.
+faster-whisper==1.1.1
+ctranslate2==4.5.0
+
+# Text to speech. A small ONNX voice that is comfortable on a CPU, which is the point — a TTS that
+# needs a card is a TTS most of this project's users cannot run.
+piper-tts==1.2.0
+onnxruntime==1.20.1
+
+# faster-whisper's own transitive pins, listed so a resolver change cannot quietly move them.
+av==13.1.0
+huggingface-hub==0.26.5
+tokenizers==0.20.3
+numpy==2.1.3

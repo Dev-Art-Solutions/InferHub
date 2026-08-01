@@ -72,7 +72,12 @@ public sealed class ToolExecutor(
                             lease.ToolId,
                             frame.Message);
 
-                        return ToolResult.Failed(job.JobId, frame.Message ?? "the tool reported an error");
+                        // The worker may say which *kind* of failure it was; the edge renders a
+                        // status from that field and never from the message (phase-29 D6).
+                        return ToolResult.Refused(
+                            job.JobId,
+                            frame.Message ?? "the tool reported an error",
+                            frame.Code);
                     }
 
                     var attachments = ReadBack(frame, scratch, lease.ToolId);

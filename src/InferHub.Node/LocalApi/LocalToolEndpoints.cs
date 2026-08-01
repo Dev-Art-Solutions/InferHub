@@ -104,6 +104,11 @@ internal static class LocalToolEndpoints
                 return Error(StatusCodes.Status503ServiceUnavailable, result.Error ?? "the tool is busy");
             }
 
+            if (ToolErrorCodes.IsClientError(result.ErrorCode))
+            {
+                return Error(StatusCodes.Status400BadRequest, NodeErrorText.Readable(result.Error));
+            }
+
             return Error(StatusCodes.Status502BadGateway, NodeErrorText.Readable(result.Error));
         }
 

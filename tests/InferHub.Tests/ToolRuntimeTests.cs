@@ -278,6 +278,46 @@ public class ToolRuntimeTests
         await pool.DisposeAsync();
     }
 
+    /// <summary>
+    /// Phase 42's one amendment to the narrowing rule, and the only widening anywhere in the
+    /// runtime: an <em>empty</em> model list in a manifest is an open set, so the worker's report is
+    /// taken as-is. The TTS worker's models are voice files an operator dropped into a directory,
+    /// and no list written in advance survives the first new voice — the drift phase-40 D2 refuses.
+    /// The <b>kind</b> is still the ceiling, which is what the second half of this asserts.
+    /// </summary>
+    [Fact]
+    public async Task AnEmptyModelListInTheManifestLetsTheWorkerReportWhatItFound()
+    {
+        using var scratch = new ToolWorkerFixture.TempDirectory();
+
+        var manifest = ToolWorkerFixture.Manifest(
+            kind: "speak",
+            models: [],
+            arguments: ["--capabilities", "speak:en_US-amy,bg_BG-ivan;transcribe:not-granted"]);
+
+        var options = ToolWorkerFixture.Options(scratch.Path, "echo");
+        var pool = new ToolWorkerPool(manifest, options, TimeProvider.System, NullLogger.Instance);
+
+        await using var lease = await pool.AcquireAsync(CancellationToken.None);
+
+        var capability = Assert.Single(pool.Capabilities);
+        Assert.Equal("speak", capability.Kind);
+        Assert.Equal(["en_US-amy", "bg_BG-ivan"], capability.Models);
+
+        await lease.DisposeAsync();
+        await pool.DisposeAsync();
+    }
+
+    [Fact]
+    public void AnOpenModelSetOffersNothingUntilAWorkerHasAnswered()
+    {
+        // Before the handshake, "ask the worker" has no answer — and a capability nobody has
+        // confirmed must not be advertised to the fleet in the meantime.
+        var declared = new[] { new InferHub.Shared.Contracts.NodeCapability("speak", []) };
+
+        Assert.Empty(ToolWorkerPool.Narrow(declared, reported: null));
+    }
+
     [Fact]
     public async Task AnIdleWorkerIsRetiredAndTheNextRequestStartsAFreshOne()
     {

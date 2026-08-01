@@ -105,6 +105,30 @@ public sealed class UsageMeter(
         Record(client, "embed", model, promptTokens, 0, fallback: false);
     }
 
+    /// <summary>
+    /// Meter work that has no token count (phase 42, D7): a transcription in <b>audio seconds</b>,
+    /// a synthesis in <b>input characters</b>.
+    /// </summary>
+    /// <remarks>
+    /// Rule 7 at its most literal. The unit is a duration or a length — a number computed from what
+    /// was processed — and there is deliberately nowhere in this call, in
+    /// <see cref="UsageRecord"/>, or in either ledger, that a transcript could be put.
+    /// <c>AudioPrivacyTests</c> runs a real transcription through a mesh with a capturing logger and
+    /// fails if a known phrase from the fixture appears anywhere in the logs or the ledger.
+    /// </remarks>
+    public void RecordUnits(ResolvedClient client, string kind, string model, double units, string unitKind)
+    {
+        if (units <= 0)
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+
+        admission.RecordUnits(client.Id, unitKind, units, now);
+        Write(client, UsageRecord.ForUnits(client.Id, model, kind, units, unitKind, now));
+    }
+
     private void Record(ResolvedClient client, string kind, string model, long promptTokens, long completionTokens, bool fallback)
     {
         var now = DateTimeOffset.UtcNow;
@@ -112,10 +136,14 @@ public sealed class UsageMeter(
         // Feed the client's rate windows first — admission must see this even if the ledger is slow.
         admission.RecordTokens(client.Id, promptTokens + completionTokens, now);
 
+        Write(client, UsageRecord.ForTokens(client.Id, model, kind, promptTokens, completionTokens, fallback, now));
+    }
+
+    private void Write(ResolvedClient client, UsageRecord record)
+    {
         try
         {
-            var pending = ledger.RecordAsync(
-                new UsageRecord(client.Id, model, kind, promptTokens, completionTokens, fallback, now));
+            var pending = ledger.RecordAsync(record);
 
             if (!pending.IsCompletedSuccessfully)
             {

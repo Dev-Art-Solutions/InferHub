@@ -193,9 +193,16 @@ public class UsageLedgerTests
         // this asserts the record type has no property that could carry content.
         var properties = typeof(UsageRecord).GetProperties().Select(p => p.Name).ToArray();
 
+        // Units/UnitKind arrived in phase 42, when audio gave the fleet work that has no token
+        // count. They are a number and the *name* of a unit; the list below is the reason this test
+        // is written as an exact match rather than a search for suspicious names — a field that
+        // could hold content has to be added here deliberately, by somebody reading this comment.
         Assert.Equal(
-            new[] { "ClientId", "Model", "Kind", "PromptTokens", "CompletionTokens", "Fallback", "AtUtc", "TotalTokens" }
-                .OrderBy(n => n),
+            new[]
+            {
+                "ClientId", "Model", "Kind", "PromptTokens", "CompletionTokens", "Fallback", "AtUtc",
+                "Units", "UnitKind", "TotalTokens"
+            }.OrderBy(n => n),
             properties.OrderBy(n => n));
 
         // And every string-typed property is an identifier, not content.
@@ -203,7 +210,14 @@ public class UsageLedgerTests
             .Where(p => p.PropertyType == typeof(string))
             .Select(p => p.Name)
             .OrderBy(n => n);
-        Assert.Equal(new[] { "ClientId", "Kind", "Model" }, stringProps);
+        Assert.Equal(new[] { "ClientId", "Kind", "Model", "UnitKind" }, stringProps);
+
+        // UnitKind is a closed set of three, not free text a caller can steer.
+        Assert.All(
+            new[] { UsageUnits.Tokens, UsageUnits.AudioSeconds, UsageUnits.Characters },
+            kind => Assert.True(UsageUnits.IsKnown(kind)));
+        Assert.False(UsageUnits.IsKnown("the transcript"));
+
         await Task.CompletedTask;
     }
 

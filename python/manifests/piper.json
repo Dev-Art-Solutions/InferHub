@@ -1,0 +1,19 @@
+{
+  "id": "piper",
+  "capabilities": [
+    {
+      "kind": "speak",
+      "models": []
+    }
+  ],
+  "command": ["/opt/inferhub/venv/bin/python", "-u", "/opt/inferhub/tools/piper_worker.py"],
+  "workdir": "/opt/inferhub/tools",
+  "env": {
+    "INFERHUB_PIPER_VOICES": "/data/tools/voices"
+  },
+  "minWorkers": 0,
+  "maxWorkers": 1,
+  "startTimeoutSeconds": 60,
+  "requestTimeoutSeconds": 300,
+  "idleTimeoutSeconds": 900
+}

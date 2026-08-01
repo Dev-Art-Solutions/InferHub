@@ -72,6 +72,11 @@ public static class LocalApiEndpoints
         // answer than a 404 for something this node genuinely could serve if it were configured to.
         app.MapLocalToolEndpoints();
 
+        // Phase 42, mapped for the same reason: with no audio worker loaded these answer a 503
+        // naming the capability, which is what a node that *could* serve this if configured owes a
+        // caller — better than a 404 that reads as "wrong URL".
+        app.MapLocalAudioEndpoints();
+
         // Phase 38. Mapped only when there is a corpus to serve, so a node that changes no config
         // keeps the v3.5 surface exactly: these routes 404 and a retrieval header still gets a 501.
         if (app.Services.GetService<RetrievalPipeline>() is not null)

@@ -60,6 +60,39 @@ public sealed class ToolOptions
     public long MaxAttachmentBytes { get; set; } = ToolAttachmentLimits.DefaultMaxBytes;
 
     /// <summary>
+    /// Whether a worker may fetch model weights it does not have (phase 42, D4). Default
+    /// <c>false</c>; the <c>:tools</c> image sets it <c>true</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It is a <em>third</em> opt-in, and the third one is not redundant with the first two for the
+    /// same reason the second was not redundant with the first (phase-41 D2, phase-36 D6):
+    /// <c>Enabled</c> consents to running tools, <c>Allowed</c> consents to running <em>these</em>
+    /// tools, and this consents to one of them reaching the internet from a box whose operator may
+    /// have deliberately air-gapped it. Whisper auto-downloads its weights on first use, which is
+    /// exactly the reach phase-39 D7 refused to do at boot.
+    /// </para>
+    /// <para>
+    /// The <c>:tools</c> image sets it true because a tools image that cannot fetch a model is
+    /// furniture, and choosing that image <em>is</em> the consent — the same reasoning by which the
+    /// <c>:ollama</c> image sets <c>Ollama__Supervisor__Enabled=true</c> and a bare node does not.
+    /// With it off, a worker that needs missing weights fails the <b>job</b> with a message naming
+    /// this key and the exact pre-fetch command; the node keeps serving everything else.
+    /// </para>
+    /// </remarks>
+    public bool AllowModelDownload { get; set; }
+
+    /// <summary>
+    /// What the node tells every worker about itself. Stated into the child's environment rather
+    /// than inherited — the environment is cleared first (phase-41 D3), so this is the only way a
+    /// consent flag reaches a worker, and a worker cannot pick one up by accident.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> WorkerEnvironment() => new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["INFERHUB_ALLOW_MODEL_DOWNLOAD"] = AllowModelDownload ? "1" : "0"
+    };
+
+    /// <summary>
     /// How long a request waits for a free worker before it is refused. Past it: <c>503</c> +
     /// <c>Retry-After</c> — the same status and header as the hub's <c>RequestQueue</c>
     /// (phase-25 D5) and solo mode's concurrency gate (phase-37 D9), so a client's retry logic

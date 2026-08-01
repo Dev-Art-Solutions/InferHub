@@ -1,0 +1,27 @@
+{
+  "id": "whisper",
+  "capabilities": [
+    {
+      "kind": "transcribe",
+      "models": [
+        "whisper-tiny",
+        "whisper-base",
+        "whisper-small",
+        "whisper-medium",
+        "whisper-large-v3",
+        "whisper-large-v3-turbo"
+      ]
+    }
+  ],
+  "command": ["/opt/inferhub/venv/bin/python", "-u", "/opt/inferhub/tools/whisper_worker.py"],
+  "workdir": "/opt/inferhub/tools",
+  "env": {
+    "HF_HOME": "/data/tools/hf",
+    "OMP_NUM_THREADS": "4"
+  },
+  "minWorkers": 0,
+  "maxWorkers": 1,
+  "startTimeoutSeconds": 120,
+  "requestTimeoutSeconds": 1800,
+  "idleTimeoutSeconds": 900
+}

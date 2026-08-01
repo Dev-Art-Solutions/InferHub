@@ -326,7 +326,7 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
 
         try
         {
-            var worker = await ToolWorkerProcess.StartAsync(manifest, logger, cancellationToken);
+            var worker = await ToolWorkerProcess.StartAsync(manifest, options.WorkerEnvironment(), logger, cancellationToken);
             OnStartSucceeded(worker);
             return worker;
         }
@@ -362,7 +362,7 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
 
         try
         {
-            var worker = await ToolWorkerProcess.StartAsync(manifest, logger, cancellationToken);
+            var worker = await ToolWorkerProcess.StartAsync(manifest, options.WorkerEnvironment(), logger, cancellationToken);
 
             logger.LogInformation(
                 "Tool '{ToolId}' started again after giving up; its capabilities are back on this node.",
@@ -473,12 +473,25 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
     /// A worker may <b>narrow</b> what its manifest claims and never widen it.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Narrowing is real and needed — a Whisper worker finds one of the two model files the
     /// manifest names, and declaring the missing one would route requests at an error. Widening is
     /// refused for the same reason <c>Tools:Allowed</c> is a ceiling the hub cannot raise: the
     /// operator's file on the box is the authority on what this node may be asked to do, and a
     /// script that could add capabilities to its own node is a script that decides what traffic the
     /// fleet sends it.
+    /// </para>
+    /// <para>
+    /// <b>Amended in phase 42: a declared capability with an <em>empty</em> model list is open on
+    /// models and still closed on kind.</b> The TTS worker's models are voice files an operator
+    /// dropped into a directory, and there is no list anybody could write in advance that would not
+    /// be wrong the first time somebody added a voice — the drift phase-40 D2 refuses for backend
+    /// models. What the ceiling was protecting survives intact: the manifest still decides that this
+    /// tool may <c>speak</c> at all, and every name it reports corresponds to a file the operator
+    /// put on the box. A worker can no more invent a voice than it could invent a manifest.
+    /// A capability the manifest does not name is still refused, and this is the only widening
+    /// anywhere in the runtime.
+    /// </para>
     /// </remarks>
     internal static IReadOnlyList<NodeCapability> Narrow(
         IReadOnlyList<NodeCapability> declared,
@@ -486,7 +499,9 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
     {
         if (reported is null || reported.Count == 0)
         {
-            return declared;
+            // Nothing reported: the manifest stands, minus any open-ended entry — an empty model
+            // list means "ask the worker", and a worker that did not answer has not offered one.
+            return declared.Where(capability => capability.Models.Count > 0).ToArray();
         }
 
         var narrowed = new List<NodeCapability>();
@@ -501,9 +516,11 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
                 continue;
             }
 
-            var models = capability.Models
-                .Where(model => match.Models.Any(m => string.Equals(m, model, StringComparison.OrdinalIgnoreCase)))
-                .ToArray();
+            var models = capability.Models.Count == 0
+                ? match.Models.ToArray()
+                : capability.Models
+                    .Where(model => match.Models.Any(m => string.Equals(m, model, StringComparison.OrdinalIgnoreCase)))
+                    .ToArray();
 
             if (models.Length > 0)
             {

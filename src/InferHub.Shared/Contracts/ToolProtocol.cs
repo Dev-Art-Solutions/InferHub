@@ -164,8 +164,51 @@ public sealed record ToolFrame
     [JsonPropertyName("message")]
     public string? Message { get; init; }
 
+    /// <summary>
+    /// On an <c>error</c> frame: which <em>kind</em> of failure this was, from
+    /// <see cref="ToolErrorCodes"/>. Optional, and an unknown value is treated as absent.
+    /// </summary>
+    /// <remarks>
+    /// It exists so the edge never has to read the error <em>text</em> to pick a status code —
+    /// phase-29 D6's refusal, and the same reasoning that put <c>RetryAfterSeconds</c> on
+    /// <c>ToolResult</c> in phase 41. A TTS worker asked for mp3 on a box with no <c>ffmpeg</c>
+    /// states "this was the caller's fault, here is what I can do" as a field, and the edge renders
+    /// a 400. Without it, that refusal is a 502 and the caller reasonably concludes the server is
+    /// broken.
+    /// </remarks>
+    [JsonPropertyName("code")]
+    public string? Code { get; init; }
+
     /// <summary>The payload as raw JSON, or null when the frame carried none.</summary>
     public string? PayloadJson() => Payload?.GetRawText();
+}
+
+/// <summary>
+/// The failure kinds a worker may name on an <c>error</c> frame (phase 42). Deliberately a very
+/// short list: each one exists because an edge renders it as something other than the default 502,
+/// and a code nobody renders is a code that is wrong by the time somebody reads it.
+/// </summary>
+public static class ToolErrorCodes
+{
+    /// <summary>The request was wrong. Rendered as a <c>400</c>.</summary>
+    public const string InvalidRequest = "invalid_request";
+
+    /// <summary>
+    /// The worker cannot produce the format that was asked for — no encoder, no such voice.
+    /// Rendered as a <c>400</c>, and the worker's own message must name what it <em>can</em> do.
+    /// </summary>
+    public const string UnsupportedFormat = "unsupported_format";
+
+    /// <summary>
+    /// The worker is running but its weights are not there and it was not allowed to fetch them
+    /// (<c>Tools:AllowModelDownload</c>). It stays a <c>502</c>: nothing the caller sends will fix
+    /// it, and the message names the flag and the pre-fetch command for whoever runs the box.
+    /// </summary>
+    public const string ModelUnavailable = "model_unavailable";
+
+    /// <summary>Whether this code changes the status the edge renders.</summary>
+    public static bool IsClientError(string? code) =>
+        code is InvalidRequest or UnsupportedFormat;
 }
 
 /// <summary>A file handed between the node and a worker by path, never by value.</summary>

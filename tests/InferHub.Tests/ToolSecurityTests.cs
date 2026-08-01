@@ -63,6 +63,47 @@ public class ToolSecurityTests
     }
 
     /// <summary>
+    /// Phase 42's third opt-in reaches the worker as a <em>stated</em> variable rather than an
+    /// inherited one — which is the only way it could, since the child's environment is cleared
+    /// first (D3). Whisper auto-downloads its weights on first use, and that is a reach onto the
+    /// internet from a box whose operator may have deliberately air-gapped it: with the flag off,
+    /// the worker must be able to tell, and it must be told the same way whatever shell the node
+    /// was started from.
+    /// </summary>
+    [Theory]
+    [InlineData(true, "1")]
+    [InlineData(false, "0")]
+    public async Task TheModelDownloadConsentIsStatedIntoTheWorkersEnvironment(bool allow, string expected)
+    {
+        using var scratch = new ToolWorkerFixture.TempDirectory();
+
+        var options = ToolWorkerFixture.Options(scratch.Path, "echo");
+        options.AllowModelDownload = allow;
+
+        var pool = new ToolWorkerPool(
+            ToolWorkerFixture.Manifest(),
+            options,
+            TimeProvider.System,
+            NullLogger.Instance);
+
+        var executor = new ToolExecutor(
+            new PoolRuntime(pool),
+            ToolWorkerFixture.Wrap(options),
+            NullLogger<ToolExecutor>.Instance);
+
+        var answer = await Ask(executor, "INFERHUB_ALLOW_MODEL_DOWNLOAD");
+
+        Assert.True(answer.GetProperty("present").GetBoolean());
+        Assert.Equal(expected, answer.GetProperty("value").GetString());
+
+        await pool.DisposeAsync();
+    }
+
+    [Fact]
+    public void ModelDownloadIsOffByDefaultSoNothingEverFetchesByAccident()
+        => Assert.False(new InferHub.Node.Configuration.ToolOptions().AllowModelDownload);
+
+    /// <summary>
     /// A worker still needs enough environment to run at all: PATH, HOME and — on Windows, where
     /// this suite runs — the handful the platform requires to start a process.
     /// </summary>

@@ -1,0 +1,80 @@
+# The tools node — a solo node that also transcribes and speaks (phase 42, v3.10+).
+#
+#   docker compose -f deploy/docker/compose.tools.yml up -d
+#
+#   curl http://localhost:5082/v1/audio/transcriptions \
+#        -H "Authorization: Bearer $INFERHUB_API_KEY" \
+#        -F file=@meeting.m4a -F model=whisper-small -F response_format=verbose_json
+#
+#   curl http://localhost:5082/v1/audio/speech \
+#        -H "Authorization: Bearer $INFERHUB_API_KEY" -H 'Content-Type: application/json' \
+#        -d '{"model":"en_US-amy-medium","input":"InferHub can talk now.","response_format":"wav"}' \
+#        --output out.wav
+#
+# It is compose.ollama.yml plus two Python workers, on the third image (~6 GB). Chat, embeddings,
+# retrieval and model management all still work — this is a superset, not a specialisation.
+#
+# ONE MANUAL STEP, and it is deliberate: no voice is baked in or fetched, because there is no
+# default voice that is right for everyone and a confident answer in the wrong language is worse
+# than a refusal. Once, after `up`:
+#
+#   docker compose -f deploy/docker/compose.tools.yml exec node sh -c \
+#     'mkdir -p /data/tools/voices && cd /data/tools/voices && \
+#      curl -fsSLO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx && \
+#      curl -fsSLO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx.json'
+#   docker compose -f deploy/docker/compose.tools.yml restart node
+#
+# Whisper weights are different: they fetch themselves on first transcription, into /data/tools/hf
+# on the volume, because Tools__AllowModelDownload is on in this image (phase-42 D4) and the model
+# a caller names is unambiguous in a way a voice is not.
+
+name: inferhub-tools
+
+services:
+  node:
+    image: ghcr.io/dev-art-solutions/inferhub-node:tools
+    container_name: inferhub-node-tools
+    restart: unless-stopped
+    ports:
+      - "5082:8080"
+    environment:
+      LocalApi__Enabled: "true"
+      Coordinator__Enabled: "false"
+
+      # NOT optional (phase-37 D4). The container binds a wildcard, and this one accepts a 25 MB
+      # upload and spends GPU time on it. Put INFERHUB_API_KEY in deploy/docker/.env.
+      LocalApi__ApiKeys__0: "${INFERHUB_API_KEY:?set INFERHUB_API_KEY in .env}"
+
+      LocalApi__Retrieval__Enabled: "true"
+
+      # Transcription only: drop `piper` from the allow-list. The manifest stays on disk, the node
+      # logs that it was not started, and no Python process is ever spawned for it (phase-41 D2).
+      # Tools__Allowed__1: ""
+
+      # Air-gapped, or you would rather pre-fetch: turn the download off and the worker fails the
+      # *job* with the exact pre-fetch command in the message. The node keeps serving everything
+      # else, including chat.
+      # Tools__AllowModelDownload: "false"
+
+      # One transcription at a time is the default and it is deliberate (phase-41 D4): a second
+      # Whisper on the same card is two copies of the weights and an out-of-memory error at the
+      # worst possible moment. Capability-aware routing means a busy transcription does not make
+      # this node ineligible for chat (phase-42 D6).
+
+    volumes:
+      # Required in practice. Holds the Whisper cache, the Piper voices, pulled Ollama models, the
+      # corpus and the node id — without it every `up` re-downloads gigabytes.
+      - node-data:/data
+
+    # The GPU. Delete this whole `deploy:` block for the CPU path — nothing else changes, and the
+    # Whisper worker's first log line says which one it got.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  node-data:

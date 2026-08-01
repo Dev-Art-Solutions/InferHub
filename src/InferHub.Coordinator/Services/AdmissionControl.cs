@@ -32,10 +32,14 @@ public sealed class AdmissionControl
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, ClientState> states =
         new(StringComparer.Ordinal);
 
-    public AdmissionDecision TryAdmit(ResolvedClient client, string model)
-        => TryAdmit(client, model, DateTimeOffset.UtcNow);
+    public AdmissionDecision TryAdmit(ResolvedClient client, string model, string unitKind = UsageUnits.Tokens)
+        => TryAdmit(client, model, DateTimeOffset.UtcNow, unitKind);
 
-    internal AdmissionDecision TryAdmit(ResolvedClient client, string model, DateTimeOffset now)
+    internal AdmissionDecision TryAdmit(
+        ResolvedClient client,
+        string model,
+        DateTimeOffset now,
+        string unitKind = UsageUnits.Tokens)
     {
         var limits = client.Limits;
 
@@ -59,14 +63,19 @@ public sealed class AdmissionControl
         {
             state.Prune(now);
 
-            // Hard budget first: a client that is out of tokens for the day should hear 402,
+            // Hard budget first: a client that is out of budget for the day should hear 402,
             // not a 429 that suggests waiting a minute will help.
-            if (limits.TokensPerDay is { } daily && state.TokensToday >= daily)
+            //
+            // The budget checked is the one for the unit *this* request is measured in (phase-42
+            // D7). A chat request cannot exhaust an audio budget and a transcription cannot exhaust
+            // a token budget, because neither consumes the other's unit — and a client whose only
+            // limit is TokensPerDay would otherwise transcribe a library for free.
+            if (DailyBudget(limits, unitKind) is { } daily && Consumed(state, unitKind) >= daily)
             {
                 return new AdmissionDecision(
                     false,
                     StatusCodes.Status402PaymentRequired,
-                    $"daily token budget of {daily} exhausted for client '{client.Id}'",
+                    $"daily {Describe(unitKind)} budget of {Format(daily)} exhausted for client '{client.Id}'",
                     SecondsUntilUtcMidnight(now));
             }
 
@@ -107,8 +116,16 @@ public sealed class AdmissionControl
 
     /// <summary>Fed by <see cref="UsageMeter"/> when a request completes and its counts are known.</summary>
     public void RecordTokens(string clientId, long tokens, DateTimeOffset atUtc)
+        => RecordUnits(clientId, UsageUnits.Tokens, tokens, atUtc);
+
+    /// <summary>
+    /// The general form (phase 42). Tokens additionally feed the per-minute window; the two audio
+    /// units have daily budgets only, because "seconds of audio per minute" is a limit nobody has
+    /// asked for and a key nobody would be able to reason about.
+    /// </summary>
+    public void RecordUnits(string clientId, string unitKind, double units, DateTimeOffset atUtc)
     {
-        if (tokens <= 0 || !states.TryGetValue(clientId, out var state))
+        if (units <= 0 || !states.TryGetValue(clientId, out var state))
         {
             // No state means no limits were ever checked for this client — nothing to feed.
             return;
@@ -117,11 +134,56 @@ public sealed class AdmissionControl
         lock (state)
         {
             state.Prune(atUtc);
-            state.TokenEvents.Enqueue(new TokenEvent(atUtc, tokens));
-            state.TokensLastMinute += tokens;
-            state.TokensToday += tokens;
+
+            switch (unitKind)
+            {
+                case UsageUnits.AudioSeconds:
+                    state.AudioSecondsToday += units;
+                    break;
+
+                case UsageUnits.Characters:
+                    state.CharactersToday += units;
+                    break;
+
+                default:
+                    var tokens = (long)units;
+                    state.TokenEvents.Enqueue(new TokenEvent(atUtc, tokens));
+                    state.TokensLastMinute += tokens;
+                    state.TokensToday += tokens;
+                    break;
+            }
         }
     }
+
+    private static double? DailyBudget(ClientLimits limits, string unitKind) => unitKind switch
+    {
+        UsageUnits.AudioSeconds => limits.AudioSecondsPerDay,
+        UsageUnits.Characters => limits.CharactersPerDay,
+        _ => limits.TokensPerDay
+    };
+
+    private static double Consumed(ClientState state, string unitKind) => unitKind switch
+    {
+        UsageUnits.AudioSeconds => state.AudioSecondsToday,
+        UsageUnits.Characters => state.CharactersToday,
+        _ => state.TokensToday
+    };
+
+    private static string Describe(string unitKind) => unitKind switch
+    {
+        UsageUnits.AudioSeconds => "audio-second",
+        UsageUnits.Characters => "character",
+        _ => "token"
+    };
+
+    /// <summary>
+    /// Invariant, and trimmed of a trailing <c>.0</c>. A budget rendered with the host's culture
+    /// puts a decimal comma in an error message on a Bulgarian or German box — the same locale trap
+    /// <c>PrometheusFormatter</c> guards against, in a place a test on an English CI runner would
+    /// never see.
+    /// </summary>
+    private static string Format(double value) =>
+        value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>Live view for <c>GET /api/admin/clients</c>.</summary>
     public ClientLiveUsage LiveUsageOf(string clientId)
@@ -138,7 +200,9 @@ public sealed class AdmissionControl
                 state.InFlight,
                 state.RequestTimestamps.Count,
                 state.TokensLastMinute,
-                state.TokensToday);
+                state.TokensToday,
+                state.AudioSecondsToday,
+                state.CharactersToday);
         }
     }
 
@@ -161,6 +225,8 @@ public sealed class AdmissionControl
         public int InFlight;
         public long TokensLastMinute;
         public long TokensToday;
+        public double AudioSecondsToday;
+        public double CharactersToday;
         public DateOnly Day = DateOnly.FromDateTime(DateTime.UtcNow);
         public readonly Queue<DateTimeOffset> RequestTimestamps = new();
         public readonly Queue<TokenEvent> TokenEvents = new();
@@ -185,6 +251,8 @@ public sealed class AdmissionControl
             {
                 Day = today;
                 TokensToday = 0;
+                AudioSecondsToday = 0;
+                CharactersToday = 0;
             }
         }
     }
@@ -215,4 +283,6 @@ public sealed record ClientLiveUsage(
     int InFlight,
     int RequestsLastMinute,
     long TokensLastMinute,
-    long TokensToday);
+    long TokensToday,
+    double AudioSecondsToday = 0,
+    double CharactersToday = 0);

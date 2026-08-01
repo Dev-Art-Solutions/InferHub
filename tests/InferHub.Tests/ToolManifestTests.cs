@@ -85,6 +85,64 @@ public class ToolManifestTests
     }
 
     /// <summary>
+    /// Phase 42: <c>"models": []</c> is a deliberate open set and <c>models</c> omitted is a
+    /// mistake, so the two are distinguished by null-versus-empty rather than collapsed. The shipped
+    /// Piper manifest is the reason — its models are voice files an operator dropped into a
+    /// directory, and there is no list anybody could write in advance that survives the first new
+    /// voice.
+    /// </summary>
+    [Fact]
+    public void AnEmptyModelListIsAnOpenSetAndAMissingOneIsStillAMistake()
+    {
+        Assert.True(ToolManifestLoader.TryParse(
+            """{ "id": "piper", "capabilities": [{"kind":"speak","models":[]}], "command": ["x"] }""",
+            "piper.json",
+            out var manifest,
+            out _));
+
+        var capability = Assert.Single(manifest!.Capabilities);
+        Assert.Equal("speak", capability.Kind);
+        Assert.Empty(capability.Models);
+
+        Assert.False(ToolManifestLoader.TryParse(
+            """{ "id": "piper", "capabilities": [{"kind":"speak"}], "command": ["x"] }""",
+            "piper.json",
+            out _,
+            out var error));
+
+        Assert.Contains("\"models\": []", error);
+    }
+
+    /// <summary>The two manifests that ship in the <c>:tools</c> image must actually load.</summary>
+    [Theory]
+    [InlineData("whisper.json", "whisper", "transcribe")]
+    [InlineData("piper.json", "piper", "speak")]
+    public void TheShippedManifestsParse(string file, string id, string kind)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "InferHub.sln")))
+        {
+            directory = directory.Parent;
+        }
+
+        Assert.NotNull(directory);
+
+        var text = File.ReadAllText(Path.Combine(directory!.FullName, "python", "manifests", file));
+
+        Assert.True(ToolManifestLoader.TryParse(text, file, out var manifest, out var error), error);
+        Assert.Equal(id, manifest!.Id);
+        Assert.Equal(kind, Assert.Single(manifest.Capabilities).Kind);
+
+        // argv, never a command line — the field the loader refuses by name (phase-41 D3).
+        Assert.True(manifest.Command.Count > 1);
+
+        // One worker per manifest by default: a second Whisper on the same card is two copies of
+        // the weights and an out-of-memory error at the worst possible moment.
+        Assert.Equal(1, manifest.MaxWorkers);
+    }
+
+    /// <summary>
     /// One bad manifest must not take a node's inference offline. The box still has a GPU and a
     /// backend, and a fleet that loses a chat node to a fat-fingered JSON comma has traded a small
     /// problem for a large one.

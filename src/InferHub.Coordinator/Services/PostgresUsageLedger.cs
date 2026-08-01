@@ -41,8 +41,8 @@ public sealed class PostgresUsageLedger : IUsageLedger, IAsyncDisposable
         await using var command = dataSource.CreateCommand(
             $"""
             INSERT INTO {QualifiedTable}
-                (at_utc, client_id, model, kind, prompt_tokens, completion_tokens, fallback)
-            VALUES (@at, @client, @model, @kind, @prompt, @completion, @fallback)
+                (at_utc, client_id, model, kind, prompt_tokens, completion_tokens, fallback, units, unit_kind)
+            VALUES (@at, @client, @model, @kind, @prompt, @completion, @fallback, @units, @unit_kind)
             """);
         command.CommandTimeout = options.CommandTimeoutSeconds;
         command.Parameters.AddWithValue("at", record.AtUtc);
@@ -52,6 +52,8 @@ public sealed class PostgresUsageLedger : IUsageLedger, IAsyncDisposable
         command.Parameters.AddWithValue("prompt", record.PromptTokens);
         command.Parameters.AddWithValue("completion", record.CompletionTokens);
         command.Parameters.AddWithValue("fallback", record.Fallback);
+        command.Parameters.AddWithValue("units", record.Units);
+        command.Parameters.AddWithValue("unit_kind", record.UnitKind);
 
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -96,7 +98,9 @@ public sealed class PostgresUsageLedger : IUsageLedger, IAsyncDisposable
                    count(*)                                    AS requests,
                    coalesce(sum(prompt_tokens), 0)             AS prompt_tokens,
                    coalesce(sum(completion_tokens), 0)         AS completion_tokens,
-                   count(*) FILTER (WHERE fallback)            AS fallback_requests
+                   count(*) FILTER (WHERE fallback)            AS fallback_requests,
+                   coalesce(sum(units) FILTER (WHERE unit_kind = 'audio_seconds'), 0) AS audio_seconds,
+                   coalesce(sum(units) FILTER (WHERE unit_kind = 'characters'), 0)    AS characters
             FROM {QualifiedTable}
             {where}
             GROUP BY client_id, model
@@ -114,7 +118,9 @@ public sealed class PostgresUsageLedger : IUsageLedger, IAsyncDisposable
                 reader.GetInt64(2),
                 reader.GetInt64(3),
                 reader.GetInt64(4),
-                reader.GetInt64(5)));
+                reader.GetInt64(5),
+                reader.GetDouble(6),
+                reader.GetDouble(7)));
         }
 
         return rows;
@@ -154,6 +160,19 @@ public sealed class PostgresUsageLedger : IUsageLedger, IAsyncDisposable
                     );
                     CREATE INDEX IF NOT EXISTS {Quote(options.Table + "_at_client_idx")}
                         ON {QualifiedTable} (at_utc, client_id);
+
+                    -- Phase 42, and it is ADDITIVE ON PURPOSE. `ADD COLUMN ... DEFAULT` has not
+                    -- rewritten a table since PostgreSQL 11: the default is stored in the catalog
+                    -- and existing rows are read through it, so a ledger with two years of chat in
+                    -- it gains two columns in milliseconds and every old row correctly reports
+                    -- `units = total tokens`... except that it cannot, because the total is not a
+                    -- constant. So the default is 0 and the token columns remain the answer for
+                    -- rows written before this release — which is why the aggregate reads the
+                    -- token columns for tokens and `units` only for the two new kinds.
+                    ALTER TABLE {QualifiedTable}
+                        ADD COLUMN IF NOT EXISTS units double precision NOT NULL DEFAULT 0;
+                    ALTER TABLE {QualifiedTable}
+                        ADD COLUMN IF NOT EXISTS unit_kind text NOT NULL DEFAULT 'tokens';
                     """);
                 command.CommandTimeout = options.CommandTimeoutSeconds;
                 await command.ExecuteNonQueryAsync(ct);

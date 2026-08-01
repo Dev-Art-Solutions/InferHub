@@ -544,8 +544,126 @@ A tool failure is a failed **job**, never a failed node. Attachments are capped 
 (`Tools:MaxAttachmentBytes`, a 413 at the edge), written to a per-request scratch directory that is
 deleted in a `finally` — after success and after failure — and never logged.
 
-**v3.9 ships the machinery and no tool.** The test suite drives a real child process that echoes;
-Whisper and Piper arrive in v3.10, onto something already proven.
+**v3.9 shipped the machinery and no tool.** The test suite drives a real child process that echoes.
+**v3.10 puts Whisper and Piper on it** — see below.
+
+## Speech in, speech out (v3.10+)
+
+Two endpoints, on OpenAI's audio API exactly, against your own hardware:
+
+```bash
+# transcription
+curl http://localhost:5080/v1/audio/transcriptions \
+  -H "Authorization: Bearer $KEY" \
+  -F file=@meeting.m4a -F model=whisper-small -F response_format=verbose_json
+
+# speech
+curl http://localhost:5080/v1/audio/speech \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"en_US-amy-medium","input":"InferHub can talk now.","response_format":"wav"}' \
+  --output out.wav
+```
+
+Every SDK in every language already speaks this, so pointing an existing app at your own GPU is a
+base-URL change. The same two routes are served by a **solo node with no coordinator at all**, and
+by one container:
+
+```bash
+docker run -d --gpus all \
+  -e LocalApi__Enabled=true -e Coordinator__Enabled=false \
+  -e LocalApi__ApiKeys__0="$KEY" -v inferhub:/data -p 5081:8080 \
+  ghcr.io/dev-art-solutions/inferhub-node:tools
+```
+
+`--gpus` left off is CPU Whisper — roughly real time for `small` on a modern core — and the worker's
+first log line says which one it got.
+
+### The four images
+
+| Tag | Size | Arch | What is in it |
+|---|---|---|---|
+| `inferhub-coordinator` | ~120 MB | amd64 + arm64 | The hub |
+| `inferhub-node` | ~340 MB | amd64 + arm64 | A node. No inference engine — point it at an Ollama or an OpenAI-compatible server |
+| `inferhub-node:ollama` | ~4 GB | amd64 | The same node with Ollama inside it (v3.7+) |
+| `inferhub-node:tools` | ~6 GB | amd64 | The same again, plus Python, `faster-whisper` and `piper` (v3.10+) |
+
+The first three are **unchanged** by v3.10. The Python is ~1.5 GB and it is in a layer whether a
+flag is on or off, so a flag would grow every existing coordinator+node stack for a feature it does
+not use. An operator on the plain image can still run these workers by installing Python themselves
+and pointing a manifest at it (`python/requirements-tools.txt` is what the image installs) — the
+runtime does not care where the interpreter came from.
+
+### Formats
+
+| | |
+|---|---|
+| Transcription | `json` (default), `text`, `srt`, `vtt`, `verbose_json` |
+| Speech | `wav`, `pcm` natively; `mp3`, `opus`, `flac` where the worker has `ffmpeg` (the `:tools` image does) |
+
+`srt` and `vtt` are formatted at the edge from the segments Whisper produces anyway, so a worker
+author never writes a subtitle timestamp. **A format that cannot be produced is a `400` naming the
+ones that can** — never a silent substitution, because a caller who asked for mp3 and got a wav has
+a corrupted file with a confident content type and finds out in a media player three days later.
+
+### Models and voices
+
+**No weights are baked into the image.** Whisper fetches on first use into `/data/tools/hf`, on the
+volume, so it happens once rather than once per `docker run`. That fetch is a reach onto the
+internet, so it is behind a **third** opt-in: `Tools:AllowModelDownload` (default `false`, set
+`true` in the `:tools` image, because choosing that image is the consent). With it off, a worker
+that needs missing weights fails the **job** with the exact pre-fetch command in the message, and
+the node keeps serving everything else.
+
+Voices are not fetched, because no default voice is right for everyone and a confident answer in the
+wrong language is worse than a refusal. Drop a Piper `.onnx` + `.onnx.json` pair into
+`/data/tools/voices` and restart; the model name is the file's stem.
+
+```bash
+docker exec inferhub sh -c 'mkdir -p /data/tools/voices && cd /data/tools/voices && \
+  curl -fsSLO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx && \
+  curl -fsSLO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx.json'
+```
+
+### None of it is kept
+
+Design rule 7 at its most literal: a transcription request is a recording of somebody's voice and
+the answer is what they said.
+
+- The hub buffers the upload for the dispatch and drops it. No temp file, no cache.
+- The node writes it into a per-request scratch directory that is deleted in a `finally`, always.
+- **Nothing containing audio bytes or transcript text is logged, at any level.** The line for a
+  transcription carries the model, the duration and the outcome — not the filename you chose.
+- The usage ledger gains a **duration**, never a transcript.
+
+`AudioPrivacyTests` runs a transcription through a real mesh with a capturing logger and fails if a
+known phrase from the fixture appears anywhere in the logs or the ledger.
+
+### Usage and quotas
+
+Audio has no token count, so metering it as tokens would mean inventing a number. A usage row now
+carries `units` and a `unitKind` — `tokens`, `audio_seconds` or `characters` — and the token fields
+are untouched, so every existing consumer and every existing row keeps working. Two new client
+limits go with it:
+
+```jsonc
+"Auth": { "Clients": [ { "Id": "acme", "Key": "…",
+  "Limits": { "AudioSecondsPerDay": 3600, "CharactersPerDay": 200000 } } ] }
+```
+
+They are separate budgets on purpose: a client whose only limit is `TokensPerDay` could otherwise
+transcribe a library for free. Over one is the same `402` + `Retry-After` to UTC midnight as the
+token budget.
+
+### One transcription at a time
+
+`maxWorkers` defaults to 1 — a second Whisper process on the same card is two copies of the weights
+and an out-of-memory error at the worst possible moment. Because routing is per **capability**
+(v3.8), a node busy transcribing is still a candidate for chat: "my chat got slow when someone
+uploaded a podcast" is the failure that prevents.
+
+**Not in v3.10, and said out loud:** streaming TTS (chunked audio needs a concatenable format and a
+client-side contract), diarization, speaker labels, voice cloning, and `/v1/audio/translations`.
+The last is one flag on the same worker and can land whenever somebody asks.
 
 ## OpenAI-compatible API
 
@@ -743,6 +861,10 @@ a key an identity and, optionally, limits:
           "RequestsPerMinute": 60,
           "TokensPerMinute": 100000,
           "TokensPerDay": 2000000,
+          // v3.10. Audio has no token count, so these are separate budgets — otherwise a client
+          // whose only limit is TokensPerDay could transcribe a library for free.
+          "AudioSecondsPerDay": 3600,
+          "CharactersPerDay": 200000,
           "AllowedModels": ["llama3", "nomic-embed-text"]
         }
       }
@@ -759,7 +881,7 @@ What happens at the boundary, per status code:
 | Situation | Response |
 |---|---|
 | Over `MaxConcurrent`, `RequestsPerMinute` or `TokensPerMinute` | `429` with a window-accurate `Retry-After` |
-| Over `TokensPerDay` | `402 Payment Required`, `Retry-After` pointing at UTC midnight |
+| Over `TokensPerDay`, `AudioSecondsPerDay` or `CharactersPerDay` | `402 Payment Required`, `Retry-After` pointing at UTC midnight. Each unit has its own budget and consumes only its own. |
 | Model outside `AllowedModels` | `404`, byte-identical to a model that does not exist |
 | Every capable node at its declared cap, longer than `Queue:MaxWaitSeconds` | `503` with `Retry-After` |
 
@@ -770,10 +892,14 @@ On `/v1` the rejections use the OpenAI error envelope (`rate_limit_error` /
 prompt tokens, completion tokens, and whether it was served by [cloud burst](#cloud-burst-v24)
 (the one that costs actual money). Embeddings and [document ingestion](#document-ingestion-v25)
 count too: a client that ingests a 500-page manual has consumed the fleet. A usage record is
-a client id, a model, a kind, two integers, a flag and a timestamp. **It never contains the
-prompt, the completion, a hash of either, or a "sample" — and there is no flag to change
-that.** Streaming counts come from the terminal chunk; a stream that never delivers it (a
-mid-stream disconnect) records nothing rather than guessing.
+a client id, a model, a kind, some counts, a unit name, a flag and a timestamp. **It never contains
+the prompt, the completion, the audio, the transcript, a hash of any of them, or a "sample" — and
+there is no flag to change that.** Streaming counts come from the terminal chunk; a stream that
+never delivers it (a mid-stream disconnect) records nothing rather than guessing.
+
+Since v3.10 the unit is named, because audio has none of the old ones: `tokens`, `audio_seconds` or
+`characters`. The token columns are untouched, so a row written by v3.9 still means what it meant,
+and the aggregate reports each unit in its own column rather than summing seconds into tokens.
 
 ```bash
 # Aggregates you could put on an invoice (admin scope):
@@ -988,6 +1114,7 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `Tools:ScratchDirectory` | `data/tools/scratch` | Per-request working directories, deleted in a `finally` — after success and after failure. `/data/tools/scratch` in the images. |
 | `Tools:MaxAttachmentBytes` | `26214400` | 25 MB, matching the OpenAI audio API. Over it is a `413` at the edge naming the limit. Also read by the **coordinator** for its own edge. |
 | `Tools:QueueMaxWaitSeconds` | `30` | How long a request waits for a free worker before `503` + `Retry-After`. |
+| `Tools:AllowModelDownload` | `false` | v3.10. May a worker fetch weights it does not have? The **third** consent — `Enabled` is the feature, `Allowed` is these tools, this is reaching the internet from a box you may have air-gapped. `true` in the `:tools` image. With it off, a worker that needs missing weights fails the **job** naming this key and the pre-fetch command. |
 | `Tools:MaxStartAttempts` | `3` | Start attempts per `RestartWindow` before a tool's pool gives up, withdraws its capabilities and drops to probing. |
 | `Tools:RestartWindow` | `00:10:00` | The budget's window. |
 | `Tools:RestartBackoff` | `00:00:10` | Wait before the second and later attempts; doubles each time. |

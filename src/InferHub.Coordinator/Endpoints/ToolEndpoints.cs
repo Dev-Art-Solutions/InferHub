@@ -118,7 +118,7 @@ public static class ToolEndpoints
     internal const int CapabilityRetryAfterSeconds = 30;
 
     /// <summary>Does any node offer this model, for any kind of work?</summary>
-    private static bool KnownToTheFleet(INodeRegistry registry, string model) =>
+    internal static bool KnownToTheFleet(INodeRegistry registry, string model) =>
         registry.FindNodesWithModel(model).Count > 0
         || registry.CapabilitySummary()
             .Any(summary => summary.Models.Contains(model, StringComparer.OrdinalIgnoreCase));
@@ -134,6 +134,12 @@ public static class ToolEndpoints
                 // status; that is the inference phase-29 D6 refuses to make.
                 httpContext.Response.Headers.RetryAfter = retryAfter.ToString();
                 return Error(StatusCodes.Status503ServiceUnavailable, result.Error ?? "the tool is busy");
+            }
+
+            if (ToolErrorCodes.IsClientError(result.ErrorCode))
+            {
+                // The worker named the request as the problem. Its message says what it can do.
+                return Error(StatusCodes.Status400BadRequest, NodeErrorText.Readable(result.Error));
             }
 
             return Error(StatusCodes.Status502BadGateway, NodeErrorText.Readable(result.Error));

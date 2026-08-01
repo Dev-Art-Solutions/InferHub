@@ -36,6 +36,16 @@ public sealed class ClientLimits
     public long? TokensPerDay { get; set; }
 
     /// <summary>
+    /// Seconds of audio this client may have transcribed per UTC day (phase 42, D7). Audio has no
+    /// token count, so a token budget cannot bound it — a client with <c>TokensPerDay</c> set and
+    /// nothing else could transcribe a library and never touch its budget.
+    /// </summary>
+    public double? AudioSecondsPerDay { get; set; }
+
+    /// <summary>Characters this client may have synthesised per UTC day. The unit TTS bills in.</summary>
+    public double? CharactersPerDay { get; set; }
+
+    /// <summary>
     /// Models this client may use. Empty/null = all. A request outside the list is a 404
     /// identical to a model that does not exist — a client is not told what exists but is
     /// not for them.
@@ -47,5 +57,7 @@ public sealed class ClientLimits
         || RequestsPerMinute is not null
         || TokensPerMinute is not null
         || TokensPerDay is not null
+        || AudioSecondsPerDay is not null
+        || CharactersPerDay is not null
         || AllowedModels is { Count: > 0 };
 }

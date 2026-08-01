@@ -9,7 +9,8 @@ public sealed record ToolResult(
     [property: JsonPropertyName("payload")] string? Payload,
     [property: JsonPropertyName("error")] string? Error,
     [property: JsonPropertyName("attachments")] IReadOnlyList<ToolAttachment>? Attachments = null,
-    [property: JsonPropertyName("retryAfterSeconds")] int? RetryAfterSeconds = null)
+    [property: JsonPropertyName("retryAfterSeconds")] int? RetryAfterSeconds = null,
+    [property: JsonPropertyName("errorCode")] string? ErrorCode = null)
 {
     public static ToolResult Succeeded(
         Guid jobId,
@@ -23,6 +24,15 @@ public sealed record ToolResult(
     /// </summary>
     public static ToolResult Failed(Guid jobId, string error)
         => new(jobId, false, null, error);
+
+    /// <summary>
+    /// A failure the worker attributed to the request itself (phase 42): an unproducible format, a
+    /// voice that does not exist. Same reasoning as <see cref="Retry"/> one paragraph down — the
+    /// node states which <em>kind</em> of failure it was and the edge renders a status from it,
+    /// rather than the edge reading the message and guessing.
+    /// </summary>
+    public static ToolResult Refused(Guid jobId, string error, string? errorCode)
+        => new(jobId, false, null, error, null, null, errorCode);
 
     /// <summary>
     /// A failure the caller should try again — every worker busy, or a tool that is temporarily not

@@ -46,7 +46,9 @@ public sealed class InMemoryUsageLedger : IUsageLedger
                 g.LongCount(),
                 g.Sum(r => r.PromptTokens),
                 g.Sum(r => r.CompletionTokens),
-                g.LongCount(r => r.Fallback)))
+                g.LongCount(r => r.Fallback),
+                g.Where(r => r.UnitKind == UsageUnits.AudioSeconds).Sum(r => r.Units),
+                g.Where(r => r.UnitKind == UsageUnits.Characters).Sum(r => r.Units)))
             .OrderBy(a => a.ClientId, StringComparer.OrdinalIgnoreCase)
             .ThenBy(a => a.Model, StringComparer.OrdinalIgnoreCase)
             .ToArray();

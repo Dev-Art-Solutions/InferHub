@@ -183,6 +183,11 @@ app.MapMetricsEndpoint(version);
 app.MapInferenceEndpoints();
 app.MapOpenAiEndpoints();
 app.MapToolEndpoints();
+
+// Phase 42. Beside /api/tools/{capability} rather than replacing it: an operator who writes their
+// own tool needs a call InferHub did not have to know about in advance, and a client with an OpenAI
+// SDK needs the route that SDK already calls.
+app.MapAudioEndpoints();
 app.MapAdminEndpoints();
 
 if (vectorStoreEnabled)

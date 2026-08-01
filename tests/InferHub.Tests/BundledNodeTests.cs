@@ -225,10 +225,93 @@ public class BundledNodeTests
         Assert.DoesNotContain("NVIDIA", plain);
     }
 
+    // ---- the tools image (phase 42, D3) ------------------------------------------------------
+
+    [Fact]
+    public void NeitherOfTheOlderImagesLearnedAboutPython()
+    {
+        // The third image is a third image for phase-39 D2's reason, restated: ~1.5 GB of Python
+        // wheels are in a layer whether a flag is on or off, so a flag would grow every existing
+        // deployment for a feature it does not use.
+        foreach (var name in new[] { "Dockerfile", "Dockerfile.ollama" })
+        {
+            var text = File.ReadAllText(Path.Combine(RepoRoot(), "src", "InferHub.Node", name));
+
+            Assert.DoesNotContain("python", text, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("requirements-tools", text);
+            Assert.DoesNotContain("ffmpeg", text, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public void TheToolsImageEnablesBothToolOptInsAndTheDownloadConsent()
+    {
+        var dockerfile = ToolsInstructions();
+
+        // Opt in twice, then a third time for the reach onto the internet (phase-41 D2,
+        // phase-42 D4). None of the three is redundant with the others, and this image is the one
+        // place where all three are legitimately on.
+        Assert.Contains("ENV Tools__Enabled=true", dockerfile);
+        Assert.Contains("ENV Tools__Allowed__0=whisper", dockerfile);
+        Assert.Contains("ENV Tools__Allowed__1=piper", dockerfile);
+        Assert.Contains("ENV Tools__AllowModelDownload=true", dockerfile);
+
+        // The permissions trap, for the sixth time. Every path this image writes to has to be
+        // under /data, and /data has to exist in the image and be owned by app.
+        Assert.Contains("ENV Tools__ScratchDirectory=/data/tools/scratch", dockerfile);
+        Assert.Contains("/data/tools/hf", dockerfile);
+        Assert.Contains("/data/tools/voices", dockerfile);
+        Assert.Contains("chown -R app:app /data", dockerfile);
+        Assert.Contains("USER app", dockerfile);
+    }
+
+    [Fact]
+    public void TheToolsImagePinsTheSameOllamaAsTheBundledOne()
+    {
+        // Two images, one engine version. Bumping one and not the other means `:ollama` and
+        // `:tools` of the same tag contain different Ollamas, which is phase-39 D9's question with
+        // one more way to get it wrong.
+        Assert.Equal(OllamaVersionOf(BundledDockerfile()), OllamaVersionOf(ToolsDockerfile()));
+        Assert.Matches(@"ARG OLLAMA_SHA256=[0-9a-f]{64}", ToolsDockerfile());
+    }
+
+    /// <summary>
+    /// Rule 5's own assertion for this phase: the Python is a subprocess, not a dependency. No
+    /// project file may reference it, and <c>InferHub.Shared.csproj</c> must still be empty.
+    /// </summary>
+    [Fact]
+    public void NoProjectReferencesPythonAndTheSharedProjectIsStillEmpty()
+    {
+        foreach (var project in Directory.EnumerateFiles(
+                     Path.Combine(RepoRoot(), "src"), "*.csproj", SearchOption.AllDirectories))
+        {
+            var text = File.ReadAllText(project);
+
+            Assert.DoesNotContain("Python", text, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("CSnakes", text, StringComparison.OrdinalIgnoreCase);
+        }
+
+        var shared = File.ReadAllText(
+            Path.Combine(RepoRoot(), "src", "InferHub.Shared", "InferHub.Shared.csproj"));
+
+        Assert.DoesNotContain("PackageReference", shared);
+    }
+
     // ---- helpers ----------------------------------------------------------------------------
 
     private static string BundledDockerfile()
         => File.ReadAllText(Path.Combine(RepoRoot(), "src", "InferHub.Node", "Dockerfile.ollama"));
+
+    private static string ToolsDockerfile()
+        => File.ReadAllText(Path.Combine(RepoRoot(), "src", "InferHub.Node", "Dockerfile.tools"));
+
+    private static string ToolsInstructions()
+        => string.Join(
+            '\n',
+            ToolsDockerfile().Split('\n').Where(line => !line.TrimStart().StartsWith('#')));
+
+    private static string OllamaVersionOf(string dockerfile)
+        => System.Text.RegularExpressions.Regex.Match(dockerfile, @"ARG OLLAMA_VERSION=(\S+)").Groups[1].Value;
 
     private static string BundledInstructions()
         => string.Join(

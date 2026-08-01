@@ -7,6 +7,16 @@ using System.Text.Json;
 //
 //   inferhub-echo-worker [--no-ready] [--exit-on-start] [--slow-ready <ms>]
 //                        [--capabilities <kind>:<model>,<model>;<kind>:<model>]
+//                        [--audio-fail <code>] [--audio-no-segments]
+//
+// Phase 42 added two behaviours that are chosen by the request's *capability* rather than by a
+// "behaviour" field, because the audio edge builds the worker payload itself and a client cannot
+// reach into it:
+//
+//   transcribe  answer with a canned verbose transcript (text + segments + duration)
+//   speak       write a real RIFF wav into the scratch directory and name it back; refuse any
+//               response_format other than wav/pcm with an `unsupported_format` code, which is how
+//               a box with no ffmpeg behaves and is what the edge renders as a 400
 //
 // Behaviours are asked for in the request payload's "behaviour" field:
 //   (absent)   echo the payload back
@@ -110,6 +120,14 @@ async Task HandleRequestAsync(JsonElement frame)
         && payload.TryGetProperty("behaviour", out var b)
             ? b.GetString()
             : null;
+
+    var capability = frame.TryGetProperty("capability", out var kind) ? kind.GetString() : null;
+
+    if (behaviour is null && capability is "transcribe" or "speak")
+    {
+        await HandleAudioAsync(id, capability, payload, frame);
+        return;
+    }
 
     switch (behaviour)
     {
@@ -256,11 +274,150 @@ async Task HandleRequestAsync(JsonElement frame)
     }
 }
 
+// ---- phase 42: the audio behaviours ------------------------------------------------------------
+
+async Task HandleAudioAsync(string? id, string capability, JsonElement payload, JsonElement frame)
+{
+    if (arguments.AudioFailCode is { } code)
+    {
+        // A worker naming which *kind* of failure this was. The edge renders a 400 for a client
+        // error and a 502 for anything else, without ever reading this message.
+        Send(new { type = "error", id, code, message = $"the echo worker was asked to fail with {code}" });
+        return;
+    }
+
+    if (capability == "transcribe")
+    {
+        // A canned verbose transcript. The distinctive phrase is what AudioPrivacyTests looks for
+        // in the logs and the ledger — it must appear in the response and nowhere else.
+        var segments = arguments.AudioNoSegments
+            ? Array.Empty<object>()
+            :
+            [
+                new { id = 0, start = 0.0, end = 1.5, text = " The quick brown fox" },
+                new { id = 1, start = 1.5, end = 3.25, text = " jumps over the lazy dog." }
+            ];
+
+        Send(new
+        {
+            type = "result",
+            id,
+            payload = new
+            {
+                text = "The quick brown fox jumps over the lazy dog.",
+                language = "en",
+                duration = 3.25,
+                segments
+            }
+        });
+
+        return;
+    }
+
+    var format = payload.ValueKind is JsonValueKind.Object
+        && payload.TryGetProperty("response_format", out var f)
+            ? f.GetString() ?? "wav"
+            : "wav";
+
+    if (format is not ("wav" or "pcm"))
+    {
+        // Exactly how a box without ffmpeg behaves: it refuses and names what it can do. Never a
+        // substitution — an mp3 that is really a wav is a corrupted file with a confident content
+        // type, and the caller finds out in a media player.
+        Send(new
+        {
+            type = "error",
+            id,
+            code = "unsupported_format",
+            message = $"this worker cannot produce '{format}'. It can produce: wav, pcm"
+        });
+
+        return;
+    }
+
+    var scratch = frame.TryGetProperty("scratch", out var s) ? s.GetString() : null;
+
+    if (scratch is null)
+    {
+        Send(new { type = "error", id, message = "no scratch directory" });
+        return;
+    }
+
+    var name = format == "wav" ? "speech.wav" : "speech.pcm";
+    var path = Path.Combine(scratch, name);
+    await File.WriteAllBytesAsync(path, format == "wav" ? Wav.Silence(0.25) : Wav.Pcm(0.25));
+
+    Send(new
+    {
+        type = "result",
+        id,
+        payload = new { format, characters = payload.TryGetProperty("input", out var i) ? (i.GetString() ?? "").Length : 0 },
+        files = new[]
+        {
+            new { name, mediaType = format == "wav" ? "audio/wav" : "audio/pcm", path }
+        }
+    });
+}
+
+/// <summary>
+/// A real RIFF/WAVE file, not a byte array with a plausible length. A test that asserts on
+/// `Content-Length` passes just as happily on 44 bytes of zeros, and "the header is actually a
+/// header" is the one thing an automated audio assertion can honestly check.
+/// </summary>
+internal static class Wav
+{
+    private const int SampleRate = 16000;
+
+    public static byte[] Pcm(double seconds)
+    {
+        var samples = (int)(SampleRate * seconds);
+        var pcm = new byte[samples * 2];
+
+        // A quiet 440 Hz tone rather than silence: a file of zeros compresses to nothing and would
+        // hide a truncation bug behind a plausible byte count.
+        for (var i = 0; i < samples; i++)
+        {
+            var value = (short)(Math.Sin(2 * Math.PI * 440 * i / SampleRate) * 3000);
+            pcm[i * 2] = (byte)(value & 0xFF);
+            pcm[(i * 2) + 1] = (byte)((value >> 8) & 0xFF);
+        }
+
+        return pcm;
+    }
+
+    public static byte[] Silence(double seconds)
+    {
+        var pcm = Pcm(seconds);
+        using var buffer = new MemoryStream();
+        using var writer = new BinaryWriter(buffer);
+
+        writer.Write("RIFF"u8);
+        writer.Write(36 + pcm.Length);
+        writer.Write("WAVE"u8);
+        writer.Write("fmt "u8);
+        writer.Write(16);
+        writer.Write((short)1);              // PCM
+        writer.Write((short)1);              // mono
+        writer.Write(SampleRate);
+        writer.Write(SampleRate * 2);        // byte rate
+        writer.Write((short)2);              // block align
+        writer.Write((short)16);             // bits per sample
+        writer.Write("data"u8);
+        writer.Write(pcm.Length);
+        writer.Write(pcm);
+        writer.Flush();
+
+        return buffer.ToArray();
+    }
+}
+
 internal sealed record Args(
     bool NoReady,
     bool ExitOnStart,
     int SlowReadyMs,
-    object[]? Capabilities)
+    object[]? Capabilities,
+    string? AudioFailCode = null,
+    bool AudioNoSegments = false)
 {
     public static Args Parse(string[] args)
     {
@@ -268,6 +425,8 @@ internal sealed record Args(
         var exitOnStart = false;
         var slowReadyMs = 0;
         object[]? capabilities = null;
+        string? audioFailCode = null;
+        var audioNoSegments = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -285,10 +444,16 @@ internal sealed record Args(
                 case "--capabilities" when i + 1 < args.Length:
                     capabilities = ParseCapabilities(args[++i]);
                     break;
+                case "--audio-fail" when i + 1 < args.Length:
+                    audioFailCode = args[++i];
+                    break;
+                case "--audio-no-segments":
+                    audioNoSegments = true;
+                    break;
             }
         }
 
-        return new Args(noReady, exitOnStart, slowReadyMs, capabilities);
+        return new Args(noReady, exitOnStart, slowReadyMs, capabilities, audioFailCode, audioNoSegments);
     }
 
     /// <summary>"transcribe:a,b;speak:c" → the capability list a ready frame carries.</summary>

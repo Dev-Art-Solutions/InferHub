@@ -126,8 +126,13 @@ public static class ToolManifestLoader
             return false;
         }
 
+        // `models: []` is a *deliberate* open set (phase 42) and `models` omitted is a mistake, so
+        // the two are distinguished by null-vs-empty rather than collapsed. An open set means "ask
+        // the worker which ones it found" — the TTS worker's models are voice files an operator
+        // dropped into a directory, and no list written in advance survives the first new voice.
+        // The kind is still the ceiling: see ToolWorkerPool.Narrow.
         var capabilities = (file.Capabilities ?? [])
-            .Where(c => !string.IsNullOrWhiteSpace(c.Kind) && c.Models is { Count: > 0 })
+            .Where(c => !string.IsNullOrWhiteSpace(c.Kind) && c.Models is not null)
             .Select(c => new NodeCapability(
                 c.Kind!.Trim(),
                 c.Models!
@@ -135,12 +140,11 @@ public static class ToolManifestLoader
                     .Select(m => m.Trim())
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToArray()))
-            .Where(c => c.Models.Count > 0)
             .ToArray();
 
         if (capabilities.Length == 0)
         {
-            error = "'capabilities' must declare at least one { kind, models } pair — a tool that claims nothing can never be routed to.";
+            error = "'capabilities' must declare at least one { kind, models } pair — a tool that claims nothing can never be routed to. Use \"models\": [] to let the worker report what it found.";
             return false;
         }
 

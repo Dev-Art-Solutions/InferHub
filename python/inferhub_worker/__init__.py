@@ -35,6 +35,7 @@ Three rules worth knowing before you write one:
 from __future__ import annotations
 
 import json
+import os
 import signal
 import sys
 import traceback
@@ -43,7 +44,24 @@ from typing import Any, Callable, Iterable, Sequence
 
 PROTOCOL_VERSION = 1
 
-__all__ = ["PROTOCOL_VERSION", "File", "Request", "ToolError", "Worker"]
+__all__ = [
+    "PROTOCOL_VERSION",
+    "ERROR_INVALID_REQUEST",
+    "ERROR_UNSUPPORTED_FORMAT",
+    "ERROR_MODEL_UNAVAILABLE",
+    "File",
+    "Request",
+    "ToolError",
+    "Worker",
+]
+
+# Error codes the node understands (phase 42). A code is how a worker says which *kind* of failure
+# this was, so the HTTP edge can pick a status without reading the message: the two below marked
+# "client" become a 400, everything else stays a 502. Without them, "this box has no ffmpeg so I
+# cannot make you an mp3" reaches the caller as a server error and they file a bug about the server.
+ERROR_INVALID_REQUEST = "invalid_request"
+ERROR_UNSUPPORTED_FORMAT = "unsupported_format"
+ERROR_MODEL_UNAVAILABLE = "model_unavailable"
 
 
 @dataclass(frozen=True)
@@ -78,9 +96,46 @@ class Request:
         if self._worker is not None:
             self._worker._send({"type": "chunk", "id": self.id, "payload": payload})
 
+    # ---- file handoff (phase 42) ---------------------------------------------------------------
+    #
+    # Binary never travels on the pipe. Inputs arrive as paths in ``files``; outputs are written
+    # into ``scratch`` and named back. The node deletes the whole directory when the request ends —
+    # success or failure — so nothing here has to clean up after itself, and nothing here may write
+    # anywhere else: a worker that names a file outside its scratch directory is refused and logged,
+    # because reading it would turn "a tool ran" into "a tool exfiltrated a file through the
+    # client-facing API".
+
+    def input_path(self, index: int = 0) -> str:
+        """The path of the n-th uploaded file. Raises ToolError when the caller sent none."""
+        if index >= len(self.files):
+            raise ToolError("this request carried no file")
+
+        return self.files[index].path
+
+    def output(self, name: str, media_type: str = "application/octet-stream") -> File:
+        """
+        A file to write into, inside the scratch directory.
+
+        Create it, write to ``result.path``, and return it (or a list of them) alongside your
+        payload. ``name`` is what the caller sees; anything that looks like a path in it is dropped,
+        so a media type from a request can never become a directory traversal.
+        """
+        safe = os.path.basename(name) or "output"
+        return File(safe, media_type, os.path.join(self.scratch, safe))
+
 
 class ToolError(Exception):
-    """Raise this for a failure the caller should see. Anything else is caught and reported too."""
+    """
+    Raise this for a failure the caller should see. Anything else is caught and reported too.
+
+    ``code`` is optional and is one of the ``ERROR_*`` constants above. Use it when the failure is
+    the *request's* fault — an unproducible format, a voice that does not exist — so the caller gets
+    a 400 with your sentence in it rather than a 502 that reads as "the server is broken".
+    """
+
+    def __init__(self, message: str, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 Handler = Callable[[Request], Any]
@@ -162,7 +217,12 @@ class Worker:
         try:
             answer = handler(request)
         except ToolError as error:
-            self._send({"type": "error", "id": request.id, "message": str(error)})
+            frame: dict[str, Any] = {"type": "error", "id": request.id, "message": str(error)}
+
+            if getattr(error, "code", None):
+                frame["code"] = error.code
+
+            self._send(frame)
             return
         except Exception as error:  # noqa: BLE001 - a worker must never die on one bad request
             traceback.print_exc(file=sys.stderr)

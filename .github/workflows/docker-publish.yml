@@ -59,6 +59,21 @@ jobs:
               type=raw,value=gpu,suffix=
             reclaim-disk: true
 
+          # The tools image (phase 42): the bundled node plus a Python venv, Whisper and Piper.
+          #
+          # amd64 only, for phase-39 D9's reasons, and `mode=min` for phase-39's cache reason with
+          # one more image sharing the same 10 GB GHA budget. ~6 GB, which is why reclaim-disk is on
+          # — a stock runner has ~14 GB free and this build extracts an Ollama tarball *and*
+          # resolves ~1.5 GB of Python wheels.
+          - name: inferhub-node
+            scope: node-tools
+            dockerfile: src/InferHub.Node/Dockerfile.tools
+            platforms: linux/amd64
+            cache: min
+            flavor: suffix=-tools
+            extra-tags: type=raw,value=tools,suffix=
+            reclaim-disk: true
+
     steps:
       - uses: actions/checkout@v4
 

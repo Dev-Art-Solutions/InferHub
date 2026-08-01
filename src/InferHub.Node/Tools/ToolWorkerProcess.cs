@@ -98,6 +98,7 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
     /// </summary>
     public static async Task<ToolWorkerProcess> StartAsync(
         ToolManifest manifest,
+        IReadOnlyDictionary<string, string> nodeEnvironment,
         ILogger logger,
         CancellationToken cancellationToken)
     {
@@ -125,7 +126,7 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
             startInfo.WorkingDirectory = manifest.WorkingDirectory;
         }
 
-        ApplyEnvironment(startInfo, manifest);
+        ApplyEnvironment(startInfo, manifest, nodeEnvironment);
 
         var process = new Process { StartInfo = startInfo };
 
@@ -322,7 +323,10 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
         lifetime.Dispose();
     }
 
-    private static void ApplyEnvironment(ProcessStartInfo startInfo, ToolManifest manifest)
+    private static void ApplyEnvironment(
+        ProcessStartInfo startInfo,
+        ToolManifest manifest,
+        IReadOnlyDictionary<string, string> nodeEnvironment)
     {
         // ProcessStartInfo pre-populates Environment from *this* process. Clearing it is the whole
         // of the leak fix, and it has to happen before anything is added back.
@@ -338,6 +342,14 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
             {
                 startInfo.Environment[name] = value;
             }
+        }
+
+        // The node's own consent flags, added before the manifest so a manifest can still override
+        // one deliberately. They are not inherited — nothing is (see the Clear above); they are
+        // *stated*, which is why a tool cannot acquire one by being started in the right shell.
+        foreach (var (name, value) in nodeEnvironment)
+        {
+            startInfo.Environment[name] = value;
         }
 
         foreach (var (name, value) in manifest.Environment)

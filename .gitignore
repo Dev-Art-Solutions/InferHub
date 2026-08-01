@@ -70,3 +70,4 @@ secrets.json
 # (VectorStore:DataDirectory and Vector:ReplicaDirectory both default under ./data)
 src/*/data/
 .claude/settings.json
+__pycache__/

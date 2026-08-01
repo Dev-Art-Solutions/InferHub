@@ -124,6 +124,12 @@ platform needs to start a process at all (`SystemRoot`, `COMSPEC`, `PATHEXT`, `T
 
 Everything else is dropped. If you need a variable, name it in the manifest's `env`.
 
+One variable the **node** states into your environment rather than passing through:
+`INFERHUB_ALLOW_MODEL_DOWNLOAD` (`1` or `0`, from `Tools:AllowModelDownload`, v3.10+). If your
+worker fetches weights on first use, check it — and when it is `0`, fail the request with a message
+naming the flag *and the exact pre-fetch command*, because an operator who is told only "download is
+off" has to go and find out what the command was.
+
 ### `command` is an argv array. There is no shell.
 
 ```jsonc
@@ -140,7 +146,7 @@ model, options and paths all arrive in the protocol, on stdin, after you are alr
 | Field | Default | Meaning |
 |---|---|---|
 | `id` | required | What `Tools:Allowed` names. Unique per directory. |
-| `capabilities` | required | `[{ "kind": "...", "models": [...] }]`. The ceiling; `ready` may narrow it. |
+| `capabilities` | required | `[{ "kind": "...", "models": [...] }]`. The ceiling; `ready` may narrow it. **`"models": []` is an open set** (v3.10+) — the kind is still granted here, and the worker's `ready` decides the names. Omitting `models` is still a refusal. |
 | `command` | required | argv array. Element 0 is the program. |
 | `workdir` | — | Working directory for the child. |
 | `env` | `{}` | Extra environment, on top of the pass-through list above. |
@@ -163,3 +169,70 @@ take a node's inference offline.
 | Failed to start 3× in 10 minutes | The pool gives up, logs once at Error, **withdraws your capabilities from the node's registration** so the coordinator stops routing that work here — and keeps probing every minute, so a fix is noticed without a restart. |
 | Returned a file outside `scratch` | Refused and logged. That path is not read. |
 | Returned files to a `stream=true` request | The job fails naming the limitation, rather than dropping them. |
+
+### Saying whose fault it was (v3.10+)
+
+By default a worker's `error` frame becomes a **502** — the caller reads it as "the server is
+broken". Sometimes that is a lie: a box with no `ffmpeg` asked for an mp3 has a *request* problem,
+and the caller can fix it by asking for a wav. So an `error` frame may carry a `code`:
+
+```python
+from inferhub_worker import ToolError, ERROR_UNSUPPORTED_FORMAT
+
+raise ToolError("this worker cannot produce 'mp3'. It can produce: wav, pcm",
+                ERROR_UNSUPPORTED_FORMAT)
+```
+
+| Code | The edge renders |
+|---|---|
+| `invalid_request` | `400` |
+| `unsupported_format` | `400` — and **your message must name what you *can* do** |
+| `model_unavailable` | `502` — nothing the caller sends fixes it; name the fix for whoever runs the box |
+| anything else, or none | `502` |
+
+The code exists so the edge never reads your error *text* to pick a status. Keep the list short: a
+code nobody renders is a code that is wrong by the time somebody reads it.
+
+## The two shipped workers (v3.10+)
+
+`tools/whisper_worker.py` and `tools/piper_worker.py`, with `manifests/whisper.json` and
+`manifests/piper.json`, are what the `ghcr.io/dev-art-solutions/inferhub-node:tools` image runs.
+They are also the worked examples: between them they use every part of the protocol — file in, file
+out, capability narrowing at handshake, a structured refusal with a code, and stderr as the log.
+
+```bash
+# on a plain node, or bare metal — the runtime does not care where the interpreter came from
+python -m venv /opt/inferhub/venv
+/opt/inferhub/venv/bin/pip install -r requirements-tools.txt
+cp -r inferhub_worker tools manifests /opt/inferhub/
+```
+
+Then `Tools:Enabled=true`, `Tools:Allowed=["whisper","piper"]`,
+`Tools:ManifestDirectory=/opt/inferhub/manifests`, and — if you want Whisper to fetch its own
+weights — `Tools:AllowModelDownload=true`.
+
+**They answer `/v1/audio/transcriptions` and `/v1/audio/speech`**, on a hub and on a solo node
+alike. The worker never sees `response_format` for transcription: it always returns
+`{text, language, duration, segments}` and the edge produces `json`/`text`/`srt`/`vtt`/
+`verbose_json` from it, so no worker author writes a subtitle timestamp.
+
+### `whisper_worker.py`
+
+Models are `whisper-tiny` … `whisper-large-v3-turbo`. **It narrows at handshake**: with
+`INFERHUB_ALLOW_MODEL_DOWNLOAD=0` it offers only the sizes already in `HF_HOME`, so the fleet never
+routes a job at a box that would have to reach the internet to answer it. Device is CUDA when
+`ctranslate2` can see one and CPU otherwise, **and it logs which** — four gigabytes of CUDA runtime,
+a dropped `--gpus` flag and a silent CPU fallback is an afternoon spent blaming the model.
+
+### `piper_worker.py`
+
+Voices are `.onnx` + `.onnx.json` pairs under `INFERHUB_PIPER_VOICES`; the model name is the file's
+stem. Its manifest declares `"models": []`, which is an **open set**: the worker reports what it
+found. That is the one place a worker's report may add a model rather than only remove one, and it
+is bounded — the manifest still decides that this tool may `speak` at all, and every name reported
+is a file the operator put on the box. There is no list anybody could write in advance that would
+survive the first new voice.
+
+`wav` and `pcm` are native; `mp3`, `opus` and `flac` need `ffmpeg` on the box, and without it the
+worker refuses with `unsupported_format` naming what it can do rather than handing back a wav with
+an mp3's content type.
