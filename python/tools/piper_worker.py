@@ -23,7 +23,6 @@ confident content type, found three days later in a media player.
 from __future__ import annotations
 
 import glob
-import json
 import os
 import shutil
 import subprocess
@@ -98,15 +97,22 @@ def load(name: str):
     return _loaded[name]
 
 
-def sample_rate(voice_path: str) -> int:
-    with open(voice_path + ".json", "r", encoding="utf-8") as handle:
-        return int(json.load(handle).get("audio", {}).get("sample_rate", 22050))
+def synthesise(voice, text: str, wav_path: str, speed: float | None) -> None:
+    """
+    Piper writes a wav; the raw PCM and every encoded format are derived from it.
 
+    ``synthesize_wav`` sets the sample rate, width and channel count from the first chunk itself,
+    which is why nothing here reads the voice's config to do it — a hand-set rate that disagrees
+    with the model produces a file that plays at the wrong pitch and passes every byte-count
+    assertion anyone writes.
+    """
+    from piper import SynthesisConfig
 
-def synthesise(voice, text: str, wav_path: str) -> None:
-    """Piper writes a wav; the raw PCM and every encoded format are derived from it."""
+    # length_scale is phoneme duration: < 1 is faster. OpenAI's `speed` is the reciprocal.
+    config = SynthesisConfig(length_scale=1.0 / speed) if speed else None
+
     with wave.open(wav_path, "wb") as output:
-        voice.synthesize(text, output)
+        voice.synthesize_wav(text, output, syn_config=config)
 
 
 def encode(wav_path: str, target: str, fmt: str) -> None:
@@ -143,7 +149,7 @@ def speak(request: Request):
     voice = load(name)
 
     wav = request.output("speech.wav", "audio/wav")
-    synthesise(voice, text, wav.path)
+    synthesise(voice, text, wav.path, payload.get("speed"))
 
     if fmt == "wav":
         log(f"synthesised {len(text)} characters with {name} as wav")

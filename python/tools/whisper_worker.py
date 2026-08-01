@@ -55,6 +55,10 @@ MODELS = {
     "whisper-large-v3-turbo": "large-v3-turbo",
 }
 
+#: The manifest names every key above, so this and `python/manifests/whisper.json` have to agree.
+#: They are checked against each other at handshake by nothing at all — a name here that the
+#: manifest does not grant is simply never routed, which is the safe direction.
+
 _loaded: dict[str, object] = {}
 
 
@@ -88,13 +92,30 @@ def device() -> tuple[str, str]:
 
 
 def cached(size: str) -> bool:
-    """Whether the weights for this size are already on disk."""
+    """
+    Whether the weights for this size are already on disk.
+
+    It asks **faster-whisper's own name → repo map** rather than assembling a cache directory name
+    by hand: the repos are not all under one owner (`large-v3-turbo` is `mobiuslabsgmbh/…`, the rest
+    are `Systran/…`), so a hand-built `models--Systran--faster-whisper-{size}` would report "not
+    cached" for a model that is sitting right there — and with downloads off that means a node
+    silently refuses to offer a capability it has.
+    """
+    try:
+        from faster_whisper.utils import _MODELS
+    except Exception:  # noqa: BLE001 - a probe must never be why a worker fails to start
+        return False
+
+    repo = _MODELS.get(size)
+
+    if repo is None:
+        return False
+
     root = cache_root()
+    needle = "models--" + repo.replace("/", "--")
 
     if not os.path.isdir(root):
         return False
-
-    needle = f"models--Systran--faster-whisper-{size}"
 
     for current, directories, _ in os.walk(root):
         if needle in directories or os.path.basename(current) == needle:
@@ -136,7 +157,15 @@ def load(model: str):
     log(f"loading {model} ({size}) on {where}/{compute}")
 
     try:
-        _loaded[model] = WhisperModel(size, device=where, compute_type=compute, download_root=None)
+        # local_files_only mirrors the consent into the library itself, so a bug in the cache check
+        # above cannot turn "downloads are off" into a silent download. The flag is the contract;
+        # this makes it enforceable rather than advisory.
+        _loaded[model] = WhisperModel(
+            size,
+            device=where,
+            compute_type=compute,
+            local_files_only=not allow_download(),
+        )
     except Exception as error:  # noqa: BLE001
         raise ToolError(f"could not load '{model}': {type(error).__name__}: {error}") from error
 
@@ -159,6 +188,10 @@ def transcribe(request: Request):
         initial_prompt=prompt,
         temperature=float(temperature) if temperature is not None else 0.0,
         vad_filter=False,
+        # Explicit, because the library's default flipped to True and the edge builds SRT and
+        # WebVTT cues out of these timings. A subtitle file whose cues are all approximately right
+        # is the failure nobody reports as a bug — it just looks like a bad transcription.
+        without_timestamps=False,
     )
 
     # faster-whisper yields lazily; the transcription does not actually happen until this loop.
