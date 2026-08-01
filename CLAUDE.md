@@ -1801,6 +1801,44 @@ because a client whose only limit is `TokensPerDay` could otherwise transcribe a
 - **No `/v1/audio/translations`.** One flag on the same worker; shipping an untested surface to look
   complete is how a feature list starts lying.
 
+> **v3.10.0 was dead on arrival, in three separate ways, and v3.10.1 fixed it the same night.**
+> The fifth time (v2.5.1, v3.0.1, v3.5.1, phase-32 D7) — every one found by pulling the published
+> image, none by a test. The three that are worth carrying forward as rules:
+>
+> 1. **SignalR's default `MaximumReceiveMessageSize` is 32 KB, and exceeding it kills the
+>    connection rather than failing the message.** Every real `/v1/audio/speech` through a
+>    coordinator was a 500 that also dropped the node. Phase 41 had verified attachments across a
+>    real wire — with a **16-byte** file, four orders of magnitude under the cap, which proved the
+>    plumbing and nothing about the size.
+>    [NodeHubLimits](src/InferHub.Coordinator/Hubs/NodeHubLimits.cs) now *derives* the wire cap from
+>    `Tools:MaxAttachmentBytes` (base64 is 4/3, plus an envelope), because two numbers that have to
+>    agree are two numbers that will not. **When a phase adds bytes to the wire, test a payload past
+>    32 KB or the wire test is decoration.**
+> 2. **The interpreter that builds a venv must be the interpreter that runs it.** The venv was built
+>    in a `debian:trixie-slim` stage (Python 3.13) and copied into the `aspnet:10.0` runtime (3.12);
+>    site-packages live under `lib/python3.13/` and nothing was importable. Everything *looked*
+>    right — manifests loaded, `/api/status` answered — and the first transcription would have died
+>    on an `import`. It is now built in the final stage, and `Dockerfile.tools` **asserts the import
+>    at build time**, which is the only reason this cannot ship again.
+> 3. **An open model set has to start a worker eagerly, or it deadlocks.** Nothing declares the
+>    capability until a worker reports; no worker starts until a request is routed; nothing routes
+>    to an undeclared capability. A TTS node with a voice on its volume refused `speak` forever.
+>
+> And one that is a design lesson rather than a bug: **a `libcuda` the driver injects is not a CUDA
+> runtime.** CTranslate2 needs `libcublas`/`libcudart`, which phase-39 D1 got for free because
+> Ollama ships its own — they were already in the image, just off the worker's loader path. The
+> Whisper manifest's `env` points `LD_LIBRARY_PATH` at them, and the worker now **falls back to the
+> CPU loudly** rather than failing the job: phase-39 D6's line, that a card which cannot be used is
+> the operator's problem while a failed job is everyone's.
+
+> **A validator written for a hand-edited file is wrong for an image.** `Tools:Allowed` refused a
+> blank entry, on the good reasoning that a blank id hides a typo behind an index. But an array that
+> arrives from an image's environment cannot have an element *removed* — `-e Tools__Allowed__1=` is
+> the only lever `docker run` gives you — so the `:tools` image could not be run with one tool, or
+> with none: `-e Tools__Enabled=false` failed startup and no second flag helped. Blanks are ignored
+> now. Nothing is hidden by it: a manifest not in the list is still loaded and still logged **by
+> name** as not started, which is the signal the strict check was standing in for.
+
 **Rule 5 survived again.** Phase 42 added **zero** new `PackageReference`s, `InferHub.Shared.csproj`
 is still empty, and there is no Python in any `.csproj` — the Python is a `pip install` in one
 Dockerfile, which is the same category as phase-39's `curl`.
