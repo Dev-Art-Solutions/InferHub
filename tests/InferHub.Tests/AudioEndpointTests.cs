@@ -214,6 +214,39 @@ public class AudioEndpointTests
         Assert.Equal(StatusCodes.Status401Unauthorized, context.Response.StatusCode);
     }
 
+    /// <summary>
+    /// Found by pulling the published <c>:tools</c> image and looking at it, which is the only way
+    /// this class of thing is ever found. A tools-only box — no Ollama, a running Whisper — reported
+    /// <c>capabilities: []</c> on its own status page while happily serving transcriptions, because
+    /// solo status asked the backend's models and never the tool runtime. That page is the one an
+    /// operator checks to find out why nothing is being routed to a node.
+    /// </summary>
+    [Fact]
+    public async Task SoloStatusReportsTheToolRuntimesCapabilities()
+    {
+        var (solo, cleanup) = await AudioFixture.SoloAsync();
+
+        try
+        {
+            var response = await solo.Client.GetAsync("/api/status");
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+            var capabilities = document.RootElement
+                .GetProperty("capabilities")
+                .EnumerateArray()
+                .Select(kind => kind.GetString())
+                .ToArray();
+
+            Assert.Contains("transcribe", capabilities);
+            Assert.Contains("speak", capabilities);
+        }
+        finally
+        {
+            await solo.DisposeAsync();
+            cleanup.Dispose();
+        }
+    }
+
     // ---- metering (D7) --------------------------------------------------------------------------
 
     [Fact]

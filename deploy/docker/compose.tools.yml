@@ -47,8 +47,15 @@ services:
 
       LocalApi__Retrieval__Enabled: "true"
 
-      # Transcription only: drop `piper` from the allow-list. The manifest stays on disk, the node
-      # logs that it was not started, and no Python process is ever spawned for it (phase-41 D2).
+      # Transcription only: blank `piper` out of the allow-list. An entry set to "" is ignored —
+      # which is the only lever an environment variable gives you over an array element the image
+      # already filled in. The manifest stays on disk, the node logs by name that it was not
+      # started, and no Python process is ever spawned for it (phase-41 D2).
+      # Tools__Allowed__1: ""
+      #
+      # No tools at all — this image as an ordinary node — needs all three:
+      # Tools__Enabled: "false"
+      # Tools__Allowed__0: ""
       # Tools__Allowed__1: ""
 
       # Air-gapped, or you would rather pre-fetch: turn the download off and the worker fails the

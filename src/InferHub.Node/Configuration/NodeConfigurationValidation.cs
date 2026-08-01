@@ -174,14 +174,28 @@ public sealed class ToolOptionsValidator : IValidateOptions<ToolOptions>
             }
         }
 
+        // Blank entries are counted out everywhere below, and that is a decision (phase 42).
+        //
+        // A list that arrives from an image's environment cannot have an element *removed* — the
+        // only thing an operator can do to `Tools__Allowed__1` is set it to "". Counting a blank as
+        // a named tool made the `:tools` image impossible to run with tools off, or with only one
+        // of the two: `-e Tools__Enabled=false` failed startup with "Allowed names 2 tool(s)",
+        // and there was no second command that would have helped. Found by trying to use the
+        // published image as an ordinary chat node.
+        //
+        // Nothing is hidden by accepting it: a manifest that is not in the list is still loaded and
+        // still logged by name as "not started", which is the signal the strict check was standing
+        // in for.
+        var named = options.Allowed.Count(id => !string.IsNullOrWhiteSpace(id));
+
         if (!options.Enabled)
         {
             // Allowing tools without enabling them is a common half-configuration, and it is
             // silent: the operator reads their own Allowed list back and concludes it is on.
-            if (options.Allowed.Count > 0)
+            if (named > 0)
             {
                 failures.Add(
-                    $"{ToolOptions.SectionName}:{nameof(ToolOptions.Allowed)} names {options.Allowed.Count} tool(s) but {ToolOptions.SectionName}:{nameof(ToolOptions.Enabled)} is false, so none of them can run. Turn it on, or remove the list.");
+                    $"{ToolOptions.SectionName}:{nameof(ToolOptions.Allowed)} names {named} tool(s) but {ToolOptions.SectionName}:{nameof(ToolOptions.Enabled)} is false, so none of them can run. Turn it on, or clear the list (an entry set to \"\" is ignored, which is how you clear one that came from an image).");
             }
 
             return Result(failures);
@@ -197,11 +211,9 @@ public sealed class ToolOptionsValidator : IValidateOptions<ToolOptions>
             failures.Add($"{ToolOptions.SectionName}:{nameof(ToolOptions.ScratchDirectory)} must be set.");
         }
 
-        if (options.Allowed.Any(string.IsNullOrWhiteSpace))
-        {
-            failures.Add(
-                $"{ToolOptions.SectionName}:{nameof(ToolOptions.Allowed)} contains an empty entry. A blank id matches no manifest and hides a typo behind an index.");
-        }
+        // `Enabled` with nothing named stays legal: it is a documented way to stage a rollout, and
+        // the runtime says so at boot. The blank-entry refusal that used to live here is gone for
+        // the reason above — it was the only way to drop a tool an image had named.
 
         // Deliberately NOT a failure: an enabled runtime with an empty Allowed list runs nothing,
         // and that is a legitimate way to stage a rollout — the runtime is registered, the

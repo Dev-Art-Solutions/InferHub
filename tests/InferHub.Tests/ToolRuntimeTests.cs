@@ -73,7 +73,7 @@ public class ToolRuntimeTests
         var died = await runtime.RunAsync("""{"model":"echo","behaviour":"exit","code":7}""");
 
         Assert.False(died.Success);
-        Assert.Contains("exited before answering", died.Error);
+        Assert.Contains("stopped answering", died.Error);
 
         var next = await runtime.RunAsync("""{"model":"echo","restarted":true}""");
         Assert.True(next.Success);
@@ -316,6 +316,57 @@ public class ToolRuntimeTests
         var declared = new[] { new InferHub.Shared.Contracts.NodeCapability("speak", []) };
 
         Assert.Empty(ToolWorkerPool.Narrow(declared, reported: null));
+    }
+
+    /// <summary>
+    /// …which is exactly why an open set must start one worker eagerly, and this is the deadlock
+    /// that proves it. <b>Found by running the published image:</b> nothing declares the capability
+    /// until a worker has reported, no worker starts until a request is routed, and no request is
+    /// routed to a capability nobody declares — so a TTS node with a voice on its volume answered
+    /// "this node does not provide 'speak'" forever, with every test green.
+    /// </summary>
+    [Fact]
+    public async Task AnOpenModelSetStartsOneWorkerEagerlyEvenWithMinWorkersZero()
+    {
+        using var scratch = new ToolWorkerFixture.TempDirectory();
+
+        var manifest = ToolWorkerFixture.Manifest(
+            kind: "speak",
+            models: [],
+            minWorkers: 0,
+            arguments: ["--capabilities", "speak:en_US-amy"]);
+
+        var options = ToolWorkerFixture.Options(scratch.Path, "echo");
+        var pool = new ToolWorkerPool(manifest, options, TimeProvider.System, NullLogger.Instance);
+
+        await pool.StartAsync(CancellationToken.None);
+
+        var capability = Assert.Single(pool.Capabilities);
+        Assert.Equal("speak", capability.Kind);
+        Assert.Equal(["en_US-amy"], capability.Models);
+
+        await pool.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task AClosedModelSetStillStartsNothingUntilItIsAsked()
+    {
+        // The eager start is scoped to the case that needs it. A Whisper pool whose manifest names
+        // its models must not load weights at boot on every node in the fleet.
+        using var scratch = new ToolWorkerFixture.TempDirectory();
+
+        var pool = new ToolWorkerPool(
+            ToolWorkerFixture.Manifest(kind: "transcribe", models: ["whisper-small"], minWorkers: 0),
+            ToolWorkerFixture.Options(scratch.Path, "echo"),
+            TimeProvider.System,
+            NullLogger.Instance);
+
+        await pool.StartAsync(CancellationToken.None);
+
+        Assert.Equal(["whisper-small"], Assert.Single(pool.Capabilities).Models);
+        Assert.Equal(0, pool.LiveWorkerCount);
+
+        await pool.DisposeAsync();
     }
 
     [Fact]

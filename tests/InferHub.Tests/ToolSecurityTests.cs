@@ -274,6 +274,32 @@ public class ToolSecurityTests
         Assert.Contains("Enabled", result.FailureMessage);
     }
 
+    /// <summary>
+    /// Blanking an entry is how an operator removes one that came from an image's environment —
+    /// there is no other way, because <c>-e Tools__Allowed__1=</c> is the only lever
+    /// <c>docker run</c> gives you over an array element.
+    /// </summary>
+    /// <remarks>
+    /// Found by trying to run the published <c>:tools</c> image as an ordinary chat node:
+    /// <c>-e Tools__Enabled=false</c> failed startup with "Allowed names 2 tool(s)", and no second
+    /// flag existed that would have helped. Nothing is hidden by accepting a blank — a manifest
+    /// that is not in the list is still loaded and still logged by name as "not started", which is
+    /// the signal the strict check was standing in for.
+    /// </remarks>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ABlankAllowedEntryIsHowYouClearOneAnImageNamed(bool enabled)
+    {
+        var result = new ToolOptionsValidator().Validate(null, new ToolOptions
+        {
+            Enabled = enabled,
+            Allowed = ["", "  "]
+        });
+
+        Assert.True(result.Succeeded);
+    }
+
     [Fact]
     public void TheDefaultOptionsAreOffAndValid()
     {

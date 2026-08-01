@@ -78,46 +78,65 @@ RUN curl -fsSL -o ollama.tar.zst \
  && zstd -d -c ollama.tar.zst | tar -x -C /opt/ollama \
  && rm ollama.tar.zst
 
-# ---------------------------------------------------------------------------------------------
-# The Python venv, in its own stage so a rebuild of the node does not re-resolve ~1.5 GB of wheels.
-#
-# The versions are pinned in python/requirements-tools.txt — read the header there before changing
-# anything, including why they are pinned by version rather than by hash.
-#
-# There is no CUDA toolkit here and there does not need to be one: ctranslate2 reaches CUDA through
-# libcuda.so.1, which the NVIDIA container runtime injects at `docker run` (phase-39 D1). An
-# nvidia/cuda base would add a third copy of a runtime nothing loads.
-# ---------------------------------------------------------------------------------------------
-FROM debian:trixie-slim AS python
-
-RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 python3-venv python3-dev build-essential \
- && rm -rf /var/lib/apt/lists/*
-
-COPY python/requirements-tools.txt /tmp/requirements-tools.txt
-
-RUN python3 -m venv /opt/inferhub/venv \
- && /opt/inferhub/venv/bin/pip install --no-cache-dir --upgrade pip \
- && /opt/inferhub/venv/bin/pip install --no-cache-dir -r /tmp/requirements-tools.txt
-
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 WORKDIR /app
 COPY --from=build /app .
 COPY --from=ollama /opt/ollama/bin/ /usr/local/bin/
 COPY --from=ollama /opt/ollama/lib/ /usr/local/lib/
 
-# python3 is the interpreter the venv was built against; ffmpeg is what turns wav into mp3/opus/flac
-# (D1). Without ffmpeg the TTS worker still answers, in wav and pcm, and REFUSES the rest by name —
-# it never substitutes, because an mp3 that is really a wav is a corrupted file with a confident
-# content type.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 ffmpeg \
- && rm -rf /var/lib/apt/lists/*
+# ---------------------------------------------------------------------------------------------
+# THE VENV IS BUILT IN THIS STAGE, AND THAT IS THE WHOLE POINT. Do not move it back out.
+#
+# The first cut built it in a `debian:trixie-slim` stage and COPYed it here, which is the obvious
+# shape — a rebuild of the node then does not re-resolve ~1.5 GB of wheels. It shipped an image in
+# which NOTHING IN THE VENV WAS IMPORTABLE: trixie has Python 3.13, this base has 3.12, and a venv's
+# site-packages live under `lib/python3.13/`, which a 3.12 interpreter does not look in. Every
+# manifest still loaded, the node still started, `/api/status` still answered — and the first
+# transcription would have died on `from faster_whisper import WhisperModel`. Found by pulling the
+# published image and running it, which is the only way this class of thing is ever found
+# (phase-21 D7, v2.5.1, v3.0.1, v3.5.1).
+#
+# So the interpreter that builds the venv is the interpreter that runs it, by construction.
+#
+# python3-venv is build-only and is purged below. All four wheels are manylinux binaries, so no
+# compiler is needed — if that ever stops being true, add build-essential to the same purge list
+# rather than to the image.
+#
+# ffmpeg is what turns wav into mp3/opus/flac (D1). Without it the TTS worker still answers, in wav
+# and pcm, and REFUSES the rest by name — it never substitutes, because an mp3 that is really a wav
+# is a corrupted file with a confident content type.
+#
+# curl is here because the documented way to add a voice is `docker exec … curl -O`, and on the
+# first run of the published image that command did not exist. Documentation that names a tool the
+# image does not have fails on the one step an operator has to perform by hand.
+#
+# There is no CUDA toolkit and there does not need to be one: ctranslate2 reaches CUDA through
+# libcuda.so.1, which the NVIDIA container runtime injects at `docker run` (phase-39 D1).
+# ---------------------------------------------------------------------------------------------
+COPY python/requirements-tools.txt /tmp/requirements-tools.txt
 
-COPY --from=python /opt/inferhub/venv /opt/inferhub/venv
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-venv ffmpeg curl ca-certificates \
+ && python3 -m venv /opt/inferhub/venv \
+ && /opt/inferhub/venv/bin/pip install --no-cache-dir --upgrade pip \
+ && /opt/inferhub/venv/bin/pip install --no-cache-dir -r /tmp/requirements-tools.txt \
+ && apt-get purge -y python3-venv \
+ && apt-get autoremove -y \
+ && rm -rf /tmp/requirements-tools.txt /var/lib/apt/lists/*
+
 COPY python/inferhub_worker/ /opt/inferhub/inferhub_worker/
 COPY python/tools/           /opt/inferhub/tools/
 COPY python/manifests/       /opt/inferhub/tools/manifests/
+
+# The assertion that makes the failure above impossible to ship again: it runs at BUILD time, in
+# the final image, with the exact interpreter and the exact PYTHONPATH the workers will use. A
+# venv that cannot import its own libraries now fails `docker build` instead of the first
+# transcription somebody attempts on a box they just set up.
+ENV PYTHONPATH=/opt/inferhub
+RUN /opt/inferhub/venv/bin/python -c \
+      "import faster_whisper, ctranslate2, piper, onnxruntime, inferhub_worker; print('tool venv ok')" \
+ && /opt/inferhub/venv/bin/python -c \
+      "import py_compile; py_compile.compile('/opt/inferhub/tools/whisper_worker.py', doraise=True); py_compile.compile('/opt/inferhub/tools/piper_worker.py', doraise=True); print('workers compile')"
 
 ENV NVIDIA_VISIBLE_DEVICES=all
 # `compute` is not decoration. The container runtime's default is `utility`, which gives a working
@@ -161,10 +180,10 @@ ENV Tools__ScratchDirectory=/data/tools/scratch
 # where before it starts, and the cache is on the volume so it happens once.
 ENV Tools__AllowModelDownload=true
 
-# PYTHONPATH is how the workers find inferhub_worker without it being a package: it is a reference
+# PYTHONPATH is set above, before the import assertion, so the assertion checks the same thing the
+# workers get. It is how they find inferhub_worker without it being a package: a reference
 # implementation that is copied or vendored, never released to PyPI (phase 41) — a published
 # package is a support surface this repository has not agreed to.
-ENV PYTHONPATH=/opt/inferhub
 ENV PYTHONUNBUFFERED=1
 
 USER app

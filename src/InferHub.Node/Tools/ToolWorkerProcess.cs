@@ -188,7 +188,7 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
             if (frame is null)
             {
                 throw new ToolWorkerDiedException(
-                    $"tool '{manifest.Id}' exited before answering (exit code {TryGetExitCode()})");
+                    $"tool '{manifest.Id}' stopped answering before this request finished{TryDescribeExit()}");
             }
 
             switch (frame.Type)
@@ -389,7 +389,7 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
             if (frame is null)
             {
                 throw new ToolStartException(
-                    $"tool '{manifest.Id}' exited during startup (exit code {TryGetExitCode()}). Its stderr is in this log under the tool's id.");
+                    $"tool '{manifest.Id}' exited during startup{TryDescribeExit()}. Its stderr is in this log under the tool's id.");
             }
 
             if (frame.Type is ToolFrameTypes.Log)
@@ -485,15 +485,24 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
         logger.Log(logLevel, "[tool {ToolId}] {Message}", manifest.Id, message);
     }
 
-    private string TryGetExitCode()
+    /// <summary>
+    /// The exit code, when there is one to report.
+    /// </summary>
+    /// <remarks>
+    /// A worker killed with SIGKILL closes its stdout before the OS has reaped it, so this path is
+    /// reached with <c>HasExited</c> still false — and the first version of the sentence read
+    /// "exited before answering (exit code still running)", which is a contradiction the reader has
+    /// to decode. Reporting nothing is better than reporting a non-answer as if it were one.
+    /// </remarks>
+    private string TryDescribeExit()
     {
         try
         {
-            return process.HasExited ? process.ExitCode.ToString() : "still running";
+            return process.HasExited ? $" (exit code {process.ExitCode})" : string.Empty;
         }
         catch (Exception)
         {
-            return "unknown";
+            return string.Empty;
         }
     }
 }

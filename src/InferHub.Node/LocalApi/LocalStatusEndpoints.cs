@@ -86,8 +86,14 @@ internal static class LocalStatusEndpoints
                 // Phase 40. In solo mode this is what the node will and will not answer — the
                 // same declaration a meshed node sends the hub, enforced here at the edge instead
                 // of by a router that is not there.
+                //
+                // The tool runtime's live capabilities are folded in, exactly as CoordinatorConnection
+                // folds them into a model report (phase 41). Without them a tools-only box — no
+                // Ollama, a running Whisper — reported `capabilities: []` while happily serving
+                // transcriptions, which is the one page an operator checks to find out why nothing
+                // is being routed to it. Found by pulling the :tools image and looking at it.
                 capabilities = Capabilities.BackendCapabilities
-                    .Declare(models, node.Capabilities)
+                    .Declare(models, node.Capabilities, services.GetService<Tools.IToolRuntime>()?.Capabilities)
                     .Select(capability => capability.Kind)
                     .ToArray(),
                 retrieval = await RetrievalBlockAsync(services, cancellationToken),

@@ -107,6 +107,68 @@ public class ToolMeshTests
         Assert.Equal("echoed 1 file(s)", await response.Content.ReadAsStringAsync());
     }
 
+    /// <summary>
+    /// The limit that is not the edge's, and the reason this test exists at all.
+    /// </summary>
+    /// <remarks>
+    /// SignalR's default <c>MaximumReceiveMessageSize</c> is <b>32 KB</b>, and exceeding it does not
+    /// fail the message — it kills the connection. Phase 41 shipped attachments and verified them
+    /// across a real wire with a <em>16-byte</em> file, four orders of magnitude under the cap, so
+    /// the wire test proved the plumbing and said nothing about the size. Found in phase 42 by
+    /// running a real mesh: a six-second synthesised wav is ~300 KB, so <em>every</em> real
+    /// <c>/v1/audio/speech</c> through a coordinator returned a 500 and dropped the node.
+    /// <c>NodeHubLimits</c> derives the wire cap from <c>Tools:MaxAttachmentBytes</c>, so the two
+    /// numbers cannot disagree. This asserts a payload comfortably past 32 KB in <b>both</b>
+    /// directions.
+    /// </remarks>
+    [Fact]
+    public async Task AnAttachmentLargerThanSignalRsDefaultMessageSizeCrossesTheWireBothWays()
+    {
+        await using var mesh = await ToolMesh.StartAsync();
+
+        // 256 KB up, which the node reads back and reports on, and a file back down.
+        var payload = new byte[256 * 1024];
+        Random.Shared.NextBytes(payload);
+
+        using var form = new MultipartFormDataContent();
+        form.Add(new StringContent("echo"), "model");
+        form.Add(new StringContent("""{"model":"echo","behaviour":"files"}"""), "payload");
+        form.Add(new ByteArrayContent(payload), "file", "big.bin");
+
+        var response = await mesh.Client.PostAsync("/api/tools/echo", form);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("echoed 1 file(s)", await response.Content.ReadAsStringAsync());
+
+        // …and the node is still connected afterwards, which is the half a 500 would hide: blowing
+        // the cap tears down the SignalR connection, so the *next* request is what tells you.
+        var next = await mesh.Client.PostAsync(
+            "/api/tools/echo",
+            JsonContent.Create(new { model = "echo", still = "connected" }));
+
+        Assert.Equal(HttpStatusCode.OK, next.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void AnAttachmentCapOfNothingLeavesSignalRsOwnDefaultAlone(long attachmentBytes)
+        => Assert.Equal(NodeHubLimits.SignalRDefault, NodeHubLimits.ReceiveSizeFor(attachmentBytes));
+
+    [Fact]
+    public void AnyRealAttachmentCapRaisesTheWireCapAboveTheDefault()
+        => Assert.True(NodeHubLimits.ReceiveSizeFor(1024) >= NodeHubLimits.SignalRDefault);
+
+    [Fact]
+    public void TheWireCapCoversTheAttachmentCapAfterBase64()
+    {
+        // 25 MB of bytes is ~33.3 MB of base64 before the envelope. A cap that forgot the encoding
+        // would be under by a third — which is a limit that works in every test with a small file.
+        var cap = NodeHubLimits.ReceiveSizeFor(ToolAttachmentLimits.DefaultMaxBytes);
+
+        Assert.True(cap > ToolAttachmentLimits.DefaultMaxBytes * 4 / 3);
+    }
+
     [Fact]
     public async Task AnAttachmentOverTheCapIsA413AtTheEdgeNamingTheLimit()
     {
@@ -235,7 +297,9 @@ public class ToolMeshTests
             builder.WebHost.UseUrls("http://127.0.0.1:0");
             builder.Logging.ClearProviders();
 
-            builder.Services.AddSignalR();
+            builder.Services.AddSignalR(o =>
+                o.MaximumReceiveMessageSize = InferHub.Coordinator.Hubs.NodeHubLimits.ReceiveSizeFor(
+                    maxAttachmentBytes ?? InferHub.Shared.Contracts.ToolAttachmentLimits.DefaultMaxBytes));
             builder.Services.AddSingleton<IOptionsMonitor<ApiKeyOptions>>(
                 new ApiKeyMonitor(new ApiKeyOptions { NodeEnrollmentSecret = Secret }));
             builder.Services.AddSingleton<NodeAuthFilter>();

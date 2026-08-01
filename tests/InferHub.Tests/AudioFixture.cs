@@ -151,7 +151,9 @@ internal sealed class AudioMesh : IAsyncDisposable
         builder.Logging.AddProvider(Logs);
         builder.Logging.SetMinimumLevel(LogLevel.Trace);
 
-        builder.Services.AddSignalR();
+        builder.Services.AddSignalR(o =>
+            o.MaximumReceiveMessageSize = InferHub.Coordinator.Hubs.NodeHubLimits.ReceiveSizeFor(
+                maxAttachmentBytes ?? InferHub.Shared.Contracts.ToolAttachmentLimits.DefaultMaxBytes));
         builder.Services.AddSingleton<IOptionsMonitor<ApiKeyOptions>>(
             new StaticApiKeys(new ApiKeyOptions { NodeEnrollmentSecret = Secret }));
         builder.Services.AddSingleton<NodeAuthFilter>();

@@ -53,6 +53,24 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
     public ToolManifest Manifest => manifest;
 
     /// <summary>
+    /// Whether any declared capability defers its model list to the worker (phase 42). Such a pool
+    /// must start one worker eagerly — see <see cref="StartAsync"/>.
+    /// </summary>
+    private bool HasOpenModelSet => manifest.Capabilities.Any(capability => capability.Models.Count == 0);
+
+    /// <summary>Idle workers this pool is holding. Test-only: nothing in the runtime branches on it.</summary>
+    internal int LiveWorkerCount
+    {
+        get
+        {
+            lock (gate)
+            {
+                return idle.Count;
+            }
+        }
+    }
+
+    /// <summary>
     /// What this pool currently offers the mesh. Empty once the pool has given up, which is what
     /// unroutes the node for this capability — the same mechanism phase-36 D7 uses for a broken
     /// backend, reused rather than replaced by a health field.
@@ -64,9 +82,22 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        Capabilities = manifest.Capabilities;
+        // Narrow against nothing rather than taking the manifest verbatim: an open-ended capability
+        // (`"models": []`) has no answer until a worker has been asked, and advertising `speak: []`
+        // in the meantime is a declaration that this node serves nothing under that kind.
+        Capabilities = Narrow(manifest.Capabilities, reported: null);
 
-        for (var i = 0; i < manifest.MinWorkers; i++)
+        // …which is why an open set forces one eager worker, whatever MinWorkers says.
+        //
+        // FOUND BY RUNNING THE PUBLISHED IMAGE, and it was a deadlock: nothing declares the
+        // capability until a worker has reported, no worker starts until a request is routed, and
+        // no request is routed to a capability nobody declares. A TTS node with a voice sitting on
+        // its volume answered "this node does not provide 'speak'" forever. An open set is a
+        // promise to ask the worker, so the asking cannot be deferred until somebody needs the
+        // answer.
+        var eager = HasOpenModelSet ? Math.Max(manifest.MinWorkers, 1) : manifest.MinWorkers;
+
+        for (var i = 0; i < eager; i++)
         {
             // Eager start is best-effort: a min-workers tool that cannot start must not stop the
             // node from booting, for the same reason a bad manifest does not.

@@ -18,7 +18,14 @@ builder.Services.AddOptions<ApiKeyOptions>()
     .ValidateOnStart();
 builder.Services.AddSingleton<IValidateOptions<ApiKeyOptions>, ApiKeyOptionsValidator>();
 builder.Services.AddSingleton<IClientRegistry, ClientRegistry>();
-builder.Services.AddSignalR();
+// The message cap is derived from Tools:MaxAttachmentBytes, not left at SignalR's 32 KB default —
+// see NodeHubLimits. Exceeding that default does not fail a message, it kills the connection, and
+// a synthesised sentence is ~300 KB.
+builder.Services.AddSignalR(options =>
+    options.MaximumReceiveMessageSize = NodeHubLimits.ReceiveSizeFor(
+        builder.Configuration
+            .GetSection(ToolEdgeOptions.SectionName)
+            .GetValue("MaxAttachmentBytes", ToolAttachmentLimits.DefaultMaxBytes)));
 builder.Services.AddSingleton<NodeAuthFilter>();
 builder.Services.Configure<DispatcherOptions>(builder.Configuration.GetSection("Dispatcher"));
 builder.Services.Configure<RouterOptions>(builder.Configuration.GetSection("Router"));

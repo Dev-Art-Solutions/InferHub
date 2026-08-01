@@ -62,10 +62,11 @@ MODELS = {
 _loaded: dict[str, object] = {}
 
 
-def log(message: str) -> None:
+def log(message: str, level: str = "info") -> None:
     # stderr is not protocol: the node pumps it into its own log under this tool's id, which is
     # where a Python traceback goes and the most useful thing a tool author ever leaves behind.
-    print(f"[{TOOL_ID}] {message}", file=sys.stderr, flush=True)
+    prefix = f"[{TOOL_ID}]" if level == "info" else f"[{TOOL_ID}] {level.upper()}:"
+    print(f"{prefix} {message}", file=sys.stderr, flush=True)
 
 
 def allow_download() -> bool:
@@ -76,8 +77,16 @@ def cache_root() -> str:
     return os.environ.get("HF_HOME") or os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
 
 
+#: int8 on the CPU is roughly two to three times real time for `small` on a modern desktop core,
+#: and the quality difference against float32 is not audible in a transcript.
+CPU = ("cpu", "int8")
+
+
 def device() -> tuple[str, str]:
-    """(device, compute_type). CUDA when the driver loads, CPU otherwise — never a device node check."""
+    """
+    (device, compute_type). CUDA when the driver loads, CPU otherwise — never a device node check
+    (phase-39 D5: under WSL2 the ``/dev/nvidia*`` nodes do not exist and CUDA works fine).
+    """
     try:
         import ctranslate2
 
@@ -86,9 +95,7 @@ def device() -> tuple[str, str]:
     except Exception as error:  # noqa: BLE001 - a probe must never be why a worker fails to start
         log(f"CUDA probe failed ({type(error).__name__}: {error}); falling back to the CPU")
 
-    # int8 on the CPU is roughly twice real time for `small` on a modern desktop core, and the
-    # quality difference against float32 is not audible in a transcript.
-    return "cpu", "int8"
+    return CPU
 
 
 def cached(size: str) -> bool:
@@ -153,21 +160,47 @@ def load(model: str):
 
     from faster_whisper import WhisperModel
 
-    where, compute = device()
-    log(f"loading {model} ({size}) on {where}/{compute}")
-
-    try:
+    def build(where: str, compute: str):
         # local_files_only mirrors the consent into the library itself, so a bug in the cache check
         # above cannot turn "downloads are off" into a silent download. The flag is the contract;
         # this makes it enforceable rather than advisory.
-        _loaded[model] = WhisperModel(
+        return WhisperModel(
             size,
             device=where,
             compute_type=compute,
             local_files_only=not allow_download(),
         )
+
+    where, compute = device()
+    log(f"loading {model} ({size}) on {where}/{compute}")
+
+    try:
+        _loaded[model] = build(where, compute)
     except Exception as error:  # noqa: BLE001
-        raise ToolError(f"could not load '{model}': {type(error).__name__}: {error}") from error
+        # FOUND BY RUNNING THE IMAGE. `get_cuda_device_count()` counts what the *driver* can see;
+        # CTranslate2 additionally needs the CUDA *runtime* — libcublas, libcudart — and a box that
+        # has the first and not the second fails here with "Library libcublas.so.12 is not found".
+        # A card that cannot be used is the operator's problem to fix and a *slow* box in the
+        # meantime; a failed job is everyone's, and it is not the trade phase-39 D6 made. So the
+        # fallback is automatic and the log says exactly why, at Warning, every time.
+        if where == "cuda":
+            log(
+                f"CUDA is visible but unusable ({type(error).__name__}: {error}). "
+                "Falling back to the CPU — transcription will work and will be several times "
+                "slower. On a bare-metal node, put your CUDA runtime on the worker's "
+                "LD_LIBRARY_PATH via the manifest's 'env'.",
+                "warning",
+            )
+
+            try:
+                where, compute = CPU
+                _loaded[model] = build(where, compute)
+            except Exception as fallback:  # noqa: BLE001
+                raise ToolError(
+                    f"could not load '{model}' on the CPU either: {type(fallback).__name__}: {fallback}"
+                ) from fallback
+        else:
+            raise ToolError(f"could not load '{model}': {type(error).__name__}: {error}") from error
 
     log(f"{model} is ready on {where}")
     return _loaded[model]
