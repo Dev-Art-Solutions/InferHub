@@ -672,7 +672,7 @@ coordinator saying what a node should be doing — and the node deciding whether
 
 ```bash
 curl -X PUT http://localhost:5080/api/admin/profiles/gpu-boxes \
-  -H "X-Admin-Key: $ADMIN" -H 'Content-Type: application/json' -d '{
+  -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{
     "selector": { "labels": { "tier": "gpu" } },
     "capabilities": { "embed": false },
     "tools": { "whisper": true, "piper": false },

@@ -5,7 +5,7 @@ coordinator can say what a node should be doing — and the node decides whether
 
 ```bash
 curl -X PUT http://localhost:5080/api/admin/profiles/gpu-boxes \
-  -H "X-Admin-Key: $ADMIN" -H 'Content-Type: application/json' -d '{
+  -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{
     "selector": { "labels": { "tier": "gpu" } },
     "capabilities": { "embed": false },
     "tools": { "whisper": true, "piper": false },
@@ -86,7 +86,12 @@ which is never a wrong answer and never a capability nobody granted.
 Additive throughout. **A fleet that defines no profile behaves exactly as v3.10** — the profile
 registry matches nothing, no new key appears in `/api/status`, and no node changes what it declares.
 A v3.10 node against a v3.11 hub registers and serves normally; a v3.11 node against an older hub
-gets no answer to its profile request, logs it at debug, and runs its own configuration.
+gets no answer to its profile request, logs it at debug, and runs its own configuration. Both were
+run, as real published images, against this release.
+
+A profile that matches a **v3.10 node** reads as `pending` on `/api/status` rather than `applied` —
+the node cannot apply what it does not understand, and the status page says which boxes have not
+taken it rather than claiming they have.
 
 `dotnet test`: **975 passed, 0 failed, 46 skipped** (was 946 at v3.10.1).
 
