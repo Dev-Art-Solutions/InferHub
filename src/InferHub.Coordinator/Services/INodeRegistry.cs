@@ -18,6 +18,13 @@ public interface INodeRegistry
 
     bool Uncordon(string nodeId);
 
+    /// <summary>
+    /// The concurrency cap a node is running at after clamping a coordinator profile (phase 43).
+    /// Applied here rather than by a re-registration, so lowering a cap takes effect on the next
+    /// dispatch without a node having to reconnect. Null restores the registered value.
+    /// </summary>
+    bool SetEffectiveConcurrency(string connectionId, int? maxConcurrency);
+
     string? FindConnectionIdByNodeId(string nodeId);
 
     IReadOnlyCollection<NodeSnapshot> Snapshot(DateTimeOffset now);

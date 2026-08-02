@@ -17,9 +17,9 @@ public static class AdminEndpoints
     {
         var group = app.MapGroup("/api/admin");
 
-        group.MapGet("/nodes", (INodeRegistry registry, IAuditLog audit) =>
+        group.MapGet("/nodes", (INodeRegistry registry, IAuditLog audit, IProfileRegistry profiles) =>
         {
-            var nodes = BuildAdminNodes(registry, audit);
+            var nodes = BuildAdminNodes(registry, audit, profiles);
             return Results.Ok(nodes);
         });
 
@@ -68,6 +68,7 @@ public static class AdminEndpoints
             INodeConnectionTracker connections,
             IConversationAffinity affinity,
             IAuditLog audit,
+            IProfileRegistry profiles,
             ILoggerFactory loggerFactory) =>
         {
             var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin");
@@ -83,6 +84,10 @@ public static class AdminEndpoints
             // Explicit deregister is the operator saying this node is gone for good — unlike a
             // transient disconnect, so its warm conversations should not linger pinned to it.
             affinity.ForgetNode(nodeId);
+            // Same reasoning for the reported profile state: a node that is gone for good should
+            // not leave a stale "refused" hanging on the status page. The profile itself stays —
+            // it is fleet configuration, not node state, and the box may come back.
+            profiles.Forget(nodeId);
             audit.Record(nodeId, "deregister", ActorOf(context), DateTimeOffset.UtcNow);
 
             logger.LogInformation(
@@ -155,6 +160,139 @@ public static class AdminEndpoints
             INodeRegistry registry, ModelCommandCoordinator commands, IAuditLog audit,
             ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
             await EnsureModelAsync(model, replicas ?? 1, context, registry, commands, audit, loggerFactory, cancellationToken));
+
+        // Node profiles (phase 43). The hub says what a node should be doing; the node clamps it
+        // against its own configuration and reports what it refused. Admin key only, like every
+        // route in this group.
+        group.MapGet("/profiles", (IProfileRegistry profiles) => Results.Ok(profiles.All()));
+
+        group.MapGet("/profiles/{name}", (string name, IProfileRegistry profiles) =>
+        {
+            var profile = profiles.Get(name);
+
+            return profile is null
+                ? Results.NotFound(new { error = $"profile '{name}' not found" })
+                : Results.Ok(profile);
+        });
+
+        group.MapPut("/profiles/{name}", async (
+            string name,
+            NodeProfile body,
+            HttpContext context,
+            IProfileRegistry profiles,
+            NodeProfileCoordinator coordinator,
+            INodeRegistry registry,
+            IAuditLog audit,
+            ILoggerFactory loggerFactory,
+            CancellationToken cancellationToken) =>
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return Results.BadRequest(new { error = "a profile name is required" });
+            }
+
+            if (body?.Selector is null || body.Selector.IsEmpty)
+            {
+                // A selector that names nothing would otherwise read as "everything", and the one
+                // thing a fleet-configuration API must not do is apply to more boxes than the
+                // author meant.
+                return Results.BadRequest(new
+                {
+                    error = "a selector naming a nodeId or at least one label is required; a profile that selects nothing is refused rather than applied to everything"
+                });
+            }
+
+            if (body.MaxConcurrency is { } concurrency and < 1)
+            {
+                return Results.BadRequest(new { error = $"maxConcurrency {concurrency} is not a usable limit; it must be at least 1" });
+            }
+
+            var stored = profiles.Put(name, body);
+            var pushes = await coordinator.ReassertAsync(cancellationToken);
+            var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin");
+
+            foreach (var push in pushes.Where(p => string.Equals(p.Profile, stored.Name, StringComparison.OrdinalIgnoreCase)))
+            {
+                audit.Record(push.NodeId, $"profile.apply:{stored.Name}@{stored.Revision}", ActorOf(context), DateTimeOffset.UtcNow);
+            }
+
+            logger.LogInformation(
+                "Profile '{Profile}' revision {Revision} written; {Matched} of {Nodes} connected node(s) matched",
+                stored.Name,
+                stored.Revision,
+                pushes.Count(p => p.Profile is not null),
+                pushes.Count);
+
+            return Results.Ok(new
+            {
+                profile = stored,
+                applied = pushes.Where(p => p.Profile is not null).Select(p => p.NodeId).ToArray(),
+                conflicts = pushes
+                    .Where(p => p.Conflicts is not null)
+                    .Select(p => new { nodeId = p.NodeId, profiles = p.Conflicts })
+                    .ToArray()
+            });
+        });
+
+        group.MapDelete("/profiles/{name}", async (
+            string name,
+            IProfileRegistry profiles,
+            NodeProfileCoordinator coordinator,
+            CancellationToken cancellationToken) =>
+        {
+            if (!profiles.Delete(name))
+            {
+                return Results.NotFound(new { error = $"profile '{name}' not found" });
+            }
+
+            // Re-assert rather than just forgetting it: every node it used to match has to be told
+            // to revert to its own configuration, or it stays narrowed with nothing explaining why.
+            var pushes = await coordinator.ReassertAsync(cancellationToken);
+
+            return Results.Ok(new
+            {
+                deleted = name,
+                reverted = pushes.Where(p => p.Profile is null && p.Conflicts is null).Select(p => p.NodeId).ToArray()
+            });
+        });
+
+        // What one node is actually running, and what it would not do. The question an operator
+        // asks after writing a profile and finding a box still serving what it served before.
+        group.MapGet("/nodes/{nodeId}/profile", (
+            string nodeId,
+            INodeRegistry registry,
+            IProfileRegistry profiles) =>
+        {
+            var node = registry.Snapshot(DateTimeOffset.UtcNow)
+                .FirstOrDefault(n => string.Equals(n.NodeId, nodeId, StringComparison.OrdinalIgnoreCase));
+
+            if (node is null)
+            {
+                return Results.NotFound(new { error = $"node '{nodeId}' not found" });
+            }
+
+            var assignment = profiles.MatchFor(node.NodeId, node.Labels);
+            var state = profiles.StateOf(node.NodeId);
+
+            return Results.Ok(new
+            {
+                nodeId = node.NodeId,
+                name = node.Name,
+                assigned = assignment.Profile?.Name,
+                revision = assignment.Profile?.Revision,
+                conflicts = assignment.Conflicts,
+                status = assignment.IsConflict ? "conflict" : state?.Status() ?? "none",
+                effective = new
+                {
+                    capabilities = (node.Capabilities ?? []).Select(c => c.Kind).ToArray(),
+                    maxConcurrency = node.MaxConcurrency
+                },
+                applied = state?.Applied ?? Array.Empty<string>(),
+                refusals = state?.Refusals ?? Array.Empty<NodeProfileRefusal>(),
+                pending = state?.Pending ?? Array.Empty<string>(),
+                reportedAtUtc = state?.AtUtc
+            });
+        });
 
         group.MapGet("/stream", StreamAsync);
 
@@ -361,6 +499,7 @@ public static class AdminEndpoints
         var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin.Stream");
         var vectorEvents = context.RequestServices.GetService<VectorEvents>();
         var commands = context.RequestServices.GetService<ModelCommandCoordinator>();
+        var profiles = context.RequestServices.GetService<IProfileRegistry>();
 
         context.Response.Headers.ContentType = "text/event-stream";
         context.Response.Headers.CacheControl = "no-cache, no-store";
@@ -405,7 +544,7 @@ public static class AdminEndpoints
 
         try
         {
-            await WriteSnapshotAsync(context.Response, registry, audit, cancellationToken);
+            await WriteSnapshotAsync(context.Response, registry, audit, profiles, cancellationToken);
 
             var keepalive = TimeSpan.FromSeconds(10);
 
@@ -435,13 +574,13 @@ public static class AdminEndpoints
                     // A fleet change (or the very first wake) always warrants a fresh snapshot.
                     if (needSnapshot)
                     {
-                        await WriteSnapshotAsync(context.Response, registry, audit, cancellationToken);
+                        await WriteSnapshotAsync(context.Response, registry, audit, profiles, cancellationToken);
                     }
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
                     // Idle keepalive — refresh ages/in-flight counts even when nothing happened.
-                    await WriteSnapshotAsync(context.Response, registry, audit, cancellationToken);
+                    await WriteSnapshotAsync(context.Response, registry, audit, profiles, cancellationToken);
                 }
             }
         }
@@ -476,9 +615,10 @@ public static class AdminEndpoints
         HttpResponse response,
         INodeRegistry registry,
         IAuditLog audit,
+        IProfileRegistry? profiles,
         CancellationToken cancellationToken)
     {
-        var nodes = BuildAdminNodes(registry, audit);
+        var nodes = BuildAdminNodes(registry, audit, profiles);
         var payload = JsonSerializer.Serialize(new { nodes }, StreamJsonOptions);
         await response.WriteAsync("event: snapshot\n", cancellationToken);
         await response.WriteAsync($"data: {payload}\n\n", cancellationToken);
@@ -503,11 +643,45 @@ public static class AdminEndpoints
         await response.Body.FlushAsync(cancellationToken);
     }
 
-    private static AdminNode[] BuildAdminNodes(INodeRegistry registry, IAuditLog audit)
+    private static AdminNode[] BuildAdminNodes(
+        INodeRegistry registry,
+        IAuditLog audit,
+        IProfileRegistry? profiles = null)
     {
         return registry.Snapshot(DateTimeOffset.UtcNow)
-            .Select(node => AdminNode.From(node, audit.Get(node.NodeId)))
+            .Select(node => AdminNode.From(
+                node,
+                audit.Get(node.NodeId),
+                ProfileBlock(profiles, node)))
             .ToArray();
+    }
+
+    /// <summary>
+    /// What the console needs to render a node's profile in one column: which one, which revision,
+    /// and whether it took (phase 43). Null when profiles are not in play at all, so a deployment
+    /// that never writes one sees no new key.
+    /// </summary>
+    private static AdminNodeProfile? ProfileBlock(IProfileRegistry? profiles, Services.NodeSnapshot node)
+    {
+        if (profiles is null)
+        {
+            return null;
+        }
+
+        var assignment = profiles.MatchFor(node.NodeId, node.Labels);
+        var state = profiles.StateOf(node.NodeId);
+
+        if (assignment.Profile is null && !assignment.IsConflict && state?.ProfileName is null)
+        {
+            return null;
+        }
+
+        return new AdminNodeProfile(
+            assignment.Profile?.Name ?? state?.ProfileName,
+            assignment.Profile?.Revision ?? state?.Revision ?? 0,
+            assignment.IsConflict ? "conflict" : state?.Status() ?? "pending",
+            assignment.Conflicts,
+            state?.Refusals ?? Array.Empty<NodeProfileRefusal>());
     }
 
     private static string ActorOf(HttpContext context)
@@ -539,9 +713,12 @@ public static class AdminEndpoints
         // Resolved capabilities (phase 40) — what this node will actually be routed for, which is
         // the question an operator staring at a node that is "up but idle" is really asking.
         IReadOnlyList<string> Capabilities,
-        AdminNodeAction? LastAction)
+        AdminNodeAction? LastAction,
+        // Null unless a profile applies to this node (phase 43), so a fleet that defines none sees
+        // exactly the v3.10 payload.
+        AdminNodeProfile? Profile = null)
     {
-        public static AdminNode From(NodeSnapshot node, AuditEntry? lastAction)
+        public static AdminNode From(NodeSnapshot node, AuditEntry? lastAction, AdminNodeProfile? profile = null)
         {
             return new AdminNode(
                 node.ConnectionId,
@@ -561,9 +738,17 @@ public static class AdminEndpoints
                 (node.Capabilities ?? []).Select(capability => capability.Kind).ToArray(),
                 lastAction is null
                     ? null
-                    : new AdminNodeAction(lastAction.Action, lastAction.AtUtc, lastAction.By));
+                    : new AdminNodeAction(lastAction.Action, lastAction.AtUtc, lastAction.By),
+                profile);
         }
     }
 
     private sealed record AdminNodeAction(string Action, DateTimeOffset AtUtc, string By);
+
+    private sealed record AdminNodeProfile(
+        string? Name,
+        long Revision,
+        string Status,
+        IReadOnlyList<string>? Conflicts,
+        IReadOnlyList<NodeProfileRefusal> Refusals);
 }

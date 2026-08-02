@@ -4,6 +4,7 @@ using InferHub.Node.Backends;
 using InferHub.Node.Backends.Supervision;
 using InferHub.Node.Capabilities;
 using InferHub.Node.Configuration;
+using InferHub.Node.Profiles;
 using InferHub.Node.Tools;
 using InferHub.Node.Vector;
 using InferHub.Shared.Contracts;
@@ -22,6 +23,7 @@ public sealed class CoordinatorConnection(
     ModelCommandExecutor modelCommandExecutor,
     ToolExecutor toolExecutor,
     IToolRuntime toolRuntime,
+    NodeProfileApplier profiles,
     ReplicaStore replicaStore,
     IBackendSupervisor supervisor,
     ILogger<CoordinatorConnection> logger) : IAsyncDisposable
@@ -251,6 +253,8 @@ public sealed class CoordinatorConnection(
         hubConnection.On<ModelCommand>("ExecuteModelCommand", RunModelCommandAsync);
         hubConnection.On<ToolJob>("ExecuteToolJob", RunToolJobAsync);
         hubConnection.On<ToolJob>("ExecuteStreamingToolJob", RunStreamingToolJobAsync);
+        hubConnection.On<NodeProfile>("ApplyNodeProfile", OnApplyNodeProfile);
+        hubConnection.On("ClearNodeProfile", () => OnApplyNodeProfile(null));
         hubConnection.On<Guid>("CancelJob", CancelJob);
         hubConnection.On<VectorReplicaAssignment>("AssignVectorReplica", OnAssignVectorReplica);
         hubConnection.On<VectorReplicaOp>("ApplyVectorOp", OnApplyVectorOp);
@@ -391,17 +395,145 @@ public sealed class CoordinatorConnection(
             backend.Endpoint,
             GetVersion(),
             node.Labels.Count == 0 ? null : new Dictionary<string, string>(node.Labels),
-            node.MaxConcurrency,
+            // The clamped cap, not the configured one: a node that reconnects while a profile has
+            // lowered its concurrency must not spend one registration advertising the higher number.
+            profiles.Effective.MaxConcurrency,
             inventory.Count == 0 ? null : inventory,
             backend.SupportsModelManagement);
 
         await connection.InvokeAsync("Register", registration, cancellationToken);
+        await RequestProfileAsync(cancellationToken);
         await ReportModelsAsync(cancellationToken);
 
         logger.LogInformation(
             "Registered node {NodeId} ({NodeName}) with coordinator",
             registration.NodeId,
             registration.Name);
+    }
+
+    /// <summary>
+    /// Phase 43, D2. The node <em>asks</em> at registration rather than waiting to be told, so a hub
+    /// that never learned this node was away — a reboot, a network partition, a coordinator restart
+    /// — does not have to track who has what. Desired state converges because whoever comes back
+    /// asks the question again.
+    /// </summary>
+    private async Task RequestProfileAsync(CancellationToken cancellationToken)
+    {
+        var activeConnection = connection;
+
+        if (activeConnection is not { State: HubConnectionState.Connected })
+        {
+            return;
+        }
+
+        NodeProfileAssignment? assignment;
+
+        try
+        {
+            assignment = await activeConnection.InvokeAsync<NodeProfileAssignment?>(
+                "RequestNodeProfile",
+                nodeId,
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // A hub older than v3.11 has no such method, and a node that refused to register over
+            // that would be exactly the mixed-fleet outage phase-40 D1 exists to avoid.
+            logger.LogDebug(ex, "This coordinator did not answer a profile request; running local configuration");
+            return;
+        }
+
+        if (assignment is null || assignment.IsConflict)
+        {
+            if (assignment?.IsConflict is true)
+            {
+                logger.LogWarning(
+                    "The coordinator reports that {Count} profiles match this node ({Profiles}); it has sent none and this node keeps what it is running. Fix the selectors.",
+                    assignment.Conflicts!.Count,
+                    string.Join(", ", assignment.Conflicts!));
+            }
+
+            return;
+        }
+
+        await ApplyProfileAsync(assignment.Profile, cancellationToken);
+    }
+
+    /// <summary>A live push: an operator wrote or deleted a profile that matches this node.</summary>
+    private void OnApplyNodeProfile(NodeProfile? profile)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ApplyProfileAsync(profile, lifetime.Token);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Could not apply the node profile the coordinator sent");
+            }
+        });
+    }
+
+    /// <summary>
+    /// Clamp it, apply it, say what happened, and run whatever model commands survived. Refusals are
+    /// per item and never all-or-nothing (D6): a profile that asks for one impossible thing and four
+    /// possible ones applies the four.
+    /// </summary>
+    private async Task ApplyProfileAsync(NodeProfile? profile, CancellationToken cancellationToken)
+    {
+        var application = await profiles.ApplyAsync(nodeId, profile, cancellationToken);
+        var activeConnection = connection;
+
+        if (activeConnection is { State: HubConnectionState.Connected })
+        {
+            try
+            {
+                await activeConnection.InvokeAsync("ReportProfileState", application.State, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "Could not report profile state to the coordinator");
+            }
+        }
+
+        if (application.Changed)
+        {
+            // The declaration is what unroutes this node for a capability the profile switched off,
+            // so it has to go out at once rather than on the next refresh — the phase-36 D7
+            // mechanism again, for the third reason.
+            await ReportModelsAsync(cancellationToken);
+        }
+
+        if (application.Commands.Count == 0)
+        {
+            return;
+        }
+
+        // Model commands go down the one path that already exists for them (phase 26), progress
+        // frames and all. A second pull path is a second set of bugs.
+        //
+        // Not awaited, and that is the point: a profile arrives during registration, and a pull is
+        // minutes. Waiting for one here would hold up the connection that is meant to be carrying
+        // its progress — the profile reports them as `pending` precisely so the answer can come
+        // later.
+        _ = Task.Run(async () =>
+        {
+            foreach (var command in application.Commands)
+            {
+                try
+                {
+                    await RunModelCommandAsync(command);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Profile-driven {Kind} of '{Model}' failed", command.Kind, command.ModelName);
+                }
+            }
+        });
     }
 
     private void EnsureHeartbeatLoop()
@@ -761,7 +893,14 @@ public sealed class CoordinatorConnection(
         // Phase 41 folds the tool runtime's *live* list in here. A pool that gave up has emptied
         // its own, so the very next report unroutes this node for that capability — the phase-36
         // D7 mechanism reused rather than a health field invented.
-        var capabilities = BackendCapabilities.Declare(filtered, node.Capabilities, toolRuntime.Capabilities);
+        // Phase 43 narrows it once more, with what a coordinator profile switched off — which can
+        // only ever be a superset of Node:Capabilities:Disabled, because the clamp that produced it
+        // refuses to remove anything from that list.
+        var capabilities = BackendCapabilities.Declare(
+            filtered,
+            node.Capabilities,
+            toolRuntime.Capabilities,
+            profiles.Effective.DisabledCapabilities);
         var report = new NodeModels(nodeId, filtered, DateTimeOffset.UtcNow, capabilities);
         await activeConnection.InvokeAsync("ReportModels", report, cancellationToken);
 

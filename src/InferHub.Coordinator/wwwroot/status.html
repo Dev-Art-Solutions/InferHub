@@ -65,6 +65,7 @@
           <th>In-flight (local / reported)</th>
           <th>Models</th>
           <th>Capabilities</th>
+          <th title="The coordinator's node profile for this box, and whether it took (v3.11+)">Profile</th>
           <th title="Measured throughput — EWMA of tokens/second across this node's models (v2.8+)">tok/s</th>
           <th>Last seen</th>
         </tr>
@@ -153,6 +154,7 @@
           <td>${n.localInFlight} / ${n.inFlight}</td>
           <td>${n.modelCount}</td>
           <td>${!n.capabilities || n.capabilities.length === 0 ? "—" : n.capabilities.join(", ")}</td>
+          <td>${!n.profile ? "—" : `${n.profile.name || "—"}@${n.profile.revision} (${n.profile.status})`}</td>
           <td>${n.tokensPerSecond == null ? "—" : n.tokensPerSecond.toFixed(1)}</td>
           <td>${fmtSeconds(n.ageSeconds)} ago</td>
         </tr>

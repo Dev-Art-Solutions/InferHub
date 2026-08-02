@@ -37,6 +37,7 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
     private readonly List<Task> terminations = new();
 
     private int gaveUpFlag;
+    private int suspendedFlag;
     private bool gaveUpLogged;
     private DateTimeOffset lastRecoveryProbe;
 
@@ -51,6 +52,13 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
     }
 
     public ToolManifest Manifest => manifest;
+
+    /// <summary>
+    /// Switched off by a coordinator profile (phase 43). A suspended pool holds no workers, declares
+    /// nothing, and is not a candidate for a request — which reads to a client as "this node does not
+    /// provide it" rather than as a queue, because that is what it is.
+    /// </summary>
+    public bool Suspended => Volatile.Read(ref suspendedFlag) == 1;
 
     /// <summary>
     /// Whether any declared capability defers its model list to the worker (phase 42). Such a pool
@@ -80,14 +88,69 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
     /// <summary>Raised when <see cref="Capabilities"/> changes, so the node can re-report at once.</summary>
     public event Action? CapabilitiesChanged;
 
-    public async Task StartAsync(CancellationToken cancellationToken)
+    public Task StartAsync(CancellationToken cancellationToken)
     {
         // Narrow against nothing rather than taking the manifest verbatim: an open-ended capability
         // (`"models": []`) has no answer until a worker has been asked, and advertising `speak: []`
         // in the meantime is a declaration that this node serves nothing under that kind.
         Capabilities = Narrow(manifest.Capabilities, reported: null);
 
-        // …which is why an open set forces one eager worker, whatever MinWorkers says.
+        return StartEagerWorkersAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Stops this pool and withdraws its capabilities, without forgetting that it exists — a profile
+    /// that switches it back on gets a running tool, not a node restart (phase-43 D6).
+    /// </summary>
+    public async Task SuspendAsync()
+    {
+        if (Interlocked.Exchange(ref suspendedFlag, 1) == 1)
+        {
+            return;
+        }
+
+        logger.LogInformation(
+            "Tool '{ToolId}' is switched off by the coordinator's node profile; its workers are stopped and its capabilities are withdrawn from this node.",
+            manifest.Id);
+
+        List<ToolWorkerProcess> workers;
+
+        lock (gate)
+        {
+            workers = idle.ToList();
+            idle.Clear();
+        }
+
+        foreach (var worker in workers)
+        {
+            await worker.DisposeAsync();
+        }
+
+        Capabilities = Array.Empty<NodeCapability>();
+        RaiseCapabilitiesChanged();
+    }
+
+    /// <summary>Restores a suspended pool to what <see cref="StartAsync"/> leaves behind.</summary>
+    public async Task ResumeAsync(CancellationToken cancellationToken)
+    {
+        if (Interlocked.Exchange(ref suspendedFlag, 0) == 0)
+        {
+            return;
+        }
+
+        logger.LogInformation("Tool '{ToolId}' is switched back on by the coordinator's node profile.", manifest.Id);
+
+        Capabilities = Narrow(manifest.Capabilities, reported: null);
+        RaiseCapabilitiesChanged();
+
+        // An open model set still forces an eager worker, for the deadlock reason below: nothing
+        // would ever ask the worker what it has, so nothing would ever declare it.
+        await StartEagerWorkersAsync(cancellationToken);
+    }
+
+    private async Task StartEagerWorkersAsync(CancellationToken cancellationToken)
+    {
+        // An open-ended capability forces one eager worker, whatever MinWorkers says.
         //
         // FOUND BY RUNNING THE PUBLISHED IMAGE, and it was a deadlock: nothing declares the
         // capability until a worker has reported, no worker starts until a request is routed, and
@@ -134,6 +197,14 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
     /// </summary>
     public async Task<ToolWorkerLease> AcquireAsync(CancellationToken cancellationToken)
     {
+        // The runtime already skips a suspended pool when it picks a candidate; this closes the
+        // window where it is suspended between the pick and the acquire.
+        if (Suspended)
+        {
+            throw new ToolUnavailableException(
+                $"tool '{manifest.Id}' is switched off by the coordinator's node profile for this node");
+        }
+
         if (Volatile.Read(ref gaveUpFlag) == 1)
         {
             throw new ToolUnavailableException(
@@ -178,6 +249,13 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
     /// </summary>
     public async Task MaintainAsync(CancellationToken cancellationToken)
     {
+        // A suspended pool holds nothing to retire, and probing it would start the very worker the
+        // profile switched off.
+        if (Suspended)
+        {
+            return;
+        }
+
         var now = time.GetUtcNow();
         var retire = new List<ToolWorkerProcess>();
 

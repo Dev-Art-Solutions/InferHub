@@ -74,6 +74,11 @@
     .stream-pill.offline { background: rgba(248, 113, 113, 0.12); color: var(--err); }
     .last-action { color: var(--muted); font-size: 11px; line-height: 1.3; }
     .last-action strong { color: var(--text); font-weight: 500; }
+    /* Phase 43: a profile that did not take must not read like one that did. */
+    .profile-applied { color: var(--ok, #3fb950); }
+    .profile-pending { color: var(--muted); }
+    .profile-refused,
+    .profile-conflict { color: var(--bad, #f85149); font-weight: 500; }
     .toasts {
       position: fixed; right: 20px; bottom: 20px; display: flex; flex-direction: column;
       gap: 8px; z-index: 9999; max-width: 360px;
@@ -178,6 +183,7 @@
             <th>In-flight</th>
             <th>Max</th>
             <th>Capabilities</th>
+            <th>Profile</th>
             <th>Labels</th>
             <th>Last seen</th>
             <th>Last action</th>

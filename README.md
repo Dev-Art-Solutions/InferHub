@@ -665,6 +665,68 @@ uploaded a podcast" is the failure that prevents.
 client-side contract), diarization, speaker labels, voice cloning, and `/v1/audio/translations`.
 The last is one flag on the same worker and can land whenever somebody asks.
 
+## Configure the fleet, not the boxes (v3.11+)
+
+Twenty nodes means twenty `appsettings.json` files and twenty restarts. A **node profile** is the
+coordinator saying what a node should be doing — and the node deciding whether it may:
+
+```bash
+curl -X PUT http://localhost:5080/api/admin/profiles/gpu-boxes \
+  -H "X-Admin-Key: $ADMIN" -H 'Content-Type: application/json' -d '{
+    "selector": { "labels": { "tier": "gpu" } },
+    "capabilities": { "embed": false },
+    "tools": { "whisper": true, "piper": false },
+    "models": { "ensure": ["llama3.2"], "remove": [] },
+    "maxConcurrency": 4
+  }'
+```
+
+Every node whose labels match applies what it can, and reports back what it would not do and why.
+`GET /api/admin/nodes/{id}/profile` is the answer to "I wrote that and the box still does what it
+did before".
+
+### The hub can only ever narrow a node, and the check runs on the node
+
+This is the design decision the feature exists around, and most systems in this space get it the
+other way round. A profile can switch a capability **off**; it cannot re-open one the box's own
+`Node:Capabilities:Disabled` closed. It can **stop** a tool; it cannot introduce one — a tool id that
+is not already in that node's `Tools:Allowed` is refused by name, and there is no field anywhere in a
+profile for a command, a path or an interpreter. It can **lower** `MaxConcurrency`; raising it is
+refused, because that number is a statement about hardware you own and the coordinator does not.
+
+The clamp that enforces all of this runs **on the node**, not on the hub. A clamp on the hub is a
+clamp an attacker skips by not being the hub: the point is that a compromised or misconfigured
+coordinator cannot turn a fleet of GPU boxes into fleet-wide remote code execution. What a profile
+can do is bounded by what you already put in the file on the machine.
+
+### Desired state, so a rebooted node fixes itself
+
+A profile is not a command. A node asks for its profile every time it registers, so a box that was
+being rebuilt when you wrote one converges on the way back in, with no operator action and nothing
+for the hub to remember. Re-applying the same revision changes nothing and says so — which is why
+that reconnect is safe to run unconditionally instead of re-pulling forty gigabytes of weights.
+
+Refusals are **per item**: a profile asking for one impossible thing and four possible ones applies
+the four and reports the one. A profile is never a startup dependency and **never restarts a node** —
+switching a tool off stops its workers in place, and switching it back on starts them again.
+
+### Selectors, conflicts and persistence
+
+Selectors are exact: a `nodeId`, or a set of `labels` of which **every** pair must match. No globs,
+no expression language — a pattern dialect pointed at a security boundary is how somebody's node ends
+up matched by a rule that reads correct. A selector that names nothing matches **nothing**, and is
+refused with a 400 rather than quietly applying to every box you own.
+
+If two profiles match one node, neither is sent. The node keeps what it last applied and `/api/status`
+and the console show it as `conflict` until you fix the selectors — silent precedence is how a node
+ends up in a state no single document explains.
+
+Profiles are in memory by default and a coordinator restart forgets them; set
+`Fleet:Profiles:Persistence` to `file` or `postgres` to keep them (`postgres` is what an HA pair
+wants, so both hubs read one fleet configuration). Losing them is survivable by design: every node
+falls back to its own configuration, which is never a wrong answer and never a capability nobody
+granted.
+
 ## OpenAI-compatible API
 
 Everything else in this ecosystem speaks the OpenAI wire format and exposes exactly one knob
@@ -1038,6 +1100,9 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Affinity:Persistence` | `none` | Sticky-conversation persistence (v2.12): `none` (in-memory, reset on restart) or `file` (survives a coordinator restart). Affinity keys on the stable node id either way, so a node reconnecting keeps its warm conversations. |
 | `Affinity:DataDirectory` | `./data/affinity` | Where the `file` store writes (append-log + periodic snapshot). Container image overrides to `/data/affinity`. |
 | `Affinity:SnapshotEveryOps` | `256` | Ops appended before the log is compacted to a snapshot. |
+| `Fleet:Profiles:Persistence` | `none` | Node-profile persistence (v3.11): `none` (profiles live as long as this coordinator), `file`, or `postgres` (what an HA pair wants — both hubs read one fleet configuration). A lost profile reverts every node to its own config. See [Configure the fleet](#configure-the-fleet-not-the-boxes-v311). |
+| `Fleet:Profiles:DataDirectory` | `./data/profiles` | Where the `file` store writes. Container image overrides to `/data/profiles`. |
+| `Fleet:Profiles:Postgres:ConnectionString` | — | Required when `Persistence=postgres`. Set via env or user-secrets, never `appsettings.json`. Its own connection string, deliberately not coupled to the vector store's. |
 | `Auth:ApiKeys` | `[]` | Accepted client Bearer tokens (constant-time compared). Anonymous, unlimited. |
 | `Auth:Clients` | `[]` | Named clients: `{Id, Key, Limits, Collections}`. See [Clients, quotas & usage](#clients-quotas--usage-v27). |
 | `Auth:Clients[].Collections` | `null` | Collections this client may touch; exact names or a `prefix*`. `null` = all. See [Multi-tenant collections](#multi-tenant-collections-v213). |

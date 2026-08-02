@@ -115,6 +115,9 @@ public static class NodeHostBuilderExtensions
         builder.Services.AddSingleton<OpenAiBackend>();
         builder.Services.AddSingleton<InferenceExecutor>();
         builder.Services.AddSingleton<ModelCommandExecutor>();
+        // Phase 43. Always registered, and inert without a profile: its effective state starts as
+        // the node's own configuration, so a fleet that defines no profile behaves exactly as v3.10.
+        builder.Services.AddSingleton<Profiles.NodeProfileApplier>();
         builder.Services.AddSingleton<CoordinatorConnection>();
         builder.Services.AddHostedService<Worker>();
 

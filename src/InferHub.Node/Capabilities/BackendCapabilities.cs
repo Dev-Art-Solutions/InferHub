@@ -28,11 +28,22 @@ public static class BackendCapabilities
     /// </summary>
     private static readonly string[] BackendKinds = [CapabilityKinds.Chat, CapabilityKinds.Embed];
 
+    /// <param name="narrowed">
+    /// Capability kinds a coordinator profile switched off (phase 43). It is applied on top of
+    /// <c>Node:Capabilities:Disabled</c> and can only ever be a superset of it, because the clamp
+    /// that produced it started from that list and refuses to remove anything from it.
+    /// </param>
     public static IReadOnlyList<NodeCapability> Declare(
         IReadOnlyList<ModelInfo> models,
         CapabilityOptions options,
-        IReadOnlyList<NodeCapability>? toolCapabilities = null)
+        IReadOnlyList<NodeCapability>? toolCapabilities = null,
+        IReadOnlyList<string>? narrowed = null)
     {
+        var disabled = narrowed is { Count: > 0 } ? narrowed : options.Disabled;
+
+        bool IsDisabled(string kind) =>
+            disabled.Any(entry => string.Equals(entry?.Trim(), kind, StringComparison.OrdinalIgnoreCase));
+
         var names = models
             .Where(model => !string.IsNullOrWhiteSpace(model.Name))
             .Select(model => model.Name.Trim())
@@ -47,7 +58,7 @@ public static class BackendCapabilities
         var backend = names.Length == 0
             ? Array.Empty<NodeCapability>()
             : BackendKinds
-                .Where(kind => !options.IsDisabled(kind))
+                .Where(kind => !IsDisabled(kind))
                 .Select(kind => new NodeCapability(kind, names))
                 .ToArray();
 
@@ -65,7 +76,7 @@ public static class BackendCapabilities
             capability => capability.Models.ToList(),
             StringComparer.OrdinalIgnoreCase);
 
-        foreach (var capability in toolCapabilities.Where(c => !options.IsDisabled(c.Kind)))
+        foreach (var capability in toolCapabilities.Where(c => !IsDisabled(c.Kind)))
         {
             if (!merged.TryGetValue(capability.Kind, out var existing))
             {

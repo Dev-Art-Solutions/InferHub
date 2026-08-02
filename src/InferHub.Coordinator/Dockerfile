@@ -60,6 +60,11 @@ ENV VectorStore__DataDirectory=/data/vectors
 # The /data chown above covers the parent; this points the default at it. Inert unless persistence is on.
 ENV Affinity__DataDirectory=/data/affinity
 
+# Node profiles (phase 43) write under /data when Fleet:Profiles:Persistence=file — the sixth
+# instance of the same trap, and the reason the default stays relative in ProfileOptions. Inert
+# unless persistence is on.
+ENV Fleet__Profiles__DataDirectory=/data/profiles
+
 EXPOSE 8080
 
 # Non-root. The runtime image ships this user for exactly this purpose.

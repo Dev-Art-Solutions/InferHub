@@ -102,6 +102,25 @@ public sealed class NodeRegistry : INodeRegistry
         return true;
     }
 
+    public bool SetEffectiveConcurrency(string connectionId, int? maxConcurrency)
+    {
+        if (!nodes.TryGetValue(connectionId, out var existing))
+        {
+            return false;
+        }
+
+        var effective = NormalizeMaxConcurrency(maxConcurrency);
+
+        if (existing.EffectiveMaxConcurrency == effective)
+        {
+            return true;
+        }
+
+        nodes[connectionId] = existing with { EffectiveMaxConcurrency = effective };
+        RaiseChanged();
+        return true;
+    }
+
     public bool Cordon(string nodeId)
     {
         return SetCordoned(nodeId, true);
@@ -327,7 +346,9 @@ public sealed class NodeRegistry : INodeRegistry
             GetLocalInFlight(connectionId),
             entry.Models.Count,
             entry.Registration.Labels ?? EmptyLabels,
-            entry.Registration.MaxConcurrency,
+            // A profile can only ever have lowered it (phase-43 D1), so this is the number the
+            // saturation check and the console should both be reading.
+            entry.EffectiveMaxConcurrency ?? entry.Registration.MaxConcurrency,
             entry.Cordoned,
             entry.Registration.SupportsModelManagement,
             entry.Capabilities);
@@ -394,5 +415,7 @@ public sealed class NodeRegistry : INodeRegistry
         /// What the node said, verbatim — null when it said nothing (phase 40).
         IReadOnlyList<NodeCapability>? DeclaredCapabilities,
         /// What the router asks. Derived from the two fields above by <see cref="Resolved"/>.
-        IReadOnlyList<NodeCapability> Capabilities);
+        IReadOnlyList<NodeCapability> Capabilities,
+        /// The cap after a profile clamped it (phase 43). Null = the registered value stands.
+        int? EffectiveMaxConcurrency = null);
 }

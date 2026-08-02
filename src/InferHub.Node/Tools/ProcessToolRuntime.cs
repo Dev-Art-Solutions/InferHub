@@ -171,8 +171,10 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
         {
             // Matched against the pool's *live* capabilities, not the manifest's: a pool that has
             // given up must read as "this node does not provide it" rather than as a queue.
-            pool = pools.FirstOrDefault(p => Provides(p.Capabilities, capability, model))
-                ?? pools.FirstOrDefault(p => p.Manifest.Provides(capability, model));
+            // A suspended pool is excluded from both passes (phase 43): a tool the coordinator
+            // switched off must read as "this node does not provide it", which is what it now is.
+            pool = pools.FirstOrDefault(p => !p.Suspended && Provides(p.Capabilities, capability, model))
+                ?? pools.FirstOrDefault(p => !p.Suspended && p.Manifest.Provides(capability, model));
         }
 
         if (pool is null)
@@ -181,6 +183,38 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
         }
 
         return await pool.AcquireAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Phase 43. The set has already been through <c>NodeProfileClamp</c>, so it is a subset of
+    /// <c>Tools:Allowed</c> by construction — nothing here can start a tool the operator did not
+    /// grant, because nothing here can create a pool.
+    /// </summary>
+    public async Task SetDisabledToolsAsync(
+        IReadOnlyCollection<string> toolIds,
+        CancellationToken cancellationToken)
+    {
+        ToolWorkerPool[] snapshot;
+
+        lock (pools)
+        {
+            snapshot = pools.ToArray();
+        }
+
+        foreach (var pool in snapshot)
+        {
+            var shouldSuspend = toolIds.Any(id =>
+                string.Equals(id?.Trim(), pool.Manifest.Id, StringComparison.OrdinalIgnoreCase));
+
+            if (shouldSuspend)
+            {
+                await pool.SuspendAsync();
+            }
+            else
+            {
+                await pool.ResumeAsync(cancellationToken);
+            }
+        }
     }
 
     public async ValueTask DisposeAsync()

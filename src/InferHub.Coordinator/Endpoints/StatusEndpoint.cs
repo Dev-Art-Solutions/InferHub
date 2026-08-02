@@ -26,6 +26,7 @@ public static class StatusEndpoint
             var snapshot = metrics.Snapshot(now);
             var vectorBlock = BuildVectorBlock(services, nodes);
             var throughput = services.GetService(typeof(ThroughputTracker)) as ThroughputTracker;
+            var profiles = services.GetService(typeof(IProfileRegistry)) as IProfileRegistry;
 
             return Results.Ok(new StatusResponse(
                 version,
@@ -44,7 +45,9 @@ public static class StatusEndpoint
                     node.ModelCount,
                     node.Cordoned,
                     throughput?.NodeAverage(node.NodeId),
-                    (node.Capabilities ?? []).Select(capability => capability.Kind).ToArray())).ToArray(),
+                    (node.Capabilities ?? []).Select(capability => capability.Kind).ToArray(),
+                    node.MaxConcurrency,
+                    BuildProfileBlock(profiles, node))).ToArray(),
                 models,
                 registry.CapabilitySummary(),
                 snapshot,
@@ -62,6 +65,39 @@ public static class StatusEndpoint
     /// reports <c>enabled: false</c>, so "is this thing sending my prompts anywhere?" is a
     /// question the status page answers rather than one you have to go and read the config for.
     /// </summary>
+    /// <summary>
+    /// A node's profile, as far as the hub can see it (phase 43): which one applies, which revision,
+    /// whether the node took it, and what it refused.
+    /// </summary>
+    /// <remarks>
+    /// Null when no profile applies and none ever did, so a fleet that never writes one keeps the
+    /// v3.10 status payload byte for byte. <c>conflict</c> is the hub's own answer and never a
+    /// node's: a node cannot know that a second profile matches it, because the whole point of D4 is
+    /// that it was never sent one.
+    /// </remarks>
+    private static NodeProfileStatusBlock? BuildProfileBlock(IProfileRegistry? profiles, NodeSnapshot node)
+    {
+        if (profiles is null)
+        {
+            return null;
+        }
+
+        var assignment = profiles.MatchFor(node.NodeId, node.Labels);
+        var state = profiles.StateOf(node.NodeId);
+
+        if (assignment.Profile is null && !assignment.IsConflict && state?.ProfileName is null)
+        {
+            return null;
+        }
+
+        return new NodeProfileStatusBlock(
+            assignment.Profile?.Name ?? state?.ProfileName,
+            assignment.Profile?.Revision ?? state?.Revision ?? 0,
+            assignment.IsConflict ? "conflict" : state?.Status() ?? "pending",
+            assignment.Conflicts,
+            state?.Refusals ?? Array.Empty<NodeProfileRefusal>());
+    }
+
     /// <summary>
     /// A queue you cannot see is a queue you will not notice filling (phase 25, D5). Reported
     /// even when nothing has ever queued, so a zero is a statement rather than an absence.
@@ -246,7 +282,18 @@ public static class StatusEndpoint
         double? TokensPerSecond,
         // Resolved, so this is what the router will actually match on for this node — not what
         // it declared (phase-40 D1). A node that declared nothing shows chat + embed.
-        IReadOnlyList<string> Capabilities);
+        IReadOnlyList<string> Capabilities,
+        // The cap the node is running at, after a profile may have lowered it (phase 43).
+        int? MaxConcurrency,
+        NodeProfileStatusBlock? Profile);
+
+    internal sealed record NodeProfileStatusBlock(
+        string? Name,
+        long Revision,
+        /// <c>applied</c> | <c>pending</c> | <c>refused</c> | <c>conflict</c> | <c>none</c>.
+        string Status,
+        IReadOnlyList<string>? Conflicts,
+        IReadOnlyList<NodeProfileRefusal> Refusals);
 
     internal sealed record VectorStatusBlock(
         string Provider,

@@ -220,6 +220,8 @@ public class FailoverTests
 
         public bool Uncordon(string nodeId) => false;
 
+        public bool SetEffectiveConcurrency(string connectionId, int? maxConcurrency) => false;
+
         public string? FindConnectionIdByNodeId(string nodeId) => null;
 
         public IReadOnlyCollection<NodeSnapshot> Snapshot(DateTimeOffset now) => [];

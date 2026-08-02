@@ -331,6 +331,11 @@ public class ToolSecurityTests
 
         public Task<ToolWorkerLease> AcquireAsync(string capability, string model, CancellationToken cancellationToken)
             => pool.AcquireAsync(cancellationToken);
+
+        public Task SetDisabledToolsAsync(IReadOnlyCollection<string> toolIds, CancellationToken cancellationToken)
+            => toolIds.Contains(pool.Manifest.Id, StringComparer.OrdinalIgnoreCase)
+                ? pool.SuspendAsync()
+                : pool.ResumeAsync(cancellationToken);
     }
 
 }

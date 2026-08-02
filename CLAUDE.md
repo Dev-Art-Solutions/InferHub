@@ -169,6 +169,10 @@ themselves, and why `NullVectorQueryRouter` replaces the node-serving router.
 - [LocalApi/](src/InferHub.Node/LocalApi/) — solo mode (phase 37): the coordinator's client-facing
   surface, served by the node itself. **The only place ASP.NET appears on the node** (rule 2 as
   amended). Since phase 38 it also maps the RAG routes, but only when a corpus is configured.
+- [Profiles/](src/InferHub.Node/Profiles/) — node profiles (phase 43). `NodeProfileClamp` is the
+  **pure** ceiling — what a coordinator may and may not ask of this box — and `NodeProfileApplier`
+  carries out only what survived it. The clamp runs here, on the node, and that is the whole point:
+  see phase-43 D1.
 - [Retrieval/](src/InferHub.Node/Retrieval/) — solo RAG (phase 38): the three node-side seams the
   shared pipelines need — `LocalEmbeddingDispatcher`, `LocalReranker`, `NodeVectorLog`. The store,
   the pipelines and the extractors are `InferHub.Shared`'s; nothing is reimplemented here.
@@ -229,6 +233,13 @@ as load-bearing:
    drive behaviour (routing, admission, anything), that reasoning has stopped being true and the
    design has drifted — stop. (Admission windows are fed in-memory by `UsageMeter`, never from
    the ledger.) Default is `none`: in-memory, reset on restart, like every other counter.
+
+   **Third recorded exception (phase 43): node profiles**, when `Fleet:Profiles:Persistence` is
+   `file` or `postgres`. A profile that evaporates on hub restart is useless for the thing it was
+   asked to do. The rule survives for phase-30 D2's reason: **a lost profile costs the fleet
+   reverting to the operator-configured default on each box — never a wrong answer, and never a
+   capability nobody granted**, because the node's own config remains the authority for what is
+   *possible* and a profile is only a preference over it. See phase-43 D1/D3. Default is `none`.
 5. **No new heavy dependencies.** The dependency surface is deliberately minimal (ASP.NET Core,
    SignalR, OllamaClient on the node, xunit for tests). There are exactly **two** recorded
    exceptions, both coordinator-only, both feature-scoped, both inert unless the feature is on:
@@ -1843,6 +1854,90 @@ because a client whose only limit is `TokensPerDay` could otherwise transcribe a
 is still empty, and there is no Python in any `.csproj` — the Python is a `pip install` in one
 Dockerfile, which is the same category as phase-39's `curl`.
 `BundledNodeTests.NoProjectReferencesPythonAndTheSharedProjectIsStillEmpty` asserts both.
+
+### Phase 43 (node profiles) — also load-bearing
+
+**D1 — The node's config is a ceiling the hub cannot raise, and the clamp runs *on the node*. This
+is the decision the second half of the tools-and-fleet track turns on.**
+[NodeProfileClamp](src/InferHub.Node/Profiles/NodeProfileClamp.cs) is a pure function from
+`(LocalCeiling, NodeProfile?)` to `(effective, applied[], refusals[], ensure[], remove[])`. A profile
+may **narrow** what a node does and may never widen it: it can switch a capability off but cannot
+re-open one `Node:Capabilities:Disabled` closed; it can stop a tool but cannot introduce a manifest,
+a command, an interpreter or a path (phase-41 D2's `Tools:Allowed` is the grant, and the hub is not a
+grantor); it can lower `MaxConcurrency` but not raise it, because that number is a statement about
+hardware the operator owns.
+
+**A clamp that runs on the hub is a clamp an attacker skips by not being the hub.** The whole point
+is that a compromised or misconfigured coordinator cannot turn a fleet of GPU boxes into
+fleet-wide RCE. The hub *also* validates a little, for a better error message; the node's copy is the
+one that is load-bearing, and `ProfileClampTests` drives the node's real application path with
+hostile profiles — a tool id that is a path, an interpreter, a shell one-liner.
+
+**No new authority over data, either.** `models.remove` deletes weights, which is destructive — but
+phase 26 already gave the hub `DELETE /api/admin/nodes/{id}/models/{model}`, so profiles add no
+authority there that a coordinator did not have. If a future field would give the hub something a
+node's own config never granted, it does not belong in a profile.
+
+**D2 — Desired state, not commands, because a node reconnects.** Two directions, and both exist so
+the hub does not have to remember who has which revision:
+- **Push** — `NodeProfileCoordinator.ReassertAsync` re-evaluates every connected node after a write
+  or a delete and sends `ApplyNodeProfile` / `ClearNodeProfile` down the outbound connection
+  (phase-26 D1 — the hub still never dials a node).
+- **Pull** — the node invokes `RequestNodeProfile` right after `Register`, and a hub older than
+  v3.11 answering with an error is a **debug log and a node that runs its own configuration**, not a
+  failed registration (phase-40 D1's mixed-fleet rule).
+
+Convergence is idempotent **by revision**: applying the same `(name, revision)` twice changes nothing
+and says so, which is what makes the reconnect path safe to run unconditionally — otherwise a
+rebooted node would re-pull forty gigabytes of weights on every reconnect. Revisions are monotonic
+per profile and **never reused, including across a delete and a re-create under the same name**.
+
+**Model commands are not awaited.** A profile arrives during registration and a pull is minutes;
+waiting would hold up the connection meant to carry its progress. They go down the phase-26
+`ModelCommand` path — the one that already exists — and the state reports them as `pending`.
+
+**D3 — Profiles are rule 4's third recorded exception, and the reasoning is phase-30 D2's.**
+`Fleet:Profiles:Persistence` = `none` (default) | `file` | `postgres`. Rule 4 survives because **a
+lost profile costs the fleet reverting to the operator-configured default on each box** — never a
+wrong answer, and never a capability nobody granted. The node's own config remains the authority for
+what is *possible*; a profile is only a preference over it. If a future change ever makes a profile
+the authority for something a node cannot re-derive locally, that reasoning has stopped being true
+and the design has drifted — stop.
+
+`FileProfileStore` is `FileAffinityStore`'s discipline (append log + compacted snapshot, atomic
+move), with one difference: it **flushes to disk on every write**, because a profile is not a hint.
+`/data/profiles` is the **sixth** instance of the container permissions trap — the default stays
+relative for bare metal, the image sets the absolute path.
+
+**D4 — Selectors are exact matches, and two matching profiles is an error the hub reports.**
+`{nodeId}` or `{labels}` with **every** pair matching; no glob, no expression language (phase-31 D1's
+footgun, aimed here at a security-relevant boundary). A node matched by two profiles is **not**
+merged and **not** resolved by creation order: the hub sends nothing, the node keeps its last applied
+profile, and `/api/status` and the console show `conflict`. **A selector that names nothing matches
+nothing**, never everything — `PUT` refuses one with a 400.
+
+**D5 — Every application is an audit event.** `profile.apply:{name}@{rev}` by the admin caller on a
+push; `profile.refused:{name}@{rev} (n)` by `node` when refusals come back. Same category as
+cordon/uncordon — an admin action against one node — unlike phase-22 D5's cloud-burst events, which
+were kept out of the audit log precisely because they were not.
+
+**D6 — A node that cannot honour a profile keeps running, loudly.** Refusals are per item, never
+all-or-nothing. A profile is never a startup dependency and **never restarts the node** — a switched
+-off tool pool is *suspended* (workers stopped, capabilities withdrawn through phase-36 D7's
+mechanism, `ToolWorkerPool.Suspended` excluded from candidate selection) and a later profile resumes
+it in place. A node that rebooted on a hub instruction is a node an operator cannot keep up, and
+in-flight jobs would die for a config change.
+
+**The effective concurrency cap lands on the registry entry via `ReportProfileState`**, not by a
+re-registration: `NodeRegistry.SetEffectiveConcurrency` sets it and `NodeSnapshot.MaxConcurrency`
+resolves `effective ?? registered`, so the saturation check reads the right number on the next
+dispatch.
+
+> *Test-harness lesson, not a product one:* a hub that throws while activating `NodeHub` (a missing
+> DI registration — `Dispatcher` needs `ThroughputTracker`) refuses the handshake, and the node's
+> retry loop is **correct** to keep trying every `Coordinator:RetryDelay` forever. In a suite with
+> `builder.Logging.ClearProviders()` that reads as a hang and then a dead test host. If a new mesh
+> fixture never registers, check the hub's composition before suspecting the wire.
 
 ## Auth model (three independent token sets)
 

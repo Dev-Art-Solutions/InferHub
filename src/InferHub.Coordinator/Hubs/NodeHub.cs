@@ -64,6 +64,77 @@ public sealed class NodeHub(
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// A node asking what it should be doing (phase 43, D2). The pull direction: the hub does not
+    /// track who has which revision, because whoever comes back asks the question again and the
+    /// answer is the same document.
+    /// </summary>
+    /// <remarks>
+    /// It returns a value, which is fine — the binder trap on <c>StreamChunks</c> is specific to
+    /// client-to-server <em>streams</em>, and this is an ordinary invocation with a result.
+    /// </remarks>
+    public Task<NodeProfileAssignment> RequestNodeProfile(string nodeId)
+    {
+        if (services.GetService(typeof(IProfileRegistry)) is not IProfileRegistry profiles)
+        {
+            return Task.FromResult(NodeProfileAssignment.None);
+        }
+
+        var node = registry.Snapshot(DateTimeOffset.UtcNow)
+            .FirstOrDefault(n => string.Equals(n.ConnectionId, Context.ConnectionId, StringComparison.Ordinal));
+
+        var assignment = profiles.MatchFor(nodeId, node?.Labels);
+
+        if (assignment.IsConflict)
+        {
+            logger.LogWarning(
+                "Node {NodeId} asked for its profile and matches {Count} of them ({Profiles}); sending none",
+                nodeId,
+                assignment.Conflicts!.Count,
+                string.Join(", ", assignment.Conflicts!));
+        }
+
+        return Task.FromResult(assignment);
+    }
+
+    /// <summary>What a node did with its profile, including everything it refused and why (D6).</summary>
+    public Task ReportProfileState(NodeProfileState state)
+    {
+        if (services.GetService(typeof(IProfileRegistry)) is IProfileRegistry profiles)
+        {
+            profiles.ReportState(state);
+        }
+
+        // The clamped concurrency cap lands on the registry entry, so lowering a node's cap does not
+        // need it to re-register — the router reads the effective number on the next dispatch.
+        registry.SetEffectiveConcurrency(Context.ConnectionId, state.MaxConcurrency);
+
+        if (state.Refusals.Count > 0
+            && services.GetService(typeof(IAuditLog)) is IAuditLog audit)
+        {
+            // The audit log is the per-node last-admin-action store, and a profile application is
+            // exactly that category (D5) — unlike phase-22 D5's cloud-burst events, which were kept
+            // out of it precisely because they were not per-node admin actions.
+            audit.Record(
+                state.NodeId,
+                $"profile.refused:{state.ProfileName}@{state.Revision} ({state.Refusals.Count})",
+                "node",
+                state.AtUtc);
+        }
+
+        logger.LogInformation(
+            "Node {NodeId} reports profile '{Profile}' revision {Revision}: {Status}, {Applied} applied, {Refused} refused, {Pending} pending",
+            state.NodeId,
+            state.ProfileName ?? "(none)",
+            state.Revision,
+            state.Status(),
+            state.Applied.Count,
+            state.Refusals.Count,
+            state.Pending.Count);
+
+        return Task.CompletedTask;
+    }
+
     public Task Heartbeat(Heartbeat heartbeat)
     {
         if (!registry.Touch(Context.ConnectionId, heartbeat, DateTimeOffset.UtcNow))

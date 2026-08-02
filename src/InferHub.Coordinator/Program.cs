@@ -65,6 +65,36 @@ builder.Services.AddSingleton<IToolDispatcher>(sp => sp.GetRequiredService<Dispa
 builder.Services.AddSingleton<INodeConnectionTracker, NodeConnectionTracker>();
 builder.Services.AddSingleton<IEmbeddingDispatcher, EmbeddingDispatcher>();
 builder.Services.AddSingleton<ModelCommandCoordinator>();
+
+// Node profiles (phase 43). The registry is always present so nothing branches on the feature
+// existing; with no profile written it matches nothing and every node runs its own configuration,
+// which is byte-identical to v3.10. Persistence is the opt-in half — see ProfileOptions for why a
+// profile is rule 4's third recorded exception.
+builder.Services.AddOptions<FleetOptions>()
+    .Bind(builder.Configuration.GetSection(FleetOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<FleetOptions>, FleetOptionsValidator>();
+
+var profilePersistence = (builder.Configuration
+    .GetSection(FleetOptions.SectionName)
+    .GetSection(nameof(FleetOptions.Profiles))
+    .GetValue<string>(nameof(ProfileOptions.Persistence)) ?? ProfileOptions.PersistenceNone).Trim();
+
+if (string.Equals(profilePersistence, ProfileOptions.PersistenceFile, StringComparison.OrdinalIgnoreCase))
+{
+    builder.Services.AddSingleton<IProfileStore, FileProfileStore>();
+}
+else if (string.Equals(profilePersistence, ProfileOptions.PersistencePostgres, StringComparison.OrdinalIgnoreCase))
+{
+    builder.Services.AddSingleton<IProfileStore, PostgresProfileStore>();
+}
+else
+{
+    builder.Services.AddSingleton<IProfileStore, NoProfileStore>();
+}
+
+builder.Services.AddSingleton<IProfileRegistry, ProfileRegistry>();
+builder.Services.AddSingleton<NodeProfileCoordinator>();
 builder.Services.AddSingleton<ThroughputTracker>();
 builder.Services.AddHostedService<NodeReaper>();
 

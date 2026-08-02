@@ -97,6 +97,23 @@
       `<span class="label-chip">${escapeHtml(c)}</span>`).join("")}</div>`;
   };
 
+  // Phase 43. Which profile this node is under and whether it took. "conflict" is the hub's own
+  // answer — two profiles match and neither was sent — and a refusal is shown with its reason,
+  // because "I wrote a profile and that box still does what it did before" is the whole question.
+  const profileCell = (node) => {
+    const p = node.profile;
+    if (!p) return "—";
+
+    const title = p.status === "conflict"
+      ? `matched by: ${(p.conflicts || []).join(", ")}`
+      : (p.refusals || []).map(r => `${r.item}: ${r.reason}`).join("\n");
+
+    const name = p.name ? `${escapeHtml(p.name)}@${p.revision}` : "—";
+    return `<div class="last-action" title="${escapeHtml(title)}"><strong>${name}</strong><br>` +
+      `<span class="profile-${escapeHtml(p.status)}">${escapeHtml(p.status)}</span>` +
+      `${p.refusals && p.refusals.length ? ` (${p.refusals.length} refused)` : ""}</div>`;
+  };
+
   const lastActionCell = (node) => {
     if (!node.lastAction) return "—";
     const by = node.lastAction.by ? ` by ${escapeHtml(node.lastAction.by)}` : "";
@@ -278,6 +295,7 @@
           <td>${n.localInFlight} / ${n.inFlight}</td>
           <td>${max}</td>
           <td>${capabilityChips(n.capabilities)}</td>
+          <td>${profileCell(n)}</td>
           <td>${labelChips(n.labels)}</td>
           <td>${fmtSeconds(n.ageSeconds)} ago</td>
           <td>${lastActionCell(n)}</td>
