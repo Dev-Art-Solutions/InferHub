@@ -63,14 +63,16 @@ of one.
 
 ## Status
 
-**InferHub 3.0** removes the single point of failure. Run a second coordinator as a
-[warm standby](#high-availability-v30) over the same Postgres: exactly one holds a lease and
-serves inference, the other waits. When the active hub dies, the standby takes the lease within
-the TTL, the nodes reconnect to it, and the mesh keeps serving — no manual promotion, no data
-migration, and a fencing guard so there is never a moment with two hubs both serving. It is the
-foundation of the HA track, honestly scoped: active-active load sharing and clustering the
-`local` vector provider are still future work. Off by default; single-coordinator deployments are
-byte-identical to 2.13. Still **zero new dependencies** — the lease is `Npgsql`, already there.
+**InferHub 3.11** stops making you edit twenty `appsettings.json` files. A
+[node profile](#configure-the-fleet-not-the-boxes-v311) is the coordinator saying what a node should
+be doing — capabilities, tools, models, concurrency — and the node deciding whether it may. The hub
+can only ever **narrow** a node: it can switch a capability off but not re-open one the box closed,
+stop a tool but never introduce one, lower `MaxConcurrency` but not raise it. The clamp that enforces
+that runs **on the node**, because a clamp on the hub is a clamp an attacker skips by not being the
+hub. Profiles are desired state rather than commands, so a rebooted box converges on the way back in,
+refusals are per item and named with the key that caused them, and two profiles matching one node is
+a `conflict` rather than a silent merge. A fleet that defines no profile behaves exactly as v3.10.
+Still **zero new dependencies**.
 
 | Phase | Theme | Version |
 |------:|-------|---------|
@@ -115,18 +117,26 @@ byte-identical to 2.13. Still **zero new dependencies** — the lease is `Npgsql
 | 39 | Bundled node image — Ollama in the container, GPU or CPU (done) | `v3.7.0` |
 | 40 | Capabilities — a node declares what it can *do* (done) | `v3.8.0` |
 | 41 | Tool runtime — supervised subprocess workers (done) | `v3.9.0` |
+| 42 | Speech — STT and TTS behind the OpenAI audio API (done) | `v3.10.0` |
+| 43 | Node profiles — the hub configures, the node clamps (done) | `v3.11.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
 v3.7 turned to the node — supervising its own backend, serving the hub's API, retrieving for itself,
-and now shipping as [one container](#a-node-and-its-ollama-in-one-container-v37) that carries its own
-Ollama and uses your card, your CPU, or neither. v3.8 starts a new track: routing now asks *what a
-node can do*, not just *what it holds* — which is the seam a node needs before it can run something
-other than a language model, and v3.9 is that something: a [tool runtime](#tools-on-a-node-v39) that
-lets a node drive **supervised child processes** (Python, in practice) with two consents, a restart
-budget and no new dependencies. Next on that track: speech-to-text and text-to-speech behind the
-OpenAI audio API, on a `:tools` image, in v3.10. Still on the table: teaching the **coordinator** about backend health as a typed signal (a
-status column and an alert, rather than a line in the node's log), **active-active**
+and shipping as [one container](#a-node-and-its-ollama-in-one-container-v37) that carries its own
+Ollama and uses your card, your CPU, or neither. v3.8 started the current track: routing asks *what a
+node can do*, not just *what it holds* — the seam a node needs before it can run something other than
+a language model. v3.9 is that something, a [tool runtime](#tools-on-a-node-v39) that lets a node
+drive **supervised child processes** (Python, in practice) with two consents, a restart budget and no
+new dependencies; v3.10 is the first real tool, [Whisper and Piper](#speech-in-speech-out-v310)
+behind the OpenAI audio API on a `:tools` image; and v3.11 turns the same track outward, letting the
+hub [configure the fleet](#configure-the-fleet-not-the-boxes-v311) within what each operator already
+allowed. Two phases remain in it: **hub-assigned retrieval** in v3.12 — turn RAG on for a node, pick
+its vector engine, and have the node bring the corpus up at runtime without editing a file on the box
+— and v3.13, the console, the Prometheus series and the docs pass that make five releases' worth of
+capabilities, tools, audio, profiles and per-node corpora operable by someone who did not write them.
+Still on the table beyond that: teaching the **coordinator** about backend health as a typed signal
+(a status column and an alert, rather than a line in the node's log), **active-active**
 multi-coordinator load sharing, an **OTLP push** exporter behind an explicit opt-in, and a dedicated
 cross-encoder reranker behind the existing `IReranker` seam. A fourth vector backend (Milvus,
 Weaviate) is the same shape as the third and will ship on real demand rather than for the comparison
@@ -513,9 +523,10 @@ read a line and kill it. It does not know what Python is.
 
 `Tools:Enabled` consents to the feature. `Tools:Allowed` names the manifest ids that may actually
 run — a manifest on disk that is not in the list is loaded, logged and never started. The two are
-not redundant: from v3.11 a coordinator will be able to turn a node's capabilities on and off, and
-**`Tools:Allowed` is the ceiling it can never raise.** A single switch would make "the operator
-enabled tools" and "the hub may run any tool present on this box" the same consent.
+not redundant: since v3.11 a coordinator can turn a node's tools and capabilities off through a
+[node profile](#configure-the-fleet-not-the-boxes-v311), and **`Tools:Allowed` is the ceiling it can
+never raise.** A single switch would make "the operator enabled tools" and "the hub may run any tool
+present on this box" the same consent.
 
 ### This is not a sandbox
 
