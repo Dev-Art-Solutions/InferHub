@@ -1,6 +1,7 @@
 using InferHub.Node.Backends;
 using InferHub.Node.Configuration;
 using InferHub.Node.Profiles;
+using InferHub.Node.Retrieval;
 using InferHub.Node.Tools;
 using InferHub.Shared.Contracts;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -19,13 +20,30 @@ internal static class TestProfiles
         IInferenceBackend backend,
         IToolRuntime runtime,
         NodeOptions? node = null,
-        ToolOptions? tools = null)
+        ToolOptions? tools = null,
+        RetrievalHost? retrieval = null)
         => new(
             Options.Create(node ?? new NodeOptions()),
             Options.Create(tools ?? new ToolOptions()),
             backend,
             runtime,
+            retrieval ?? IdleRetrieval(),
             NullLogger<NodeProfileApplier>.Instance);
+
+    /// <summary>
+    /// A retrieval host with no corpus and nothing to build one from (phase 44). It is what every
+    /// fixture that predates the phase wants: registered, inert, and never asked to start anything.
+    /// </summary>
+    public static RetrievalHost IdleRetrieval(LocalRetrievalOptions? options = null)
+        => new(
+            new EmptyServiceProvider(),
+            Options.Create(options ?? new LocalRetrievalOptions()),
+            NullLogger<RetrievalHost>.Instance);
+
+    private sealed class EmptyServiceProvider : IServiceProvider
+    {
+        public object? GetService(Type serviceType) => null;
+    }
 
     /// <summary>The ceiling a plain node presents: nothing disabled, no tools, no cap.</summary>
     public static LocalCeiling OpenCeiling(

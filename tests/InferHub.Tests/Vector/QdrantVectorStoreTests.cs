@@ -445,7 +445,7 @@ public class QdrantVectorStoreTests : IAsyncLifetime
             Qdrant = new QdrantStoreOptions { Url = Url!, CollectionPrefix = _prefix }
         });
         var http = QdrantClient.Configure(new HttpClient(), Url!, null, 30);
-        return new QdrantVectorStore(new QdrantClient(http), options, NullLogger<QdrantVectorStore>.Instance);
+        return new QdrantVectorStore(new QdrantClient(http), options.Value, NullVectorLog.Instance);
     }
 
     private LocalVectorStore NewLocal(string distance)

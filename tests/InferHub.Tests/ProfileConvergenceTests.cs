@@ -370,6 +370,10 @@ public class ProfileConvergenceTests
             builder.Services.Configure<RouterOptions>(_ => { });
             builder.Services.AddSingleton<Dispatcher>();
             builder.Services.AddSingleton<IDispatcher>(sp => sp.GetRequiredService<Dispatcher>());
+            // Phase 44: ownership is re-derived on every profile re-assert, so the coordinator needs it
+            // (D1). Empty here — these suites assign no corpus, so every collection stays the hub's.
+            builder.Services.AddSingleton<InferHub.Coordinator.Vector.CollectionOwnership>();
+            builder.Services.AddSingleton<InferHub.Coordinator.Vector.NodeCorpusRegistry>();
             builder.Services.AddSingleton<NodeProfileCoordinator>();
             builder.Services.AddSingleton<InferHub.Coordinator.Cluster.IClusterMembership,
                 InferHub.Coordinator.Cluster.SingleCoordinatorMembership>();
@@ -420,7 +424,7 @@ public class ProfileConvergenceTests
                 nodeOptions,
                 new FixedIdentity(NodeId),
                 backend,
-                new InferenceExecutor(backend, replicas, NullLogger<InferenceExecutor>.Instance),
+                new InferenceExecutor(backend, replicas, TestProfiles.IdleRetrieval(), NullLogger<InferenceExecutor>.Instance),
                 new ModelCommandExecutor(backend, NullLogger<ModelCommandExecutor>.Instance),
                 new ToolExecutor(runtime, ToolWorkerFixture.Wrap(toolOptions), NullLogger<ToolExecutor>.Instance),
                 runtime,
@@ -431,7 +435,9 @@ public class ProfileConvergenceTests
                     ToolWorkerFixture.Wrap(toolOptions),
                     backend,
                     runtime,
+                    TestProfiles.IdleRetrieval(),
                     NullLogger<NodeProfileApplier>.Instance),
+                TestProfiles.IdleRetrieval(),
                 replicas,
                 new NoBackendSupervisor(),
                 NullLogger<CoordinatorConnection>.Instance);

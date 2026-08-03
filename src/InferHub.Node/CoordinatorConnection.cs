@@ -5,6 +5,7 @@ using InferHub.Node.Backends.Supervision;
 using InferHub.Node.Capabilities;
 using InferHub.Node.Configuration;
 using InferHub.Node.Profiles;
+using InferHub.Node.Retrieval;
 using InferHub.Node.Tools;
 using InferHub.Node.Vector;
 using InferHub.Shared.Contracts;
@@ -24,6 +25,7 @@ public sealed class CoordinatorConnection(
     ToolExecutor toolExecutor,
     IToolRuntime toolRuntime,
     NodeProfileApplier profiles,
+    RetrievalHost retrieval,
     ReplicaStore replicaStore,
     IBackendSupervisor supervisor,
     ILogger<CoordinatorConnection> logger) : IAsyncDisposable
@@ -500,6 +502,11 @@ public sealed class CoordinatorConnection(
             }
         }
 
+        // Phase 44, D6. Say what the corpus is doing right after a profile touched it, rather than
+        // waiting for the periodic report: an operator who just switched retrieval on is looking at
+        // the console now, and "pending" for thirty seconds reads as "it did not work".
+        await ReportCorpusStateAsync(cancellationToken);
+
         if (application.Changed)
         {
             // The declaration is what unroutes this node for a capability the profile switched off,
@@ -924,6 +931,51 @@ public sealed class CoordinatorConnection(
             models.Count,
             backend.Name,
             capabilities.Count == 0 ? "no capability" : string.Join(", ", capabilities.Select(c => c.Kind)));
+
+        // Phase 44, D6. The corpus report rides the model loop rather than getting a timer of its
+        // own: it is the same "what is this node doing now" refresh, and a second schedule is a
+        // second thing to reason about when the two disagree.
+        await ReportCorpusStateAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Tells the hub what this node's corpus is doing (phase 44, D6). <b>The hub never asks</b> — it
+    /// would be a synchronous dependency on a box that may be asleep, and <c>/api/status</c> has to
+    /// answer when the fleet does not.
+    /// </summary>
+    /// <remarks>
+    /// A hub older than v3.12 has no such method, and that is a debug line and a node that carries on
+    /// (phase-40 D1's mixed-fleet rule, for the third time).
+    /// </remarks>
+    private async Task ReportCorpusStateAsync(CancellationToken cancellationToken)
+    {
+        var activeConnection = connection;
+
+        if (activeConnection is not { State: HubConnectionState.Connected })
+        {
+            return;
+        }
+
+        NodeCorpusState state;
+
+        try
+        {
+            state = await retrieval.StateAsync(nodeId, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogDebug(ex, "Could not read the corpus state to report it");
+            return;
+        }
+
+        try
+        {
+            await activeConnection.InvokeAsync("ReportCorpusState", state, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "This coordinator did not accept a corpus report");
+        }
     }
 
     private static Uri BuildHubUrl(string coordinatorUrl)

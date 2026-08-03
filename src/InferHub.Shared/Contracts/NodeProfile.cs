@@ -44,7 +44,46 @@ public sealed record NodeProfile(
     [property: JsonPropertyName("tools")] IReadOnlyDictionary<string, bool>? Tools = null,
     [property: JsonPropertyName("models")] NodeProfileModels? Models = null,
     /// <summary>Lowered, never raised. Null leaves the node's own cap alone.</summary>
-    [property: JsonPropertyName("maxConcurrency")] int? MaxConcurrency = null);
+    [property: JsonPropertyName("maxConcurrency")] int? MaxConcurrency = null,
+    /// <summary>
+    /// Phase 44. The corpus this node should be running, if any — the one field in a profile that
+    /// <em>assigns</em> rather than narrows, and it is only sound because the hub records who owns
+    /// the collection and excludes it from replication (phase-44 D1). Null leaves retrieval exactly
+    /// as the box has it.
+    /// </summary>
+    [property: JsonPropertyName("retrieval")] RetrievalProfile? Retrieval = null);
+
+/// <summary>
+/// A corpus the coordinator wants a node to host (phase 44): which engine, where it is, which
+/// collections the node owns, and what to embed with.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>There is no secret in here, and there will not be one</b> (D4). <see cref="CredentialRef"/> is
+/// a <em>name</em>, resolved on the node against <c>LocalApi:Retrieval:Credentials:{ref}</c>. A hub
+/// that carried the API key would be a secret distributor: the key would land in profile persistence
+/// and in an admin API response, and every node the selector matched would be handed a credential it
+/// may not need. A ref this node cannot resolve is a refusal naming the key — never a quiet fall back
+/// to an unauthenticated connection.
+/// </para>
+/// <para>
+/// <b>There is no field for a data directory either.</b> Where bytes land on a box is the operator's,
+/// same as <c>Tools:Allowed</c> is in phase 41.
+/// </para>
+/// </remarks>
+public sealed record RetrievalProfile(
+    [property: JsonPropertyName("enabled")] bool Enabled,
+    /// <summary><c>local</c> or <c>qdrant</c>. <c>postgres</c> is refused by name on a node (D2).</summary>
+    [property: JsonPropertyName("provider")] string? Provider = null,
+    /// <summary>Where the engine is, for an external provider. Ignored by <c>local</c>.</summary>
+    [property: JsonPropertyName("url")] string? Url = null,
+    [property: JsonPropertyName("credentialRef")] string? CredentialRef = null,
+    /// <summary>
+    /// Collections this node owns. The hub has recorded itself out of them: it will not create them
+    /// centrally, replicate to them or heal them (D1).
+    /// </summary>
+    [property: JsonPropertyName("collections")] IReadOnlyList<string>? Collections = null,
+    [property: JsonPropertyName("embeddingModel")] string? EmbeddingModel = null);
 
 /// <summary>
 /// Which nodes a profile applies to: an exact node id, or an exact match on <b>every</b> label pair

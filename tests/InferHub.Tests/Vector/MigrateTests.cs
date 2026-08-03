@@ -346,7 +346,7 @@ public class MigrateTests : IAsyncLifetime
             Qdrant = new QdrantStoreOptions { Url = QdrantTestGate.Url!, CollectionPrefix = prefix }
         });
         var http = QdrantClient.Configure(new HttpClient(), QdrantTestGate.Url!, null, 30);
-        return new QdrantVectorStore(new QdrantClient(http), options, NullLogger<QdrantVectorStore>.Instance);
+        return new QdrantVectorStore(new QdrantClient(http), options.Value, NullVectorLog.Instance);
     }
 
     private static async Task<(PostgresVectorStore Store, NpgsqlDataSource DataSource)> NewPostgresAsync()

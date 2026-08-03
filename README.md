@@ -63,16 +63,17 @@ of one.
 
 ## Status
 
-**InferHub 3.11** stops making you edit twenty `appsettings.json` files. A
-[node profile](#configure-the-fleet-not-the-boxes-v311) is the coordinator saying what a node should
-be doing — capabilities, tools, models, concurrency — and the node deciding whether it may. The hub
-can only ever **narrow** a node: it can switch a capability off but not re-open one the box closed,
-stop a tool but never introduce one, lower `MaxConcurrency` but not raise it. The clamp that enforces
-that runs **on the node**, because a clamp on the hub is a clamp an attacker skips by not being the
-hub. Profiles are desired state rather than commands, so a rebooted box converges on the way back in,
-refusals are per item and named with the key that caused them, and two profiles matching one node is
-a `conflict` rather than a silent merge. A fleet that defines no profile behaves exactly as v3.10.
-Still **zero new dependencies**.
+**InferHub 3.12** puts a corpus on every node. A
+[node profile](#configure-the-fleet-not-the-boxes-v311) can now turn retrieval on for a node, choose
+its vector engine and have the box [bring it up](#a-corpus-on-every-node-v312) — no file edited on the
+machine, no restart, and inference never stops. The rule that made this hard is kept rather than
+relaxed: **one authority per collection name, and the hub knows who it is.** The hub records an owner
+per collection, refuses to create a node-owned name centrally, and never replicates to or heals one —
+so a node holds one authority and zero derived copies under the names it owns, and the v3.6 refusal to
+boot a *self*-configured corpus on a meshed node is untouched. The client API does not move: documents
+and searches still go to the hub, which dispatches them to the owner. The hub names a credential and
+the node resolves it, so no secret ever rides the link. Still **zero new dependencies** — the Qdrant
+connector a node runs is the one the coordinator has had since v3.1, moved rather than rewritten.
 
 | Phase | Theme | Version |
 |------:|-------|---------|
@@ -119,6 +120,7 @@ Still **zero new dependencies**.
 | 41 | Tool runtime — supervised subprocess workers (done) | `v3.9.0` |
 | 42 | Speech — STT and TTS behind the OpenAI audio API (done) | `v3.10.0` |
 | 43 | Node profiles — the hub configures, the node clamps (done) | `v3.11.0` |
+| 44 | Hub-assigned retrieval — a corpus on every node (done) | `v3.12.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -131,10 +133,11 @@ drive **supervised child processes** (Python, in practice) with two consents, a 
 new dependencies; v3.10 is the first real tool, [Whisper and Piper](#speech-in-speech-out-v310)
 behind the OpenAI audio API on a `:tools` image; and v3.11 turns the same track outward, letting the
 hub [configure the fleet](#configure-the-fleet-not-the-boxes-v311) within what each operator already
-allowed. Two phases remain in it: **hub-assigned retrieval** in v3.12 — turn RAG on for a node, pick
-its vector engine, and have the node bring the corpus up at runtime without editing a file on the box
-— and v3.13, the console, the Prometheus series and the docs pass that make five releases' worth of
-capabilities, tools, audio, profiles and per-node corpora operable by someone who did not write them.
+allowed, and v3.12 uses that seam for the thing it was shaped for: [a corpus on every
+node](#a-corpus-on-every-node-v312), assigned from one place, with ownership recorded so the hub
+cannot overwrite what it granted. One phase remains in the track — v3.13, the console, the Prometheus
+series and the docs pass that make six releases' worth of capabilities, tools, audio, profiles and
+per-node corpora operable by someone who did not write them.
 Still on the table beyond that: teaching the **coordinator** about backend health as a typed signal
 (a status column and an alert, rather than a line in the node's log), **active-active**
 multi-coordinator load sharing, an **OTLP push** exporter behind an explicit opt-in, and a dedicated
@@ -738,6 +741,78 @@ wants, so both hubs read one fleet configuration). Losing them is survivable by 
 falls back to its own configuration, which is never a wrong answer and never a capability nobody
 granted.
 
+## A corpus on every node (v3.12+)
+
+Retrieval used to be the hub's, or a standalone node's, and never both. From v3.12 the coordinator can
+**turn retrieval on for a node, choose its vector engine, and have the node bring it up** — without
+editing a file on the box and without restarting it:
+
+```bash
+curl -X PUT http://localhost:5080/api/admin/profiles/edge-boxes \
+  -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{
+    "selector": { "labels": { "site": "sofia" } },
+    "retrieval": {
+      "enabled": true,
+      "provider": "qdrant",
+      "url": "http://qdrant.sofia.internal:6333",
+      "credentialRef": "sofia-qdrant",
+      "collections": ["site-sofia-docs"],
+      "embeddingModel": "nomic-embed-text"
+    }
+  }'
+```
+
+The node starts the corpus while it keeps answering chat. Switch it off and the retrieval routes go
+back to 501 with the sentence they have always had, the in-flight retrievals drain rather than fault,
+and the corpus is still there when you switch it back on.
+
+### One authority per collection name, and the hub knows who it is
+
+v3.6 refused to let a meshed node hold its own corpus, because a node with hub-derived replicas *and*
+an authority under the same names is a collection with two truths and a replication pass waiting to
+overwrite one of them. **That rule is not relaxed** — a node that sets `LocalApi:Retrieval:Enabled` by
+hand while meshed still refuses to boot.
+
+What changed is that the hub can now be the one who *assigns* the corpus, and can therefore be the one
+who *knows*:
+
+- The hub records an **owner** per collection: `hub`, or `node:{id}`.
+- A hub-side create of a node-owned name is a **409 naming the owner** — not a mystery conflict.
+- **Replication and healing never target a node-owned collection.** There is nothing hub-side to
+  derive replicas from, and pushing an empty snapshot at the owner would be the hub deleting somebody's
+  corpus while reporting success.
+
+### The client API does not move
+
+A client posts to `/api/collections/{c}/documents` and searches at `/api/collections/{c}/search`
+exactly as before, whether the chunks are in the hub's store or on a box in another city. The hub
+sees a node-owned collection and dispatches the work to its owner over the connection the node already
+opened — so client scoping, quotas and the response shapes are all the ones you already had.
+
+Two things are said out loud rather than left to be discovered:
+
+- **PDF is a 415 on a node-owned collection.** The PDF extractor ships with the coordinator only, and
+  a hub that extracted the text and shipped chunks would be a second ingestion path with different
+  chunking and a different failure mode. Convert to text or Markdown, or use a hub-owned collection.
+- **An owner that is not connected is a 503 naming the node**, never a quiet answer from the hub's own
+  store. A confident answer from the wrong corpus is the failure nobody notices.
+
+### The engine, the secret and the disk stay the operator's
+
+A profile names `provider` and `credentialRef`. It cannot name a **secret**: `credentialRef` is a
+*name*, resolved on the node against `LocalApi:Retrieval:Credentials:{ref}`, and a name the box does
+not have is a refusal naming the key — never a fall back to an unauthenticated connection to your
+Qdrant. There is no field anywhere in a profile for a data directory, either.
+
+`postgres` is refused **by name** on a node, with the reason: the Postgres connector needs `Npgsql`,
+which is coordinator-scoped by design. A node runs `local` (its own disk) or `qdrant` — and the Qdrant
+connector costs a node nothing, because it was hand-rolled over `HttpClient` back in v3.1 rather than
+taking the official gRPC client.
+
+A start that fails — unreachable engine, unresolvable credential, wrong dimension — leaves the node
+with **no corpus and a reported refusal**, visible on `/api/status` and in the console, while the node
+goes on serving chat.
+
 ## OpenAI-compatible API
 
 Everything else in this ecosystem speaks the OpenAI wire format and exposes exactly one knob
@@ -1173,8 +1248,13 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `LocalApi:AllowAnonymous` | `false` | Explicit consent to serve a non-loopback address with no keys. Warns on every boot. |
 | `LocalApi:RequireAuthForLoopback` | `false` | Same meaning as the coordinator's key of that name. |
 | `LocalApi:MaxWaitSeconds` | `30` | How long a request waits for a concurrency slot before `503`. Only bites when `Node:MaxConcurrency` is set. |
-| `LocalApi:Retrieval:Enabled` | `false` | v3.6. RAG on this node. **Requires `Coordinator:Enabled=false`; both on fails startup.** See [Retrieval on a standalone node](#retrieval-on-a-standalone-node-v36). |
-| `LocalApi:Retrieval:DataDirectory` | `./data/retrieval` | Where the corpus lives. `/data/retrieval` in the image — mount a volume or it is ephemeral. |
+| `LocalApi:Retrieval:Enabled` | `false` | v3.6. RAG configured **on this node, by this node**. **Requires `Coordinator:Enabled=false`; both on fails startup** — that refusal is unchanged in v3.12, which grants a meshed node a corpus only through a profile the hub recorded. See [Retrieval on a standalone node](#retrieval-on-a-standalone-node-v36) and [A corpus on every node](#a-corpus-on-every-node-v312). |
+| `LocalApi:Retrieval:DataDirectory` | `./data/retrieval` | Where the corpus lives, for the `local` provider. `/data/retrieval` in the image — mount a volume or it is ephemeral. **No profile can set this**: where bytes land on a box is the operator's. |
+| `LocalApi:Retrieval:Provider` | `local` | v3.12. `local` (this box's disk) or `qdrant`. `postgres` is refused **by name** with the reason — `Npgsql` is coordinator-scoped (design rule 5). |
+| `LocalApi:Retrieval:Url` | _(empty)_ | v3.12. Where the external engine is. Required for `qdrant` unless a profile supplies one. |
+| `LocalApi:Retrieval:CredentialRef` | _(empty)_ | v3.12. Which entry of `Credentials` to authenticate the engine with. |
+| `LocalApi:Retrieval:Credentials:{name}` | — | v3.12. Credential name → secret, on **this** box (env: `LocalApi__Retrieval__Credentials__sofia-qdrant`). A coordinator profile can *name* one of these; it can never add one, and a name this node does not have is a refusal rather than an unauthenticated connection. |
+| `LocalApi:Retrieval:Qdrant:*` | — | v3.12. The hub's `VectorStore:Qdrant:*` keys (`CollectionPrefix`, `TimeoutSeconds`, `HnswM`, `HnswEfConstruct`, `Quantization`, `OnDisk`, `PayloadIndexKeys`, …), same names and meanings — the node runs the same connector, moved into the shared library rather than rewritten. |
 | `LocalApi:Retrieval:Distance` | `cosine` | `cosine`, `dot` or `l2`, for collections this node creates. |
 | `LocalApi:Retrieval:DefaultEmbeddingModel` | `nomic-embed-text` | Resolved against this node's own backend. |
 | `LocalApi:Retrieval:Retrieval:*` | — | The phase-24 retrieval keys (`DefaultK`, `MaxRecords`, `OnMissing`, `Mode`, `CandidatesPerBranch`, `Rerank`, `RerankModel`, `RerankCandidates`, `RerankTimeoutSeconds`, `Template`), same names, meanings and defaults as the hub's `VectorStore:Retrieval:*`. |

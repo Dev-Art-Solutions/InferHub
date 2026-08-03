@@ -43,7 +43,8 @@ public static class NodeProfileClamp
                 Array.Empty<string>(),
                 Array.Empty<NodeProfileRefusal>(),
                 Array.Empty<string>(),
-                Array.Empty<string>());
+                Array.Empty<string>(),
+                Retrieval: null);
         }
 
         var applied = new List<string>();
@@ -57,6 +58,7 @@ public static class NodeProfileClamp
 
         var concurrency = ClampConcurrency(local, desired, applied, refusals);
         var (ensure, remove) = ClampModels(local, desired, applied, refusals);
+        var retrieval = ClampRetrieval(local, desired, applied, refusals);
 
         return new ClampResult(
             new EffectiveProfile(
@@ -66,7 +68,8 @@ public static class NodeProfileClamp
             applied,
             refusals,
             ensure,
-            remove);
+            remove,
+            retrieval);
     }
 
     /// <summary>
@@ -264,6 +267,79 @@ public static class NodeProfileClamp
         return (ensure, remove);
     }
 
+    /// <summary>
+    /// Phase 44. The one thing a profile <em>assigns</em> rather than narrows — and it is still
+    /// bounded by this box, in the two places that matter.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The engine and the secret are the ceiling here.</b> A profile cannot name
+    /// <c>postgres</c>, because <c>Npgsql</c> is scoped to the coordinator by name (rule 5, phase-44
+    /// D2), and it cannot supply a credential — it names one, and a name this node does not have is a
+    /// refusal rather than an unauthenticated connection to somebody's engine (D4). There is no field
+    /// for a data directory anywhere in a profile, so where bytes land stays the operator's.
+    /// </para>
+    /// <para>
+    /// Everything the start itself can fail on — an unreachable engine, a dimension that does not
+    /// match — is refused by <c>RetrievalHost</c> rather than here, because this function is pure and
+    /// those answers need I/O. Both paths end in the same per-item refusal (phase-43 D6).
+    /// </para>
+    /// </remarks>
+    private static RetrievalIntent? ClampRetrieval(
+        LocalCeiling local,
+        NodeProfile desired,
+        List<string> applied,
+        List<NodeProfileRefusal> refusals)
+    {
+        if (desired.Retrieval is not { } retrieval)
+        {
+            return null;
+        }
+
+        if (!retrieval.Enabled)
+        {
+            // Switching off is narrowing, so it is honoured unconditionally — including on a node
+            // that has no corpus, where it is simply a no-op.
+            applied.Add("retrieval off");
+            return new RetrievalIntent(Enabled: false, null, null, null, null, null);
+        }
+
+        var provider = retrieval.Provider?.Trim();
+
+        if (!string.IsNullOrEmpty(provider)
+            && !string.Equals(provider, ProviderLocal, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(provider, ProviderQdrant, StringComparison.OrdinalIgnoreCase))
+        {
+            refusals.Add(new NodeProfileRefusal(
+                "retrieval",
+                string.Equals(provider, ProviderPostgres, StringComparison.OrdinalIgnoreCase)
+                    ? "a node cannot run the 'postgres' vector provider: Npgsql is scoped to the coordinator by name (design rule 5). Use 'local' or 'qdrant'."
+                    : $"unknown vector provider '{provider}'; a node runs 'local' or 'qdrant'"));
+
+            return null;
+        }
+
+        var collections = Clean(retrieval.Collections);
+
+        applied.Add(collections.Count == 0
+            ? $"retrieval on ({provider ?? ProviderLocal})"
+            : $"retrieval on ({provider ?? ProviderLocal}): {string.Join(", ", collections)}");
+
+        return new RetrievalIntent(
+            Enabled: true,
+            provider,
+            string.IsNullOrWhiteSpace(retrieval.Url) ? null : retrieval.Url.Trim(),
+            string.IsNullOrWhiteSpace(retrieval.CredentialRef) ? null : retrieval.CredentialRef.Trim(),
+            collections,
+            string.IsNullOrWhiteSpace(retrieval.EmbeddingModel) ? null : retrieval.EmbeddingModel.Trim());
+    }
+
+    private const string ProviderLocal = "local";
+
+    private const string ProviderQdrant = "qdrant";
+
+    private const string ProviderPostgres = "postgres";
+
     private static IReadOnlyList<string> Clean(IReadOnlyList<string>? models) =>
         models is null
             ? Array.Empty<string>()
@@ -296,4 +372,17 @@ public sealed record ClampResult(
     IReadOnlyList<string> Applied,
     IReadOnlyList<NodeProfileRefusal> Refusals,
     IReadOnlyList<string> EnsureModels,
-    IReadOnlyList<string> RemoveModels);
+    IReadOnlyList<string> RemoveModels,
+    RetrievalIntent? Retrieval);
+
+/// <summary>
+/// What the profile wants the corpus to be (phase 44), after the clamp and before any I/O. Null
+/// means the profile said nothing about retrieval, which is different from asking for it off.
+/// </summary>
+public sealed record RetrievalIntent(
+    bool Enabled,
+    string? Provider,
+    string? Url,
+    string? CredentialRef,
+    IReadOnlyList<string>? Collections,
+    string? EmbeddingModel);

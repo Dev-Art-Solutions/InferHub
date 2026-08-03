@@ -1,12 +1,8 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
-using InferHub.Coordinator.Observability;
-using InferHub.Coordinator.Vector;
-using InferHub.Shared.Vector;
 using InferHub.Shared.Vector.Storage;
-using Microsoft.Extensions.Options;
 
-namespace InferHub.Coordinator.Vector.Qdrant;
+namespace InferHub.Shared.Vector.Qdrant;
 
 /// <summary>
 /// Qdrant implementation of <see cref="IVectorStore"/>, spoken over <see cref="QdrantClient"/>'s
@@ -24,8 +20,18 @@ namespace InferHub.Coordinator.Vector.Qdrant;
 /// this store publishes the two lifecycle events itself. The constructor opens no connection — DI
 /// composition and smoke tests must work against a dead Qdrant.
 /// </para>
+/// <para>
+/// <b>Phase 44 moved this class, unchanged in behaviour, from the coordinator into
+/// <c>InferHub.Shared</c> (D2), so a node assigned a Qdrant corpus runs the same store rather than a
+/// second one.</b> The move cost nothing because phase-33 D2 declined the official gRPC client: this
+/// is <c>HttpClient</c> and JSON, which a plain class library can already do. The two host couplings
+/// became the same seams phase-38 D3 used — <see cref="IVectorLog"/> instead of <c>ILogger</c>, a
+/// plain <see cref="VectorStoreOptions"/> instead of <c>IOptions&lt;T&gt;</c>, and two plain events
+/// where the coordinator used to be handed its own <c>VectorEvents</c> bus, exactly as
+/// <see cref="LocalVectorStore"/> already did.
+/// </para>
 /// </summary>
-internal sealed class QdrantVectorStore : IVectorStore, IServerSideHybridSearch
+public sealed class QdrantVectorStore : IVectorStore, IServerSideHybridSearch
 {
     // Reserved payload keys. A record's own payload and metadata are nested so they can never clash
     // with these, and so a metadata filter maps to `__meta.<key>` without ambiguity.
@@ -44,26 +50,28 @@ internal sealed class QdrantVectorStore : IVectorStore, IServerSideHybridSearch
     private readonly QdrantClient _client;
     private readonly QdrantStoreOptions _q;
     private readonly DistanceMetric _defaultDistance;
-    private readonly ILogger<QdrantVectorStore> _logger;
-    private readonly VectorEvents? _events;
+    private readonly IVectorLog _log;
     private readonly ConcurrentDictionary<string, CollectionMeta> _cache = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, long> _ops = new(StringComparer.Ordinal);
 
+    /// <summary>Raised after a collection is created here. The coordinator forwards it to its event bus.</summary>
+    public event Action<CollectionInfo>? CollectionCreated;
+
+    /// <summary>Raised after a collection is dropped here.</summary>
+    public event Action<string>? CollectionDropped;
+
     public QdrantVectorStore(
         QdrantClient client,
-        IOptions<VectorStoreOptions> options,
-        ILogger<QdrantVectorStore> logger,
-        VectorEvents? events = null)
+        VectorStoreOptions options,
+        IVectorLog? log = null)
     {
         _client = client;
-        var opts = options.Value;
-        _q = opts.Qdrant;
-        if (!DistanceMetricExtensions.TryParse(opts.Distance, out _defaultDistance))
+        _q = options.Qdrant;
+        if (!DistanceMetricExtensions.TryParse(options.Distance, out _defaultDistance))
         {
-            throw new InvalidOperationException($"invalid VectorStore:Distance '{opts.Distance}'");
+            throw new InvalidOperationException($"invalid VectorStore:Distance '{options.Distance}'");
         }
-        _logger = logger;
-        _events = events;
+        _log = log ?? NullVectorLog.Instance;
     }
 
     public async Task<CollectionInfo> CreateCollectionAsync(string name, int dimension, string? distance, CancellationToken cancellationToken = default)
@@ -89,12 +97,9 @@ internal sealed class QdrantVectorStore : IVectorStore, IServerSideHybridSearch
         var wire = metric.ToWireString();
         _cache[name] = new CollectionMeta(dimension, metric, wire, Hybrid: true);
         _ops[name] = 0;
-        _events?.Publish("vector.collection.created", name, new Dictionary<string, object?>
-        {
-            ["dimension"] = dimension,
-            ["distance"] = wire
-        });
-        return new CollectionInfo(name, dimension, wire, 0, 0);
+        var created = new CollectionInfo(name, dimension, wire, 0, 0);
+        CollectionCreated?.Invoke(created);
+        return created;
     }
 
     public async Task<bool> DropCollectionAsync(string name, CancellationToken cancellationToken = default)
@@ -108,7 +113,7 @@ internal sealed class QdrantVectorStore : IVectorStore, IServerSideHybridSearch
         await _client.DropCollectionAsync(qname, cancellationToken);
         _cache.TryRemove(name, out _);
         _ops.TryRemove(name, out _);
-        _events?.Publish("vector.collection.dropped", name);
+        CollectionDropped?.Invoke(name);
         return true;
     }
 
@@ -443,7 +448,10 @@ internal sealed class QdrantVectorStore : IVectorStore, IServerSideHybridSearch
             }
             catch (QdrantException ex)
             {
-                _logger.LogWarning(
+                // The template and its fields are unchanged by the move (phase-38 D3): the hub's
+                // structured output has to read the same after this class changed projects.
+                _log.Warn(
+                    null,
                     "Qdrant refused a payload index on {Field} for collection {Collection}: {Error}. Metadata filters will scan.",
                     field, qname, ex.Message);
             }
@@ -451,7 +459,7 @@ internal sealed class QdrantVectorStore : IVectorStore, IServerSideHybridSearch
     }
 
     /// <summary>Warm the metadata cache from Qdrant at startup; returns the InferHub collection count.</summary>
-    internal async Task<int> LoadRegistryCacheAsync(CancellationToken cancellationToken)
+    public async Task<int> LoadRegistryCacheAsync(CancellationToken cancellationToken)
     {
         var names = await InferHubCollectionNamesAsync(cancellationToken);
         _cache.Clear();

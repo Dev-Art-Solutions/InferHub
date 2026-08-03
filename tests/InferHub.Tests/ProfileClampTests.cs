@@ -329,6 +329,7 @@ public class ProfileClampTests
                 ToolWorkerFixture.Wrap(toolOptions),
                 new ManageableBackend(),
                 fixture.Runtime,
+                TestProfiles.IdleRetrieval(),
                 NullLogger<NodeProfileApplier>.Instance);
 
             return fixture;

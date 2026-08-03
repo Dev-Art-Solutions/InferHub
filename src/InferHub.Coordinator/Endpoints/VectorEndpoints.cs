@@ -250,9 +250,20 @@ public static class VectorEndpoints
             CreateCollectionRequest request,
             HttpContext context,
             IVectorStore store,
+            CollectionOwnership ownership,
             IAuditLog audit,
             CancellationToken cancellationToken) =>
         {
+            // Phase-44 D1. Node-owned names live in a namespace the hub refuses to create centrally,
+            // so the disjointness that keeps "one authority per collection name" true is structural
+            // rather than a convention somebody has to remember. The 409 names the owner, because a
+            // bare conflict sends an operator looking for a collection that is not missing — it is
+            // somewhere else, deliberately.
+            if (!ownership.IsHubOwned(request.Name))
+            {
+                return Error(StatusCodes.Status409Conflict, ownership.RefusalFor(request.Name));
+            }
+
             try
             {
                 var info = await store.CreateCollectionAsync(request.Name, request.Dimension, request.Distance, cancellationToken);

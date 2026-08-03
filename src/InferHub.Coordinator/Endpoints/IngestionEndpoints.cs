@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using InferHub.Coordinator.Auth;
 using InferHub.Coordinator.Ingestion;
 using InferHub.Coordinator.Services;
+using InferHub.Coordinator.Vector;
 using Microsoft.AspNetCore.Http;
 
 namespace InferHub.Coordinator.Endpoints;
@@ -33,10 +34,25 @@ public static class IngestionEndpoints
         return app;
     }
 
+    /// <summary>
+    /// Phase-44 D5. PDF is refused for a node-owned collection, and the message names the
+    /// limitation rather than the missing service.
+    /// </summary>
+    /// <remarks>
+    /// <c>PdfPig</c> is coordinator-scoped by name (rule 5), so the owning node has no extractor. The
+    /// hub <em>could</em> extract the text here and ship chunks — and that is exactly what makes it
+    /// wrong: it would be a second ingestion path with different chunking, different metadata and a
+    /// different failure mode from every other document that node holds. Phase-38 D5 refused this for
+    /// a solo node; a hub-assigned corpus is the same corpus.
+    /// </remarks>
+    internal const string NodeOwnedPdfRefusal =
+        "PDF ingestion is not available for a node-owned collection: the PDF text extractor ships with the coordinator, and this collection's chunks are written by the node that owns it. Convert the document to text or Markdown first, or ingest it into a hub-owned collection.";
+
     private static async Task<IResult> IngestAsync(
         string collection,
         HttpContext context,
         IngestionPipeline pipeline,
+        NodeCorpusDispatcher corpora,
         CancellationToken cancellationToken)
     {
         var http = context.Request;
@@ -66,7 +82,21 @@ public static class IngestionEndpoints
 
         try
         {
-            var result = await pipeline.IngestAsync(collection, request, autoProvision, cancellationToken);
+            IngestResult result;
+
+            if (corpora.IsNodeOwned(collection))
+            {
+                if (IsPdf(request))
+                {
+                    return Error(StatusCodes.Status415UnsupportedMediaType, NodeOwnedPdfRefusal);
+                }
+
+                result = await corpora.IngestAsync(collection, request, cancellationToken);
+            }
+            else
+            {
+                result = await pipeline.IngestAsync(collection, request, autoProvision, cancellationToken);
+            }
 
             // A partial ingest is not a success. The chunks that landed are real and visible, and
             // re-posting the same bytes will resume rather than no-op — but the call the caller
@@ -74,6 +104,11 @@ public static class IngestionEndpoints
             return result.Status == IngestResult.Partial
                 ? Results.Json(result, JsonOptions, statusCode: StatusCodes.Status500InternalServerError)
                 : Results.Json(result, JsonOptions);
+        }
+        catch (NodeCorpusUnavailableException ex)
+        {
+            // 503, not 500: the request is well-formed and will work again when the owner is back.
+            return Error(StatusCodes.Status503ServiceUnavailable, ex.Message);
         }
         catch (DocumentTooLargeException ex)
         {
@@ -98,6 +133,23 @@ public static class IngestionEndpoints
         catch (ArgumentException ex)
         {
             return Error(StatusCodes.Status400BadRequest, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Whether this upload is a PDF, decided the same way <c>TextExtractor</c> decides it, so the
+    /// refusal cannot disagree with what the pipeline would have done.
+    /// </summary>
+    private static bool IsPdf(IngestRequest request)
+    {
+        try
+        {
+            return TextExtractor.ResolveMediaType(request.ContentType, request.FileName) == TextExtractor.Pdf;
+        }
+        catch (UnsupportedMediaTypeException)
+        {
+            // Not a format we read at all; the pipeline's own message is the better one.
+            return false;
         }
     }
 

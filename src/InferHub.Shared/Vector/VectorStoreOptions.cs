@@ -96,6 +96,32 @@ public sealed class QdrantStoreOptions
     /// connector indexes the reserved payload path it stores them under.
     /// </summary>
     public IList<string> PayloadIndexKeys { get; set; } = ["documentId"];
+
+    /// <summary>
+    /// A copy with the address and the credential replaced — how a node projects a corpus the hub
+    /// assigned it (phase 44) without mutating the options object its own configuration is bound to,
+    /// which would write a resolved secret into the live options graph.
+    /// </summary>
+    /// <remarks>
+    /// It lives here, beside the properties, on purpose: a knob added above and forgotten here would
+    /// be a node quietly running different HNSW or quantization settings from the hub's — the kind of
+    /// divergence that shows up as "retrieval is worse on that box" months later.
+    /// </remarks>
+    public QdrantStoreOptions WithConnection(string? url, string? apiKey) => new()
+    {
+        Url = string.IsNullOrWhiteSpace(url) ? Url : url!,
+        ApiKey = string.IsNullOrWhiteSpace(apiKey) ? ApiKey : apiKey,
+        TimeoutSeconds = TimeoutSeconds,
+        CollectionPrefix = CollectionPrefix,
+        UpsertBatchSize = UpsertBatchSize,
+        OverFetchMultiplier = OverFetchMultiplier,
+        HnswM = HnswM,
+        HnswEfConstruct = HnswEfConstruct,
+        EfSearch = EfSearch,
+        Quantization = Quantization,
+        OnDisk = OnDisk,
+        PayloadIndexKeys = new List<string>(PayloadIndexKeys)
+    };
 }
 
 /// <summary>

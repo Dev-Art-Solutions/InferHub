@@ -438,12 +438,60 @@ public sealed class LocalRetrievalOptionsValidator(IConfiguration? configuration
                 $"{LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.DefaultEmbeddingModel)} must be set.");
         }
 
+        ValidateProvider(options, failures);
         ValidateRetrieval(options.Retrieval, failures);
         ValidateIngestion(options.Ingestion, failures);
 
         return failures.Count == 0
             ? ValidateOptionsResult.Success
             : ValidateOptionsResult.Fail(failures);
+    }
+
+    /// <summary>
+    /// Phase-44 D2. A node runs <c>local</c> or <c>qdrant</c> and never <c>postgres</c>, and the
+    /// refusal says <em>that</em> rather than "unknown value": an operator who typed the name of a
+    /// provider this product genuinely has is owed the reason it is not available on a box, not a
+    /// spelling complaint.
+    /// </summary>
+    private static void ValidateProvider(LocalRetrievalOptions options, List<string> failures)
+    {
+        var prefix = $"{LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.Provider)}";
+
+        if (VectorStoreProviderExtensions.IsPostgres(options.Provider))
+        {
+            failures.Add(
+                $"{prefix} is 'postgres', which a node cannot run: the Postgres connector needs Npgsql, and that package is scoped to the coordinator by name (design rule 5). Use 'local' for a corpus on this box's disk, or 'qdrant' for an external engine — the Qdrant connector is hand-rolled over HttpClient and costs a node nothing.");
+
+            return;
+        }
+
+        if (!VectorStoreProviderExtensions.IsQdrant(options.Provider)
+            && !string.Equals(options.Provider?.Trim(), VectorStoreProviderExtensions.Local, StringComparison.OrdinalIgnoreCase))
+        {
+            failures.Add($"{prefix} must be 'local' or 'qdrant' (got '{options.Provider}').");
+            return;
+        }
+
+        if (!VectorStoreProviderExtensions.IsQdrant(options.Provider))
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(options.Url) && string.IsNullOrWhiteSpace(options.Qdrant.Url))
+        {
+            failures.Add(
+                $"{LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.Url)} must be set when {prefix} is 'qdrant'.");
+        }
+
+        // A ref that names nothing is a failure here for the same reason it is a refusal when a hub
+        // sends one (phase-44 D4): the alternative is a corpus that comes up unauthenticated against
+        // somebody's shared Qdrant and says nothing about it.
+        if (!string.IsNullOrWhiteSpace(options.CredentialRef)
+            && !options.TryResolveCredential(options.CredentialRef, out _))
+        {
+            failures.Add(
+                $"{LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.CredentialRef)} names '{options.CredentialRef}', and {LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.Credentials)} on this node has no such entry.");
+        }
     }
 
     // The same rules and the same wording as the coordinator's VectorStoreOptionsValidator, against

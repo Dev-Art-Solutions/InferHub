@@ -1294,6 +1294,16 @@ that exists in both places has two different sets of chunks under it, and `Repli
 will overwrite a collection the operator believes they own. There is no configuration of that which
 is safe, so it is not offered.
 
+> **Amended in phase 44, and narrowly.** The startup failure above is **unchanged** — a node that
+> sets `LocalApi:Retrieval:Enabled` by hand while meshed still refuses to boot, and
+> `NodeOwnedCollectionTests` holds that line. What phase 44 added is the one case this decision could
+> not express: a corpus the **hub assigned**, and therefore *knows about*. The hub records an owner
+> per collection name ([CollectionOwnership](src/InferHub.Coordinator/Vector/CollectionOwnership.cs)),
+> refuses to create a node-owned name centrally, and excludes it from replication and healing — so
+> the node holds one authority and zero derived copies **under names the hub has recorded as not its
+> own**. The sentence that survives both phases: *one authority per collection name, and the hub
+> knows who it is.* See phase-44 D1.
+
 **It refuses rather than silently disabling, and that asymmetry with phase-36 D1 is deliberate.**
 A disabled supervisor costs an operational nicety and one log line is enough. What is switched off
 here is *grounding*, and a node that quietly answers ungrounded is precisely the phase-31 D4 /
@@ -1938,6 +1948,94 @@ dispatch.
 > retry loop is **correct** to keep trying every `Coordinator:RetryDelay` forever. In a suite with
 > `builder.Logging.ClearProviders()` that reads as a hang and then a dead test host. If a new mesh
 > fixture never registers, check the hub's composition before suspecting the wire.
+
+### Phase 44 (hub-assigned retrieval) — also load-bearing
+
+**D1 — Phase-38 D1 is amended precisely, and the invariant it protected is intact. Read this
+twice.** The sentence to check any future change against is: **one authority per collection name, and
+the hub knows who it is.**
+
+Phase-38 D1 refused to boot a node that was both meshed and holding its own corpus, because such a
+node holds hub-derived replicas *and* an authority under the same names, and `ReplicationCoordinator`
+would eventually overwrite a collection its operator believed they owned. **That reasoning is not
+reversed.** What changed is that the hub can now be the one who *assigns* the corpus, and can
+therefore be the one who *knows*:
+
+- [CollectionOwnership](src/InferHub.Coordinator/Vector/CollectionOwnership.cs) records an owner per
+  name — `hub` or `node:{id}` — **one place**, the way `CollectionAccessPolicy` and `FleetSaturation`
+  are one place. It is re-derived from the profile book on every re-assert and on every node's
+  registration pull, so it follows the documents rather than accumulating beside them.
+- **A hub-side create of a node-owned name is a `409` naming the owner.** Disjointness is structural,
+  not a convention somebody has to remember.
+- **Replication and healing bind to it.** `ReplicationCoordinator` skips placement and fan-out for a
+  node-owned name; `HealingService` skips it in the sweep and refuses a manual rebuild with the
+  owner's name. `VectorCompositionTests` asserts both constructors still take the record — a refactor
+  that dropped the parameter would leave every behavioural test passing against a default of
+  "everything is the hub's", which is exactly the silent failure this decision is about.
+- **A self-configured corpus on a meshed node is still a startup failure.** `LocalRetrievalOptions`
+  set by hand plus `Coordinator:Enabled=true` fails exactly as it did in v3.6. The *only* way a meshed
+  node holds an authority is that the hub granted it, recorded it, and excluded it from replication.
+
+**D2 — A node runs `local` or `qdrant`, never `postgres` — and phase-33 D2 is why this cost nothing.**
+The Qdrant connector was hand-rolled over `HttpClient` with zero dependencies because the official
+client is gRPC. That decision, made to protect rule 5 two releases earlier, is what let
+`QdrantVectorStore`, `QdrantClient`, `QdrantIdMap` and `SparseVector` **move into `InferHub.Shared`**
+— so a node assigned a Qdrant corpus runs the *same* store rather than a second one. The two host
+couplings became phase-38 D3's seams (`IVectorLog`, plain options) plus two plain events the
+coordinator forwards to `VectorEvents`; `QdrantBootstrapper` stayed behind as a host concern, which
+is also why `using InferHub.Coordinator.Vector.Qdrant;` still resolves everywhere it was written.
+`PostgresVectorStore` stays on the coordinator, because `Npgsql` is a package and rule 5 names it as
+coordinator-scoped — and the node's validator refuses `postgres` **by name**, with that reason,
+rather than reporting an unknown value.
+
+**A dependency declined two releases ago is the reason a feature was free today.** `InferHub.Shared.csproj`
+is still an empty `<Project Sdk="Microsoft.NET.Sdk">`.
+
+**D3 — The corpus starts and stops at runtime; the routes are always mapped.**
+[RetrievalHost](src/InferHub.Node/Retrieval/RetrievalHost.cs) is the **only** thing on a node that
+constructs a vector store. DI holds the seams around it and builds nothing until
+`StartCorpusAsync` is called, because ASP.NET cannot map an endpoint after the application has
+started and a node that restarts itself on a hub instruction is refused by phase-43 D6.
+
+- The retrieval routes are **mapped unconditionally** and answer **501** with the phase-37 D8
+  sentence while no corpus runs. `SoloRetrievalTests` records that amendment: they were 404s through
+  v3.11. Same shape as tools (41) and audio (42).
+- Stopping **drains**: a request already retrieving holds a `CorpusLease` and finishes against the
+  store it started on, bounded at 30s.
+- **A start that fails leaves no corpus at all** — never a half-started one that answers some
+  queries. An `HttpClient` timeout arrives as a `TaskCanceledException`, so the catch distinguishes
+  the caller's token from the operation's own timeout; getting that wrong would have turned the most
+  ordinary failure (an engine that is slow to refuse) into an exception nobody converts to a refusal.
+
+**D4 — The hub names a credential; the node resolves it. The hub never carries the secret.**
+`credentialRef` resolves against `LocalApi:Retrieval:Credentials:{ref}` on the box. An unresolvable
+ref is a **refusal naming the key**, never a fall back to an unauthenticated connection. The
+alternative — the hub pushing a key down the link — makes the coordinator a secret distributor, puts
+credentials in profile persistence and in an admin API response, and hands every node in the selector
+a secret it may not need.
+
+**Phase-35 D4 still applies to the node**: a non-loopback engine with no credential **warns and
+proceeds**, because that is the operator's own network. The asymmetry with D1's hard refusals is the
+line the whole track draws — refuse when the risk is somebody else's, warn when it is theirs.
+
+**D5 — Ingestion and search for a node-owned collection go through the hub, dispatched to the owner.**
+The client-facing API stays the hub's; `NodeCorpusDispatcher` sends a `corpus-ingest` /
+`corpus-search` job down the connection the node already opened (phase-26 D1 — the hub still never
+dials a node), and the node runs the **shared** pipelines against its own store. One API for clients,
+no new surface, no second ingestion path, and the hub keeps enforcing phase-31 D2's client scoping
+over data it does not hold. An owner that is not connected is a **503 naming the node**, never a
+silent fall back to the hub's own store — that would be phase-31 D4's failure, a confident answer
+from the wrong data. **PDF is a 415 on a node-owned collection** (phase-38 D5, unchanged): a hub that
+extracted the text and shipped chunks would be a second ingestion path with different behaviour.
+
+**D6 — What the hub knows about a node corpus is what the node reported, not what the hub queried.**
+`ReportCorpusState` rides the existing model-refresh loop and fires again right after a profile
+touches the corpus; `NodeCorpusRegistry` is a mailbox, and `/api/status` reads it. The hub does
+**not** query a node's corpus, because that is a synchronous dependency on a box that may be asleep
+and `/api/status` has to answer when the fleet does not. A stale block is the honest failure mode,
+and the timestamp says so.
+
+**Rule 5 survived again.** Phase 44 added **zero** new dependencies.
 
 ## Auth model (three independent token sets)
 

@@ -95,6 +95,14 @@ else
 
 builder.Services.AddSingleton<IProfileRegistry, ProfileRegistry>();
 builder.Services.AddSingleton<NodeProfileCoordinator>();
+
+// Phase 44. Who is the authority for a collection name (D1), what each node says about the corpus it
+// hosts (D6), and how work for a node-owned collection reaches its owner (D5). All three are
+// registered unconditionally and are inert for a fleet that assigns no corpus: ownership is empty, so
+// every name is the hub's and every code path is the one v3.11 took.
+builder.Services.AddSingleton<CollectionOwnership>();
+builder.Services.AddSingleton<NodeCorpusRegistry>();
+builder.Services.AddSingleton<NodeCorpusDispatcher>();
 builder.Services.AddSingleton<ThroughputTracker>();
 builder.Services.AddHostedService<NodeReaper>();
 

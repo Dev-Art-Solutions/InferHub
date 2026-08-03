@@ -74,19 +74,31 @@ public class SoloRetrievalTests
         Assert.Contains(result.Failures!, f => f.Contains("{context}"));
     }
 
-    // ---- D7: with retrieval off, v3.5.1 exactly ----------------------------------------------
+    // ---- D7 / phase-44 D3: with retrieval off, the routes answer 501 -------------------------
 
+    /// <summary>
+    /// <b>Amended in phase 44 (D3).</b> These were 404s until v3.11, because the routes were mapped
+    /// only when a corpus was composed at startup. From v3.12 a coordinator can start a corpus on a
+    /// running node, and ASP.NET cannot map an endpoint after the application has started — so they
+    /// are mapped unconditionally and answer the retrieval refusal instead.
+    /// </summary>
+    /// <remarks>
+    /// The 501 is the better answer regardless of the mechanics, and it is the one this repo already
+    /// chose twice: tools (phase 41) and audio (phase 42) both map their routes with the feature off,
+    /// because "this host could serve that if configured" is a different fact from "wrong URL".
+    /// </remarks>
     [Theory]
     [InlineData("/api/collections")]
     [InlineData("/api/collections/docs/documents")]
     [InlineData("/api/vector/docs/anything")]
-    public async Task WithRetrievalOffTheRagRoutesAreNotThere(string path)
+    public async Task WithRetrievalOffTheRagRoutesAnswer501RatherThan404(string path)
     {
         await using var host = await SoloHost.StartAsync();
 
         var response = await host.Client.GetAsync(path);
 
-        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
+        Assert.Contains("retrieval is not available on this node", await response.Content.ReadAsStringAsync());
     }
 
     [Fact]

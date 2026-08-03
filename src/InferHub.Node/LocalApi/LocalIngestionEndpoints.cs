@@ -1,3 +1,4 @@
+using InferHub.Node.Retrieval;
 using System.Text;
 using System.Text.Json;
 using InferHub.Shared.Ingestion;
@@ -42,9 +43,16 @@ internal static class LocalIngestionEndpoints
     private static async Task<IResult> IngestAsync(
         string collection,
         HttpContext context,
-        IngestionPipeline pipeline,
         CancellationToken cancellationToken)
     {
+        using var lease = LocalApiEndpoints.LeaseCorpus(context);
+
+        if (lease is null)
+        {
+            return LocalApiEndpoints.NoCorpus();
+        }
+
+        var pipeline = lease.Corpus.Ingestion;
         var http = context.Request;
 
         IngestRequest request;
@@ -113,12 +121,19 @@ internal static class LocalIngestionEndpoints
 
     private static async Task<IResult> ListAsync(
         string collection,
-        DocumentIndex documents,
+        HttpContext context,
         CancellationToken cancellationToken)
     {
+        using var lease = LocalApiEndpoints.LeaseCorpus(context);
+
+        if (lease is null)
+        {
+            return LocalApiEndpoints.NoCorpus();
+        }
+
         try
         {
-            var list = await documents.ListAsync(collection, cancellationToken);
+            var list = await lease.Corpus.Documents.ListAsync(collection, cancellationToken);
             return Results.Json(new { collection, documents = list }, LocalApiEndpoints.JsonOptions);
         }
         catch (KeyNotFoundException ex)
@@ -130,12 +145,19 @@ internal static class LocalIngestionEndpoints
     private static async Task<IResult> GetAsync(
         string collection,
         string id,
-        DocumentIndex documents,
+        HttpContext context,
         CancellationToken cancellationToken)
     {
+        using var lease = LocalApiEndpoints.LeaseCorpus(context);
+
+        if (lease is null)
+        {
+            return LocalApiEndpoints.NoCorpus();
+        }
+
         try
         {
-            var document = await documents.GetAsync(collection, id, cancellationToken);
+            var document = await lease.Corpus.Documents.GetAsync(collection, id, cancellationToken);
             return document is null
                 ? Error(StatusCodes.Status404NotFound, $"document '{id}' not found in '{collection}'")
                 : Results.Json(document, LocalApiEndpoints.JsonOptions);
@@ -149,12 +171,19 @@ internal static class LocalIngestionEndpoints
     private static async Task<IResult> ChunksAsync(
         string collection,
         string id,
-        DocumentIndex documents,
+        HttpContext context,
         CancellationToken cancellationToken)
     {
+        using var lease = LocalApiEndpoints.LeaseCorpus(context);
+
+        if (lease is null)
+        {
+            return LocalApiEndpoints.NoCorpus();
+        }
+
         try
         {
-            var chunks = await documents.ChunksOfAsync(collection, id, cancellationToken);
+            var chunks = await lease.Corpus.Documents.ChunksOfAsync(collection, id, cancellationToken);
             if (chunks.Count == 0)
             {
                 return Error(StatusCodes.Status404NotFound, $"document '{id}' not found in '{collection}'");
@@ -181,12 +210,19 @@ internal static class LocalIngestionEndpoints
     private static async Task<IResult> DeleteAsync(
         string collection,
         string id,
-        DocumentIndex documents,
+        HttpContext context,
         CancellationToken cancellationToken)
     {
+        using var lease = LocalApiEndpoints.LeaseCorpus(context);
+
+        if (lease is null)
+        {
+            return LocalApiEndpoints.NoCorpus();
+        }
+
         try
         {
-            var removed = await documents.DeleteAsync(collection, id, cancellationToken);
+            var removed = await lease.Corpus.Documents.DeleteAsync(collection, id, cancellationToken);
             return removed == 0
                 ? Error(StatusCodes.Status404NotFound, $"document '{id}' not found in '{collection}'")
                 : Results.Json(new { collection, documentId = id, deleted = true, chunks = removed }, LocalApiEndpoints.JsonOptions);

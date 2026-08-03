@@ -104,6 +104,32 @@ public class VectorCompositionTests
         Assert.DoesNotContain(services, d => d.ServiceType == typeof(IVectorQueryRouter) && d.ImplementationType == typeof(NullVectorQueryRouter));
     }
 
+    /// <summary>
+    /// Phase-44 D1, in the type system. <b>Replication and healing bind to
+    /// <see cref="CollectionOwnership"/>, and the day one of them stops is the day the hub can
+    /// overwrite a corpus it does not own.</b>
+    /// </summary>
+    /// <remarks>
+    /// It is a reflection assertion rather than a behavioural one on purpose: the behaviour is
+    /// covered by <c>NodeOwnedCollectionTests</c>, and what this guards is the <em>binding</em> — a
+    /// refactor that drops the parameter would leave every one of those tests passing against a
+    /// default of "everything is the hub's", which is exactly the silent failure D1 is about.
+    /// </remarks>
+    [Fact]
+    public void ReplicationAndHealingBothTakeTheOwnershipRecord()
+    {
+        foreach (var type in new[] { typeof(ReplicationCoordinator), typeof(HealingService) })
+        {
+            var takesOwnership = type
+                .GetConstructors()
+                .Single()
+                .GetParameters()
+                .Any(parameter => parameter.ParameterType == typeof(CollectionOwnership));
+
+            Assert.True(takesOwnership, $"{type.Name} must take CollectionOwnership (phase-44 D1)");
+        }
+    }
+
     private sealed class StubEmbeddingDispatcher : IEmbeddingDispatcher
     {
         public Task<string> DispatchEmbedAsync(string rawJson, string? modelOverride, CancellationToken cancellationToken)

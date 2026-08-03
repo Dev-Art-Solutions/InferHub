@@ -23,6 +23,7 @@ public sealed class HealingService : IHostedService, IDisposable
     private readonly IOptions<VectorStoreOptions> _options;
     private readonly Metrics _metrics;
     private readonly VectorEvents? _events;
+    private readonly CollectionOwnership? _ownership;
     private readonly ILogger<HealingService> _logger;
 
     private readonly TimeSpan _debounce;
@@ -43,7 +44,8 @@ public sealed class HealingService : IHostedService, IDisposable
         IOptions<VectorStoreOptions> options,
         Metrics metrics,
         ILogger<HealingService> logger,
-        VectorEvents? events = null)
+        VectorEvents? events = null,
+        CollectionOwnership? ownership = null)
     {
         _store = store;
         _registry = registry;
@@ -52,6 +54,7 @@ public sealed class HealingService : IHostedService, IDisposable
         _options = options;
         _metrics = metrics;
         _events = events;
+        _ownership = ownership;
         _logger = logger;
 
         _debounce = TimeSpan.FromMilliseconds(Math.Max(50, options.Value.Healing.DebounceMilliseconds));
@@ -102,6 +105,14 @@ public sealed class HealingService : IHostedService, IDisposable
     /// </summary>
     public async Task RebuildAsync(string collection, CancellationToken cancellationToken = default)
     {
+        if (!IsHubOwned(collection))
+        {
+            // An operator asking to rebuild somebody else's authority is asking for the one thing
+            // this phase exists to make impossible. Say which box owns it instead (D1).
+            throw new InvalidOperationException(
+                _ownership!.RefusalFor(collection));
+        }
+
         var info = await _store.GetCollectionAsync(collection, cancellationToken);
         if (info is null) throw new KeyNotFoundException($"collection '{collection}' does not exist");
 
@@ -122,6 +133,13 @@ public sealed class HealingService : IHostedService, IDisposable
             ["after"] = after
         });
     }
+
+    /// <summary>
+    /// Phase 44, D1. Healing binds to hub-owned collections only — see
+    /// <see cref="ReplicationCoordinator"/> for the full reasoning. Null ownership means every
+    /// collection is the hub's, which is what a deployment with no node corpora has.
+    /// </summary>
+    private bool IsHubOwned(string collection) => _ownership?.IsHubOwned(collection) ?? true;
 
     private void OnFleetChanged() => ScheduleHeal();
 
@@ -212,6 +230,15 @@ public sealed class HealingService : IHostedService, IDisposable
             foreach (var info in collections)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+
+                // Phase 44, D1. A node-owned collection is never healed: healing means "make the
+                // fleet's copies match the hub's", and for these names the hub has no copy and no
+                // claim. Under-replication is not a thing that can be true of a corpus the hub does
+                // not hold, so it is not reported as one either.
+                if (!IsHubOwned(info.Name))
+                {
+                    continue;
+                }
 
                 var liveHolders = _replicas.Holders(info.Name)
                     .Where(connectedConnectionIds.Contains)

@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace InferHub.Coordinator.Vector.Qdrant;
+namespace InferHub.Shared.Vector.Qdrant;
 
 /// <summary>
 /// Turns chunk (or query) text into a Qdrant sparse vector — the <em>lexical</em> view of the text,
@@ -21,7 +21,7 @@ namespace InferHub.Coordinator.Vector.Qdrant;
 /// </para>
 /// Pure and deterministic: same text → same vector.
 /// </summary>
-internal static class SparseVector
+public static class SparseVector
 {
     /// <summary>The sparse vector for <paramref name="text"/>, or null when it has no lexical terms
     /// (an empty string, or a payload with no text to index — the same "nothing to rank" stance
@@ -54,7 +54,7 @@ internal static class SparseVector
 
     /// <summary>FNV-1a 32-bit over the token's UTF-8 bytes. The token is already lowercased by the
     /// tokenizer, so casing is folded before it reaches here.</summary>
-    internal static uint HashTerm(string token)
+    public static uint HashTerm(string token)
     {
         const uint offset = 2166136261;
         const uint prime = 16777619;

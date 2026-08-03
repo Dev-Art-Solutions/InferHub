@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 
-namespace InferHub.Coordinator.Vector.Qdrant;
+namespace InferHub.Shared.Vector.Qdrant;
 
 /// <summary>
 /// Maps an arbitrary InferHub record id (a SHA-256 chunk id, a filename, a GUID, a caller-supplied
@@ -15,7 +15,7 @@ namespace InferHub.Coordinator.Vector.Qdrant;
 /// the mapping. Nothing downstream ever sees the UUID.
 /// </para>
 /// </summary>
-internal static class QdrantIdMap
+public static class QdrantIdMap
 {
     // A fixed namespace GUID, in RFC-4122 network byte order (most-significant byte first). Constant
     // forever: change it and every existing point id shifts, orphaning every stored collection.

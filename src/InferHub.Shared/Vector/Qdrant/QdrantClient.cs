@@ -5,7 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using InferHub.Shared.Vector.Storage;
 
-namespace InferHub.Coordinator.Vector.Qdrant;
+namespace InferHub.Shared.Vector.Qdrant;
 
 /// <summary>
 /// Speaks Qdrant's JSON REST API by hand over an <see cref="HttpClient"/> — no client package, no
@@ -13,7 +13,7 @@ namespace InferHub.Coordinator.Vector.Qdrant;
 /// plain JSON does not need a dependency to talk to, and taking one would drag protobuf into the
 /// coordinator for a store that answers REST perfectly well. Nothing here persists or logs content.
 /// </summary>
-internal sealed class QdrantClient(HttpClient http)
+public sealed class QdrantClient(HttpClient http)
 {
     /// <summary>Name of the <see cref="IHttpClientFactory"/> client this connector drives.</summary>
     public const string HttpClientName = "qdrant";
@@ -334,7 +334,7 @@ internal sealed class QdrantClient(HttpClient http)
             : $"Qdrant returned {(int)status} {status}: {detail}";
     }
 
-    internal static string ToQdrantDistance(DistanceMetric metric) => metric switch
+    public static string ToQdrantDistance(DistanceMetric metric) => metric switch
     {
         DistanceMetric.Cosine => "Cosine",
         DistanceMetric.Dot => "Dot",
@@ -344,7 +344,7 @@ internal sealed class QdrantClient(HttpClient http)
 }
 
 /// <summary>Qdrant answered, and it answered badly. Carries the status it used.</summary>
-internal sealed class QdrantException(int statusCode, string message) : Exception(message)
+public sealed class QdrantException(int statusCode, string message) : Exception(message)
 {
     public int StatusCode { get; } = statusCode;
 }
@@ -354,7 +354,7 @@ internal sealed class QdrantException(int statusCode, string message) : Exceptio
 // `vectors` is a JsonElement so the same request type serves both shapes: an unnamed
 // QdrantVectorParams (3.1 dense-only) and a name→params map (3.2 named dense). `sparse_vectors` is
 // present only for hybrid-capable collections.
-internal sealed record QdrantCreateCollection(
+public sealed record QdrantCreateCollection(
     [property: JsonPropertyName("vectors")] JsonElement Vectors,
     [property: JsonPropertyName("sparse_vectors")] IReadOnlyDictionary<string, QdrantSparseParams>? SparseVectors,
     [property: JsonPropertyName("hnsw_config")] QdrantHnswConfig HnswConfig,
@@ -362,7 +362,7 @@ internal sealed record QdrantCreateCollection(
 
 // `on_disk` is nullable so it is omitted entirely when off — an unquantized, in-memory collection's
 // create body stays exactly what 3.2 sent.
-internal sealed record QdrantVectorParams(
+public sealed record QdrantVectorParams(
     [property: JsonPropertyName("size")] int Size,
     [property: JsonPropertyName("distance")] string Distance,
     [property: JsonPropertyName("on_disk")] bool? OnDisk = null);
@@ -372,118 +372,118 @@ internal sealed record QdrantVectorParams(
 /// record rather than four positional arguments, because a call site reading
 /// <c>(16, 64, "binary", true)</c> tells the reader nothing.
 /// </summary>
-internal readonly record struct QdrantCollectionBuild(int HnswM, int HnswEfConstruct, string Quantization, bool OnDisk);
+public readonly record struct QdrantCollectionBuild(int HnswM, int HnswEfConstruct, string Quantization, bool OnDisk);
 
 // Exactly one of the two is set; Qdrant reads the shape it recognises.
-internal sealed record QdrantQuantizationConfig(
+public sealed record QdrantQuantizationConfig(
     [property: JsonPropertyName("scalar")] QdrantScalarQuantization? Scalar,
     [property: JsonPropertyName("binary")] QdrantBinaryQuantization? Binary);
 
-internal sealed record QdrantScalarQuantization(
+public sealed record QdrantScalarQuantization(
     [property: JsonPropertyName("type")] string Type,
     [property: JsonPropertyName("quantile")] double Quantile,
     [property: JsonPropertyName("always_ram")] bool AlwaysRam);
 
-internal sealed record QdrantBinaryQuantization(
+public sealed record QdrantBinaryQuantization(
     [property: JsonPropertyName("always_ram")] bool AlwaysRam);
 
-internal sealed record QdrantPayloadIndexRequest(
+public sealed record QdrantPayloadIndexRequest(
     [property: JsonPropertyName("field_name")] string FieldName,
     [property: JsonPropertyName("field_schema")] string FieldSchema);
 
 // A sparse vector declared with `modifier: idf` — Qdrant applies inverse-document-frequency
 // weighting to it server-side, so the hub ships only raw term frequencies (phase 34).
-internal sealed record QdrantSparseParams(
+public sealed record QdrantSparseParams(
     [property: JsonPropertyName("modifier")] string Modifier);
 
 // Named-vector form of a search query: {"name": "dense", "vector": [...]}.
-internal sealed record QdrantNamedVector(
+public sealed record QdrantNamedVector(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("vector")] float[] Vector);
 
 // A Qdrant sparse vector on the wire: parallel index/value arrays.
-internal sealed record QdrantSparse(
+public sealed record QdrantSparse(
     [property: JsonPropertyName("indices")] uint[] Indices,
     [property: JsonPropertyName("values")] float[] Values);
 
-internal sealed record QdrantHnswConfig(
+public sealed record QdrantHnswConfig(
     [property: JsonPropertyName("m")] int M,
     [property: JsonPropertyName("ef_construct")] int EfConstruct);
 
-internal sealed record QdrantExists(
+public sealed record QdrantExists(
     [property: JsonPropertyName("result")] QdrantExistsResult? Result);
 
-internal sealed record QdrantExistsResult(
+public sealed record QdrantExistsResult(
     [property: JsonPropertyName("exists")] bool Exists);
 
-internal sealed record QdrantGetCollection(
+public sealed record QdrantGetCollection(
     [property: JsonPropertyName("result")] QdrantCollectionResult? Result);
 
-internal sealed record QdrantCollectionResult(
+public sealed record QdrantCollectionResult(
     [property: JsonPropertyName("config")] QdrantCollectionConfig? Config);
 
-internal sealed record QdrantCollectionConfig(
+public sealed record QdrantCollectionConfig(
     [property: JsonPropertyName("params")] QdrantCollectionParams? Params);
 
-internal sealed record QdrantCollectionParams(
+public sealed record QdrantCollectionParams(
     [property: JsonPropertyName("vectors")] JsonElement? Vectors,
     [property: JsonPropertyName("sparse_vectors")] JsonElement? SparseVectors);
 
-internal sealed record QdrantListCollections(
+public sealed record QdrantListCollections(
     [property: JsonPropertyName("result")] QdrantListResult? Result);
 
-internal sealed record QdrantListResult(
+public sealed record QdrantListResult(
     [property: JsonPropertyName("collections")] IReadOnlyList<QdrantCollectionName>? Collections);
 
-internal sealed record QdrantCollectionName(
+public sealed record QdrantCollectionName(
     [property: JsonPropertyName("name")] string Name);
 
 // The store's view of a point to upsert: a dense vector, an optional sparse (lexical) vector, and
 // the payload. The client turns this into the wire shape (bare array vs {dense, sparse}) per the
 // collection's named-ness.
-internal sealed record QdrantPoint(string Id, float[] Dense, QdrantSparse? Sparse, JsonElement Payload);
+public sealed record QdrantPoint(string Id, float[] Dense, QdrantSparse? Sparse, JsonElement Payload);
 
 // The serialized wire point: `vector` is whatever VectorValue built.
-internal sealed record QdrantWirePoint(
+public sealed record QdrantWirePoint(
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("vector")] JsonElement Vector,
     [property: JsonPropertyName("payload")] JsonElement Payload);
 
-internal sealed record QdrantUpsertRequest(
+public sealed record QdrantUpsertRequest(
     [property: JsonPropertyName("points")] IReadOnlyList<QdrantWirePoint> Points);
 
-internal sealed record QdrantRetrieveRequest(
+public sealed record QdrantRetrieveRequest(
     [property: JsonPropertyName("ids")] IReadOnlyList<string> Ids,
     [property: JsonPropertyName("with_payload")] bool WithPayload,
     [property: JsonPropertyName("with_vector")] bool WithVector);
 
-internal sealed record QdrantRetrieveResponse(
+public sealed record QdrantRetrieveResponse(
     [property: JsonPropertyName("result")] IReadOnlyList<QdrantRetrievedPoint>? Result);
 
 // `vector` is a JsonElement because a hybrid-capable collection returns a named map
 // ({dense: [...], sparse: {...}}) while a 3.1 collection returns a bare array; the store extracts the
 // dense floats from whichever shape it is.
-internal sealed record QdrantRetrievedPoint(
+public sealed record QdrantRetrievedPoint(
     [property: JsonPropertyName("payload")] JsonElement? Payload,
     [property: JsonPropertyName("vector")] JsonElement? Vector);
 
-internal sealed record QdrantDeletePointsRequest(
+public sealed record QdrantDeletePointsRequest(
     [property: JsonPropertyName("points")] IReadOnlyList<string> Points);
 
-internal sealed record QdrantDeleteByFilterRequest(
+public sealed record QdrantDeleteByFilterRequest(
     [property: JsonPropertyName("filter")] QdrantFilter Filter);
 
-internal sealed record QdrantCountRequest(
+public sealed record QdrantCountRequest(
     [property: JsonPropertyName("filter")] QdrantFilter? Filter,
     [property: JsonPropertyName("exact")] bool Exact);
 
-internal sealed record QdrantCountResponse(
+public sealed record QdrantCountResponse(
     [property: JsonPropertyName("result")] QdrantCountResult? Result);
 
-internal sealed record QdrantCountResult(
+public sealed record QdrantCountResult(
     [property: JsonPropertyName("count")] long Count);
 
-internal sealed record QdrantSearchRequest(
+public sealed record QdrantSearchRequest(
     [property: JsonPropertyName("vector")] JsonElement Vector,
     [property: JsonPropertyName("limit")] int Limit,
     [property: JsonPropertyName("filter")] QdrantFilter? Filter,
@@ -491,20 +491,20 @@ internal sealed record QdrantSearchRequest(
     [property: JsonPropertyName("with_vector")] bool WithVector,
     [property: JsonPropertyName("params")] QdrantSearchParams? Params);
 
-internal sealed record QdrantSearchParams(
+public sealed record QdrantSearchParams(
     [property: JsonPropertyName("hnsw_ef")] int HnswEf);
 
-internal sealed record QdrantSearchResponse(
+public sealed record QdrantSearchResponse(
     [property: JsonPropertyName("result")] IReadOnlyList<QdrantScoredPoint>? Result);
 
-internal sealed record QdrantScoredPoint(
+public sealed record QdrantScoredPoint(
     [property: JsonPropertyName("score")] double Score,
     [property: JsonPropertyName("payload")] JsonElement? Payload);
 
 // ---- Query API (hybrid fusion + sparse search, phase 34) -------------------------------
 // `query` and each prefetch's `query` are JsonElements so one request type carries a fusion selector
 // ({"fusion":"rrf"}), a dense array, or a sparse {indices,values} interchangeably.
-internal sealed record QdrantQueryRequest(
+public sealed record QdrantQueryRequest(
     [property: JsonPropertyName("prefetch")] IReadOnlyList<QdrantPrefetch>? Prefetch,
     [property: JsonPropertyName("query")] JsonElement Query,
     [property: JsonPropertyName("using")] string? Using,
@@ -513,50 +513,50 @@ internal sealed record QdrantQueryRequest(
     [property: JsonPropertyName("with_payload")] bool WithPayload,
     [property: JsonPropertyName("with_vector")] bool WithVector);
 
-internal sealed record QdrantPrefetch(
+public sealed record QdrantPrefetch(
     [property: JsonPropertyName("query")] JsonElement Query,
     [property: JsonPropertyName("using")] string Using,
     [property: JsonPropertyName("filter")] QdrantFilter? Filter,
     [property: JsonPropertyName("limit")] int Limit);
 
-internal sealed record QdrantFusion(
+public sealed record QdrantFusion(
     [property: JsonPropertyName("fusion")] string Fusion);
 
-internal sealed record QdrantQueryResponse(
+public sealed record QdrantQueryResponse(
     [property: JsonPropertyName("result")] QdrantQueryResult? Result);
 
-internal sealed record QdrantQueryResult(
+public sealed record QdrantQueryResult(
     [property: JsonPropertyName("points")] IReadOnlyList<QdrantScoredPoint>? Points);
 
-internal sealed record QdrantScrollRequest(
+public sealed record QdrantScrollRequest(
     [property: JsonPropertyName("filter")] QdrantFilter? Filter,
     [property: JsonPropertyName("limit")] int Limit,
     [property: JsonPropertyName("offset")] JsonElement? Offset,
     [property: JsonPropertyName("with_payload")] bool WithPayload,
     [property: JsonPropertyName("with_vector")] bool WithVector);
 
-internal sealed record QdrantScrollResponse(
+public sealed record QdrantScrollResponse(
     [property: JsonPropertyName("result")] QdrantScrollResult? Result);
 
-internal sealed record QdrantScrollResult(
+public sealed record QdrantScrollResult(
     [property: JsonPropertyName("points")] IReadOnlyList<QdrantRetrievedPoint>? Points,
     [property: JsonPropertyName("next_page_offset")] JsonElement? NextPageOffset);
 
 // A Qdrant filter: exact-match AND across payload keys, which is exactly `FlatIndex`'s metadata
 // filter semantics. A point missing the key never matches, so null-metadata is excluded — the same
 // rule the local and postgres providers honour.
-internal sealed record QdrantFilter(
+public sealed record QdrantFilter(
     [property: JsonPropertyName("must")] IReadOnlyList<QdrantFieldCondition> Must);
 
-internal sealed record QdrantFieldCondition(
+public sealed record QdrantFieldCondition(
     [property: JsonPropertyName("key")] string Key,
     [property: JsonPropertyName("match")] QdrantMatch Match);
 
-internal sealed record QdrantMatch(
+public sealed record QdrantMatch(
     [property: JsonPropertyName("value")] string Value);
 
-internal sealed record QdrantErrorEnvelope(
+public sealed record QdrantErrorEnvelope(
     [property: JsonPropertyName("status")] QdrantErrorStatus? Status);
 
-internal sealed record QdrantErrorStatus(
+public sealed record QdrantErrorStatus(
     [property: JsonPropertyName("error")] string? Error);

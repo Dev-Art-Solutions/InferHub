@@ -27,6 +27,7 @@ public static class StatusEndpoint
             var vectorBlock = BuildVectorBlock(services, nodes);
             var throughput = services.GetService(typeof(ThroughputTracker)) as ThroughputTracker;
             var profiles = services.GetService(typeof(IProfileRegistry)) as IProfileRegistry;
+            var corpora = services.GetService(typeof(NodeCorpusRegistry)) as NodeCorpusRegistry;
 
             return Results.Ok(new StatusResponse(
                 version,
@@ -47,7 +48,8 @@ public static class StatusEndpoint
                     throughput?.NodeAverage(node.NodeId),
                     (node.Capabilities ?? []).Select(capability => capability.Kind).ToArray(),
                     node.MaxConcurrency,
-                    BuildProfileBlock(profiles, node))).ToArray(),
+                    BuildProfileBlock(profiles, node),
+                    corpora?.Of(node.NodeId))).ToArray(),
                 models,
                 registry.CapabilitySummary(),
                 snapshot,
@@ -285,7 +287,11 @@ public static class StatusEndpoint
         IReadOnlyList<string> Capabilities,
         // The cap the node is running at, after a profile may have lowered it (phase 43).
         int? MaxConcurrency,
-        NodeProfileStatusBlock? Profile);
+        NodeProfileStatusBlock? Profile,
+        // What this node last *said* about the corpus it hosts (phase 44, D6) — never the answer to
+        // a query the hub ran against it. Null for a node that has never reported one, so a fleet
+        // with no node corpora keeps the v3.11 payload exactly.
+        NodeCorpusState? Corpus = null);
 
     internal sealed record NodeProfileStatusBlock(
         string? Name,

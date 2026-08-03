@@ -237,11 +237,12 @@ internal sealed class AudioMesh : IAsyncDisposable
             Options.Create(new NodeOptions { Name = "audio-node" }),
             new FixedNodeId("audio-node"),
             backend,
-            new InferenceExecutor(backend, replicas, NullLogger<InferenceExecutor>.Instance),
+            new InferenceExecutor(backend, replicas, TestProfiles.IdleRetrieval(), NullLogger<InferenceExecutor>.Instance),
             new ModelCommandExecutor(backend, NullLogger<ModelCommandExecutor>.Instance),
             new ToolExecutor(runtime, ToolWorkerFixture.Wrap(toolOptions), NullLogger<ToolExecutor>.Instance),
             runtime,
             TestProfiles.Applier(backend, runtime),
+            TestProfiles.IdleRetrieval(),
             replicas,
             new NoBackendSupervisor(),
             NullLogger<CoordinatorConnection>.Instance);

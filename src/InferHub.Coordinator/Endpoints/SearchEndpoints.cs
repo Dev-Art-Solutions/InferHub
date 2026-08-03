@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using InferHub.Coordinator.Auth;
 using InferHub.Coordinator.Vector;
+using InferHub.Shared.Contracts;
 using InferHub.Shared.Vector;
 
 namespace InferHub.Coordinator.Endpoints;
@@ -30,6 +31,7 @@ public static class SearchEndpoints
         SearchQuery query,
         IVectorStore store,
         RetrievalPipeline pipeline,
+        NodeCorpusDispatcher corpora,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(query.Query))
@@ -37,16 +39,44 @@ public static class SearchEndpoints
             return Results.Json(new { error = "query is required" }, JsonOptions, statusCode: StatusCodes.Status400BadRequest);
         }
 
+        if (query.Mode is not null && !RetrievalModes.TryParse(query.Mode, out _))
+        {
+            return Results.Json(new { error = $"invalid mode '{query.Mode}'; expected vector, keyword or hybrid" }, JsonOptions, statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        // Phase-44 D5. A node-owned collection is searched on its owner, through the owner's copy of
+        // the same shared pipeline — so the mode, the k clamping, the fusion and the rerank fallback
+        // are the ones this endpoint has always described, run one hop away.
+        if (corpora.IsNodeOwned(collection))
+        {
+            try
+            {
+                var remote = await corpora.SearchAsync(
+                    new CorpusSearchJob(
+                        collection,
+                        query.Query!,
+                        query.K,
+                        query.Mode,
+                        query.Rerank,
+                        query.Model,
+                        query.EmbeddingModel),
+                    cancellationToken);
+
+                return Results.Json(
+                    new SearchResponse(collection, query.Mode ?? "vector", remote.Select(ToHit).ToArray()),
+                    JsonOptions);
+            }
+            catch (NodeCorpusUnavailableException ex)
+            {
+                return Results.Json(new { error = ex.Message }, JsonOptions, statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+        }
+
         // A missing collection is a plain 404 here, decided before any embedding runs — the RAG
         // path's OnMissing (error vs passthrough) is a chat-request policy, not a playground one.
         if (await store.GetCollectionAsync(collection, cancellationToken) is null)
         {
             return Results.Json(new { error = $"collection '{collection}' does not exist" }, JsonOptions, statusCode: StatusCodes.Status404NotFound);
-        }
-
-        if (query.Mode is not null && !RetrievalModes.TryParse(query.Mode, out _))
-        {
-            return Results.Json(new { error = $"invalid mode '{query.Mode}'; expected vector, keyword or hybrid" }, JsonOptions, statusCode: StatusCodes.Status400BadRequest);
         }
 
         var retrieval = new RetrievalRequest(collection, query.K, query.EmbeddingModel, query.Mode, query.Rerank);

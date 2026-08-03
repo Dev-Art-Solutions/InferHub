@@ -23,7 +23,7 @@ public class InferenceExecutorTests : IDisposable
         var replicas = new ReplicaStore(
             Options.Create(new VectorReplicaOptions { ReplicaDirectory = _replicaDir }),
             NullLogger<ReplicaStore>.Instance);
-        return new InferenceExecutor(backend, replicas, NullLogger<InferenceExecutor>.Instance);
+        return new InferenceExecutor(backend, replicas, TestProfiles.IdleRetrieval(), NullLogger<InferenceExecutor>.Instance);
     }
 
     [Fact]
@@ -88,7 +88,7 @@ public class InferenceExecutorTests : IDisposable
             },
             LastSeq: 2));
 
-        var executor = new InferenceExecutor(new RecordingBackend(), replicas, NullLogger<InferenceExecutor>.Instance);
+        var executor = new InferenceExecutor(new RecordingBackend(), replicas, TestProfiles.IdleRetrieval(), NullLogger<InferenceExecutor>.Instance);
         var requestJson = """{"collection":"docs","vector":[1.0,0.0],"k":1}""";
         var job = new InferenceJob(Guid.NewGuid(), "vector-query", requestJson);
 

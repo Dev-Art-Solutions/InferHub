@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using InferHub.Coordinator.Auth;
 using InferHub.Coordinator.Endpoints;
 using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.OpenAi;
@@ -51,6 +52,7 @@ internal sealed class HubHost : IAsyncDisposable
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Logging.ClearProviders();
 
+
         // The real registry with one real registration: /v1/models and /api/tags then run the
         // shipped code path rather than a stub's idea of it.
         var registry = new NodeRegistry();
@@ -87,6 +89,11 @@ internal sealed class HubHost : IAsyncDisposable
         {
             host.app.MapIngestionEndpoints();
             host.app.MapSearchEndpoints();
+
+            // Phase 44: the admin collection routes are mapped too, because the hub-side create is
+            // where the ownership refusal lives (D1). `supportsReplication: false` keeps the fleet
+            // half out of a fixture that has no replication services.
+            host.app.MapVectorEndpoints(supportsReplication: false);
         }
 
         await host.app.StartAsync();
@@ -110,6 +117,14 @@ internal sealed class HubHost : IAsyncDisposable
     public Task<CollectionInfo> CreateCollectionAsync(string name, int dimension)
         => app.Services.GetRequiredService<IVectorStore>().CreateCollectionAsync(name, dimension, distance: null);
 
+    /// <summary>Who owns which collection (phase 44). Empty unless a test assigns something.</summary>
+    public InferHub.Coordinator.Vector.CollectionOwnership Ownership
+        => app.Services.GetRequiredService<InferHub.Coordinator.Vector.CollectionOwnership>();
+
+    /// <summary>What the hub's own store holds under a name, which for a node-owned one is nothing.</summary>
+    public Task<CollectionInfo?> StoreCollectionAsync(string name)
+        => app.Services.GetRequiredService<IVectorStore>().GetCollectionAsync(name);
+
     /// <summary>
     /// The hub's half of the phase-38 retrieval stack, composed exactly as the shipped
     /// <c>AddInferHubVectorStore</c> composes it for the <c>local</c> provider — same store, same
@@ -127,6 +142,21 @@ internal sealed class HubHost : IAsyncDisposable
 
         builder.Services.AddSingleton(_ => new LocalVectorStore(options, NullVectorLog.Instance));
         builder.Services.AddSingleton<IVectorStore>(sp => sp.GetRequiredService<LocalVectorStore>());
+
+        // Phase 44. Ingestion and search ask who owns a collection before they touch a store (D1/D5).
+        // Empty here, which is the shape every pre-44 assertion in this suite depends on: no node
+        // owns anything, so both endpoints take exactly the hub-owned path they always took.
+        builder.Services.AddSingleton<InferHub.Coordinator.Vector.CollectionOwnership>();
+        builder.Services.AddSingleton<InferHub.Coordinator.Vector.NodeCorpusDispatcher>();
+        builder.Services.AddSingleton<IAuditLog, AuditLog>();
+
+        // Mapping the admin collection routes brings their whole parameter list with it — minimal
+        // APIs build every endpoint in the table on the first request, so one unregistered service
+        // is a 500 on unrelated routes rather than on the route that wanted it.
+        builder.Services.AddSingleton<InferHub.Coordinator.Vector.ReplicaRegistry>();
+        builder.Services.AddSingleton<IClientRegistry, ClientRegistry>();
+        builder.Services.Configure<ApiKeyOptions>(_ => { });
+        builder.Services.Configure<VectorStoreOptions>(_ => { });
         builder.Services.AddSingleton<IVectorQueryRouter, NullVectorQueryRouter>();
         builder.Services.AddSingleton<IReranker, KeepOrderReranker>();
         builder.Services.AddSingleton<IRetrievalMetrics>(sp => sp.GetRequiredService<Metrics>());
@@ -195,16 +225,34 @@ internal sealed class HubHost : IAsyncDisposable
 
         public string? LastJobJson { get; private set; }
 
+        /// <summary>The kind of the last job dispatched — phase 44 added two that are not inference.</summary>
+        public string? LastJobKind { get; private set; }
+
+        /// <summary>The node the last job was routed to, which is the whole assertion for a node-owned collection.</summary>
+        public string? LastNodeId { get; private set; }
+
+        /// <summary>Canned answer for a <c>corpus-*</c> job, so the hub half can be tested without a node.</summary>
+        public string? CorpusResponse { get; set; }
+
         public Task<InferenceResult> DispatchAsync(
             RoutableNode node,
             InferenceJob job,
             CancellationToken cancellationToken)
         {
             LastJobJson = job.RequestJson;
+            LastJobKind = job.Kind;
+            LastNodeId = node.NodeId;
 
-            return Task.FromResult(Failure is null
-                ? InferenceResult.Succeeded(job.JobId, BlockingResponse)
-                : InferenceResult.Failed(job.JobId, Failure));
+            if (Failure is not null)
+            {
+                return Task.FromResult(InferenceResult.Failed(job.JobId, Failure));
+            }
+
+            var body = job.Kind.StartsWith("corpus-", StringComparison.Ordinal) && CorpusResponse is not null
+                ? CorpusResponse
+                : BlockingResponse;
+
+            return Task.FromResult(InferenceResult.Succeeded(job.JobId, body));
         }
 
         public Task<ChannelReader<InferenceChunk>> DispatchStreamAsync(

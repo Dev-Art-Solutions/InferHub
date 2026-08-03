@@ -1,3 +1,4 @@
+using InferHub.Node.Retrieval;
 using InferHub.Shared.Vector;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -35,62 +36,66 @@ internal static class LocalCollectionEndpoints
 
     private static void MapLifecycle(IEndpointRouteBuilder app)
     {
-        app.MapGet("/api/collections", async (IVectorStore store, CancellationToken ct) =>
-            Results.Json(new { collections = await store.ListCollectionsAsync(ct) }, LocalApiEndpoints.JsonOptions));
+        app.MapGet("/api/collections", async (HttpContext http, CancellationToken ct) =>
+            await WithCorpusAsync(http, async corpus =>
+                Results.Json(new { collections = await corpus.Store.ListCollectionsAsync(ct) }, LocalApiEndpoints.JsonOptions)));
 
         app.MapPost("/api/collections", async (
             CreateCollectionBody body,
-            IVectorStore store,
+            HttpContext http,
             CancellationToken ct) =>
-        {
-            if (string.IsNullOrWhiteSpace(body.Name))
+            await WithCorpusAsync(http, async corpus =>
             {
-                return Error(StatusCodes.Status400BadRequest, "name is required");
-            }
+                if (string.IsNullOrWhiteSpace(body.Name))
+                {
+                    return Error(StatusCodes.Status400BadRequest, "name is required");
+                }
 
-            if (body.Dimension is not > 0)
-            {
-                return Error(
-                    StatusCodes.Status400BadRequest,
-                    "dimension is required and must be >= 1; or omit this call entirely and let the first ingest measure it");
-            }
+                if (body.Dimension is not > 0)
+                {
+                    return Error(
+                        StatusCodes.Status400BadRequest,
+                        "dimension is required and must be >= 1; or omit this call entirely and let the first ingest measure it");
+                }
 
-            try
-            {
-                var info = await store.CreateCollectionAsync(body.Name!, body.Dimension.Value, body.Distance, ct);
-                return Results.Json(info, LocalApiEndpoints.JsonOptions);
-            }
-            catch (InvalidOperationException ex)
-            {
-                return Error(StatusCodes.Status409Conflict, ex.Message);
-            }
-            catch (ArgumentException ex)
-            {
-                return Error(StatusCodes.Status400BadRequest, ex.Message);
-            }
-        });
+                try
+                {
+                    var info = await corpus.Store.CreateCollectionAsync(body.Name!, body.Dimension.Value, body.Distance, ct);
+                    return Results.Json(info, LocalApiEndpoints.JsonOptions);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Error(StatusCodes.Status409Conflict, ex.Message);
+                }
+                catch (ArgumentException ex)
+                {
+                    return Error(StatusCodes.Status400BadRequest, ex.Message);
+                }
+            }));
 
         app.MapGet("/api/collections/{collection}", async (
             string collection,
-            IVectorStore store,
+            HttpContext http,
             CancellationToken ct) =>
-        {
-            var info = await store.GetCollectionAsync(collection, ct);
-            return info is null
-                ? Error(StatusCodes.Status404NotFound, $"collection '{collection}' does not exist")
-                : Results.Json(info, LocalApiEndpoints.JsonOptions);
-        });
+            await WithCorpusAsync(http, async corpus =>
+            {
+                var info = await corpus.Store.GetCollectionAsync(collection, ct);
+                return info is null
+                    ? Error(StatusCodes.Status404NotFound, $"collection '{collection}' does not exist")
+                    : Results.Json(info, LocalApiEndpoints.JsonOptions);
+            }));
 
         app.MapDelete("/api/collections/{collection}", async (
             string collection,
-            IVectorStore store,
+            HttpContext http,
             CancellationToken ct) =>
-        {
-            var dropped = await store.DropCollectionAsync(collection, ct);
-            return dropped
-                ? Results.Json(new { collection, dropped = true }, LocalApiEndpoints.JsonOptions)
-                : Error(StatusCodes.Status404NotFound, $"collection '{collection}' does not exist");
-        });
+            await WithCorpusAsync(http, async corpus =>
+            {
+                var dropped = await corpus.Store.DropCollectionAsync(collection, ct);
+                return dropped
+                    ? Results.Json(new { collection, dropped = true }, LocalApiEndpoints.JsonOptions)
+                    : Error(StatusCodes.Status404NotFound, $"collection '{collection}' does not exist");
+            }));
     }
 
     private static void MapDataPlane(IEndpointRouteBuilder app)
@@ -100,66 +105,74 @@ internal static class LocalCollectionEndpoints
         group.MapPost("/upsert", async (
             string collection,
             VectorUpsert upsert,
-            IVectorStore store,
-            IEmbeddingDispatcher embeddings,
+            HttpContext http,
             CancellationToken ct) =>
-            await GuardAsync(async () =>
+            await WithCorpusAsync(http, corpus => GuardAsync(async () =>
             {
-                var prepared = await ResolveAsync(upsert, embeddings, ct);
-                return Results.Json(await store.UpsertAsync(collection, prepared, ct), LocalApiEndpoints.JsonOptions);
-            }));
+                var prepared = await ResolveAsync(upsert, corpus.Embeddings, ct);
+                return Results.Json(await corpus.Store.UpsertAsync(collection, prepared, ct), LocalApiEndpoints.JsonOptions);
+            })));
 
         group.MapPost("/query", async (
             string collection,
             VectorQuery query,
-            IVectorStore store,
-            IEmbeddingDispatcher embeddings,
+            HttpContext http,
             CancellationToken ct) =>
-            await GuardAsync(async () =>
+            await WithCorpusAsync(http, corpus => GuardAsync(async () =>
             {
-                var prepared = await ResolveAsync(query, embeddings, ct);
-                var matches = await store.QueryAsync(collection, prepared, ct);
+                var prepared = await ResolveAsync(query, corpus.Embeddings, ct);
+                var matches = await corpus.Store.QueryAsync(collection, prepared, ct);
                 return Results.Json(new { matches }, LocalApiEndpoints.JsonOptions);
-            }));
+            })));
 
         group.MapPost("/retrieve", async (
             string collection,
             VectorQuery query,
-            IVectorStore store,
-            IEmbeddingDispatcher embeddings,
+            HttpContext http,
             CancellationToken ct) =>
-            await GuardAsync(async () =>
+            await WithCorpusAsync(http, corpus => GuardAsync(async () =>
             {
-                var prepared = await ResolveAsync(query, embeddings, ct);
-                var matches = await store.QueryAsync(collection, prepared, ct);
+                var prepared = await ResolveAsync(query, corpus.Embeddings, ct);
+                var matches = await corpus.Store.QueryAsync(collection, prepared, ct);
                 return Results.Json(new { matches }, LocalApiEndpoints.JsonOptions);
-            }));
+            })));
 
         group.MapGet("/{id}", async (
             string collection,
             string id,
-            IVectorStore store,
+            HttpContext http,
             CancellationToken ct) =>
-            await GuardAsync(async () =>
+            await WithCorpusAsync(http, corpus => GuardAsync(async () =>
             {
-                var record = await store.GetAsync(collection, id, ct);
+                var record = await corpus.Store.GetAsync(collection, id, ct);
                 return record is null
                     ? Error(StatusCodes.Status404NotFound, $"record '{id}' not found")
                     : Results.Json(record, LocalApiEndpoints.JsonOptions);
-            }));
+            })));
 
         group.MapDelete("/{id}", async (
             string collection,
             string id,
-            IVectorStore store,
+            HttpContext http,
             CancellationToken ct) =>
-            await GuardAsync(async () =>
+            await WithCorpusAsync(http, corpus => GuardAsync(async () =>
             {
-                var removed = await store.DeleteAsync(collection, id, ct);
+                var removed = await corpus.Store.DeleteAsync(collection, id, ct);
                 return removed
                     ? Results.Json(new { id, deleted = true }, LocalApiEndpoints.JsonOptions)
                     : Error(StatusCodes.Status404NotFound, $"record '{id}' not found");
-            }));
+            })));
+    }
+
+    /// <summary>
+    /// Runs the handler against the corpus, or answers the 501 (phase-44 D3). The lease is held for
+    /// the whole handler, which is what makes stopping a corpus a drain rather than a fault.
+    /// </summary>
+    private static async Task<IResult> WithCorpusAsync(HttpContext http, Func<RunningCorpus, Task<IResult>> run)
+    {
+        using var lease = LocalApiEndpoints.LeaseCorpus(http);
+
+        return lease is null ? LocalApiEndpoints.NoCorpus() : await run(lease.Corpus);
     }
 
     /// <summary>The hub's exception-to-status mapping for the data plane, kept identical.</summary>

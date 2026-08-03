@@ -1,5 +1,6 @@
 using InferHub.Node.Backends;
 using InferHub.Node.Configuration;
+using InferHub.Node.Retrieval;
 using InferHub.Node.Tools;
 using InferHub.Shared.Contracts;
 using Microsoft.Extensions.Options;
@@ -28,6 +29,7 @@ public sealed class NodeProfileApplier(
     IOptions<ToolOptions> toolOptions,
     IInferenceBackend backend,
     IToolRuntime toolRuntime,
+    RetrievalHost retrieval,
     ILogger<NodeProfileApplier> logger)
 {
     private readonly NodeOptions node = nodeOptions.Value;
@@ -85,6 +87,17 @@ public sealed class NodeProfileApplier(
             await toolRuntime.SetDisabledToolsAsync(result.Effective.DisabledTools, cancellationToken);
             Volatile.Write(ref effective, result.Effective);
 
+            // Phase 44. The corpus is the one part of a profile whose application can fail against the
+            // world rather than against the clamp — an engine that is not there, a credential this box
+            // does not have — so its refusal joins the others rather than throwing. Refusals are per
+            // item (phase-43 D6): a profile that also switched two tools off still switched them off.
+            var refusals = result.Refusals;
+
+            if (await ApplyRetrievalAsync(result.Retrieval, cancellationToken) is { } refusal)
+            {
+                refusals = [.. refusals, refusal];
+            }
+
             var commands = result.EnsureModels
                 .Select(model => new ModelCommand(Guid.NewGuid(), ModelCommand.KindPull, model))
                 .Concat(result.RemoveModels
@@ -101,7 +114,7 @@ public sealed class NodeProfileApplier(
                 profile?.Name,
                 profile?.Revision ?? 0,
                 result.Applied,
-                result.Refusals,
+                refusals,
                 pending,
                 result.Effective.MaxConcurrency,
                 DateTimeOffset.UtcNow);
@@ -118,6 +131,45 @@ public sealed class NodeProfileApplier(
         {
             gate.Release();
         }
+    }
+
+    /// <summary>
+    /// Starts, stops or leaves the corpus alone, and turns a failed start into one refusal.
+    /// </summary>
+    /// <remarks>
+    /// <b>It never restarts the node</b> (phase-43 D6). Switching retrieval on brings a corpus up
+    /// under a process that keeps answering chat; switching it off drains the retrievals in flight
+    /// and puts the routes back to 501. A start that fails leaves the node with no corpus at all
+    /// rather than a half-started one that answers some queries (phase-44 D3).
+    /// </remarks>
+    private async Task<NodeProfileRefusal?> ApplyRetrievalAsync(
+        RetrievalIntent? intent,
+        CancellationToken cancellationToken)
+    {
+        if (intent is null)
+        {
+            return null;
+        }
+
+        if (!intent.Enabled)
+        {
+            await retrieval.StopCorpusAsync(cancellationToken);
+            return null;
+        }
+
+        var result = await retrieval.StartCorpusAsync(
+            new CorpusRequest(
+                intent.Provider,
+                intent.Url,
+                intent.CredentialRef,
+                intent.Collections,
+                intent.EmbeddingModel,
+                CorpusRequest.Profile),
+            cancellationToken);
+
+        return result.Started
+            ? null
+            : new NodeProfileRefusal("retrieval", result.Error ?? "the corpus could not be started");
     }
 
     /// <summary>

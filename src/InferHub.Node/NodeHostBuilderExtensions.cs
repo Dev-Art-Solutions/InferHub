@@ -127,9 +127,47 @@ public static class NodeHostBuilderExtensions
 
         AddOllamaSupervision(builder, ollamaOptions);
         AddToolRuntime(builder);
+        AddRetrieval(builder);
         AddLocalApi(builder);
 
         return builder;
+    }
+
+    /// <summary>
+    /// Phase 44. The retrieval stack, registered on every node and constructing nothing until a
+    /// corpus is actually started.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the shape phase 38 could not have: back then the only way to have a corpus was to boot
+    /// with one, so DI built it. From v3.12 a coordinator can assign a corpus to a <em>running</em>
+    /// node, so the store lives behind <see cref="RetrievalHost"/> and DI holds only the seams around
+    /// it — which cost nothing on a node that never gets one.
+    /// </para>
+    /// <para>
+    /// The three absences of phase-38 D5/D6 are unchanged and each is still a decision: no
+    /// <c>IPdfTextExtractor</c> (rule 5 scopes <c>PdfPig</c> to the coordinator by name, so a PDF is a
+    /// 415), no replication or healing (a node-owned corpus is never a replication target — phase-44
+    /// D1), and no <c>postgres</c> (D2, refused by name).
+    /// </para>
+    /// </remarks>
+    private static void AddRetrieval(IHostApplicationBuilder builder)
+    {
+        // Nothing to route a vector query to: node replicas are a fleet feature, and a node-owned
+        // corpus has no replicas by construction.
+        builder.Services.AddSingleton<IVectorQueryRouter, NullVectorQueryRouter>();
+        builder.Services.AddSingleton<IEmbeddingDispatcher, LocalEmbeddingDispatcher>();
+        builder.Services.AddSingleton<IReranker, LocalReranker>();
+
+        // No /metrics on a node (phase-37 D5), so the pipelines' counters go nowhere. The numbers an
+        // operator can act on are reported to the hub (D6) and read off /api/status.
+        builder.Services.AddSingleton<IRetrievalMetrics>(NullRetrievalMetrics.Instance);
+
+        // No IPdfTextExtractor argument: the seam refuses PDF when none is registered (phase-38 D5).
+        builder.Services.AddSingleton(_ => new TextExtractor());
+
+        builder.Services.AddSingleton<RetrievalHost>();
+        builder.Services.AddSingleton<IHostedService>(services => services.GetRequiredService<RetrievalHost>());
     }
 
     /// <summary>
@@ -198,90 +236,8 @@ public static class NodeHostBuilderExtensions
         {
             builder.Services.AddSingleton<LocalConcurrencyGate>();
         }
-
-        AddLocalRetrieval(builder);
     }
 
-    /// <summary>
-    /// Phase 38. Solo retrieval: the coordinator's RAG stack, which moved into
-    /// <c>InferHub.Shared</c> so that this is composition rather than a second implementation (D2).
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Registered only when <c>LocalApi:Retrieval:Enabled</c>, and that key is only <em>valid</em>
-    /// with <c>Coordinator:Enabled=false</c> — <see cref="LocalRetrievalOptionsValidator"/> fails
-    /// startup otherwise, because a meshed node already holds replicas derived from its hub and a
-    /// second authoritative store in the same process would break design rule 4. This method may
-    /// therefore assume there is no coordinator.
-    /// </para>
-    /// <para>
-    /// Three things are deliberately absent, and each absence is a decision: no
-    /// <c>IPdfTextExtractor</c> (rule 5 scopes <c>PdfPig</c> to the coordinator by name, so a PDF is
-    /// a 415 — D5); no <c>ReplicationCoordinator</c> or <c>HealingService</c> (there is no fleet to
-    /// replicate to); and no provider <c>switch</c> (local is the only store here — D4).
-    /// </para>
-    /// </remarks>
-    private static void AddLocalRetrieval(IHostApplicationBuilder builder)
-    {
-        var retrieval = builder.Configuration
-            .GetSection(LocalRetrievalOptions.SectionName)
-            .Get<LocalRetrievalOptions>() ?? new LocalRetrievalOptions();
-
-        if (!retrieval.Enabled)
-        {
-            return;
-        }
-
-        builder.Services.AddSingleton(services =>
-        {
-            var options = services.GetRequiredService<IOptions<LocalRetrievalOptions>>().Value;
-            return new LocalVectorStore(
-                options.ToVectorStoreOptions(),
-                new NodeVectorLog<LocalVectorStore>(services.GetRequiredService<ILogger<LocalVectorStore>>()));
-        });
-        builder.Services.AddSingleton<IVectorStore>(services => services.GetRequiredService<LocalVectorStore>());
-
-        // Nothing to route a vector query to: node replicas are a fleet feature and there is no
-        // fleet. The null router is the same one the external providers use on the hub.
-        builder.Services.AddSingleton<IVectorQueryRouter, NullVectorQueryRouter>();
-        builder.Services.AddSingleton<IEmbeddingDispatcher, LocalEmbeddingDispatcher>();
-        builder.Services.AddSingleton<IReranker, LocalReranker>();
-
-        // No /metrics on a solo node (phase-37 D5), so the pipelines' counters go nowhere. The
-        // numbers an operator can act on are read off the store itself, in /api/status.
-        builder.Services.AddSingleton<IRetrievalMetrics>(NullRetrievalMetrics.Instance);
-
-        // No IPdfTextExtractor argument: the seam refuses PDF when none is registered (D5).
-        builder.Services.AddSingleton(_ => new TextExtractor());
-        builder.Services.AddSingleton<DocumentIndex>();
-
-        builder.Services.AddSingleton(services =>
-        {
-            var options = services.GetRequiredService<IOptions<LocalRetrievalOptions>>().Value;
-            return new RetrievalPipeline(
-                options.ToVectorStoreOptions(),
-                services.GetRequiredService<IVectorStore>(),
-                services.GetRequiredService<IEmbeddingDispatcher>(),
-                services.GetRequiredService<IVectorQueryRouter>(),
-                services.GetRequiredService<IReranker>(),
-                services.GetRequiredService<IRetrievalMetrics>(),
-                new NodeVectorLog<RetrievalPipeline>(services.GetRequiredService<ILogger<RetrievalPipeline>>()));
-        });
-
-        builder.Services.AddSingleton(services =>
-        {
-            var options = services.GetRequiredService<IOptions<LocalRetrievalOptions>>().Value;
-            return new IngestionPipeline(
-                services.GetRequiredService<IVectorStore>(),
-                services.GetRequiredService<DocumentIndex>(),
-                services.GetRequiredService<TextExtractor>(),
-                services.GetRequiredService<IEmbeddingDispatcher>(),
-                options.Ingestion,
-                options.ToVectorStoreOptions(),
-                services.GetRequiredService<IRetrievalMetrics>(),
-                new NodeVectorLog<IngestionPipeline>(services.GetRequiredService<ILogger<IngestionPipeline>>()));
-        });
-    }
 
     /// <summary>
     /// Phase 36. The supervisor is registered only when all three of these hold, and each

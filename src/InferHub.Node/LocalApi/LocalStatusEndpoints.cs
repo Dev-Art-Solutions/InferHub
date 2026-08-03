@@ -2,6 +2,7 @@ using System.Reflection;
 using InferHub.Node.Backends;
 using InferHub.Node.Backends.Supervision;
 using InferHub.Node.Configuration;
+using InferHub.Node.Retrieval;
 using InferHub.Shared.Vector;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Builder;
@@ -144,18 +145,26 @@ internal static class LocalStatusEndpoints
     /// </remarks>
     private static async Task<object> RetrievalBlockAsync(IServiceProvider services, CancellationToken cancellationToken)
     {
-        var store = services.GetService<IVectorStore>();
-        if (store is null)
+        // Phase 44: the corpus is asked for a lease rather than resolved from DI, because it can now
+        // start and stop under a running node. `enabled: false` still means the same thing to whoever
+        // is reading this page after a 501 — there is no corpus here right now.
+        var host = services.GetService<RetrievalHost>();
+        using var lease = host?.TryLease();
+
+        if (lease is null)
         {
-            return new { enabled = false };
+            return host?.LastError is { } error
+                ? new { enabled = false, error }
+                : new { enabled = false };
         }
 
         var options = services.GetRequiredService<IOptions<LocalRetrievalOptions>>().Value;
-        var collections = await store.ListCollectionsAsync(cancellationToken);
+        var collections = await lease.Corpus.Store.ListCollectionsAsync(cancellationToken);
 
         return new
         {
             enabled = true,
+            provider = lease.Corpus.Provider,
             embeddingModel = options.DefaultEmbeddingModel,
             mode = options.Retrieval.Mode,
             rerank = options.Retrieval.Rerank,

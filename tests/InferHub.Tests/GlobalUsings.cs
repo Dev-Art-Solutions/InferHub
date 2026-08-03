@@ -5,3 +5,8 @@
 // resolves, and a reader can still find the types by name.
 global using InferHub.Shared.Ingestion;
 global using InferHub.Shared.Vector;
+
+// Phase 44 moved the Qdrant connector the same way and for the same reason: a node the hub assigns
+// a Qdrant corpus runs *this* store, not a second one (D2). `QdrantBootstrapper` stayed behind, so
+// `using InferHub.Coordinator.Vector.Qdrant;` still resolves wherever it was already written.
+global using InferHub.Shared.Vector.Qdrant;

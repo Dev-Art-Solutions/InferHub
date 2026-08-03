@@ -69,7 +69,29 @@ public static class VectorStoreServiceCollectionExtensions
                 qdrant.GetValue<int?>(nameof(QdrantStoreOptions.TimeoutSeconds)) ?? 30));
             services.AddSingleton(sp => new QdrantClient(
                 sp.GetRequiredService<IHttpClientFactory>().CreateClient(QdrantClient.HttpClientName)));
-            services.AddSingleton<QdrantVectorStore>();
+
+            // Constructed by hand for the same reason LocalVectorStore is: phase 44 moved this store
+            // into InferHub.Shared, which cannot see IOptions<T> or ILogger<T> (D2). The lifecycle
+            // events it used to publish through VectorEvents itself are now plain events the host
+            // forwards — same kinds, same data, so the admin SSE feed is unchanged.
+            services.AddSingleton(sp =>
+            {
+                var store = new QdrantVectorStore(
+                    sp.GetRequiredService<QdrantClient>(),
+                    sp.GetRequiredService<IOptions<VectorStoreOptions>>().Value,
+                    new VectorLog<QdrantVectorStore>(sp.GetRequiredService<ILogger<QdrantVectorStore>>()));
+
+                var events = sp.GetRequiredService<VectorEvents>();
+                store.CollectionCreated += info => events.Publish("vector.collection.created", info.Name,
+                    new Dictionary<string, object?>
+                    {
+                        ["dimension"] = info.Dimension,
+                        ["distance"] = info.Distance
+                    });
+                store.CollectionDropped += name => events.Publish("vector.collection.dropped", name);
+
+                return store;
+            });
             services.AddSingleton<IVectorStore>(sp => sp.GetRequiredService<QdrantVectorStore>());
             services.AddSingleton<IVectorQueryRouter, NullVectorQueryRouter>();
             services.AddSingleton<IVectorStoreBootstrapper, QdrantBootstrapper>();

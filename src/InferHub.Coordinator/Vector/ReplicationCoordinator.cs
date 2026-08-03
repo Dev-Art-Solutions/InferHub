@@ -23,6 +23,7 @@ public sealed class ReplicationCoordinator : IHostedService, IDisposable
     private readonly IHubContext<NodeHub> _hub;
     private readonly IOptions<VectorStoreOptions> _options;
     private readonly VectorEvents? _events;
+    private readonly CollectionOwnership? _ownership;
     private readonly ILogger<ReplicationCoordinator> _logger;
     private readonly SemaphoreSlim _placementGate = new(1, 1);
 
@@ -33,7 +34,8 @@ public sealed class ReplicationCoordinator : IHostedService, IDisposable
         IHubContext<NodeHub> hub,
         IOptions<VectorStoreOptions> options,
         ILogger<ReplicationCoordinator> logger,
-        VectorEvents? events = null)
+        VectorEvents? events = null,
+        CollectionOwnership? ownership = null)
     {
         _store = store;
         _registry = registry;
@@ -41,8 +43,17 @@ public sealed class ReplicationCoordinator : IHostedService, IDisposable
         _hub = hub;
         _options = options;
         _events = events;
+        _ownership = ownership;
         _logger = logger;
     }
+
+    /// <summary>
+    /// Phase 44, D1. <b>Replication never targets a node-owned collection.</b> There are no hub-side
+    /// records to derive replicas from — the authority for that name is a box, not this process — so
+    /// a placement pass over one would push an <em>empty</em> snapshot at its owner, which is the hub
+    /// deleting somebody's corpus while reporting success.
+    /// </summary>
+    private bool IsHubOwned(string collection) => _ownership?.IsHubOwned(collection) ?? true;
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -157,6 +168,15 @@ public sealed class ReplicationCoordinator : IHostedService, IDisposable
 
     private async Task PlaceForCollectionAsync(string collection, CancellationToken cancellationToken)
     {
+        if (!IsHubOwned(collection))
+        {
+            _logger.LogDebug(
+                "Skipping replica placement for '{Collection}': it is node-owned, and the hub holds no copy of it",
+                collection);
+
+            return;
+        }
+
         await _placementGate.WaitAsync(cancellationToken);
         try
         {
@@ -249,6 +269,11 @@ public sealed class ReplicationCoordinator : IHostedService, IDisposable
 
     private async Task FanOutAsync(string collection, VectorReplicaOp op)
     {
+        // A node-owned collection has no holders by construction; the check is here anyway, because
+        // the day it does have one is the day the hub starts overwriting somebody's authority
+        // one op at a time (D1).
+        if (!IsHubOwned(collection)) return;
+
         var holders = _replicas.Holders(collection).ToArray();
         if (holders.Length == 0) return;
 

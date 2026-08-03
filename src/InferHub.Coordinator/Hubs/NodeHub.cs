@@ -94,7 +94,45 @@ public sealed class NodeHub(
                 string.Join(", ", assignment.Conflicts!));
         }
 
+        // Phase 44, D1. Ownership is recorded on the pull as well as on the push, so a hub that
+        // restarted knows which names belong to which box the moment that box comes back — before
+        // any replication pass could target one of them.
+        if (services.GetService(typeof(CollectionOwnership)) is CollectionOwnership ownership)
+        {
+            if (!assignment.IsConflict && assignment.Profile?.Retrieval is { Enabled: true } retrieval)
+            {
+                ownership.Assign(nodeId, retrieval.Collections);
+            }
+            else
+            {
+                ownership.Release(nodeId);
+            }
+        }
+
         return Task.FromResult(assignment);
+    }
+
+    /// <summary>
+    /// What a node says about the corpus it hosts (phase 44, D6). The hub records it and never asks
+    /// for it: querying a node's corpus to build a status page would make <c>/api/status</c> a
+    /// synchronous dependency on a box that may be asleep.
+    /// </summary>
+    public Task ReportCorpusState(NodeCorpusState state)
+    {
+        if (services.GetService(typeof(NodeCorpusRegistry)) is NodeCorpusRegistry corpora)
+        {
+            corpora.Report(state);
+        }
+
+        if (state is { Status: NodeCorpusState.Failed, Error: { Length: > 0 } error })
+        {
+            logger.LogWarning(
+                "Node {NodeId} reports its corpus is not running: {Error}",
+                state.NodeId,
+                error);
+        }
+
+        return Task.CompletedTask;
     }
 
     /// <summary>What a node did with its profile, including everything it refused and why (D6).</summary>

@@ -40,14 +40,16 @@ public class SoloModeTests
     }
 
     [Theory]
-    // Everything that needs a fleet or a store, and is a deliberate non-goal.
+    // Everything that needs a fleet, and is a deliberate non-goal.
     [InlineData("/api/admin/nodes")]
-    [InlineData("/api/collections/docs/documents")]
     [InlineData("/api/vector/docs")]
     [InlineData("/metrics")]
     [InlineData("/console")]
     [InlineData("/api/nodes")]
-    public async Task TheFleetAndStoreRoutesAreNotThere(string path)
+    // The RAG routes left this list in phase 44: they are mapped now and answer 501 with the
+    // retrieval refusal, because a coordinator can start a corpus on a running node (D3). See
+    // SoloRetrievalTests.WithRetrievalOffTheRagRoutesAnswer501RatherThan404.
+    public async Task TheFleetRoutesAreNotThere(string path)
     {
         await using var host = await SoloHost.StartAsync();
 

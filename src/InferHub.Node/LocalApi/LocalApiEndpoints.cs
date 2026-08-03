@@ -1,5 +1,6 @@
 using System.Text.Json;
 using InferHub.Node.Configuration;
+using InferHub.Node.Retrieval;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.Ollama;
 using InferHub.Shared.OpenAi;
@@ -77,21 +78,24 @@ public static class LocalApiEndpoints
         // caller — better than a 404 that reads as "wrong URL".
         app.MapLocalAudioEndpoints();
 
-        // Phase 38. Mapped only when there is a corpus to serve, so a node that changes no config
-        // keeps the v3.5 surface exactly: these routes 404 and a retrieval header still gets a 501.
-        if (app.Services.GetService<RetrievalPipeline>() is not null)
-        {
-            var retrieval = app.Services.GetRequiredService<IOptions<LocalRetrievalOptions>>().Value;
+        // Phase 38, amended in phase 44 (D3): mapped unconditionally now, because a coordinator can
+        // start a corpus on a running node and ASP.NET cannot add an endpoint after the application
+        // has started. With nothing running they answer the same 501, with the same sentence, that a
+        // retrieval header has always got — which is a better answer than a 404 for something this
+        // node genuinely could serve if it were asked to.
+        app.MapLocalCollectionEndpoints();
+        app.MapLocalIngestionEndpoints();
+        app.MapLocalSearchEndpoints();
 
+        var retrieval = app.Services.GetRequiredService<IOptions<LocalRetrievalOptions>>().Value;
+
+        if (retrieval.Enabled)
+        {
             logger.LogInformation(
                 "Solo retrieval is on: corpus at {DataDirectory}, embedding model {Model}, default mode {Mode}. No coordinator is configured, which is what makes this node the only authority for its collections.",
                 Path.GetFullPath(retrieval.DataDirectory),
                 retrieval.DefaultEmbeddingModel,
                 retrieval.Retrieval.Mode);
-
-            app.MapLocalCollectionEndpoints();
-            app.MapLocalIngestionEndpoints();
-            app.MapLocalSearchEndpoints();
         }
 
         return app;
@@ -155,10 +159,28 @@ public static class LocalApiEndpoints
     /// A 501 is a five-minute fix.
     /// </remarks>
     internal const string RetrievalRefusal =
-        "retrieval is not available on this node: it is off. Set LocalApi:Retrieval:Enabled=true (which requires Coordinator:Enabled=false), remove the X-InferHub-Retrieve header, or point this client at a hub.";
+        "retrieval is not available on this node: it is off. Set LocalApi:Retrieval:Enabled=true (which requires Coordinator:Enabled=false), assign a corpus from a coordinator, remove the X-InferHub-Retrieve header, or point this client at a hub.";
 
     /// <summary>Thrown when a request asks for retrieval and this node has no corpus to answer from.</summary>
     internal sealed class RetrievalNotEnabledException() : InvalidOperationException(RetrievalRefusal);
+
+    /// <summary>
+    /// The one way a retrieval route gets at the corpus (phase-44 D3). Null means nothing is running,
+    /// and the caller answers <see cref="RetrievalRefusal"/> with a 501 rather than a 404 — the route
+    /// exists, this node just has no corpus behind it at the moment.
+    /// </summary>
+    /// <remarks>
+    /// The lease is what makes stopping a corpus a <em>drain</em>: a request already retrieving
+    /// finishes against the store it started on, instead of faulting because somebody wrote a profile
+    /// two seconds ago.
+    /// </remarks>
+    internal static CorpusLease? LeaseCorpus(HttpContext httpContext) =>
+        httpContext.RequestServices.GetService<RetrievalHost>()?.TryLease();
+
+    internal static IResult NoCorpus() => Results.Json(
+        new { error = RetrievalRefusal },
+        JsonOptions,
+        statusCode: StatusCodes.Status501NotImplemented);
 
     /// <summary>
     /// Applies the <c>X-InferHub-Retrieve*</c> headers to an Ollama-shaped request body, returning
@@ -180,8 +202,8 @@ public static class LocalApiEndpoints
             return (rawJson, Sources: null);
         }
 
-        var pipeline = httpContext.RequestServices.GetService<RetrievalPipeline>()
-            ?? throw new RetrievalNotEnabledException();
+        using var lease = LeaseCorpus(httpContext) ?? throw new RetrievalNotEnabledException();
+        var pipeline = lease.Corpus.Retrieval;
 
         var outcome = isChat
             ? await pipeline.AugmentChatAsync(rawJson, Deserialize<ChatRequest>(rawJson), retrieval, cancellationToken)

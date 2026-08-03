@@ -2,6 +2,7 @@ using InferHub.Node;
 using InferHub.Node.Backends;
 using InferHub.Node.Backends.Supervision;
 using InferHub.Node.Configuration;
+using InferHub.Node.Retrieval;
 using InferHub.Node.Tools;
 using InferHub.Shared.Ingestion;
 using InferHub.Shared.Vector;
@@ -267,47 +268,37 @@ public class NodeCompositionTests
 
     // ---- phase 38: solo retrieval is registered only when it is on -------------------------
 
+    /// <summary>
+    /// <b>Amended in phase 44 (D3).</b> A node no longer resolves its store from DI — a coordinator
+    /// can assign a corpus to a <em>running</em> node, and a singleton is constructed once. What must
+    /// still be true is the thing this test was always about: a node that asked for nothing holds no
+    /// corpus. So the assertion moves from "no store is registered" to "no store exists", which is
+    /// the stronger of the two.
+    /// </summary>
     [Fact]
     public void SoloRetrievalCostsTheDefaultNodeNothing()
     {
         using var plain = BuildNode();
         using var solo = BuildNode(("LocalApi:Enabled", "true"));
 
-        // Solo mode alone must not acquire a document store: retrieval is a second, separate
-        // opt-in, the phase-22 D5 / phase-36 D6 shape.
+        // Retrieval is a second, separate opt-in — the phase-22 D5 / phase-36 D6 shape.
         foreach (var host in new[] { plain, solo })
         {
+            var retrieval = host.Services.GetRequiredService<RetrievalHost>();
+
+            Assert.Null(retrieval.Current);
+            Assert.Null(retrieval.TryLease());
+
+            // Nothing that would have opened a store, either: the seams around it are registered
+            // and cost a dictionary entry each.
             Assert.Null(host.Services.GetService<IVectorStore>());
             Assert.Null(host.Services.GetService<RetrievalPipeline>());
             Assert.Null(host.Services.GetService<IngestionPipeline>());
-            Assert.Null(host.Services.GetService<IEmbeddingDispatcher>());
         }
     }
 
     [Fact]
-    public void SoloRetrievalRegistersTheSharedStackAndNothingFleetShaped()
-    {
-        using var host = BuildNode(
-            ("LocalApi:Enabled", "true"),
-            ("Coordinator:Enabled", "false"),
-            ("LocalApi:Retrieval:Enabled", "true"),
-            ("LocalApi:Retrieval:DataDirectory", Path.Combine(Path.GetTempPath(), "inferhub-comp-" + Guid.NewGuid().ToString("N"))));
-
-        Assert.NotNull(host.Services.GetService<RetrievalPipeline>());
-        Assert.NotNull(host.Services.GetService<IngestionPipeline>());
-        Assert.NotNull(host.Services.GetService<DocumentIndex>());
-
-        // Nothing to route a vector query to, and nothing to replicate to: node replicas are a
-        // fleet feature and a node with retrieval on has no fleet by definition (D1).
-        Assert.IsType<NullVectorQueryRouter>(host.Services.GetRequiredService<IVectorQueryRouter>());
-
-        // The one that has to stay true for rule 5: PdfPig is scoped to the coordinator by name,
-        // so the node never registers the extractor and a PDF is a clean 415 (D5).
-        Assert.Null(host.Services.GetService<IPdfTextExtractor>());
-    }
-
-    [Fact]
-    public void SoloRetrievalConstructorsDoNoIo()
+    public async Task SoloRetrievalStartsTheSharedStackAndNothingFleetShaped()
     {
         var directory = Path.Combine(Path.GetTempPath(), "inferhub-comp-" + Guid.NewGuid().ToString("N"));
 
@@ -317,17 +308,35 @@ public class NodeCompositionTests
             ("LocalApi:Retrieval:Enabled", "true"),
             ("LocalApi:Retrieval:DataDirectory", directory));
 
-        // Building the host must not touch the disk; the store opens its corpus when it is first
-        // resolved, not when the container is composed.
-        Assert.False(Directory.Exists(directory));
+        var retrieval = host.Services.GetRequiredService<RetrievalHost>();
 
         try
         {
-            Assert.NotNull(host.Services.GetRequiredService<IVectorStore>());
+            // Composing the container must not touch the disk — the corpus opens when the hosted
+            // service starts it, not when the container is built (phase-44 D3, and phase-33's rule
+            // that a constructor opens no connection).
+            Assert.False(Directory.Exists(directory));
+
+            await retrieval.StartAsync(CancellationToken.None);
+
+            using var lease = retrieval.TryLease();
+            Assert.NotNull(lease);
+            Assert.NotNull(lease!.Corpus.Retrieval);
+            Assert.NotNull(lease.Corpus.Ingestion);
+            Assert.NotNull(lease.Corpus.Documents);
             Assert.True(Directory.Exists(directory));
+
+            // Nothing to route a vector query to, and nothing to replicate to: node replicas are a
+            // fleet feature, and a node-owned corpus is never a replication target (phase-44 D1).
+            Assert.IsType<NullVectorQueryRouter>(host.Services.GetRequiredService<IVectorQueryRouter>());
+
+            // The one that has to stay true for rule 5: PdfPig is scoped to the coordinator by name,
+            // so the node never registers the extractor and a PDF is a clean 415 (phase-38 D5).
+            Assert.Null(host.Services.GetService<IPdfTextExtractor>());
         }
         finally
         {
+            await retrieval.StopCorpusAsync(CancellationToken.None);
             try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
         }
     }

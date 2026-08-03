@@ -1,4 +1,5 @@
 using InferHub.Coordinator.Hubs;
+using InferHub.Coordinator.Vector;
 using InferHub.Shared.Contracts;
 using Microsoft.AspNetCore.SignalR;
 
@@ -25,6 +26,7 @@ public sealed class NodeProfileCoordinator(
     IHubContext<NodeHub> hubContext,
     INodeRegistry registry,
     IProfileRegistry profiles,
+    CollectionOwnership ownership,
     ILogger<NodeProfileCoordinator> logger)
 {
     /// <summary>
@@ -32,13 +34,20 @@ public sealed class NodeProfileCoordinator(
     /// a delete, because a selector edit can pull one node in and push another out in the same
     /// request.
     /// </summary>
+    /// <remarks>
+    /// Phase 44: this is also where collection ownership is re-derived (D1). It happens in the same
+    /// pass as the push, over the same match, so the hub cannot end up believing a node owns a
+    /// collection it was never sent — the two states are computed from one answer, not two.
+    /// </remarks>
     public async Task<IReadOnlyList<ProfilePush>> ReassertAsync(CancellationToken cancellationToken)
     {
         var pushes = new List<ProfilePush>();
+        var assignments = new List<(string NodeId, NodeProfile? Profile)>();
 
         foreach (var node in registry.Snapshot(DateTimeOffset.UtcNow))
         {
             var assignment = profiles.MatchFor(node.NodeId, node.Labels);
+            assignments.Add((node.NodeId, assignment.IsConflict ? null : assignment.Profile));
 
             if (assignment.IsConflict)
             {
@@ -58,6 +67,7 @@ public sealed class NodeProfileCoordinator(
             pushes.Add(new ProfilePush(node.NodeId, assignment.Profile?.Name, null));
         }
 
+        ownership.Rebuild(assignments);
         return pushes;
     }
 

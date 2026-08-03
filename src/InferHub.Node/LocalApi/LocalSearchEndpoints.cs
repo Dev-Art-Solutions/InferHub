@@ -26,10 +26,22 @@ internal static class LocalSearchEndpoints
     private static async Task<IResult> SearchAsync(
         string collection,
         SearchQuery query,
-        IVectorStore store,
-        RetrievalPipeline pipeline,
+        HttpContext httpContext,
         CancellationToken cancellationToken)
     {
+        // Phase-44 D3: the route is always here; the corpus behind it may not be. The lease is held
+        // for the whole search, so a profile that stops the corpus mid-query drains rather than
+        // faults.
+        using var lease = LocalApiEndpoints.LeaseCorpus(httpContext);
+
+        if (lease is null)
+        {
+            return LocalApiEndpoints.NoCorpus();
+        }
+
+        var store = lease.Corpus.Store;
+        var pipeline = lease.Corpus.Retrieval;
+
         if (string.IsNullOrWhiteSpace(query.Query))
         {
             return Error(StatusCodes.Status400BadRequest, "query is required");
