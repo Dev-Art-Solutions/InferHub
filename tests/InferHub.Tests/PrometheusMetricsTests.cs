@@ -175,6 +175,13 @@ public class PrometheusMetricsTests
         Assert.Equal(1, parsed.Value("inferhub_tool_pool", ("node", "gpu-1"), ("tool", "piper"), ("state", "running")));
         Assert.Equal(1, parsed.Value("inferhub_tool_pool", ("node", "gpu-1"), ("tool", "whisper"), ("state", "not-allowed")));
 
+        // A manifest that was never allowed has no pool, so its worker and request counts are
+        // structural zeros rather than measurements — and they would sit on a dashboard for as long
+        // as the file is on the box. Found by scraping the published image, not by a test.
+        Assert.DoesNotContain(parsed.Samples, sample =>
+            sample.Name is "inferhub_tool_workers" or "inferhub_tool_requests_total"
+            && sample.Labels["tool"] == "whisper");
+
         Assert.Equal(90.5, parsed.Value("inferhub_audio_seconds_total", ("kind", "transcribe"), ("model", "whisper-small")));
         Assert.Equal(64, parsed.Value("inferhub_audio_characters_total", ("kind", "speak"), ("model", "en_US-amy")));
 

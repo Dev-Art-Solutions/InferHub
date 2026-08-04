@@ -2100,6 +2100,17 @@ if any of them starts emitting one. `inferhub_capability_nodes{capability}`,
 `AudioEndpoints.Meter`, the one place that already decides a job succeeded — so the number on a
 dashboard and the number on a bill cannot come from two definitions of "done".
 
+> **v3.13.0 broke D2 in the one place D2 is hardest to see, and the scrape of a published image
+> found it.** A manifest `Tools:Allowed` does not name has **no `ToolWorkerPool` at all** — its
+> worker and request numbers are synthesised in `ProcessToolRuntime.State` to fill the record — so
+> `tool_workers{tool="echo",state="idle"} 0` and two `tool_requests_total` zeros sat on the scrape
+> for as long as the file was on the box, describing a pool that does not exist. The `tool_pool`
+> series already carried the whole of what is true about it. Fixed in **v3.13.1**: the worker and
+> request series skip `not-allowed` rows only — a **suspended** or **stopped** pool keeps its
+> counters, because those are real history. The lesson is the narrow one: *a zero you constructed to
+> fill a field is not a measurement*, and it is easiest to ship in exactly the code that argues
+> against zeros.
+
 **D3 — Phase 41 left a gap at the hub, and it is filled *there*, not invented in the console.**
 Until v3.13 the only thing a coordinator learned about a node's tools was the capability declaration
 folded into its model report. A manifest present but not allowed, a pool a profile had suspended,

@@ -104,3 +104,17 @@ restart, and inference never stops while you do it.
 Nothing to do. **A deployment that changes no config behaves exactly as it did on 3.12.** No new
 configuration keys, no behaviour change on any request path, no new dependency, and the UI is still
 plain HTML, CSS and JavaScript with no build step.
+
+---
+
+## v3.13.1 — a dashboard fix found by scraping the published image
+
+A tool manifest that `Tools:Allowed` does not name has **no worker pool at all**. v3.13.0 still
+emitted `inferhub_tool_workers{…,state="idle"} 0` and two `inferhub_tool_requests_total` zeros for
+it — four permanent zeros per unallowed manifest per node, describing a pool that does not exist.
+
+That is the exact thing this release argues against, shipped inside the code that argues it. The
+`inferhub_tool_pool{…,state="not-allowed"} 1` series already carried the whole of what is true.
+
+v3.13.1 drops the worker and request series for `not-allowed` rows **only**. A **suspended** or
+**stopped** pool keeps its counters, because those are real history. Nothing else changed.

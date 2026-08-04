@@ -164,22 +164,32 @@ public static class PrometheusFormatter
 
         if (rows.Length == 0) return;
 
-        Header(builder, "inferhub_tool_requests_total", "counter", "Tool requests a node's worker pool served.");
-        foreach (var (node, tool) in rows)
-        {
-            Sample(builder, "inferhub_tool_requests_total",
-                [("node", node), ("tool", tool.Id), ("outcome", "ok")], tool.Requests - tool.Failures);
-            Sample(builder, "inferhub_tool_requests_total",
-                [("node", node), ("tool", tool.Id), ("outcome", "error")], tool.Failures);
-        }
+        // A manifest `Tools:Allowed` does not name has **no pool at all** — its worker and request
+        // counts are structural zeros rather than measurements, and they would sit on a dashboard
+        // for as long as the file is on the box. D2: absence stays absence. Its `tool_pool` series
+        // below is the fact that it exists and is not running, which is the whole of what is true.
+        // A *suspended* or *stopped* pool keeps its counters: those are real history.
+        var pooled = rows.Where(row => row.Tool.State != NodeToolInfo.NotAllowed).ToArray();
 
-        Header(builder, "inferhub_tool_workers", "gauge", "Warm tool workers a node is holding, by what they are doing.");
-        foreach (var (node, tool) in rows)
+        if (pooled.Length > 0)
         {
-            Sample(builder, "inferhub_tool_workers",
-                [("node", node), ("tool", tool.Id), ("state", "busy")], tool.Busy);
-            Sample(builder, "inferhub_tool_workers",
-                [("node", node), ("tool", tool.Id), ("state", "idle")], Math.Max(0, tool.Workers - tool.Busy));
+            Header(builder, "inferhub_tool_requests_total", "counter", "Tool requests a node's worker pool served.");
+            foreach (var (node, tool) in pooled)
+            {
+                Sample(builder, "inferhub_tool_requests_total",
+                    [("node", node), ("tool", tool.Id), ("outcome", "ok")], tool.Requests - tool.Failures);
+                Sample(builder, "inferhub_tool_requests_total",
+                    [("node", node), ("tool", tool.Id), ("outcome", "error")], tool.Failures);
+            }
+
+            Header(builder, "inferhub_tool_workers", "gauge", "Warm tool workers a node is holding, by what they are doing.");
+            foreach (var (node, tool) in pooled)
+            {
+                Sample(builder, "inferhub_tool_workers",
+                    [("node", node), ("tool", tool.Id), ("state", "busy")], tool.Busy);
+                Sample(builder, "inferhub_tool_workers",
+                    [("node", node), ("tool", tool.Id), ("state", "idle")], Math.Max(0, tool.Workers - tool.Busy));
+            }
         }
 
         // A pool that gave up holds zero workers. So does a pool nobody has called yet. Without this
