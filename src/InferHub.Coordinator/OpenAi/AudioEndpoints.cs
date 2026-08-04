@@ -154,7 +154,7 @@ public static class AudioEndpoints
             outcome.Units);
 
         httpContext.Response.Headers[InferenceCore.ServedByHeader] = "node";
-        Meter(context, outcome, CapabilityKinds.Transcribe, request.Model);
+        Meter(context, metrics, outcome, CapabilityKinds.Transcribe, request.Model);
 
         return Render(httpContext, outcome);
     }
@@ -223,14 +223,19 @@ public static class AudioEndpoints
             request.Characters);
 
         httpContext.Response.Headers[InferenceCore.ServedByHeader] = "node";
-        Meter(context, outcome, CapabilityKinds.Speak, request.Model);
+        Meter(context, metrics, outcome, CapabilityKinds.Speak, request.Model);
 
         return Render(httpContext, outcome);
     }
 
     /// <summary>A failed job is not billed; a succeeded one is billed in its own unit (D7).</summary>
+    /// <remarks>
+    /// Phase 45 added the scrape counter here rather than a second call site, so the number on a
+    /// dashboard and the number on a bill can never come from two different definitions of "done".
+    /// </remarks>
     private static void Meter(
         InferenceCore.ClientContext context,
+        Metrics metrics,
         AudioOutcome outcome,
         string kind,
         string model)
@@ -238,6 +243,7 @@ public static class AudioEndpoints
         if (!outcome.IsError)
         {
             context.Usage.RecordUnits(context.Client, kind, model, outcome.Units, outcome.UnitKind);
+            metrics.RecordAudioUnits(kind, model, outcome.Units, outcome.UnitKind);
         }
     }
 

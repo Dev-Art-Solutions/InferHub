@@ -135,6 +135,20 @@ public sealed class NodeHub(
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// What a node's tool runtime is doing (phase 45). Recorded, never asked for — the same mailbox
+    /// as <see cref="ReportCorpusState"/>, and for the same reason.
+    /// </summary>
+    public Task ReportToolState(NodeToolState state)
+    {
+        if (services.GetService(typeof(NodeToolRegistry)) is NodeToolRegistry tools)
+        {
+            tools.Report(state);
+        }
+
+        return Task.CompletedTask;
+    }
+
     /// <summary>What a node did with its profile, including everything it refused and why (D6).</summary>
     public Task ReportProfileState(NodeProfileState state)
     {

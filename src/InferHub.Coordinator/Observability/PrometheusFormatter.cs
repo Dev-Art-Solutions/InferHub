@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using InferHub.Coordinator.Services;
+using InferHub.Shared.Contracts;
 
 namespace InferHub.Coordinator.Observability;
 
@@ -17,7 +18,19 @@ public sealed record PrometheusScrape(
     IReadOnlyList<ClientScrapeSample> Clients,
     int AffinityEntries,
     // Null for a single-coordinator deployment: no cluster, no series (D5 — absence is a fact).
-    ClusterScrapeSample? Cluster = null);
+    ClusterScrapeSample? Cluster = null,
+    // Phase 45, all four appended with empty defaults: a fleet that declares no capability, runs no
+    // tool, writes no profile and hosts no node corpus emits exactly the v3.12 scrape.
+    IReadOnlyList<CapabilitySummary>? Capabilities = null,
+    IReadOnlyList<NodeToolState>? Tools = null,
+    IReadOnlyList<ProfileScrapeSample>? Profiles = null,
+    IReadOnlyList<NodeCorpusState>? Corpora = null);
+
+/// <summary>
+/// How many nodes are in each state under a profile (phase 45). <c>conflict</c> is the hub's own
+/// answer and the one worth alerting on: it means two profiles match a box and neither was sent.
+/// </summary>
+public sealed record ProfileScrapeSample(string Profile, string State, int Nodes);
 
 /// <summary>
 /// Leadership, as a dashboard can read it (phase 32). <c>Active</c> is the one that matters: it is
@@ -111,8 +124,136 @@ public static class PrometheusFormatter
         PerCollection(builder, m);
         Queue(builder, scrape.Queue);
         PerClient(builder, scrape.Clients);
+        PerCapability(builder, scrape.Capabilities);
+        PerTool(builder, scrape.Tools);
+        PerAudio(builder, m.PerAudio);
+        PerProfile(builder, scrape.Profiles);
+        PerNodeCorpus(builder, scrape.Corpora);
 
         return builder.ToString();
+    }
+
+    /// <summary>
+    /// How many nodes serve each capability (phase 45). A capability nobody provides has <b>no</b>
+    /// series rather than a zero — D5 again, and here the lie would be a loud one: a
+    /// <c>transcription capacity: 0</c> on a fleet that was never asked to transcribe pages somebody
+    /// at three in the morning.
+    /// </summary>
+    private static void PerCapability(StringBuilder builder, IReadOnlyList<CapabilitySummary>? capabilities)
+    {
+        if (capabilities is not { Count: > 0 }) return;
+
+        Header(builder, "inferhub_capability_nodes", "gauge", "Connected nodes that serve a capability.");
+        foreach (var c in capabilities) Sample(builder, "inferhub_capability_nodes", [("capability", c.Capability)], c.Nodes);
+
+        Header(builder, "inferhub_capability_models", "gauge", "Distinct models the fleet serves under a capability.");
+        foreach (var c in capabilities) Sample(builder, "inferhub_capability_models", [("capability", c.Capability)], c.Models.Count);
+    }
+
+    /// <summary>
+    /// What each node's tool runtime is doing, as the node last reported it (phase 45). Labelled by
+    /// node as well as by tool: a per-node counter resets when that node restarts, which is a reset
+    /// Prometheus detects per series — summing across the fleet into one counter would make every
+    /// node bounce look like a fleet-wide rate spike.
+    /// </summary>
+    private static void PerTool(StringBuilder builder, IReadOnlyList<NodeToolState>? tools)
+    {
+        var rows = (tools ?? Array.Empty<NodeToolState>())
+            .SelectMany(state => state.Tools.Select(tool => (state.NodeId, Tool: tool)))
+            .ToArray();
+
+        if (rows.Length == 0) return;
+
+        Header(builder, "inferhub_tool_requests_total", "counter", "Tool requests a node's worker pool served.");
+        foreach (var (node, tool) in rows)
+        {
+            Sample(builder, "inferhub_tool_requests_total",
+                [("node", node), ("tool", tool.Id), ("outcome", "ok")], tool.Requests - tool.Failures);
+            Sample(builder, "inferhub_tool_requests_total",
+                [("node", node), ("tool", tool.Id), ("outcome", "error")], tool.Failures);
+        }
+
+        Header(builder, "inferhub_tool_workers", "gauge", "Warm tool workers a node is holding, by what they are doing.");
+        foreach (var (node, tool) in rows)
+        {
+            Sample(builder, "inferhub_tool_workers",
+                [("node", node), ("tool", tool.Id), ("state", "busy")], tool.Busy);
+            Sample(builder, "inferhub_tool_workers",
+                [("node", node), ("tool", tool.Id), ("state", "idle")], Math.Max(0, tool.Workers - tool.Busy));
+        }
+
+        // A pool that gave up holds zero workers. So does a pool nobody has called yet. Without this
+        // series a dashboard cannot tell them apart — which is D2's own complaint about zeros,
+        // pointed at the thing D2 asked for.
+        Header(builder, "inferhub_tool_pool", "gauge", "1 for the state a node's tool pool is in: running, suspended, stopped or not-allowed.");
+        foreach (var (node, tool) in rows)
+        {
+            Sample(builder, "inferhub_tool_pool",
+                [("node", node), ("tool", tool.Id), ("state", tool.State)], 1);
+        }
+    }
+
+    /// <summary>
+    /// Audio work per <c>(kind, model)</c>. Two series rather than one, because a transcription is
+    /// metered in seconds and a synthesis in characters (phase-42 D7) — and a pair that has only
+    /// ever done one of them emits only that one.
+    /// </summary>
+    private static void PerAudio(StringBuilder builder, IReadOnlyList<AudioMetricsSnapshot>? audio)
+    {
+        if (audio is not { Count: > 0 }) return;
+
+        var seconds = audio.Where(a => a.Seconds > 0).ToArray();
+        var characters = audio.Where(a => a.Characters > 0).ToArray();
+
+        if (seconds.Length > 0)
+        {
+            Header(builder, "inferhub_audio_seconds_total", "counter", "Audio seconds transcribed, as the worker measured the decoded file.");
+            foreach (var a in seconds) Sample(builder, "inferhub_audio_seconds_total", [("kind", a.Kind), ("model", a.Model)], a.Seconds);
+        }
+
+        if (characters.Length > 0)
+        {
+            Header(builder, "inferhub_audio_characters_total", "counter", "Characters synthesised, counted at the edge.");
+            foreach (var a in characters) Sample(builder, "inferhub_audio_characters_total", [("kind", a.Kind), ("model", a.Model)], a.Characters);
+        }
+    }
+
+    /// <summary>
+    /// Nodes per <c>(profile, state)</c> (phase 45). The series an operator alerts on is
+    /// <c>state="refused"</c> and <c>state="conflict"</c>: both mean a box is not doing what the
+    /// fleet's configuration says it should, and neither shows up anywhere else as a number.
+    /// </summary>
+    private static void PerProfile(StringBuilder builder, IReadOnlyList<ProfileScrapeSample>? profiles)
+    {
+        if (profiles is not { Count: > 0 }) return;
+
+        Header(builder, "inferhub_profile_state", "gauge", "Connected nodes under a profile, by whether they applied it.");
+        foreach (var p in profiles)
+        {
+            Sample(builder, "inferhub_profile_state", [("profile", p.Profile), ("state", p.State)], p.Nodes);
+        }
+    }
+
+    /// <summary>
+    /// Records in each node-owned collection, as the owning node last counted them (phase-44 D6).
+    /// The hub does not query a node to answer a scrape, so this is a report and its staleness is
+    /// bounded by the node's model-refresh interval.
+    /// </summary>
+    private static void PerNodeCorpus(StringBuilder builder, IReadOnlyList<NodeCorpusState>? corpora)
+    {
+        var rows = (corpora ?? Array.Empty<NodeCorpusState>())
+            .Where(state => state.Enabled)
+            .SelectMany(state => state.Collections.Select(c => (state.NodeId, Collection: c)))
+            .ToArray();
+
+        if (rows.Length == 0) return;
+
+        Header(builder, "inferhub_node_corpus_records", "gauge", "Records in a node-owned collection, as its owner counts them.");
+        foreach (var (node, collection) in rows)
+        {
+            Sample(builder, "inferhub_node_corpus_records",
+                [("node", node), ("collection", collection.Name)], collection.Records);
+        }
     }
 
     private static void PerNode(StringBuilder builder, PrometheusScrape scrape)

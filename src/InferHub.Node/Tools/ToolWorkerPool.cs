@@ -41,6 +41,13 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
     private bool gaveUpLogged;
     private DateTimeOffset lastRecoveryProbe;
 
+    // Reported to the hub (phase 45). Counted here rather than at the edge because the edge knows
+    // the capability and not which manifest served it, and "which tool is failing" is the question.
+    private long requestsServed;
+    private long requestsFailed;
+    private volatile string? lastError;
+    private long lastErrorAtTicks;
+
     public ToolWorkerPool(ToolManifest manifest, ToolOptions options, TimeProvider time, ILogger logger)
     {
         this.manifest = manifest;
@@ -87,6 +94,47 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
 
     /// <summary>Raised when <see cref="Capabilities"/> changes, so the node can re-report at once.</summary>
     public event Action? CapabilitiesChanged;
+
+    /// <summary>
+    /// What the hub is told about this pool (phase 45). Read-only over what the pool already tracks
+    /// — nothing here measures anything it was not measuring, which is phase-28 D2 applied to a
+    /// second reporter.
+    /// </summary>
+    public NodeToolInfo Report()
+    {
+        int idleCount;
+
+        lock (gate)
+        {
+            idleCount = idle.Count;
+        }
+
+        // A permit that is out is a worker serving a request. `slots` is the concurrency bound, so
+        // this is the one number that knows about leased workers — the idle stack does not.
+        var busy = Math.Max(0, manifest.MaxWorkers - slots.CurrentCount);
+        var errorTicks = Interlocked.Read(ref lastErrorAtTicks);
+
+        return new NodeToolInfo(
+            manifest.Id,
+            Allowed: true,
+            State: Suspended
+                ? NodeToolInfo.Suspended
+                : Volatile.Read(ref gaveUpFlag) == 1 ? NodeToolInfo.Stopped : NodeToolInfo.Running,
+            Capabilities,
+            manifest.MaxWorkers,
+            idleCount + busy,
+            busy,
+            Interlocked.Read(ref requestsServed),
+            Interlocked.Read(ref requestsFailed),
+            lastError,
+            errorTicks == 0 ? null : new DateTimeOffset(errorTicks, TimeSpan.Zero));
+    }
+
+    private void RecordError(string message)
+    {
+        lastError = message;
+        Interlocked.Exchange(ref lastErrorAtTicks, DateTimeOffset.UtcNow.UtcTicks);
+    }
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -346,6 +394,13 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
 
     internal void ReleaseLease(ToolWorkerProcess worker, bool healthy)
     {
+        Interlocked.Increment(ref requestsServed);
+
+        if (!healthy)
+        {
+            Interlocked.Increment(ref requestsFailed);
+        }
+
         if (healthy && worker.IsAlive)
         {
             ReturnToIdle(worker);
@@ -453,6 +508,8 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
                 options.MaxStartAttempts,
                 options.RestartWindow);
 
+            RecordError(ex.Message);
+
             throw;
         }
     }
@@ -500,6 +557,13 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
             startFailures.Clear();
         }
 
+        // Cleared, not accumulated: `lastError` means "the most recent thing that happened to this
+        // pool was a failure". A pool that failed once at 3am and has served every request since
+        // would otherwise carry a permanent warning on the console, which is how an operator learns
+        // to ignore the column.
+        lastError = null;
+        Interlocked.Exchange(ref lastErrorAtTicks, 0);
+
         var resolved = Narrow(manifest.Capabilities, worker.ReportedCapabilities);
         var changed = Interlocked.Exchange(ref gaveUpFlag, 0) == 1 || !SameAs(Capabilities, resolved);
 
@@ -520,6 +584,8 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
         }
 
         Capabilities = Array.Empty<NodeCapability>();
+        RecordError(
+            $"failed to start {options.MaxStartAttempts} times in {options.RestartWindow}; not starting it again, still probing every {options.RecoveryProbeInterval}");
 
         if (!gaveUpLogged)
         {

@@ -426,6 +426,9 @@ public class ToolRuntimeTests
 
         public IReadOnlyList<NodeCapability> Capabilities => pool.Capabilities;
 
+        public NodeToolState State(string nodeId)
+            => new(nodeId, Enabled: true, [pool.Report()], DateTimeOffset.UtcNow);
+
         public event Action? CapabilitiesChanged;
 
         public Task<ToolWorkerLease> AcquireAsync(string capability, string model, CancellationToken cancellationToken)

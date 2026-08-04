@@ -28,6 +28,7 @@ public static class StatusEndpoint
             var throughput = services.GetService(typeof(ThroughputTracker)) as ThroughputTracker;
             var profiles = services.GetService(typeof(IProfileRegistry)) as IProfileRegistry;
             var corpora = services.GetService(typeof(NodeCorpusRegistry)) as NodeCorpusRegistry;
+            var tools = services.GetService(typeof(NodeToolRegistry)) as NodeToolRegistry;
 
             return Results.Ok(new StatusResponse(
                 version,
@@ -49,7 +50,8 @@ public static class StatusEndpoint
                     (node.Capabilities ?? []).Select(capability => capability.Kind).ToArray(),
                     node.MaxConcurrency,
                     BuildProfileBlock(profiles, node),
-                    corpora?.Of(node.NodeId))).ToArray(),
+                    corpora?.Of(node.NodeId),
+                    tools?.Of(node.NodeId))).ToArray(),
                 models,
                 registry.CapabilitySummary(),
                 snapshot,
@@ -291,7 +293,10 @@ public static class StatusEndpoint
         // What this node last *said* about the corpus it hosts (phase 44, D6) — never the answer to
         // a query the hub ran against it. Null for a node that has never reported one, so a fleet
         // with no node corpora keeps the v3.11 payload exactly.
-        NodeCorpusState? Corpus = null);
+        NodeCorpusState? Corpus = null,
+        // Likewise for the tool runtime (phase 45). Null for a node running v3.12 or earlier, or one
+        // that has simply never reported — which is the honest answer and not "no tools".
+        NodeToolState? Tools = null);
 
     internal sealed record NodeProfileStatusBlock(
         string? Name,

@@ -63,17 +63,18 @@ of one.
 
 ## Status
 
-**InferHub 3.12** puts a corpus on every node. A
-[node profile](#configure-the-fleet-not-the-boxes-v311) can now turn retrieval on for a node, choose
-its vector engine and have the box [bring it up](#a-corpus-on-every-node-v312) — no file edited on the
-machine, no restart, and inference never stops. The rule that made this hard is kept rather than
-relaxed: **one authority per collection name, and the hub knows who it is.** The hub records an owner
-per collection, refuses to create a node-owned name centrally, and never replicates to or heals one —
-so a node holds one authority and zero derived copies under the names it owns, and the v3.6 refusal to
-boot a *self*-configured corpus on a meshed node is untouched. The client API does not move: documents
-and searches still go to the hub, which dispatches them to the owner. The hub names a credential and
-the node resolves it, so no secret ever rides the link. Still **zero new dependencies** — the Qdrant
-connector a node runs is the one the coordinator has had since v3.1, moved rather than rewritten.
+**InferHub 3.13** closes the tools-and-fleet track by making it operable. Six releases added
+capabilities, a tool runtime, speech, node profiles and per-node corpora, and the console still showed
+a table of nodes and models — so every "I turned it on and nothing happened" was a support
+conversation. Now it is a row. The console drives the whole track without curl: a **capability
+matrix**, a **tools** panel showing what each box loaded and what it is actually running, a
+**profile editor** with the refusals each node sent back, a **node retrieval** panel, and a
+**Needs attention** strip above the fold that names the reason rather than a status word — a manifest
+`Tools:Allowed` does not list, a profile item the node clamped, a corpus that would not start.
+`/metrics` grew the series to alert on, and absence stays absence: a capability nobody serves has no
+series rather than a zero. The docs gained a four-image decision table and one end-to-end walkthrough.
+**Build-free UI, zero new dependencies, and a deployment that changes no config behaves exactly as it
+did on 3.12.**
 
 | Phase | Theme | Version |
 |------:|-------|---------|
@@ -121,6 +122,7 @@ connector a node runs is the one the coordinator has had since v3.1, moved rathe
 | 42 | Speech — STT and TTS behind the OpenAI audio API (done) | `v3.10.0` |
 | 43 | Node profiles — the hub configures, the node clamps (done) | `v3.11.0` |
 | 44 | Hub-assigned retrieval — a corpus on every node (done) | `v3.12.0` |
+| 45 | The console, the metrics and the docs for the whole track (done) | `v3.13.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -135,9 +137,10 @@ behind the OpenAI audio API on a `:tools` image; and v3.11 turns the same track 
 hub [configure the fleet](#configure-the-fleet-not-the-boxes-v311) within what each operator already
 allowed, and v3.12 uses that seam for the thing it was shaped for: [a corpus on every
 node](#a-corpus-on-every-node-v312), assigned from one place, with ownership recorded so the hub
-cannot overwrite what it granted. One phase remains in the track — v3.13, the console, the Prometheus
-series and the docs pass that make six releases' worth of capabilities, tools, audio, profiles and
-per-node corpora operable by someone who did not write them.
+cannot overwrite what it granted. **v3.13 closes the track**: the
+[console](#driving-all-of-it-from-one-page-v313), the Prometheus series and the docs pass that make
+six releases' worth of capabilities, tools, audio, profiles and per-node corpora operable by someone
+who did not write them.
 Still on the table beyond that: teaching the **coordinator** about backend health as a typed signal
 (a status column and an alert, rather than a line in the node's log), **active-active**
 multi-coordinator load sharing, an **OTLP push** exporter behind an explicit opt-in, and a dedicated
@@ -160,6 +163,29 @@ docker compose -f deploy/docker/docker-compose.yml up -d
 
 Images are published to GHCR for `linux/amd64` and `linux/arm64`:
 `ghcr.io/dev-art-solutions/inferhub-coordinator` and `.../inferhub-node`.
+
+#### Which image do I pull? (v3.13)
+
+Four artifacts with no chooser is how somebody pulls 6 GB to run a 340 MB workload, or pulls the
+small one and wonders where the audio went. All tags are under
+`ghcr.io/dev-art-solutions/`.
+
+| Pull this | Size | Arch | When it is the right one |
+|---|---:|---|---|
+| `inferhub-coordinator` | ~120 MB | amd64 + arm64 | The always-on host. No GPU, no inference engine — it routes. |
+| `inferhub-node` | ~340 MB | amd64 + arm64 | You already run Ollama, vLLM, LM Studio or a hosted OpenAI-compatible endpoint and want a node in front of it. Also the right one for **solo mode** and for a **vector-store-only** box. |
+| `inferhub-node:ollama` | ~4 GB | amd64 | You want *one* `docker run` on a GPU box with nothing installed on the host. Ollama runs inside the container, supervised. `:gpu` is an alias of the same digest — it works fine with no card. |
+| `inferhub-node:tools` | ~6 GB | amd64 | The above, **plus speech**: Python, `faster-whisper` and `piper`, so `/v1/audio/transcriptions` and `/v1/audio/speech` work out of the box. |
+
+Two rules of thumb that save the mistake each way:
+
+- **Do not pull `:tools` for chat.** It is `:ollama` plus ~1.5 GB of Python wheels you will never
+  load. Every image above it does chat identically.
+- **Do not pull `:ollama` to point at an Ollama you already have.** The bundled one would sit idle
+  next to it — or worse, fight it for a port. Use the plain image and set `Ollama:Endpoint`.
+
+Whichever node image you choose, **mount a volume at `/data`**. Model weights, the node's stable id,
+tool scratch and any corpus live there; without it every `docker run` re-downloads gigabytes.
 
 ### From source
 
@@ -594,6 +620,9 @@ first log line says which one it got.
 
 ### The four images
 
+*Which one to pull, and the two mistakes worth avoiding, are in
+[Which image do I pull?](#which-image-do-i-pull-v313). This is what is inside each.*
+
 | Tag | Size | Arch | What is in it |
 |---|---|---|---|
 | `inferhub-coordinator` | ~120 MB | amd64 + arm64 | The hub |
@@ -812,6 +841,143 @@ taking the official gRPC client.
 A start that fails — unreachable engine, unresolvable credential, wrong dimension — leaves the node
 with **no corpus and a reported refusal**, visible on `/api/status` and in the console, while the node
 goes on serving chat.
+
+## One box, one container: chat, RAG and speech (v3.13+)
+
+Six releases add up to one story, and the sections above tell it in pieces. Here it is once, top to
+bottom. **A coordinator on a small always-on host, one GPU box, and everything else configured from
+the hub** — no file edited on the GPU machine after the first `docker run`, no restart, and inference
+never stops while you do it.
+
+**1. The hub.** Anywhere; no GPU.
+
+```bash
+docker run -d --name inferhub-hub \
+  -e Auth__AdminApiKeys__0="$ADMIN_KEY" \
+  -e Auth__ApiKeys__0="$CLIENT_KEY" \
+  -e Auth__NodeEnrollmentSecret="$ENROLL" \
+  -v inferhub-hub:/data -p 5080:8080 \
+  ghcr.io/dev-art-solutions/inferhub-coordinator
+```
+
+**2. The GPU box.** One container. It carries Ollama *and* the speech workers, dials out to the hub,
+and needs no inbound rule of its own. The labels are what a profile will select on in step 4.
+
+```bash
+docker run -d --name inferhub-node --gpus all \
+  -e Coordinator__Url=http://hub.example:5080 \
+  -e Coordinator__EnrollmentSecret="$ENROLL" \
+  -e Node__Labels__role=gpu \
+  -e Tools__Enabled=true -e Tools__Allowed__0=whisper -e Tools__Allowed__1=piper \
+  -v inferhub-node:/data \
+  ghcr.io/dev-art-solutions/inferhub-node:tools
+
+docker exec inferhub-node ollama pull llama3.2
+```
+
+`Tools:Allowed` is the operator's grant and **the ceiling the hub can never raise** — step 4 can
+switch those two tools off, and can never introduce a third.
+
+**3. Chat, already.** Point anything that speaks Ollama or OpenAI at the hub.
+
+```bash
+curl http://hub.example:5080/v1/chat/completions \
+  -H "Authorization: Bearer $CLIENT_KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"llama3.2","messages":[{"role":"user","content":"Hello!"}]}'
+```
+
+**4. Give the box a corpus — from the hub, with no file edited on the box.**
+
+```bash
+curl -X PUT http://hub.example:5080/api/admin/profiles/gpu-boxes \
+  -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
+  -d '{
+        "name": "gpu-boxes",
+        "selector": { "labels": { "role": "gpu" } },
+        "maxConcurrency": 2,
+        "retrieval": {
+          "enabled": true, "provider": "local",
+          "collections": ["handbook"], "embeddingModel": "all-minilm"
+        }
+      }'
+```
+
+The node pulls the profile, **clamps it against its own configuration**, brings the corpus up at
+runtime, and reports what it applied and what it refused. Ingest and search stay on the hub's own
+API — the hub dispatches them to the owner:
+
+```bash
+curl -X POST http://hub.example:5080/api/collections/handbook/documents \
+  -H "Authorization: Bearer $CLIENT_KEY" -F file=@handbook.md
+
+curl http://hub.example:5080/v1/chat/completions \
+  -H "Authorization: Bearer $CLIENT_KEY" -H 'Content-Type: application/json' \
+  -H 'X-InferHub-Retrieve: handbook' \
+  -d '{"model":"llama3.2","messages":[{"role":"user","content":"What is our refund window?"}]}'
+```
+
+**5. Speech, on the same box, with no extra deployment.** The `:tools` image already carries the
+workers; routing is per `(capability, model)`, so **a node busy transcribing is still a candidate for
+chat**.
+
+```bash
+curl -X POST http://hub.example:5080/v1/audio/transcriptions \
+  -H "Authorization: Bearer $CLIENT_KEY" \
+  -F file=@meeting.m4a -F model=whisper-small -F response_format=srt
+```
+
+**6. Watch all of it on one page.** `http://hub.example:5080/console.html`, admin key in the bar at
+the top.
+
+### Driving all of it from one page (v3.13+)
+
+The console is plain HTML, CSS and JavaScript served by the coordinator — no build step, no bundler,
+no framework, and nothing to install. It reads `/api/status` and `/api/admin/*` and adds no API of
+its own.
+
+| Panel | What it answers |
+|---|---|
+| **Needs attention** | Everything that is *not* doing what it was told, with the reason. Above the fold, hidden when there is nothing to say. |
+| **Capabilities** | Node × capability, plus a fleet row: how many boxes serve `chat`, `embed`, `transcribe`, `speak`, and over how many models. |
+| **Tools** | Per node and manifest: allowed or not, running / suspended / stopped / not-allowed, live workers, requests, and the last error in the worker's own words. |
+| **Node retrieval** | Which node hosts which corpus, on which engine, with how many records — and why it is not running, when it is not. |
+| **Node profiles** | The profile book, an editor, apply and delete — and a table of which boxes took which revision, and what each refused. |
+
+**Desired beside effective, always.** A profile that says `maxConcurrency: 8` against a box whose
+own config caps it at 2 is not an error and not a silent no-op: the node applies the 2, reports the
+refusal with the key that stopped it, and the console shows both. That is the whole design —
+[the hub can only ever narrow a node](#the-hub-can-only-ever-narrow-a-node-and-the-check-runs-on-the-node),
+so "it did not take" needs "and here is what stopped it" beside it or it reads as a bug.
+
+A worked example of the confusion this removes: you drop `whisper.json` into the manifest directory
+and nothing happens. The node logs it, but the node is a box you are not tailing. The console shows a
+**not-allowed** row and one sentence — *the manifest is on the box but `Tools:Allowed` does not name
+it* — which is the difference between one config line and an afternoon.
+
+### What `/metrics` gained
+
+The [Prometheus endpoint](#prometheus-metrics-v210) grew the series this track needs:
+
+| Series | Labels |
+|---|---|
+| `inferhub_capability_nodes`, `inferhub_capability_models` | `capability` |
+| `inferhub_tool_requests_total` | `node`, `tool`, `outcome` |
+| `inferhub_tool_workers` | `node`, `tool`, `state` |
+| `inferhub_tool_pool` | `node`, `tool`, `state` |
+| `inferhub_audio_seconds_total`, `inferhub_audio_characters_total` | `kind`, `model` |
+| `inferhub_profile_state` | `profile`, `state` |
+| `inferhub_node_corpus_records` | `node`, `collection` |
+
+**Absence stays absence.** A capability nobody serves, a tool nobody loaded, a profile nobody wrote
+and a corpus nobody assigned each produce **no series at all** rather than a zero — the same rule the
+per-node throughput gauges have followed since v2.10. A dashboard reading `transcription capacity: 0`
+on a fleet that was never asked to transcribe would page somebody at three in the morning about a
+feature nobody turned on.
+
+The two audio counters are deliberately separate: a transcription is metered in **seconds** and a
+synthesis in **characters**, and one summed `units` series would add the two into a number nobody can
+tell is wrong. `inferhub_profile_state{state="refused"}` and `{state="conflict"}` are the two worth
+alerting on — both mean a box is not doing what your fleet configuration says it should.
 
 ## OpenAI-compatible API
 
@@ -1988,6 +2154,10 @@ What is exposed, all namespaced `inferhub_*`:
 | Queue | `queue_depth`, `queue_queued_total`, `queue_admitted_total`, `queue_timed_out_total`, `queue_rejected_total`, `queue_wait_median_ms` |
 | Named clients (`client=`) | `client_requests_in_flight`, `client_requests_last_minute`, `client_tokens_last_minute`, `client_tokens_today`, and `client_limit_*` for each configured limit |
 | Cluster (`instance=`, v3.0+) | `cluster_active` (1 = holds the lease), `cluster_fence` (acquisition counter — a change means leadership moved). Absent entirely unless `Cluster:Enabled`. Alert on `sum(inferhub_cluster_active) != 1`. |
+| Capabilities (`capability=`, v3.13+) | `capability_nodes`, `capability_models` |
+| Tools (`node=`, `tool=`, v3.13+) | `tool_requests_total{outcome}`, `tool_workers{state}`, `tool_pool{state}` |
+| Audio (`kind=`, `model=`, v3.13+) | `audio_seconds_total` (transcription), `audio_characters_total` (synthesis) |
+| Profiles / node corpora (v3.13+) | `profile_state{profile,state}`, `node_corpus_records{node,collection}` |
 
 **Auth: the admin key, not a client key.** `/metrics` is operational like `/health`, but
 unlike `/health` it exposes node names, model names, client ids and the shape of your
@@ -2002,8 +2172,9 @@ read to drive anything.
 
 Absence is meaningful. An unmeasured `(node, model)` has **no** `node_tokens_per_second`
 series rather than a zero — the router treats an unmeasured node as *average*, and a 0 on a
-dashboard would be a lie that invites an alert. Same for a client limit that is unset, and for
-the queue's median before anything has ever queued.
+dashboard would be a lie that invites an alert. Same for a client limit that is unset, for
+the queue's median before anything has ever queued, and (v3.13+) for a capability nobody serves, a
+tool nobody loaded, a profile nobody wrote and a corpus nobody assigned.
 
 A ready-made Prometheus + Grafana overlay with a starter dashboard ships in
 [`deploy/docker/compose.observability.yml`](deploy/docker/compose.observability.yml) — see the

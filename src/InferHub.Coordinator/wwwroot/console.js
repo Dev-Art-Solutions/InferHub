@@ -276,7 +276,7 @@
   const renderNodes = (nodes) => {
     const tbody = document.getElementById("nodes");
     if (!nodes || nodes.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="11" class="empty">No nodes connected.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="12" class="empty">No nodes connected.</td></tr>`;
       return;
     }
 
@@ -421,6 +421,247 @@
     renderVectorFeed();
   };
 
+  // ------------------------------------------------- capabilities, tools, corpora (phases 40–45)
+  //
+  // All three read /api/status, which the console already polls, and none of them asks the fleet
+  // anything: what a node reports is what is shown, and the "reported" column is how stale it is.
+
+  const emptyRow = (id, columns, text) => {
+    document.getElementById(id).innerHTML =
+      `<tr><td colspan="${columns}" class="empty">${escapeHtml(text)}</td></tr>`;
+  };
+
+  // Node × capability. The routed truth, not the declared one: these are the resolved capabilities
+  // /api/status reports, so a node that declared nothing shows chat + embed (phase-40 D1).
+  const renderCapabilityMatrix = (status) => {
+    const host = document.getElementById("capability-matrix");
+    if (!host) return;
+
+    const nodes = status?.nodes ?? [];
+    const kinds = [...new Set([
+      ...(status?.capabilities ?? []).map(c => c.capability),
+      ...nodes.flatMap(n => n.capabilities ?? [])
+    ])].sort();
+
+    if (nodes.length === 0 || kinds.length === 0) {
+      host.innerHTML = `<div class="empty">No node declares a capability yet.</div>`;
+      return;
+    }
+
+    const models = new Map((status?.capabilities ?? []).map(c => [c.capability, c.models ?? []]));
+
+    const head = `<tr><th>Node</th>${kinds.map(k =>
+      `<th class="matrix-cell">${escapeHtml(k)}</th>`).join("")}</tr>`;
+
+    const body = nodes.map(n => {
+      const has = new Set(n.capabilities ?? []);
+      return `<tr><td>${escapeHtml(n.name)} <code>${escapeHtml(n.nodeId)}</code></td>${kinds.map(k =>
+        `<td class="matrix-cell ${has.has(k) ? "matrix-yes" : "matrix-no"}">${has.has(k) ? "●" : "·"}</td>`
+      ).join("")}</tr>`;
+    }).join("");
+
+    // The fleet row is the answer to "will this request find a node at all" — a capability with
+    // zero nodes is a 503 with a Retry-After (phase-40 D4), not a 404, and this is where you see it.
+    const totals = `<tr><td class="meta">fleet · models</td>${kinds.map(k => {
+      const list = models.get(k) ?? [];
+      const count = nodes.filter(n => (n.capabilities ?? []).includes(k)).length;
+      return `<td class="matrix-cell" title="${escapeHtml(list.join(", "))}">${count} node${count === 1 ? "" : "s"}` +
+        `<br><span class="meta">${list.length} model${list.length === 1 ? "" : "s"}</span></td>`;
+    }).join("")}</tr>`;
+
+    host.innerHTML = `<table><thead>${head}</thead><tbody>${body}${totals}</tbody></table>`;
+  };
+
+  // A pool inside its restart budget is still "running" — it has not given up, and saying it had
+  // would be wrong. But it holds no worker and the most recent thing that happened to it was a
+  // failure, so it will fail every request it is declared for: a green pill there is the lie this
+  // panel exists to stop telling.
+  const toolIsDegraded = (tool) => tool.state === "running" && Boolean(tool.lastError) && tool.workers === 0;
+
+  const toolStatePill = (tool) => {
+    const cls = tool.state === "running" ? (toolIsDegraded(tool) ? "pill-warn" : "pill-ok")
+      : tool.state === "suspended" ? "pill-warn"
+        : tool.state === "not-allowed" ? "pill-muted" : "pill-err";
+    const label = toolIsDegraded(tool) ? "running · no worker" : tool.state;
+    return `<span class="pill ${cls}">${escapeHtml(label)}</span>`;
+  };
+
+  const renderTools = (status) => {
+    const tbody = document.getElementById("tools");
+    if (!tbody) return;
+
+    const rows = (status?.nodes ?? [])
+      .filter(n => n.tools && n.tools.enabled)
+      .flatMap(n => (n.tools.tools ?? []).map(t => ({ node: n, tool: t, atUtc: n.tools.atUtc })));
+
+    if (rows.length === 0) {
+      emptyRow("tools", 9, "No node reports a tool runtime. Tools:Enabled defaults to false.");
+      return;
+    }
+
+    tbody.innerHTML = rows.map(({ node, tool, atUtc }) => {
+      const caps = (tool.capabilities ?? []).map(c =>
+        `<span class="label-chip">${escapeHtml(c.kind)}${c.models && c.models.length ? ` ·&nbsp;${c.models.length}` : ""}</span>`).join("");
+      // Not allowed is not broken. Saying so in the row is the difference between "add the id to
+      // Tools:Allowed" and an afternoon reading node logs (phase-41 D2).
+      const why = tool.state === "not-allowed"
+        ? `<span class="why">loaded from the manifest directory, not named in <code>Tools:Allowed</code></span>`
+        : tool.lastError
+          ? `<span class="why">${escapeHtml(tool.lastError)}</span>`
+          : `<span class="matrix-no">—</span>`;
+      return `
+        <tr class="${tool.state === "stopped" ? "row-error" : ""}">
+          <td>${escapeHtml(node.name)}</td>
+          <td><code>${escapeHtml(tool.id)}</code></td>
+          <td>${tool.allowed ? `<span class="matrix-yes">yes</span>` : `<span class="matrix-no">no</span>`}</td>
+          <td>${toolStatePill(tool)}</td>
+          <td>${caps || `<span class="matrix-no">—</span>`}</td>
+          <td>${tool.busy} busy / ${tool.workers} warm / ${tool.maxWorkers} max</td>
+          <td>${tool.requests}${tool.failures ? ` <span class="pill pill-err">${tool.failures} failed</span>` : ""}</td>
+          <td>${why}</td>
+          <td>${escapeHtml(fmtRelativeAge(atUtc))}</td>
+        </tr>`;
+    }).join("");
+  };
+
+  const corpusStatePill = (corpus) => {
+    if (!corpus.enabled) return `<span class="pill pill-muted">off</span>`;
+    const cls = corpus.status === "running" ? "pill-ok" : corpus.status === "failed" ? "pill-err" : "pill-warn";
+    return `<span class="pill ${cls}">${escapeHtml(corpus.status)}</span>`;
+  };
+
+  const renderCorpora = (status) => {
+    const tbody = document.getElementById("corpora");
+    if (!tbody) return;
+
+    const rows = (status?.nodes ?? []).filter(n => n.corpus).map(n => ({ node: n, corpus: n.corpus }));
+
+    if (rows.length === 0) {
+      emptyRow("corpora", 7, "No node hosts a corpus. Assign one with a profile's retrieval block.");
+      return;
+    }
+
+    tbody.innerHTML = rows.map(({ node, corpus }) => {
+      const collections = (corpus.collections ?? []);
+      const names = collections.length
+        ? `<div class="replica-list">${collections.map(c =>
+            `<span class="replica-chip" title="dim ${c.dimension}">${escapeHtml(c.name)}</span>`).join("")}</div>`
+        : `<span class="matrix-no">—</span>`;
+      const records = collections.reduce((sum, c) => sum + (c.records ?? 0), 0);
+      return `
+        <tr class="${corpus.status === "failed" ? "row-error" : ""}">
+          <td>${escapeHtml(node.name)} <code>${escapeHtml(node.nodeId)}</code></td>
+          <td>${corpusStatePill(corpus)}</td>
+          <td>${escapeHtml(corpus.provider ?? "—")}</td>
+          <td>${names}</td>
+          <td>${collections.length ? records : `<span class="matrix-no">—</span>`}</td>
+          <td>${corpus.error ? `<span class="why">${escapeHtml(corpus.error)}</span>` : `<span class="matrix-no">—</span>`}</td>
+          <td>${escapeHtml(fmtRelativeAge(corpus.atUtc))}</td>
+        </tr>`;
+    }).join("");
+  };
+
+  // Phase 45, D1. Everything that is *not* doing what it was told, in one strip, above the fold.
+  // Desired and effective are both on the row, because "it did not take" without "and here is what
+  // stopped it" is the support conversation this panel exists to prevent.
+  const renderRefusals = (status) => {
+    const section = document.getElementById("refusals-section");
+    const host = document.getElementById("refusals");
+    if (!section || !host) return;
+
+    const items = [];
+
+    for (const node of status?.nodes ?? []) {
+      const label = `${node.name} (${node.nodeId})`;
+
+      const profile = node.profile;
+      if (profile?.status === "conflict") {
+        items.push({
+          kind: "profile", where: label,
+          what: `matched by ${(profile.conflicts ?? []).join(", ")}`,
+          why: "two profiles select this node, so the hub sent neither and it kept what it had (phase-43 D4)"
+        });
+      }
+      for (const refusal of profile?.refusals ?? []) {
+        items.push({
+          kind: "profile", where: label,
+          what: `${profile.name ?? "?"}@${profile.revision}: ${refusal.item}`,
+          why: refusal.reason
+        });
+      }
+
+      for (const tool of node.tools?.tools ?? []) {
+        if (tool.state === "not-allowed") {
+          items.push({
+            kind: "tool", where: label, what: tool.id,
+            why: "the manifest is on the box but Tools:Allowed does not name it, so it was never started"
+          });
+        } else if (tool.state === "stopped") {
+          items.push({ kind: "tool", where: label, what: tool.id, why: tool.lastError ?? "the pool gave up starting it" });
+        } else if (tool.state === "suspended") {
+          items.push({ kind: "tool", where: label, what: tool.id, why: "switched off by this node's profile" });
+        } else if (toolIsDegraded(tool)) {
+          // Still inside its restart budget, so not "stopped" — but it is declared for work it
+          // currently cannot do, and that is the strip's whole subject.
+          items.push({ kind: "tool", where: label, what: tool.id, why: tool.lastError });
+        }
+      }
+
+      if (node.corpus?.enabled && node.corpus.status === "failed") {
+        items.push({ kind: "corpus", where: label, what: node.corpus.provider, why: node.corpus.error ?? "the corpus did not start" });
+      }
+    }
+
+    if (items.length === 0) {
+      section.style.display = "none";
+      host.innerHTML = "";
+      return;
+    }
+
+    section.style.display = "";
+    host.innerHTML = `<table><thead><tr><th>What</th><th>Node</th><th>Item</th><th>Why</th></tr></thead><tbody>` +
+      items.map(i => `
+        <tr class="refusal-row">
+          <td><span class="pill pill-warn">${escapeHtml(i.kind)}</span></td>
+          <td>${escapeHtml(i.where)}</td>
+          <td><code>${escapeHtml(i.what ?? "—")}</code></td>
+          <td><span class="why">${escapeHtml(i.why ?? "")}</span></td>
+        </tr>`).join("") + `</tbody></table>`;
+  };
+
+  // Desired (the profile the hub matched) beside effective (what the node reports running), which
+  // is the whole of D1 in one table.
+  const renderProfileNodes = (status) => {
+    const tbody = document.getElementById("profile-nodes");
+    if (!tbody) return;
+
+    const rows = (status?.nodes ?? []).filter(n => n.profile);
+
+    if (rows.length === 0) {
+      emptyRow("profile-nodes", 6, "No profile matches a connected node.");
+      return;
+    }
+
+    tbody.innerHTML = rows.map(n => {
+      const p = n.profile;
+      const detail = p.status === "conflict"
+        ? `<span class="why">${escapeHtml((p.conflicts ?? []).join(", "))}</span>`
+        : (p.refusals ?? []).length
+          ? `<span class="why">${(p.refusals ?? []).map(r =>
+              `<code>${escapeHtml(r.item)}</code> — ${escapeHtml(r.reason)}`).join("<br>")}</span>`
+          : `<span class="matrix-no">—</span>`;
+      return `
+        <tr class="${p.status === "refused" || p.status === "conflict" ? "row-error" : ""}">
+          <td>${escapeHtml(n.name)} <code>${escapeHtml(n.nodeId)}</code></td>
+          <td>${escapeHtml(p.name ?? "—")}</td>
+          <td>${p.revision}</td>
+          <td><span class="profile-${escapeHtml(p.status)}">${escapeHtml(p.status)}</span></td>
+          <td>${capabilityChips(n.capabilities)}${n.maxConcurrency == null ? "" : `<span class="label-chip">max ${n.maxConcurrency}</span>`}</td>
+          <td>${detail}</td>
+        </tr>`;
+    }).join("");
+  };
+
   // ---------------------------------------------------------------- actions
 
   const setRowMessage = (nodeId, text, isError) => {
@@ -439,6 +680,11 @@
       renderModels(latestStatus.models);
       renderCollections(latestStatus.vector);
       syncDocumentCollections(latestStatus.vector);
+      renderCapabilityMatrix(latestStatus);
+      renderTools(latestStatus);
+      renderCorpora(latestStatus);
+      renderProfileNodes(latestStatus);
+      renderRefusals(latestStatus);
     }
     renderNodes(latestNodes ?? []);
     renderVectorFeed();
@@ -898,7 +1144,11 @@
   // ---------------------------------------------------------------- wiring
 
   document.getElementById("auth-set").addEventListener("click", () => {
-    if (promptForKey()) restartStream();
+    if (promptForKey()) {
+      restartStream();
+      // The profile book is admin-scoped, so it could not be read before the key existed.
+      refreshProfiles();
+    }
   });
   document.getElementById("auth-clear").addEventListener("click", () => {
     setKey(null);
@@ -1429,7 +1679,166 @@
     postModelCommand(btn.dataset.mm, decodeURIComponent(btn.dataset.node), decodeURIComponent(btn.dataset.model));
   });
 
+  // --- Node profiles (phase 43) --------------------------------------------------------------
+  //
+  // Admin-scoped CRUD over /api/admin/profiles. The editor is a textarea over the profile's own
+  // JSON rather than a form of checkboxes: a profile is a small document with an open-ended
+  // capability map and a retrieval block, and a form would have to be rewritten for every field a
+  // later phase adds — while what the operator wants to paste into a ticket is the JSON anyway.
+
+  let profileNames = [];
+  let profileNamesSignature = "";
+
+  const profileNote = (text, isError) => {
+    const el = document.getElementById("profile-note");
+    if (!el) return;
+    el.style.display = text ? "" : "none";
+    el.className = `row-msg ${isError ? "" : "info"}`;
+    el.textContent = text ?? "";
+  };
+
+  const profileSummary = (text) => {
+    const el = document.getElementById("profile-summary");
+    if (el) el.textContent = text;
+  };
+
+  const NEW_PROFILE = {
+    name: "gpu-boxes",
+    selector: { labels: { role: "gpu" } },
+    capabilities: { chat: true },
+    maxConcurrency: 2
+  };
+
+  const showProfile = (profile) => {
+    const body = document.getElementById("profile-body");
+    if (body) body.value = JSON.stringify(profile, null, 2);
+    profileNote(null);
+  };
+
+  const refreshProfiles = async (selectName) => {
+    const select = document.getElementById("profile-pick");
+    if (!select) return;
+
+    let profiles;
+    try {
+      const res = await fetch("/api/admin/profiles", { headers: adminHeaders() });
+      if (res.status === 401) {
+        profileSummary("admin key required");
+        return;
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      profiles = await res.json();
+    } catch (err) {
+      profileSummary(`could not load profiles: ${err.message}`);
+      return;
+    }
+
+    profileNames = profiles.map(p => p.name);
+    const signature = profileNames.join(" ");
+
+    if (signature !== profileNamesSignature) {
+      profileNamesSignature = signature;
+      select.innerHTML = profileNames.length === 0
+        ? `<option value="">(none yet)</option>`
+        : profileNames.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
+    }
+
+    const wanted = selectName ?? select.value;
+    const chosen = profiles.find(p => p.name === wanted) ?? profiles[0];
+
+    if (chosen) {
+      select.value = chosen.name;
+      showProfile(chosen);
+      profileSummary(`${profiles.length} profile${profiles.length === 1 ? "" : "s"} · ${chosen.name}@${chosen.revision}`);
+    } else {
+      profileSummary("no profiles yet — New… then Apply");
+    }
+  };
+
+  const applyProfile = async () => {
+    if (!adminKey && !promptForKey("Admin key required to write a profile.")) return;
+
+    let profile;
+    try {
+      profile = JSON.parse(document.getElementById("profile-body").value);
+    } catch (err) {
+      profileNote(`that is not valid JSON: ${err.message}`, true);
+      return;
+    }
+
+    const name = (profile.name ?? "").trim();
+    if (!name) {
+      profileNote("the profile needs a name", true);
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/admin/profiles/${encodeURIComponent(name)}`, {
+        method: "PUT",
+        headers: adminHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(profile)
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+
+      // What a write actually did, said out loud: how many boxes took it, and which ones two
+      // profiles now select. A silent 200 is how somebody believes a fleet changed when it did not.
+      const applied = body.applied ?? [];
+      const conflicts = body.conflicts ?? [];
+      toast(
+        `${name}@${body.profile?.revision} written`,
+        `${applied.length} node(s) matched${conflicts.length ? `, ${conflicts.length} in conflict` : ""}`,
+        conflicts.length ? "warn" : "ok");
+      profileNote(
+        conflicts.length
+          ? `conflict: ${conflicts.map(c => `${c.nodeId} is matched by ${(c.profiles ?? []).join(", ")}`).join("; ")}`
+          : `applied to ${applied.length === 0 ? "no connected node yet" : applied.join(", ")}`,
+        conflicts.length > 0);
+
+      await refreshProfiles(name);
+      pollStatusNow();
+    } catch (err) {
+      profileNote(err.message, true);
+      toast("Profile not written", err.message, "err");
+    }
+  };
+
+  const deleteProfile = async () => {
+    const name = document.getElementById("profile-pick")?.value;
+    if (!name) return;
+    if (!adminKey && !promptForKey("Admin key required to delete a profile.")) return;
+    // Deleting is not "stop configuring these boxes", it is "revert them to their own config", and
+    // the confirm says so because those read the same and are not (phase-43 D2).
+    if (!window.confirm(`Delete profile "${name}"? Every node it matched reverts to its own configuration.`)) return;
+
+    try {
+      const res = await fetch(`/api/admin/profiles/${encodeURIComponent(name)}`, {
+        method: "DELETE",
+        headers: adminHeaders()
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+
+      const reverted = body.reverted ?? [];
+      toast(`${name} deleted`, `${reverted.length} node(s) reverted to their own configuration`, "ok");
+      profileNamesSignature = "";
+      await refreshProfiles();
+      pollStatusNow();
+    } catch (err) {
+      toast("Profile not deleted", err.message, "err");
+    }
+  };
+
+  document.getElementById("profile-pick")?.addEventListener("change", () => refreshProfiles());
+  document.getElementById("profile-new")?.addEventListener("click", () => {
+    showProfile(NEW_PROFILE);
+    profileSummary("editing a new profile — Apply writes it");
+  });
+  document.getElementById("profile-apply")?.addEventListener("click", applyProfile);
+  document.getElementById("profile-delete")?.addEventListener("click", deleteProfile);
+
   setKey(null);
+  refreshProfiles();
   pollStatusNow();
   statusPollHandle = setInterval(pollStatusNow, STATUS_POLL_MS);
   ensureNodesPolling();

@@ -69,6 +69,8 @@ public static class AdminEndpoints
             IConversationAffinity affinity,
             IAuditLog audit,
             IProfileRegistry profiles,
+            NodeCorpusRegistry corpora,
+            NodeToolRegistry tools,
             ILoggerFactory loggerFactory) =>
         {
             var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin");
@@ -88,6 +90,10 @@ public static class AdminEndpoints
             // not leave a stale "refused" hanging on the status page. The profile itself stays —
             // it is fleet configuration, not node state, and the box may come back.
             profiles.Forget(nodeId);
+            // Same for the two phase-44/45 mailboxes: what a node that is gone for good last said
+            // about its corpus and its tools is not something the hub should keep answering with.
+            corpora.Forget(nodeId);
+            tools.Forget(nodeId);
             audit.Record(nodeId, "deregister", ActorOf(context), DateTimeOffset.UtcNow);
 
             logger.LogInformation(

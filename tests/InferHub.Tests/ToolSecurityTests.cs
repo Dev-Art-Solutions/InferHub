@@ -329,6 +329,9 @@ public class ToolSecurityTests
 
         public event Action? CapabilitiesChanged { add { } remove { } }
 
+        public InferHub.Shared.Contracts.NodeToolState State(string nodeId)
+            => new(nodeId, Enabled: true, [pool.Report()], DateTimeOffset.UtcNow);
+
         public Task<ToolWorkerLease> AcquireAsync(string capability, string model, CancellationToken cancellationToken)
             => pool.AcquireAsync(cancellationToken);
 

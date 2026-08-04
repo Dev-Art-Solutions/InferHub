@@ -18,6 +18,9 @@ src/
                           and since phase 38 the whole *pure* retrieval core: Vector/ (IVectorStore,
                           LocalVectorStore, InvertedIndex, HybridSearch, RetrievalPipeline) and
                           Ingestion/ (TextExtractor, Chunker, DocumentIndex, IngestionPipeline).
+                          Phase 44 added Vector/Qdrant/ (QdrantVectorStore, QdrantClient, QdrantIdMap,
+                          SparseVector) — free only because phase-33 D2 hand-rolled the connector
+                          instead of taking the gRPC client.
                           Still a plain class library with ZERO package references — see rule 2.
   InferHub.Coordinator/   ASP.NET Core web app (Sdk.Web). HTTP + SignalR hub + routing. Keeps the
                           external vector providers, replication/healing, endpoints, Metrics and
@@ -105,7 +108,11 @@ into `appsettings.json`.
   > with a real Kestrel host and a real `HubConnection` — keep it that way.
 - [wwwroot/](src/InferHub.Coordinator/wwwroot/) — static `status.html` (read-only) and
   `console.html` + `console.js` (admin). **Build-free**: plain HTML/CSS/JS, no Node/React
-  toolchain. If you reach for a bundler, stop and rethink.
+  toolchain. If you reach for a bundler, stop and rethink. Since phase 45 the console drives the
+  whole tools-and-fleet track — capabilities, tools, node profiles, node retrieval, and a
+  **Needs attention** strip above the fold — all of it off `/api/status` and `/api/admin/*` with no
+  endpoint of its own. `ConsoleContractTests` fails when a panel reads a field the payload does not
+  carry, which is the one class of console bug a unit suite can catch.
 
 ### Vector providers
 
@@ -118,7 +125,9 @@ the seam; three implementations sit behind it, selected by `VectorStore:Provider
 - **`PostgresVectorStore`** ([Vector/Postgres/](src/InferHub.Coordinator/Vector/Postgres/)) —
   table-per-collection over pgvector; publishes the two lifecycle events itself and returns the
   same score sign-conventions as `FlatIndex` (see `PostgresSchema.ScoreExpression`).
-- **`QdrantVectorStore`** ([Vector/Qdrant/](src/InferHub.Coordinator/Vector/Qdrant/), phase 33) —
+- **`QdrantVectorStore`** ([Vector/Qdrant/](src/InferHub.Shared/Vector/Qdrant/), phase 33, **moved to
+  `InferHub.Shared` in phase 44 D2** so a node assigned a Qdrant corpus runs the same store rather
+  than a second one — only `QdrantBootstrapper` stayed behind, as a host concern) —
   Qdrant over a hand-rolled REST `QdrantClient` (no dependency); publishes its own lifecycle
   events and returns the same `FlatIndex` score conventions (Qdrant reports them with no sign flip).
   Since phase 34 it also fuses dense + sparse **server-side** (`IServerSideHybridSearch`) for
@@ -220,6 +229,15 @@ as load-bearing:
    boot past: a node cannot run its own authoritative corpus (`LocalApi:Retrieval:Enabled`) while it
    is also meshed, because it would then hold a derived copy *and* an authority under the same
    collection names. See phase-38 D1 — that startup failure is this sentence, enforced.
+
+   > **Phase 44 sharpened that sentence, and the sharper one is the invariant now: *one authority
+   > per collection name, and the hub knows who it is.*** A node may hold an authoritative corpus
+   > **only** where the hub assigned it and recorded the ownership
+   > ([CollectionOwnership](src/InferHub.Coordinator/Vector/CollectionOwnership.cs)), which is what
+   > lets replication and healing skip those names and a hub-side create of one be a `409`. The
+   > phase-38 startup failure is unchanged — a node that sets `LocalApi:Retrieval:*` **by hand**
+   > while meshed still refuses to boot. What changed is that "who owns this name" became a thing
+   > the hub records rather than a thing it assumes. See phase-44 D1.
    Everything else stays in-memory;
    if you find yourself adding a database or on-disk format outside those directories/providers,
    stop and rethink. The default is `Enabled=false`, so deployments that don't opt in keep the
@@ -2036,6 +2054,72 @@ and `/api/status` has to answer when the fleet does not. A stale block is the ho
 and the timestamp says so.
 
 **Rule 5 survived again.** Phase 44 added **zero** new dependencies.
+
+### Phase 45 (the console, the metrics and the docs) — also load-bearing
+
+**D1 — The console shows *desired* beside *effective*, and every refusal is above the fold.** The
+single most confusing state phases 40–44 can produce is "I turned it on and nothing happened", and
+the answer is almost always a refusal: a profile the node clamped (43 D1), a manifest
+`Tools:Allowed` does not name (41 D2), a corpus that would not start (44 D3). A console showing only
+*effective* state turns every one of those into a support conversation, because the operator's
+evidence is a box behaving exactly as it did before. So the **Needs attention** strip sits directly
+under the auth bar, aggregates all three kinds, and carries the *reason* rather than a status word.
+It is fed from `/api/status` alone — `ConsoleContractTests.ARefusalIsVisibleFromTheStatusPayloadAlone`
+pins that, because a refusal that needed a second request would stop being visible on the first
+paint.
+
+**A pool inside its restart budget is `running`, and a green pill for it is a lie.** Found by running
+it: a manifest whose command does not exist reports `state: running` (it has not exhausted the budget,
+so it has not given up) with zero workers and a `lastError`. It is declared for work it cannot do.
+The console renders that as `running · no worker` in amber and puts it on the strip;
+`ToolWorkerPool` **clears `lastError` on a successful start**, so the field means "the most recent
+thing that happened to this pool was a failure" rather than "something once went wrong here" — a
+permanent warning is a column operators learn to ignore.
+
+**D2 — Absence stays absence, and the new series obey it.** Phase-28 D5 for the fourth time. A
+capability nobody serves, a tool nobody loaded, a profile nobody wrote and a corpus nobody assigned
+each produce **no** series rather than a zero, and `AbsenceStaysAbsenceForEveryPhase45Series` fails
+if any of them starts emitting one. `inferhub_capability_nodes{capability}`,
+`inferhub_tool_requests_total{node,tool,outcome}`, `inferhub_tool_workers{node,tool,state}`,
+`inferhub_tool_pool{node,tool,state}`, `inferhub_audio_seconds_total{kind,model}`,
+`inferhub_audio_characters_total{kind,model}`, `inferhub_profile_state{profile,state}`,
+`inferhub_node_corpus_records{node,collection}`.
+
+*Three recorded deviations from the brief's label sets, each with a reason:*
+- **The tool series carry `node` as well as `tool`.** A per-node counter resets when that node
+  restarts, which Prometheus detects **per series**; summing the fleet into one counter would make
+  every node bounce read as a fleet-wide rate spike.
+- **`inferhub_tool_pool` is a series the brief did not name.** A pool that gave up holds zero
+  workers. So does a pool nobody has called. Without it a dashboard cannot tell them apart — which
+  is D2's own complaint about zeros, pointed at the thing D2 asked for.
+- **Audio is two series, not one.** A transcription meters seconds and a synthesis meters characters
+  (phase-42 D7), so one `units` series would add seconds to characters and produce a number wrong in
+  a way no reader can detect — the same reasoning `UsageAggregate` already applies to the ledger.
+
+**The formatter still measures nothing** (phase-28 D2). `Metrics.RecordAudioUnits` is called from
+`AudioEndpoints.Meter`, the one place that already decides a job succeeded — so the number on a
+dashboard and the number on a bill cannot come from two definitions of "done".
+
+**D3 — Phase 41 left a gap at the hub, and it is filled *there*, not invented in the console.**
+Until v3.13 the only thing a coordinator learned about a node's tools was the capability declaration
+folded into its model report. A manifest present but not allowed, a pool a profile had suspended,
+and a pool that had given up were **all the same thing at the hub: nothing** — and each has a
+different fix. `NodeToolState` / `NodeToolInfo` is the phase-44 D6 mailbox verbatim: the node reports
+on the model-refresh loop and immediately after a profile touches it, the hub records it in
+`NodeToolRegistry`, and **the hub never asks**. A console that dialled the fleet could not show you
+the node that stopped answering. A hub older than v3.13 has no `ReportToolState`, which is a debug
+line and a node that carries on — phase-40 D1's mixed-fleet rule for the fourth time.
+
+**D4 — Four images now, so the docs get a chooser and one end-to-end walkthrough.** `coordinator`,
+`node`, `node:ollama`, `node:tools`, with sizes and what runs inside each: four artifacts with no
+decision table is how somebody pulls 6 GB to run a 340 MB workload, or pulls the small one and
+wonders where the audio went. And the track's story is one narrative — one box, one container, chat
++ RAG + speech, configured from a coordinator — so it is written once as a walkthrough somebody can
+follow top to bottom, with the per-feature sections left as reference.
+
+**Rule 3 survived, and rule 5 survived again.** Build-free UI: the panels are plain HTML/CSS/JS
+reusing the existing CSS variables, with no bundler, no framework and no build step. **Zero** new
+dependencies, and `InferHub.Shared.csproj` is still an empty `<Project Sdk="Microsoft.NET.Sdk">`.
 
 ## Auth model (three independent token sets)
 

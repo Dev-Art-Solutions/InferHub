@@ -28,6 +28,13 @@ public interface IToolRuntime
     event Action? CapabilitiesChanged;
 
     /// <summary>
+    /// What this runtime is doing, for the hub to record (phase 45). It includes the manifests that
+    /// were loaded and <em>not</em> started, because "I put the file there and nothing happened" is
+    /// the question phase-41 D2 answers in a log line on a box nobody is tailing.
+    /// </summary>
+    NodeToolState State(string nodeId);
+
+    /// <summary>
     /// Takes an exclusive hold on a worker for this pair, starting one if the pool has room.
     /// Throws <see cref="ToolNotProvidedException"/>, <see cref="ToolBusyException"/> or
     /// <see cref="ToolUnavailableException"/> — each of which the edge renders as its own status.
@@ -71,6 +78,12 @@ public sealed class NoToolRuntime : IToolRuntime
 
     public Task<ToolWorkerLease> AcquireAsync(string capability, string model, CancellationToken cancellationToken)
         => throw new ToolNotProvidedException(capability, model);
+
+    /// <summary>
+    /// <c>enabled: false</c> and an empty list — the honest answer for a box with no runtime, and
+    /// distinguishable from a box whose runtime is on and has nothing in it.
+    /// </summary>
+    public NodeToolState State(string nodeId) => NodeToolState.Off(nodeId);
 
     /// <summary>
     /// Nothing to switch off. A profile that names tools on a node with the runtime off has already

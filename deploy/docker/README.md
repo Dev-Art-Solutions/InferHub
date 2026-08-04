@@ -331,15 +331,38 @@ are explicitly future work. This is the foundation — a survivable hub — not 
 
 ## Images
 
-Published to GHCR on every `v*` tag, for `linux/amd64` and `linux/arm64`:
+Published to GHCR on every `v*` tag. All tags are under `ghcr.io/dev-art-solutions/`, and every
+image also carries the minor (`:3.13`) and, for the two multi-arch ones, `:latest`.
 
-```
-ghcr.io/dev-art-solutions/inferhub-coordinator:2.3.0   (also :2.3, :latest)
-ghcr.io/dev-art-solutions/inferhub-node:2.3.0
-```
+| Pull this | Size | Arch | When it is the right one |
+|---|---:|---|---|
+| `inferhub-coordinator` | ~120 MB | amd64 + arm64 | The always-on host. No GPU and no inference engine — it routes, serves the client API and hosts the console. |
+| `inferhub-node` | ~340 MB | amd64 + arm64 | You already run Ollama, vLLM, LM Studio or a hosted OpenAI-compatible endpoint. Also the right one for **solo mode** and for a **vector-store-only** box. |
+| `inferhub-node:ollama` | ~4 GB | amd64 | One `docker run` on a GPU box with nothing installed on the host: Ollama runs inside the container, supervised by the node itself. `:gpu` is an alias of the same digest. |
+| `inferhub-node:tools` | ~6 GB | amd64 | The above **plus speech** — Python, `faster-whisper` and `piper`, so `/v1/audio/*` works out of the box. |
 
-Both run as a non-root `app` user. The coordinator listens on `8080` inside the container and
-is published on `${INFERHUB_PORT:-5080}` on the host.
+### The three node shapes, and which image each wants
+
+1. **A node in front of an engine you already run** — plain `inferhub-node`, `Backend:Type=ollama`
+   pointed at your host's Ollama, or `Backend:Type=openai` pointed at vLLM/LM Studio/anything.
+   340 MB, multi-arch, works on a Raspberry Pi.
+2. **A self-contained GPU box** — `:ollama`. The node is PID 1 and Ollama is its child; the phase-36
+   supervisor restarts it if it wedges. Pull models with `docker exec … ollama pull`.
+3. **A self-contained GPU box that also does speech** — `:tools`. Same as above with the two Python
+   workers and `Tools:AllowModelDownload=true`, so the first transcription fetches its weights onto
+   the volume.
+
+**Two mistakes the sizes make expensive.** Do not pull `:tools` for chat — it is `:ollama` plus
+~1.5 GB of Python wheels nothing will load, and every image above does chat identically. Do not pull
+`:ollama` to sit next to an Ollama you already run: the bundled one idles beside it, or fights it for
+the port and the loser is whichever one's logs you are reading.
+
+Every image runs as a non-root `app` user. The coordinator listens on `8080` inside the container and
+is published on `${INFERHUB_PORT:-5080}` on the host. **Mount a volume at `/data` on any node
+image** — model weights, the node's stable id, tool scratch and any corpus live there, and without it
+every `docker run` re-downloads gigabytes. A volume mounted at a path the image does not contain is
+created root-owned and the container cannot write it; `/data` exists and is `chown`ed in all of them,
+which is why it is that path and not a subdirectory of it.
 
 ## Configuration
 

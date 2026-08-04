@@ -66,6 +66,8 @@
           <th>Models</th>
           <th>Capabilities</th>
           <th title="The coordinator's node profile for this box, and whether it took (v3.11+)">Profile</th>
+          <th title="Tool manifests this node loaded and what became of each (v3.13+)">Tools</th>
+          <th title="A corpus the hub assigned to this node, as the node counts it (v3.12+)">Corpus</th>
           <th title="Measured throughput — EWMA of tokens/second across this node's models (v2.8+)">tok/s</th>
           <th>Last seen</th>
         </tr>
@@ -108,7 +110,7 @@
       return `<span class="pill pill-err">missing</span>`;
     };
 
-    const renderStats = (snapshot, fallback, queue) => {
+    const renderStats = (snapshot, fallback, queue, capabilities) => {
       const cards = [
         ["Requests total", snapshot.requestsTotal ?? 0],
         ["In-flight", snapshot.requestsInFlight ?? 0],
@@ -133,15 +135,48 @@
         cards.push(["Queue", `${queue.depth ?? 0} waiting${wait}`]);
       }
 
+      // One card per capability the fleet actually serves (phase 40). A capability nobody provides
+      // gets no card rather than a zero — "transcription: 0 nodes" on a fleet nobody asked to
+      // transcribe is a statement, and a false one.
+      for (const c of capabilities ?? []) {
+        cards.push([c.capability, `${c.nodes} node${c.nodes === 1 ? "" : "s"}`]);
+      }
+
       document.getElementById("stats").innerHTML = cards.map(([label, value]) =>
         `<div class="card"><div class="stat-label">${label}</div><div class="stat">${value}</div></div>`
       ).join("");
     };
 
+    // A tool the operator put on the box but never allowed is the commonest "why is nothing
+    // happening", so it is named here rather than only counted (phase-41 D2).
+    const toolsCell = (tools) => {
+      if (!tools || !tools.enabled) return "—";
+      const items = tools.tools ?? [];
+      if (items.length === 0) return "on, no manifests";
+      const running = items.filter(t => t.state === "running").length;
+      const trouble = items.filter(t => t.state !== "running");
+      const detail = trouble.length === 0
+        ? ""
+        : ` · ${trouble.map(t => `${t.id} ${t.state}`).join(", ")}`;
+      return `${running}/${items.length} running${detail}`;
+    };
+
+    // What the node last *said*, never a query the hub ran against it (phase-44 D6).
+    const corpusCell = (corpus) => {
+      if (!corpus) return "—";
+      if (!corpus.enabled) return "off";
+      const collections = corpus.collections ?? [];
+      const records = collections.reduce((sum, c) => sum + (c.records ?? 0), 0);
+      const suffix = corpus.status === "running"
+        ? ` · ${collections.length} collection${collections.length === 1 ? "" : "s"}, ${records} records`
+        : corpus.error ? ` · ${corpus.error}` : "";
+      return `${corpus.provider} ${corpus.status}${suffix}`;
+    };
+
     const renderNodes = (nodes) => {
       const tbody = document.getElementById("nodes");
       if (!nodes || nodes.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="10" class="empty">No nodes connected.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="13" class="empty">No nodes connected.</td></tr>`;
         return;
       }
       tbody.innerHTML = nodes.map(n => `
@@ -155,6 +190,8 @@
           <td>${n.modelCount}</td>
           <td>${!n.capabilities || n.capabilities.length === 0 ? "—" : n.capabilities.join(", ")}</td>
           <td>${!n.profile ? "—" : `${n.profile.name || "—"}@${n.profile.revision} (${n.profile.status})`}</td>
+          <td>${toolsCell(n.tools)}</td>
+          <td>${corpusCell(n.corpus)}</td>
           <td>${n.tokensPerSecond == null ? "—" : n.tokensPerSecond.toFixed(1)}</td>
           <td>${fmtSeconds(n.ageSeconds)} ago</td>
         </tr>
@@ -184,7 +221,7 @@
         document.getElementById("version").textContent = `v${data.coordinatorVersion}`;
         document.getElementById("uptime").textContent = fmtSeconds(data.uptimeSeconds);
         document.getElementById("refreshed").textContent = new Date().toLocaleTimeString();
-        renderStats(data.metrics, data.fallback, data.queue);
+        renderStats(data.metrics, data.fallback, data.queue, data.capabilities);
         renderNodes(data.nodes);
         renderModels(data.models);
       } catch (err) {

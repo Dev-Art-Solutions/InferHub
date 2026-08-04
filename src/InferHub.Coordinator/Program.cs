@@ -103,6 +103,10 @@ builder.Services.AddSingleton<NodeProfileCoordinator>();
 builder.Services.AddSingleton<CollectionOwnership>();
 builder.Services.AddSingleton<NodeCorpusRegistry>();
 builder.Services.AddSingleton<NodeCorpusDispatcher>();
+
+// Phase 45. The same mailbox for what a node's tool runtime is doing. Empty and harmless on a fleet
+// with Tools:Enabled=false, which is the default and therefore almost every deployment.
+builder.Services.AddSingleton<NodeToolRegistry>();
 builder.Services.AddSingleton<ThroughputTracker>();
 builder.Services.AddHostedService<NodeReaper>();
 

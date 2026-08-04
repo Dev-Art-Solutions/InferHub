@@ -23,6 +23,12 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
     private readonly List<ToolWorkerPool> pools = new();
     private readonly CancellationTokenSource lifetime = new();
 
+    /// <summary>
+    /// Manifest ids that were loaded and never started because <c>Tools:Allowed</c> does not name
+    /// them (D2). Kept so the hub can be told, rather than only the log on this box.
+    /// </summary>
+    private readonly List<string> notAllowed = new();
+
     private Task? maintenance;
 
     public ProcessToolRuntime(
@@ -79,6 +85,42 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
 
     public event Action? CapabilitiesChanged;
 
+    /// <summary>
+    /// Phase 45. Every manifest on the box, started or not, so the four ways a tool can fail to serve
+    /// — not allowed, suspended by a profile, given up, or simply running — are four different
+    /// answers at the hub rather than one absence.
+    /// </summary>
+    public NodeToolState State(string nodeId)
+    {
+        ToolWorkerPool[] snapshot;
+        string[] refused;
+
+        lock (pools)
+        {
+            snapshot = pools.ToArray();
+            refused = notAllowed.ToArray();
+        }
+
+        var tools = snapshot
+            .Select(pool => pool.Report())
+            .Concat(refused.Select(id => new NodeToolInfo(
+                id,
+                Allowed: false,
+                NodeToolInfo.NotAllowed,
+                Array.Empty<NodeCapability>(),
+                MaxWorkers: 0,
+                Workers: 0,
+                Busy: 0,
+                Requests: 0,
+                Failures: 0,
+                LastError: null,
+                LastErrorAtUtc: null)))
+            .OrderBy(tool => tool.Id, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return new NodeToolState(nodeId, Enabled: true, tools, DateTimeOffset.UtcNow);
+    }
+
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         var directory = options.ResolvedManifestDirectory();
@@ -93,6 +135,11 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
                     manifest.Id,
                     directory,
                     $"{ToolOptions.SectionName}:{nameof(ToolOptions.Allowed)}");
+
+                lock (pools)
+                {
+                    notAllowed.Add(manifest.Id);
+                }
 
                 continue;
             }

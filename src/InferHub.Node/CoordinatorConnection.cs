@@ -507,6 +507,10 @@ public sealed class CoordinatorConnection(
         // the console now, and "pending" for thirty seconds reads as "it did not work".
         await ReportCorpusStateAsync(cancellationToken);
 
+        // Phase 45, and a profile is the *most* likely thing to have just suspended a pool — so the
+        // console shows `suspended` rather than `running` for the next refresh interval.
+        await ReportToolStateAsync(cancellationToken);
+
         if (application.Changed)
         {
             // The declaration is what unroutes this node for a capability the profile switched off,
@@ -936,6 +940,38 @@ public sealed class CoordinatorConnection(
         // own: it is the same "what is this node doing now" refresh, and a second schedule is a
         // second thing to reason about when the two disagree.
         await ReportCorpusStateAsync(cancellationToken);
+
+        // Phase 45, same loop for the same reason. The capability declaration above already says
+        // *what* this node will serve; this says which manifest is behind it and which one is not
+        // running, which is the difference between "nothing happened" and a reason.
+        await ReportToolStateAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Tells the hub which tools this node loaded, started, suspended or gave up on (phase 45).
+    /// <b>The hub never asks</b>, for phase-44 D6's reason — this is a mailbox, not a query.
+    /// </summary>
+    /// <remarks>
+    /// A hub older than v3.13 has no such method, and that is a debug line and a node that carries
+    /// on: phase-40 D1's mixed-fleet rule, for the fourth time.
+    /// </remarks>
+    private async Task ReportToolStateAsync(CancellationToken cancellationToken)
+    {
+        var activeConnection = connection;
+
+        if (activeConnection is not { State: HubConnectionState.Connected })
+        {
+            return;
+        }
+
+        try
+        {
+            await activeConnection.InvokeAsync("ReportToolState", toolRuntime.State(nodeId), cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "This coordinator did not accept a tool report");
+        }
     }
 
     /// <summary>

@@ -2,6 +2,7 @@ using System.Net;
 using InferHub.Coordinator.Auth;
 using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
+using InferHub.Shared.Contracts;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -154,6 +155,91 @@ public class PrometheusMetricsTests
         Assert.Contains("inferhub_node_tokens_per_second{node=\"gpu-1\",model=\"llama3\"} 42.5", text);
     }
 
+    // ---- phase 45 -------------------------------------------------------------------------------
+
+    [Fact]
+    public void CapabilityToolProfileAndCorpusSeriesCarryTheReportedValues()
+    {
+        var parsed = Exposition.Parse(PrometheusFormatter.Format(TrackScrape()));
+
+        Assert.Equal(2, parsed.Value("inferhub_capability_nodes", ("capability", "chat")));
+        Assert.Equal(1, parsed.Value("inferhub_capability_nodes", ("capability", "transcribe")));
+
+        // 12 served, 1 of them failed — so 11 ok. A single "requests" counter would leave a
+        // dashboard unable to draw an error rate without a second series to subtract.
+        Assert.Equal(11, parsed.Value("inferhub_tool_requests_total", ("node", "gpu-1"), ("tool", "piper"), ("outcome", "ok")));
+        Assert.Equal(1, parsed.Value("inferhub_tool_requests_total", ("node", "gpu-1"), ("tool", "piper"), ("outcome", "error")));
+
+        Assert.Equal(1, parsed.Value("inferhub_tool_workers", ("node", "gpu-1"), ("tool", "piper"), ("state", "busy")));
+        Assert.Equal(2, parsed.Value("inferhub_tool_workers", ("node", "gpu-1"), ("tool", "piper"), ("state", "idle")));
+        Assert.Equal(1, parsed.Value("inferhub_tool_pool", ("node", "gpu-1"), ("tool", "piper"), ("state", "running")));
+        Assert.Equal(1, parsed.Value("inferhub_tool_pool", ("node", "gpu-1"), ("tool", "whisper"), ("state", "not-allowed")));
+
+        Assert.Equal(90.5, parsed.Value("inferhub_audio_seconds_total", ("kind", "transcribe"), ("model", "whisper-small")));
+        Assert.Equal(64, parsed.Value("inferhub_audio_characters_total", ("kind", "speak"), ("model", "en_US-amy")));
+
+        Assert.Equal(1, parsed.Value("inferhub_profile_state", ("profile", "gpu-boxes"), ("state", "refused")));
+        Assert.Equal(1240, parsed.Value("inferhub_node_corpus_records", ("node", "gpu-1"), ("collection", "handbook")));
+    }
+
+    /// <summary>
+    /// D2. A capability nobody serves, a tool nobody loaded, a profile nobody wrote and a corpus
+    /// nobody assigned each produce <b>no</b> series — not a zero. "transcription capacity: 0" on a
+    /// fleet that was never asked to transcribe is a statement, and a false one.
+    /// </summary>
+    [Fact]
+    public void AbsenceStaysAbsenceForEveryPhase45Series()
+    {
+        var parsed = Exposition.Parse(PrometheusFormatter.Format(SampleScrape()));
+
+        foreach (var name in new[]
+        {
+            "inferhub_capability_nodes",
+            "inferhub_tool_requests_total",
+            "inferhub_tool_workers",
+            "inferhub_tool_pool",
+            "inferhub_audio_seconds_total",
+            "inferhub_audio_characters_total",
+            "inferhub_profile_state",
+            "inferhub_node_corpus_records"
+        })
+        {
+            Assert.DoesNotContain(parsed.Samples, sample => sample.Name == name);
+        }
+    }
+
+    /// <summary>
+    /// A transcription is metered in seconds and a synthesis in characters (phase-42 D7), so a
+    /// <c>(kind, model)</c> pair that has only ever done one of them emits only that one series —
+    /// a zero in the other unit would be a number nobody can tell from a real measurement.
+    /// </summary>
+    [Fact]
+    public void AudioPairsOnlyEmitTheUnitTheyWereActuallyMeasuredIn()
+    {
+        var parsed = Exposition.Parse(PrometheusFormatter.Format(TrackScrape()));
+
+        Assert.DoesNotContain(parsed.Samples, sample =>
+            sample.Name == "inferhub_audio_characters_total" && sample.Labels["kind"] == "transcribe");
+        Assert.DoesNotContain(parsed.Samples, sample =>
+            sample.Name == "inferhub_audio_seconds_total" && sample.Labels["kind"] == "speak");
+    }
+
+    [Fact]
+    public void Phase45SeriesAreParseableAndCarryHelpAndType()
+    {
+        var parsed = Exposition.Parse(PrometheusFormatter.Format(TrackScrape()));
+
+        foreach (var name in parsed.Samples.Select(sample => sample.Name).Distinct())
+        {
+            Assert.True(parsed.Help.ContainsKey(name), $"{name} has no # HELP line");
+            Assert.True(parsed.Types.ContainsKey(name), $"{name} has no # TYPE line");
+        }
+
+        // 90.5 seconds must not come out as "90,5" on a Bulgarian or German host — the locale bug
+        // that sinks a whole scrape and only appears on the machines nobody runs CI on.
+        Assert.Contains("inferhub_audio_seconds_total{kind=\"transcribe\",model=\"whisper-small\"} 90.5", parsed.Raw);
+    }
+
     [Fact]
     public async Task MetricsRequiresAnAdminKeyByDefault()
     {
@@ -230,6 +316,49 @@ public class PrometheusMetricsTests
             AffinityEntries: 3);
     }
 
+    /// <summary>
+    /// A fleet that actually uses phases 40–45: two nodes declaring capabilities, one running a
+    /// tool pool and holding a manifest it was never allowed to start, a profile it refused an item
+    /// of, a corpus it owns, and audio metered in both units.
+    /// </summary>
+    private static PrometheusScrape TrackScrape()
+    {
+        var metrics = new Metrics();
+        metrics.RecordAudioUnits("transcribe", "whisper-small", 90.5, InferHub.Shared.Contracts.UsageUnitKinds.AudioSeconds);
+        metrics.RecordAudioUnits("speak", "en_US-amy", 64, InferHub.Shared.Contracts.UsageUnitKinds.Characters);
+
+        var now = DateTimeOffset.UtcNow;
+
+        return SampleScrape() with
+        {
+            Metrics = metrics.Snapshot(now),
+            Capabilities =
+            [
+                new CapabilitySummary("chat", 2, ["llama3"]),
+                new CapabilitySummary("transcribe", 1, ["whisper-small"])
+            ],
+            Tools =
+            [
+                new NodeToolState("gpu-1", Enabled: true,
+                [
+                    new NodeToolInfo("piper", true, NodeToolInfo.Running,
+                        [new NodeCapability("speak", ["en_US-amy"])],
+                        MaxWorkers: 3, Workers: 3, Busy: 1, Requests: 12, Failures: 1,
+                        LastError: null, LastErrorAtUtc: null),
+                    new NodeToolInfo("whisper", false, NodeToolInfo.NotAllowed, [],
+                        MaxWorkers: 0, Workers: 0, Busy: 0, Requests: 0, Failures: 0,
+                        LastError: null, LastErrorAtUtc: null)
+                ], now)
+            ],
+            Profiles = [new ProfileScrapeSample("gpu-boxes", "refused", 1)],
+            Corpora =
+            [
+                new NodeCorpusState("gpu-1", Enabled: true, Provider: "qdrant", Status: NodeCorpusState.Running,
+                    Collections: [new NodeCorpusCollection("handbook", 768, 1240)], Error: null, now)
+            ]
+        };
+    }
+
     private static AdminApiKeyMiddleware NewMiddleware(
         out Func<bool> nextCalled,
         IReadOnlyList<string> adminKeys,
@@ -277,6 +406,9 @@ public class PrometheusMetricsTests
         public required IReadOnlyList<ExpositionSample> Samples { get; init; }
         public required IReadOnlyDictionary<string, string> Help { get; init; }
         public required IReadOnlyDictionary<string, string> Types { get; init; }
+
+        /// <summary>The bytes as written, for the few assertions that are genuinely about them.</summary>
+        public required string Raw { get; init; }
 
         public double Value(string name, params (string Key, string Value)[] labels)
         {
@@ -333,7 +465,7 @@ public class PrometheusMetricsTests
                 samples.Add(new ExpositionSample(name, labels, value));
             }
 
-            return new Exposition { Samples = samples, Help = help, Types = types };
+            return new Exposition { Samples = samples, Help = help, Types = types, Raw = text };
         }
 
         private static Dictionary<string, string> ParseLabels(string body)

@@ -133,6 +133,16 @@
     .pg-hit:last-child { border-bottom: none; }
     .pg-hit .pg-rank { color: var(--muted); }
     .pg-hit .pg-snippet { color: var(--text); white-space: pre-wrap; word-break: break-word; max-height: 84px; overflow-y: auto; margin-top: 4px; }
+    /* Phase 45. All of it reuses the variables above — no new palette, no framework (rule 3). */
+    .matrix-cell { text-align: center; font-variant-numeric: tabular-nums; }
+    .matrix-yes { color: var(--ok); }
+    .matrix-no { color: var(--muted); opacity: 0.5; }
+    .why { font-size: 12px; color: var(--muted); word-break: break-word; max-width: 420px; }
+    .why code { background: rgba(255,255,255,0.06); }
+    #refusals-section h2 { color: var(--warn); }
+    .refusal-row td { border-bottom: 1px solid var(--panel-border); }
+    .refusal-row td:first-child { white-space: nowrap; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
     @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
     @media (max-width: 720px) {
       body { padding: 16px; }
@@ -165,6 +175,18 @@
     <button id="auth-clear" disabled>Clear</button>
   </div>
 
+  <!--
+    Phase 45, D1. The single most confusing state this track can produce is "I turned it on and
+    nothing happened", and the answer is almost always a refusal: a profile the node clamped, a tool
+    Tools:Allowed does not name, a corpus that would not start. If those only appeared inside a
+    node's detail, every one of them would become a support conversation — so the strip sits above
+    the fold and stays hidden when there is nothing to say.
+  -->
+  <section id="refusals-section" style="display:none">
+    <h2>Needs attention</h2>
+    <div id="refusals" class="table-wrap"></div>
+  </section>
+
   <section>
     <h2>Fleet</h2>
     <div class="grid" id="stats"></div>
@@ -191,6 +213,100 @@
           </tr>
         </thead>
         <tbody id="nodes"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Phase 40. What the fleet can do, and which box would take it. -->
+  <section>
+    <h2>Capabilities</h2>
+    <div class="table-wrap">
+      <div id="capability-matrix"></div>
+    </div>
+  </section>
+
+  <!--
+    Phase 41/45. Desired vs effective for the tool runtime: what the operator allowed, what the box
+    loaded, what is actually running and what went wrong last. A manifest that is present but not in
+    Tools:Allowed is the commonest "nothing happened", and it is a row here rather than a log line
+    on a machine nobody is tailing.
+  -->
+  <section>
+    <h2>Tools</h2>
+    <div class="table-wrap">
+      <table id="tools-table">
+        <thead>
+          <tr>
+            <th>Node</th>
+            <th>Tool</th>
+            <th>Allowed</th>
+            <th>State</th>
+            <th>Capabilities</th>
+            <th>Workers</th>
+            <th>Requests</th>
+            <th>Last error</th>
+            <th>Reported</th>
+          </tr>
+        </thead>
+        <tbody id="tools"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Phase 44. A corpus the hub assigned, as the node that owns it counts it. -->
+  <section>
+    <h2>Node retrieval</h2>
+    <div class="table-wrap">
+      <table id="corpora-table">
+        <thead>
+          <tr>
+            <th>Node</th>
+            <th>State</th>
+            <th>Provider</th>
+            <th>Collections</th>
+            <th>Records</th>
+            <th>Last error</th>
+            <th>Reported</th>
+          </tr>
+        </thead>
+        <tbody id="corpora"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Phase 43. Write one, see which boxes took it and which refused, and why. -->
+  <section>
+    <h2>Node profiles</h2>
+
+    <div class="docs-bar">
+      <label for="profile-pick">Profile</label>
+      <select id="profile-pick"></select>
+      <button id="profile-new">New…</button>
+      <button id="profile-apply" class="primary">Apply</button>
+      <button id="profile-delete" class="danger">Delete</button>
+      <span class="spacer"></span>
+      <span class="meta" id="profile-summary">set the admin key, then refresh</span>
+    </div>
+
+    <div class="card" style="margin-bottom:12px">
+      <textarea id="profile-body" spellcheck="false"
+        style="width:100%;min-height:220px;background:transparent;color:inherit;border:none;outline:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;resize:vertical"></textarea>
+      <div id="profile-note" class="row-msg" style="display:none"></div>
+    </div>
+
+    <div class="table-wrap">
+      <table id="profile-nodes-table">
+        <thead>
+          <tr>
+            <th>Node</th>
+            <th>Profile</th>
+            <th>Revision</th>
+            <th>Status</th>
+            <th>Applied</th>
+            <th>Refused / conflicting</th>
+          </tr>
+        </thead>
+        <tbody id="profile-nodes"></tbody>
       </table>
     </div>
   </section>

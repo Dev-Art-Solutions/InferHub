@@ -24,6 +24,7 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
 
     private readonly ConcurrentDictionary<string, NodeCounter> perNode = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, VectorCollectionCounter> perCollection = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<(string Kind, string Model), AudioCounter> perAudio = new();
 
     public void RecordRequestStart(string nodeId)
     {
@@ -79,6 +80,35 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
         Interlocked.Increment(ref fallbackDispatched);
         lastFallbackModel = model;
         Interlocked.Exchange(ref lastFallbackAtTicks, DateTimeOffset.UtcNow.UtcTicks);
+    }
+
+    /// <summary>
+    /// Audio work that succeeded, in the unit it is actually in (phase-42 D7): seconds for a
+    /// transcription, characters for a synthesis. The model name and a number — never the recording
+    /// and never the transcript, which is rule 7 in its most literal form (phase-42 D5).
+    /// </summary>
+    /// <remarks>
+    /// The two units get two counters rather than one, because a single <c>units</c> sum would add
+    /// seconds to characters and produce a number wrong in a way no reader can detect — the same
+    /// reasoning <c>UsageAggregate</c> already applies to the ledger.
+    /// </remarks>
+    public void RecordAudioUnits(string kind, string model, double units, string unitKind)
+    {
+        if (units <= 0)
+        {
+            return;
+        }
+
+        var counter = perAudio.GetOrAdd((kind, model), _ => new AudioCounter());
+
+        if (unitKind == InferHub.Shared.Contracts.UsageUnitKinds.AudioSeconds)
+        {
+            counter.Add(ref counter.Seconds, units);
+        }
+        else if (unitKind == InferHub.Shared.Contracts.UsageUnitKinds.Characters)
+        {
+            counter.Add(ref counter.Characters, units);
+        }
     }
 
     public void RecordVectorReplicaHealed() => Interlocked.Increment(ref vectorReplicasHealed);
@@ -146,6 +176,16 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
             .OrderBy(snapshot => snapshot.Collection, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
+        var perAudioSnapshot = perAudio
+            .Select(pair =>
+            {
+                var (seconds, characters) = pair.Value.Read();
+                return new AudioMetricsSnapshot(pair.Key.Kind, pair.Key.Model, seconds, characters);
+            })
+            .OrderBy(snapshot => snapshot.Kind, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(snapshot => snapshot.Model, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
         var lastFallbackTicks = Interlocked.Read(ref lastFallbackAtTicks);
 
         return new MetricsSnapshot(
@@ -165,7 +205,8 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
             Interlocked.Read(ref vectorRebuildsFromRaw),
             Interlocked.Read(ref vectorUnderReplicated),
             perNodeSnapshot,
-            perCollectionSnapshot);
+            perCollectionSnapshot,
+            perAudioSnapshot);
     }
 
     private static VectorCollectionMetricsSnapshot SnapshotOf(string collection, VectorCollectionCounter counter)
@@ -210,6 +251,35 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
         public long Failed;
     }
 
+    /// <summary>
+    /// Two doubles under one lock. <c>Interlocked</c> has no <c>double</c> add, and a lock on a
+    /// per-(kind, model) object is contended by exactly the audio requests for that pair — which are
+    /// bounded by the tool runtime's worker count, i.e. one on almost every deployment.
+    /// </summary>
+    private sealed class AudioCounter
+    {
+        private readonly object gate = new();
+
+        public double Seconds;
+        public double Characters;
+
+        public void Add(ref double field, double units)
+        {
+            lock (gate)
+            {
+                field += units;
+            }
+        }
+
+        public (double Seconds, double Characters) Read()
+        {
+            lock (gate)
+            {
+                return (Seconds, Characters);
+            }
+        }
+    }
+
     private sealed class VectorCollectionCounter
     {
         public long Queries;
@@ -239,7 +309,20 @@ public sealed record MetricsSnapshot(
     long VectorRebuildsFromRaw,
     long VectorUnderReplicated,
     IReadOnlyList<NodeMetricsSnapshot> PerNode,
-    IReadOnlyList<VectorCollectionMetricsSnapshot> PerCollection);
+    IReadOnlyList<VectorCollectionMetricsSnapshot> PerCollection,
+    // Appended in phase 45 with a default, so every existing constructor call and every test that
+    // builds a snapshot by hand keeps compiling and keeps meaning what it meant.
+    IReadOnlyList<AudioMetricsSnapshot>? PerAudio = null);
+
+/// <summary>
+/// Audio work per <c>(kind, model)</c>, in both units. A pair that has only ever transcribed has
+/// <see cref="Characters"/> at zero and emits no character series — absence stays absence (D2).
+/// </summary>
+public sealed record AudioMetricsSnapshot(
+    string Kind,
+    string Model,
+    double Seconds,
+    double Characters);
 
 public sealed record NodeMetricsSnapshot(
     string NodeId,
