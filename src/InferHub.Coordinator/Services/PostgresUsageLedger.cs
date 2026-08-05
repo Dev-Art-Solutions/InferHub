@@ -100,7 +100,13 @@ public sealed class PostgresUsageLedger : IUsageLedger, IAsyncDisposable
                    coalesce(sum(completion_tokens), 0)         AS completion_tokens,
                    count(*) FILTER (WHERE fallback)            AS fallback_requests,
                    coalesce(sum(units) FILTER (WHERE unit_kind = 'audio_seconds'), 0) AS audio_seconds,
-                   coalesce(sum(units) FILTER (WHERE unit_kind = 'characters'), 0)    AS characters
+                   coalesce(sum(units) FILTER (WHERE unit_kind = 'characters'), 0)    AS characters,
+                   -- Phase 46 needed NO migration: phase 42's `units` + `unit_kind` pair was general
+                   -- enough to take a fourth unit, so a v3.13 ledger reads correctly on v3.14 and a
+                   -- v3.14 row reads correctly on a v3.13 hub (as an unfiltered zero). A per-unit
+                   -- column would have cost a DDL step here, and a `sum(units)` across kinds would
+                   -- have added megapixel-steps to seconds.
+                   coalesce(sum(units) FILTER (WHERE unit_kind = 'megapixel_steps'), 0) AS megapixel_steps
             FROM {QualifiedTable}
             {where}
             GROUP BY client_id, model
@@ -120,7 +126,8 @@ public sealed class PostgresUsageLedger : IUsageLedger, IAsyncDisposable
                 reader.GetInt64(4),
                 reader.GetInt64(5),
                 reader.GetDouble(6),
-                reader.GetDouble(7)));
+                reader.GetDouble(7),
+                reader.GetDouble(8)));
         }
 
         return rows;

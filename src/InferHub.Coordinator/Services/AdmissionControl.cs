@@ -145,6 +145,10 @@ public sealed class AdmissionControl
                     state.CharactersToday += units;
                     break;
 
+                case UsageUnits.MegapixelSteps:
+                    state.MegapixelStepsToday += units;
+                    break;
+
                 default:
                     var tokens = (long)units;
                     state.TokenEvents.Enqueue(new TokenEvent(atUtc, tokens));
@@ -159,6 +163,7 @@ public sealed class AdmissionControl
     {
         UsageUnits.AudioSeconds => limits.AudioSecondsPerDay,
         UsageUnits.Characters => limits.CharactersPerDay,
+        UsageUnits.MegapixelSteps => limits.MegapixelStepsPerDay,
         _ => limits.TokensPerDay
     };
 
@@ -166,6 +171,7 @@ public sealed class AdmissionControl
     {
         UsageUnits.AudioSeconds => state.AudioSecondsToday,
         UsageUnits.Characters => state.CharactersToday,
+        UsageUnits.MegapixelSteps => state.MegapixelStepsToday,
         _ => state.TokensToday
     };
 
@@ -173,6 +179,7 @@ public sealed class AdmissionControl
     {
         UsageUnits.AudioSeconds => "audio-second",
         UsageUnits.Characters => "character",
+        UsageUnits.MegapixelSteps => "megapixel-step",
         _ => "token"
     };
 
@@ -202,7 +209,8 @@ public sealed class AdmissionControl
                 state.TokensLastMinute,
                 state.TokensToday,
                 state.AudioSecondsToday,
-                state.CharactersToday);
+                state.CharactersToday,
+                state.MegapixelStepsToday);
         }
     }
 
@@ -227,6 +235,7 @@ public sealed class AdmissionControl
         public long TokensToday;
         public double AudioSecondsToday;
         public double CharactersToday;
+        public double MegapixelStepsToday;
         public DateOnly Day = DateOnly.FromDateTime(DateTime.UtcNow);
         public readonly Queue<DateTimeOffset> RequestTimestamps = new();
         public readonly Queue<TokenEvent> TokenEvents = new();
@@ -253,6 +262,7 @@ public sealed class AdmissionControl
                 TokensToday = 0;
                 AudioSecondsToday = 0;
                 CharactersToday = 0;
+                MegapixelStepsToday = 0;
             }
         }
     }
@@ -285,4 +295,5 @@ public sealed record ClientLiveUsage(
     long TokensLastMinute,
     long TokensToday,
     double AudioSecondsToday = 0,
-    double CharactersToday = 0);
+    double CharactersToday = 0,
+    double MegapixelStepsToday = 0);

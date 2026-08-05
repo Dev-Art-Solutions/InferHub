@@ -176,13 +176,19 @@ small one and wonders where the audio went. All tags are under
 | `inferhub-node` | ~340 MB | amd64 + arm64 | You already run Ollama, vLLM, LM Studio or a hosted OpenAI-compatible endpoint and want a node in front of it. Also the right one for **solo mode** and for a **vector-store-only** box. |
 | `inferhub-node:ollama` | ~4 GB | amd64 | You want *one* `docker run` on a GPU box with nothing installed on the host. Ollama runs inside the container, supervised. `:gpu` is an alias of the same digest — it works fine with no card. |
 | `inferhub-node:tools` | ~6 GB | amd64 | The above, **plus speech**: Python, `faster-whisper` and `piper`, so `/v1/audio/transcriptions` and `/v1/audio/speech` work out of the box. |
+| `inferhub-node:diffusion` | ~9 GB | amd64 | **Text to image** (v3.14+): PyTorch, `diffusers`, SDXL and SD 1.5, so `/v1/images/generations` works out of the box. **You need a card.** |
 
-Two rules of thumb that save the mistake each way:
+Three rules of thumb that save the mistake each way:
 
 - **Do not pull `:tools` for chat.** It is `:ollama` plus ~1.5 GB of Python wheels you will never
   load. Every image above it does chat identically.
 - **Do not pull `:ollama` to point at an Ollama you already have.** The bundled one would sit idle
   next to it — or worse, fight it for a port. Use the plain image and set `Ollama:Endpoint`.
+- **`:diffusion` is the one image that does not stack**, and that is deliberate: it has no Ollama,
+  no Whisper and no Piper in it. A card running a diffusion pipeline has no room for a chat model
+  beside it, so bundling one would ship a combination we would then have to tell you not to use.
+  Want both? Run two containers and let the coordinator route `image` to one and `chat` to the
+  other — that is what capability routing is for.
 
 Whichever node image you choose, **mount a volume at `/data`**. Model weights, the node's stable id,
 tool scratch and any corpus live there; without it every `docker run` re-downloads gigabytes.
@@ -618,9 +624,9 @@ docker run -d --gpus all \
 `--gpus` left off is CPU Whisper — roughly real time for `small` on a modern core — and the worker's
 first log line says which one it got.
 
-### The four images
+### The five images
 
-*Which one to pull, and the two mistakes worth avoiding, are in
+*Which one to pull, and the three mistakes worth avoiding, are in
 [Which image do I pull?](#which-image-do-i-pull-v313). This is what is inside each.*
 
 | Tag | Size | Arch | What is in it |
@@ -629,6 +635,7 @@ first log line says which one it got.
 | `inferhub-node` | ~340 MB | amd64 + arm64 | A node. No inference engine — point it at an Ollama or an OpenAI-compatible server |
 | `inferhub-node:ollama` | ~4 GB | amd64 | The same node with Ollama inside it (v3.7+) |
 | `inferhub-node:tools` | ~6 GB | amd64 | The same again, plus Python, `faster-whisper` and `piper` (v3.10+) |
+| `inferhub-node:diffusion` | ~9 GB | amd64 | The **plain** node plus PyTorch, `diffusers`, SDXL and SD 1.5 (v3.14+). Does not stack — no Ollama inside |
 
 The first three are **unchanged** by v3.10. The Python is ~1.5 GB and it is in a layer whether a
 flag is on or off, so a flag would grow every existing coordinator+node stack for a feature it does
@@ -707,6 +714,137 @@ uploaded a podcast" is the failure that prevents.
 **Not in v3.10, and said out loud:** streaming TTS (chunked audio needs a concatenable format and a
 client-side contract), diarization, speaker labels, voice cloning, and `/v1/audio/translations`.
 The last is one flag on the same worker and can land whenever somebody asks.
+
+## Text to image (v3.14+)
+
+**Stable Diffusion on your own card, through the API your app already calls.**
+
+```bash
+curl http://localhost:5080/v1/images/generations \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"sdxl","prompt":"a lighthouse in a storm, oil painting","size":"1024x1024","n":1}' \
+  | jq -r '.data[0].b64_json' | base64 -d > out.png
+```
+
+…the same on a solo node with no coordinator, and the same inside one container:
+
+```bash
+docker run -d --gpus all \
+  -e LocalApi__Enabled=true -e Coordinator__Enabled=false \
+  -e LocalApi__ApiKeys__0="$KEY" -v inferhub-images:/data -p 5083:8080 \
+  ghcr.io/dev-art-solutions/inferhub-node:diffusion
+```
+
+It is OpenAI's Images API, so pointing an existing app at your own hardware is a base-URL change.
+The capability seam took the whole modality with **no protocol change**: `image` is one more
+capability kind, and the router already knew how to find `(capability, model)`.
+
+### The two models
+
+| Recipe | Repo | Size | Licence | On a CPU |
+|---|---|---:|---|---|
+| `sdxl` | `stabilityai/stable-diffusion-xl-base-1.0` | ~7 GB fp16 | CreativeML OpenRAIL++-M | no — minutes per image |
+| `sd15` | `stable-diffusion-v1-5/stable-diffusion-v1-5` | ~2 GB fp16 | CreativeML OpenRAIL-M | yes, at 512×512 |
+
+Both run at fp16 with **no quantization**: `sdxl` fits an 8 GB card. FLUX.1-schnell and Qwen-Image
+are next, with the quantization path they need — they are 12B and 20B, and neither fits a 24 GB card
+at bf16.
+
+**The `model` you send is a recipe id, not a Hugging Face repo id.** A repo id is a location: it has
+a slash in it that every router and metrics label has an opinion about, and it changes when a model
+is re-hosted. That is not hypothetical — `runwayml/stable-diffusion-v1-5` was withdrawn, and `sd15`
+points at where those weights live now.
+
+Recipes are `python/recipes/*.json` — a repo, a **pinned commit sha**, the pipeline class, the
+aspect buckets and the defaults. Drop one in and restart the tool. A recipe with no pinned revision
+is skipped and logged, because "which weights were in 3.14.0" has to have an answer.
+
+### Sizes are a list, not a range
+
+SDXL was trained on fixed aspect buckets. A size outside them **does not fail** — it produces
+duplicated limbs and doubled horizons, which reads as "this model is bad" rather than "you asked for
+1000×1000". So a size the recipe does not have is a `400` naming the ones it does:
+
+| Recipe | Sizes |
+|---|---|
+| `sdxl` | `1024x1024`, `1152x896`, `896x1152`, `1216x832`, `832x1216`, `1344x768`, `768x1344` |
+| `sd15` | `512x512`, `512x768`, `768x512`, `640x640` |
+
+### Steps, guidance and seed
+
+InferHub extensions, as headers — additive by construction, so they cannot collide with whatever
+OpenAI adds next. **An unknown value is a `400`, never a silent fallback.**
+
+| Header | Range |
+|---|---|
+| `X-InferHub-Image-Steps` | 1–150, capped further by the recipe's `maxSteps` |
+| `X-InferHub-Image-Guidance` | 0–50 |
+| `X-InferHub-Image-Seed` | any non-negative integer — also accepted as `"seed"` in the body |
+
+`negative_prompt` is a **body** field, deliberately: it is your own words, and a header is the one
+part of a request every proxy in the path writes into a log.
+
+Every returned image carries the `seed` that produced it, so the one of four you liked is
+reproducible without re-rolling the other three.
+
+### You need a card, and this says so rather than being quietly slow
+
+`Tools:Image:RequireGpu` defaults to **true**: with no reachable CUDA device the worker refuses to
+start and names the key to unset. A tool that loads happily on a CPU and then serves four-minute
+requests is a node the fleet keeps routing to, and every caller pays for the discovery.
+
+Unset it and only recipes marked `cpuViable` are offered — `sd15` at 512×512, and not `sdxl`.
+`Tools:Image:AllowSlowCpu=true` offers the rest anyway: your hardware, your call. There is no
+"CPU ✅" anywhere in this README for the feature as a whole, because that tick would be true of one
+recipe and a lie about the other.
+
+The worker's first log line names the device it picked. Four gigabytes of CUDA and a silent CPU
+fallback is an afternoon of blaming the model.
+
+### No URL, no gallery, no prompt in a log
+
+- `response_format=url` is a **`400`** naming `b64_json`. Serving a URL means the hub keeps the
+  bytes, and keeping the bytes means an image store, a retention window and a question about whose
+  pictures those are that we have not agreed to answer.
+- **A prompt is content.** Nothing logs one, at any level, on either host. The line for a generation
+  carries the model, the image count, the megapixel-steps and the outcome.
+- The node writes images into a per-request scratch directory that is deleted in a `finally`,
+  always — after success and after failure.
+- **There is no bundled safety classifier**, and that is a decision: `diffusers`' checker returns a
+  *black image*, which is indistinguishable from a broken VAE, a bad seed or an OOM, so the operator
+  gets a bug report instead of a policy signal. This box generates what you ask it to generate; the
+  policy is yours.
+
+`ImagePrivacyTests` runs a generation through a real mesh with a capturing logger and fails if the
+prompt appears anywhere in the logs or the ledger.
+
+### Batches are bounded by bytes, not by count
+
+`n` is capped by `Images:MaxBatch` (4) *and* by an upper-bound byte estimate checked **before a step
+runs**, with the refusal naming the largest `n` that fits at that size. The budget is clamped by
+`Tools:MaxAttachmentBytes`, because that cap is what sizes the mesh's SignalR message limit — and
+exceeding a SignalR limit tears the node's connection down rather than failing the message. Raising
+one without the other gets you no change, deliberately.
+
+A batch runs on **one** node: fanning it across the fleet would mean four different seeds' worth of
+scheduling for a request you think is atomic, and a partial failure would have no honest status.
+
+### Usage and quotas
+
+Metered in **megapixel-steps** — `width × height × steps / 1e6`, from what the worker actually
+produced. Not "images": a 512² render at 4 steps and a 2048×1024 one at 30 steps are both one image,
+and the second is 47× the work.
+
+```jsonc
+"Auth": { "Clients": [ { "Id": "acme", "Key": "…",
+  "Limits": { "MegapixelStepsPerDay": 5000 } } ] }
+```
+
+Over it is a `402` with `Retry-After` pointing at UTC midnight, the same shape as every other budget.
+
+**Not in v3.14, and said out loud:** async jobs with progress and cancellation (next — every model
+after these two is slow enough to need it), img2img, inpainting, `/v1/images/edits`,
+`/v1/images/variations`, ControlNet, and any model that needs quantization to fit a card.
 
 ## Configure the fleet, not the boxes (v3.11+)
 

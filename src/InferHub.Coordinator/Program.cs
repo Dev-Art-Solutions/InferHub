@@ -58,6 +58,8 @@ builder.Services.AddSingleton<IConversationAffinity>(sp => new ConversationAffin
 builder.Services.AddSingleton<InferHub.Coordinator.Services.IRouter, Router>();
 builder.Services.Configure<InferHub.Coordinator.Endpoints.ToolEdgeOptions>(
     builder.Configuration.GetSection(InferHub.Coordinator.Endpoints.ToolEdgeOptions.SectionName));
+builder.Services.Configure<InferHub.Shared.Images.ImageEdgeOptions>(
+    builder.Configuration.GetSection(InferHub.Shared.Images.ImageEdgeOptions.SectionName));
 builder.Services.AddSingleton<Dispatcher>();
 builder.Services.AddSingleton<IDispatcher>(sp => sp.GetRequiredService<Dispatcher>());
 // Phase 41: the same instance, a second capability. One job registry, one failover path.
@@ -237,6 +239,10 @@ app.MapToolEndpoints();
 // own tool needs a call InferHub did not have to know about in advance, and a client with an OpenAI
 // SDK needs the route that SDK already calls.
 app.MapAudioEndpoints();
+
+// Phase 46. The same reasoning one modality over: /api/tools/image works and is generic, and a
+// client holding an OpenAI SDK calls /v1/images/generations.
+app.MapImageEndpoints();
 app.MapAdminEndpoints();
 
 if (vectorStoreEnabled)

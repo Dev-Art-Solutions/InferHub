@@ -243,7 +243,7 @@ public static class AudioEndpoints
         if (!outcome.IsError)
         {
             context.Usage.RecordUnits(context.Client, kind, model, outcome.Units, outcome.UnitKind);
-            metrics.RecordAudioUnits(kind, model, outcome.Units, outcome.UnitKind);
+            metrics.RecordToolUnits(kind, model, outcome.Units, outcome.UnitKind);
         }
     }
 

@@ -1,0 +1,13 @@
+{
+  "id": "sdxl",
+  "repo": "stabilityai/stable-diffusion-xl-base-1.0",
+  "revision": "462165984030d82259a11f4367a4eed129e94a7b",
+  "pipeline": "StableDiffusionXLPipeline",
+  "license": { "id": "CreativeML-OpenRAIL++-M", "permissive": true },
+  "defaults": { "steps": 30, "guidance": 5.0, "size": "1024x1024" },
+  "sizes": ["1024x1024", "1152x896", "896x1152", "1216x832", "832x1216", "1344x768", "768x1344"],
+  "maxSteps": 75,
+  "vramMiB": 8000,
+  "dtype": "float16",
+  "cpuViable": false
+}

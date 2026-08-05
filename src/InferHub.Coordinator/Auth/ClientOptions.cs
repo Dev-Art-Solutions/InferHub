@@ -46,6 +46,19 @@ public sealed class ClientLimits
     public double? CharactersPerDay { get; set; }
 
     /// <summary>
+    /// Megapixel-steps this client may generate per UTC day (phase 46, D-note on the unit). Image
+    /// generation consumes no tokens, no seconds and no characters, so none of the three existing
+    /// budgets can bound it — a client with <c>TokensPerDay</c> set and nothing else could keep a
+    /// card busy indefinitely and never touch a limit.
+    /// </summary>
+    /// <remarks>
+    /// A megapixel-step is <c>width × height × steps / 1e6</c>. One 1024×1024 image at 30 steps is
+    /// ≈31.5; a working day of casual use is a few thousand. It is deliberately not "images per
+    /// day", because that number bills a 4-step thumbnail and a 30-step 2-megapixel render the same.
+    /// </remarks>
+    public double? MegapixelStepsPerDay { get; set; }
+
+    /// <summary>
     /// Models this client may use. Empty/null = all. A request outside the list is a 404
     /// identical to a model that does not exist — a client is not told what exists but is
     /// not for them.
@@ -59,5 +72,6 @@ public sealed class ClientLimits
         || TokensPerDay is not null
         || AudioSecondsPerDay is not null
         || CharactersPerDay is not null
+        || MegapixelStepsPerDay is not null
         || AllowedModels is { Count: > 0 };
 }

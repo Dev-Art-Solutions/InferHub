@@ -2096,7 +2096,7 @@ if any of them starts emitting one. `inferhub_capability_nodes{capability}`,
   (phase-42 D7), so one `units` series would add seconds to characters and produce a number wrong in
   a way no reader can detect — the same reasoning `UsageAggregate` already applies to the ledger.
 
-**The formatter still measures nothing** (phase-28 D2). `Metrics.RecordAudioUnits` is called from
+**The formatter still measures nothing** (phase-28 D2). `Metrics.RecordToolUnits` (renamed from `RecordAudioUnits` in phase 46, when images joined it) is called from
 `AudioEndpoints.Meter`, the one place that already decides a job succeeded — so the number on a
 dashboard and the number on a bill cannot come from two definitions of "done".
 
@@ -2124,13 +2124,123 @@ line and a node that carries on — phase-40 D1's mixed-fleet rule for the fourt
 **D4 — Four images now, so the docs get a chooser and one end-to-end walkthrough.** `coordinator`,
 `node`, `node:ollama`, `node:tools`, with sizes and what runs inside each: four artifacts with no
 decision table is how somebody pulls 6 GB to run a 340 MB workload, or pulls the small one and
-wonders where the audio went. And the track's story is one narrative — one box, one container, chat
+wonders where the audio went. *(**Five** since phase 46's `node:diffusion`, which is the first one
+that does not stack — see 46 D9.)* And the track's story is one narrative — one box, one container, chat
 + RAG + speech, configured from a coordinator — so it is written once as a walkthrough somebody can
 follow top to bottom, with the per-feature sections left as reference.
 
 **Rule 3 survived, and rule 5 survived again.** Build-free UI: the panels are plain HTML/CSS/JS
 reusing the existing CSS variables, with no bundler, no framework and no build step. **Zero** new
 dependencies, and `InferHub.Shared.csproj` is still an empty `<Project Sdk="Microsoft.NET.Sdk">`.
+
+### Phase 46 (text to image — Stable Diffusion on the fleet) — also load-bearing
+
+**The capability seam took a whole new modality with no protocol change**, which is what phase 40 was
+built to make possible and is worth saying out loud: `image` is one more `NodeCapability` kind, a
+`ToolJob` carries the request, and neither `InferenceJob`, the dispatcher, the router nor the mesh
+learned anything.
+
+**D1 — The client surface is OpenAI's Images API, and the extensions are headers.**
+`POST /v1/images/generations` on both hosts. `steps`, `guidance` and `seed` travel as
+`X-InferHub-Image-*` headers (phase-24 D5's shape, including "an unknown value is a 400, never a
+silent fallback") because a body field would collide with whatever OpenAI adds next and would make a
+typed SDK's request object wrong. `seed` is *also* a body field, because it is the first thing anyone
+reaches for. **`negative_prompt` is a body field and never a header**, and that is rule 7 rather than
+taste: it is the caller's own words, and a header is the one part of a request every proxy in the
+path writes down by default.
+
+**D2 — `image` is its own capability kind, and the model name is a *recipe id*.** A client sends
+`sdxl`, not `stabilityai/stable-diffusion-xl-base-1.0`. A repo id is a location: it contains a slash
+every router, path and metrics label has an opinion about, and it changes when a model is re-hosted —
+which is not hypothetical, because `runwayml/stable-diffusion-v1-5` was **withdrawn** and one of the
+two shipped recipes points at its replacement. Generating is deliberately not editing; phase 50 adds
+`image-edit` as a second kind rather than a per-model operation list, because the router filters on
+`(kind, model)` and nothing else.
+
+**D3 — A recipe is a model; a manifest is a tool.** `python/recipes/*.json` (repo, **pinned
+revision**, pipeline class, aspect buckets, defaults, `cpuViable`) beside
+`python/manifests/diffusion.json`. Two files on purpose: the manifest is the operator's ceiling and
+is what `Tools:Allowed` names, while recipes are a catalogue the tool reads — collapsing them would
+make every new model an entry in `Tools:Allowed`, and a phase-43 profile could then not enable a
+model the operator had not pre-named. **A recipe with no `revision` is skipped and logged by name**;
+without a pin, "which weights were in 3.14.0" has no answer (phase-39 D9, asked of a Hugging Face
+repo instead of a tarball).
+
+**D4 — The response budget is bytes, not a count, and it is clamped by the attachment cap.** `n` is
+bounded by `Images:MaxBatch` (4) *and* by an upper-bound estimate — `width × height × 4 × n`,
+uncompressed RGBA, which no three-channel PNG can exceed — checked at the edge **before a step
+runs**, with the refusal naming the largest `n` that fits. `ImageEdgeOptions.Resolve` then takes the
+**smaller** of `Images:MaxResponseBytes` and `Tools:MaxAttachmentBytes`, because the attachment cap
+is what sizes `NodeHubLimits.ReceiveSizeFor`, and exceeding a SignalR message cap **tears the
+connection down** rather than failing the message. That is the v3.10.0 bug, and an operator raising
+one key without the other must not be able to reproduce it. `ImageWireSizeTests` pushes 3 MB across a
+real wire and asserts **the node is still registered afterwards** — which is the assertion a green
+suite got wrong last time, when phase 41 "proved" attachments with a 16-byte file.
+
+**D5 — There is no URL, and that is rule 4 and rule 7 pointing at the same refusal.**
+`response_format=url` is a `400` naming `b64_json`. Serving a URL means the hub keeps the bytes;
+keeping the bytes means an image store, a retention window, a deletion endpoint and a question about
+whose pictures those are. Considered and rejected: writing them under `/data` and serving them from
+the solo API — twenty lines, a nicer demo, and every solo node quietly becomes an image archive on
+somebody's laptop (phase-23 D2 refused the same trade for uploaded documents).
+
+**D6 — The hub never decodes a pixel, so there is no image library.** Everything it knows comes from
+the worker's result frame. Nothing measures, resizes, re-encodes or validates a raster — which is
+what keeps rule 5 intact through a phase that is *about* images. What the edge does validate is the
+**request** (the `WIDTHxHEIGHT` grammar, the 64–4096 bounds, the multiple-of-8 rule, the byte
+budget), because that is cheap, it is the caller's error, and catching it saves a minute of GPU.
+
+> **Recorded deviation from the phase brief:** the brief had the edge validate a size against the
+> recipe's aspect buckets. It cannot — a recipe is a file on the node and the hub has no model
+> catalogue until phase 48. The **worker** is the authority, answers `invalid_request` with the
+> buckets named, and `ImageRenderer` renders the 400 without reading the message (phase-29 D6). One
+> round trip to find out; the alternative is publishing a catalogue over the mesh, which is a phase.
+
+**D7 — CPU is claimed per recipe, from a measurement, never as a checkmark.** `sd15` at 512² is tens
+of seconds on a modern core; `sdxl` at 1024² is minutes. So `cpuViable` is a **recipe** field, and on
+a CPU-only node the recipes without it are simply **not declared** — the hub never routes to them
+(41 D6's withdraw-on-failure, applied before the first failure). `Tools:Image:RequireGpu` defaults
+**true** and the worker refuses to start with no CUDA, naming the key to unset; a tool that loads
+happily and then serves four-minute requests is a node the fleet keeps routing to, and every caller
+pays for the discovery. `Tools:Image:AllowSlowCpu` is the third step for somebody who has read both
+numbers.
+
+**D8 — No bundled safety classifier, and if one is ever added it fails the job rather than returning
+a black square.** `diffusers`' `StableDiffusionSafetyChecker` returns a **black image** on a
+positive, which is disqualifying on its own: the operator gets a bug report rather than a policy
+signal, and the failure is indistinguishable from a broken VAE, a bad seed or an OOM. Bundling one
+would also mean shipping a model that decides what a self-hosted box may produce — which is precisely
+the decision people run a self-hosted box to keep. The docs say so plainly, in the same voice as
+41 D7's not-a-sandbox sentence.
+
+**D9 — The fifth image does not stack, and has no Ollama in it.** `inferhub-node:diffusion` is built
+from the **plain** node plus PyTorch and diffusers (~9 GB), not from `:tools`. Three reasons, in
+order: stacking reaches ~15 GB and every pull pays for it; a card running a diffusion pipeline has no
+room for a chat model beside it, so bundling one would ship a combination the docs would have to tell
+people not to use; and **the mesh is the composition mechanism** — run `:diffusion` on the card and
+`:ollama` next to it, and phase-40 routing sends `image` to one and `chat` to the other. A combined
+`:all` image is deferred and named. `BundledNodeTests` asserts the four older images never learned
+about torch, and that this one's venv **imports at build time** — the v3.10.0 failure, turned into a
+`docker build` step rather than a thing to remember.
+
+**Metering: `megapixel_steps`, and deliberately not "images".** `width × height × steps / 1e6`,
+summed over what the worker actually produced (a recipe may clamp either, and metering the *asked*
+figures would bill for work not done). A 512² image at 4 steps and a 2048×1024 one at 30 steps are
+both "one image" and the second is **47×** the work; a counter that bills them the same is wrong in a
+way that scales with how much somebody uses the expensive path. `ClientLimits.MegapixelStepsPerDay`
+rejects with phase-25 D4's shapes. **Phase 46 needed no Postgres migration** — phase 42's generic
+`units` + `unit_kind` pair took a fourth unit, which is the payoff of not having added a column per
+unit.
+
+**Rule 7, in a form it had not met: a prompt is content.** A transcript is content because it is what
+somebody said; a prompt is content because it is what somebody *wanted*, and the picture is the
+answer. Nothing logs a prompt at any level, on either host; the log line carries the model, the image
+count, the megapixel-steps and the outcome. `ImagePrivacyTests` asserts it against a capturing logger
+at `Trace` and checks the scratch directory is empty after success **and** after failure.
+
+**Rule 5 survived again.** **Zero** new `PackageReference`, no image library anywhere in C#, and
+`InferHub.Shared.csproj` is still an empty `<Project Sdk="Microsoft.NET.Sdk">`. PyTorch is a
+subprocess, exactly as phase-41 D1 requires.
 
 ## Auth model (three independent token sets)
 

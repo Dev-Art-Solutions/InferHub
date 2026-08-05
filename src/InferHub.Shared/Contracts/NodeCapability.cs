@@ -32,11 +32,25 @@ public static class CapabilityKinds
     public const string Speak = "speak";
 
     /// <summary>
+    /// Text to image (phase 46). Declared by a tool runtime, exactly as the two audio kinds are —
+    /// the capability seam took a whole new modality with <b>no protocol change</b>, which is the
+    /// thing phase 40 was built to make possible.
+    /// </summary>
+    /// <remarks>
+    /// Generating is deliberately not editing. Phase 50 adds a second kind, <c>image-edit</c>,
+    /// rather than a per-model operation list, because the router filters on <c>(kind, model)</c>
+    /// and nothing else — teaching it to read a nested operation set would mean teaching the
+    /// affinity, the queue and the saturation logic the same thing. It is also a real distinction:
+    /// FLUX.1-schnell has no official inpainting pipeline and SDXL does.
+    /// </remarks>
+    public const string Image = "image";
+
+    /// <summary>
     /// Only used at the client edge, for error messages. The mesh carries any string — see the
     /// remarks on <see cref="NodeCapability"/>.
     /// </summary>
     public static bool IsWellKnown(string? kind) =>
-        kind is Chat or Embed or Transcribe or Speak;
+        kind is Chat or Embed or Transcribe or Speak or Image;
 
     /// <summary>
     /// The capability an Ollama-shaped job kind needs. <c>generate</c> and <c>chat</c> are both

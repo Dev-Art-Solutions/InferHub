@@ -275,6 +275,115 @@ public class BundledNodeTests
         Assert.Matches(@"ARG OLLAMA_SHA256=[0-9a-f]{64}", ToolsDockerfile());
     }
 
+    // ---- the diffusion image (phase 46, D9) --------------------------------------------------
+
+    [Fact]
+    public void TheDiffusionImageDoesNotStackOnTheOtherThree()
+    {
+        var dockerfile = DiffusionInstructions();
+
+        // D9, and it is the decision most likely to be argued with. The other three node images
+        // stack — :ollama is the plain one plus an engine, :tools is :ollama plus two workers. This
+        // one starts from the plain runtime again, because stacking reaches ~15 GB and because a
+        // card running a diffusion pipeline has no room for a chat model beside it: bundling Ollama
+        // would ship a combination the docs would then have to tell people not to use. Two
+        // containers and capability routing is the answer, which is what phase 40 was built for.
+        Assert.DoesNotContain("ollama", dockerfile, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("whisper", dockerfile, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("piper", dockerfile, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("requirements-tools", dockerfile);
+    }
+
+    [Fact]
+    public void NoneOfTheOlderImagesLearnedAboutTorch()
+    {
+        // The same argument phase 42 made about Python, one image further out: several gigabytes of
+        // CUDA wheels are in a layer whether a flag is on or off.
+        foreach (var name in new[] { "Dockerfile", "Dockerfile.ollama", "Dockerfile.tools" })
+        {
+            var text = File.ReadAllText(Path.Combine(RepoRoot(), "src", "InferHub.Node", name));
+
+            Assert.DoesNotContain("torch", text, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("diffusers", text, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("requirements-diffusion", text);
+        }
+    }
+
+    [Fact]
+    public void TheDiffusionImageEnablesItsOptInsAndKeepsRequireGpuOn()
+    {
+        var dockerfile = DiffusionInstructions();
+
+        Assert.Contains("ENV Tools__Enabled=true", dockerfile);
+        Assert.Contains("ENV Tools__Allowed__0=diffusion", dockerfile);
+        Assert.Contains("ENV Tools__AllowModelDownload=true", dockerfile);
+        Assert.Contains("ENV Tools__Image__RecipeDirectory=/opt/inferhub/recipes", dockerfile);
+
+        // The fourth opt-in is a REFUSAL rather than a grant, and it stays on in the image whose
+        // whole purpose needs a card: a tool that loads happily on a CPU and then serves
+        // four-minute requests is a node the fleet keeps routing to, and every caller pays for the
+        // discovery (phase-46 D7).
+        Assert.Contains("ENV Tools__Image__RequireGpu=true", dockerfile);
+
+        // The permissions trap, for the seventh time.
+        Assert.Contains("ENV Tools__ScratchDirectory=/data/tools/scratch", dockerfile);
+        Assert.Contains("/data/tools/hf", dockerfile);
+        Assert.Contains("chown -R app:app /data", dockerfile);
+        Assert.Contains("USER app", dockerfile);
+
+        // `compute`, not the runtime's default of `utility` — which gives a working nvidia-smi and
+        // NO libcuda, so every diagnostic looks right and everything runs on the CPU.
+        Assert.Contains("NVIDIA_DRIVER_CAPABILITIES=compute,utility", dockerfile);
+    }
+
+    /// <summary>
+    /// The v3.10.0 bug, asserted as a build step rather than remembered: a venv built by one Python
+    /// minor and run by another imports nothing, every manifest still loads, <c>/api/status</c> still
+    /// answers, and the first generation dies on an import. The image now proves its own venv at
+    /// build time, so that failure cannot be published again.
+    /// </summary>
+    [Fact]
+    public void TheDiffusionImageAssertsItsVenvImportsAtBuildTime()
+    {
+        var dockerfile = DiffusionInstructions();
+
+        Assert.Contains("python3 -m venv /opt/inferhub/venv", dockerfile);
+        Assert.Contains("import torch, diffusers, transformers, PIL, inferhub_worker", dockerfile);
+    }
+
+    /// <summary>
+    /// Every shipped recipe pins a commit sha. Without it, "which weights were in 3.14.0" has no
+    /// answer and two builds of the same tag can contain different models — phase-39 D9's question,
+    /// asked of a Hugging Face repo instead of a tarball.
+    /// </summary>
+    [Fact]
+    public void EveryShippedRecipePinsARevisionAndNamesItsLicence()
+    {
+        var recipes = Directory.GetFiles(Path.Combine(RepoRoot(), "python", "recipes"), "*.json");
+
+        Assert.NotEmpty(recipes);
+
+        foreach (var path in recipes)
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+            var root = document.RootElement;
+            var name = Path.GetFileName(path);
+
+            Assert.True(root.TryGetProperty("id", out _), $"{name} has no id");
+            Assert.True(root.TryGetProperty("repo", out _), $"{name} has no repo");
+
+            var revision = root.GetProperty("revision").GetString();
+            Assert.Matches("^[0-9a-f]{40}$", revision);
+
+            Assert.True(root.TryGetProperty("license", out var licence), $"{name} names no licence");
+            Assert.False(string.IsNullOrWhiteSpace(licence.GetProperty("id").GetString()));
+
+            // A list, not a range: SDXL was trained on fixed aspect buckets, and a size outside them
+            // does not fail — it produces duplicated limbs, which reads as a bad model.
+            Assert.NotEmpty(root.GetProperty("sizes").EnumerateArray());
+        }
+    }
+
     /// <summary>
     /// Rule 5's own assertion for this phase: the Python is a subprocess, not a dependency. No
     /// project file may reference it, and <c>InferHub.Shared.csproj</c> must still be empty.
@@ -304,6 +413,19 @@ public class BundledNodeTests
 
     private static string ToolsDockerfile()
         => File.ReadAllText(Path.Combine(RepoRoot(), "src", "InferHub.Node", "Dockerfile.tools"));
+
+    private static string DiffusionDockerfile()
+        => File.ReadAllText(Path.Combine(RepoRoot(), "src", "InferHub.Node", "Dockerfile.diffusion"));
+
+    /// <summary>
+    /// The Dockerfile with its comments stripped. Necessary here rather than cosmetic: the header of
+    /// <c>Dockerfile.diffusion</c> explains at length why the image has no Ollama in it, so a naive
+    /// substring search for "ollama" finds the explanation and fails the assertion it is explaining.
+    /// </summary>
+    private static string DiffusionInstructions()
+        => string.Join(
+            '\n',
+            DiffusionDockerfile().Split('\n').Where(line => !line.TrimStart().StartsWith('#')));
 
     private static string ToolsInstructions()
         => string.Join(

@@ -22,4 +22,25 @@ public static class UsageUnitKinds
     public const string AudioSeconds = "audio_seconds";
 
     public const string Characters = "characters";
+
+    /// <summary>
+    /// Image generation (phase 46): <c>width × height × steps / 1e6</c>, summed over the images a
+    /// request produced.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Not "images".</b> A 512×512 image at 4 steps and a 2048×1024 one at 30 steps are both
+    /// "one image", and the second is <b>47 times</b> the work. A counter that bills them the same
+    /// is not a rounding error, it is a number whose wrongness scales with how much somebody uses
+    /// the expensive path — and the person it under-charges is the person costing the most GPU.
+    /// </para>
+    /// <para>
+    /// Pixels × steps is what a diffusion transformer actually spends: every step is one pass over
+    /// the whole latent. It is not exact across models (a 20B transformer costs more per
+    /// megapixel-step than a 0.9B UNet) and it is not meant to be — <c>UsageRecord</c> carries the
+    /// model, so a rate card that cares can price per model. What this unit has to be is
+    /// <em>proportional within a model</em>, and it is.
+    /// </para>
+    /// </remarks>
+    public const string MegapixelSteps = "megapixel_steps";
 }

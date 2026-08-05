@@ -23,8 +23,11 @@ public static class UsageUnits
 
     public const string Characters = UsageUnitKinds.Characters;
 
+    /// <summary>Image generation (phase 46). See <see cref="UsageUnitKinds.MegapixelSteps"/> for why it is not "images".</summary>
+    public const string MegapixelSteps = UsageUnitKinds.MegapixelSteps;
+
     public static bool IsKnown(string? kind) =>
-        kind is Tokens or AudioSeconds or Characters;
+        kind is Tokens or AudioSeconds or Characters or MegapixelSteps;
 }
 
 /// <summary>
@@ -104,7 +107,9 @@ public sealed record UsageQuery(
 /// <b>The unit totals are separate columns, not one <c>units</c> sum</b> (phase 42). A client that
 /// chatted and transcribed has rows in two units under the same model grouping, and a single sum
 /// would add seconds to tokens and produce a number that is wrong in a way no reader can detect.
-/// Three columns, each unambiguous, and a zero means zero rather than "some other unit".
+/// A column per unit, each unambiguous, and a zero means zero rather than "some other unit". Phase
+/// 46 added the fourth for the same reason and in the same shape — appended, defaulted, and never
+/// summed across.
 /// </remarks>
 public sealed record UsageAggregate(
     string ClientId,
@@ -114,7 +119,8 @@ public sealed record UsageAggregate(
     long CompletionTokens,
     long FallbackRequests,
     double AudioSeconds = 0,
-    double Characters = 0)
+    double Characters = 0,
+    double MegapixelSteps = 0)
 {
     public long TotalTokens => PromptTokens + CompletionTokens;
 }

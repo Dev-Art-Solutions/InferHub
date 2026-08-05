@@ -236,3 +236,51 @@ survive the first new voice.
 `wav` and `pcm` are native; `mp3`, `opus` and `flac` need `ffmpeg` on the box, and without it the
 worker refuses with `unsupported_format` naming what it can do rather than handing back a wav with
 an mp3's content type.
+
+## The diffusion worker (v3.14+)
+
+`tools/diffusion_worker.py` with `manifests/diffusion.json` is what
+`ghcr.io/dev-art-solutions/inferhub-node:diffusion` runs. It answers `/v1/images/generations` on a
+hub and on a solo node alike, and it is the third worked example — the one that shows a **recipe
+catalogue** rather than a fixed model list.
+
+```bash
+python -m venv /opt/inferhub/venv
+/opt/inferhub/venv/bin/pip install -r requirements-diffusion.txt
+cp -r inferhub_worker tools recipes manifests /opt/inferhub/
+```
+
+Then `Tools:Enabled=true`, `Tools:Allowed=["diffusion"]`,
+`Tools:Image:RecipeDirectory=/opt/inferhub/recipes`, and `Tools:AllowModelDownload=true` if you want
+it to fetch its own weights.
+
+**It is a separate requirements file, and a separate image, on purpose.** The torch CUDA wheels are
+several gigabytes; stacking them onto `:tools` would put PyTorch into every audio deployment and
+Whisper into every image one. See `recipes/README.md` for the recipe format, and the header of
+`Dockerfile.diffusion` for why the image has no Ollama in it.
+
+### Recipes, not models
+
+The manifest declares `"models": []` — the same **open set** `piper.json` uses, for the same reason
+and with the same bound: the manifest decides that this tool may serve `image` at all, and every
+name the worker reports is a recipe file the operator put on the box. A list written in advance does
+not survive the first new model.
+
+What it reports depends on the card. `sd15` is marked `cpuViable` and `sdxl` is not, so a CPU-only
+node offers only the first — the hub then never routes `sdxl` there, rather than routing it and
+making the caller discover a four-minute request. With `INFERHUB_IMAGE_REQUIRE_GPU=1` (the default,
+from `Tools:Image:RequireGpu`) the worker does not start at all without CUDA, and says which key to
+unset. `INFERHUB_IMAGE_ALLOW_SLOW_CPU=1` offers the rest anyway.
+
+The device is on the first log line, for the same reason Whisper's is.
+
+### One pipeline at a time
+
+Loading SDXL is tens of seconds, so a worker that reloaded per request would spend more time loading
+than generating — and a worker that kept several resident would need the VRAM budget that has not
+been built yet. So it holds one, and frees the old pipeline **before** allocating the new one: doing
+it the other way round makes the peak both models at once, and the box OOMs on the swap rather than
+on the load.
+
+`maxWorkers` is 1, as everywhere else. A second pipeline on the same card is a second copy of the
+weights and an out-of-memory error at the worst possible moment.

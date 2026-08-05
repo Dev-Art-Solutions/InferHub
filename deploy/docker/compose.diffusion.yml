@@ -1,0 +1,83 @@
+# The diffusion node — a solo node that makes pictures (phase 46, v3.14+).
+#
+#   docker compose -f deploy/docker/compose.diffusion.yml up -d
+#
+#   curl http://localhost:5083/v1/images/generations \
+#        -H "Authorization: Bearer $INFERHUB_API_KEY" -H 'Content-Type: application/json' \
+#        -d '{"model":"sdxl","prompt":"a lighthouse in a storm, oil painting","size":"1024x1024"}' \
+#     | jq -r '.data[0].b64_json' | base64 -d > out.png
+#
+# THIS IMAGE HAS NO OLLAMA IN IT, and that is a decision rather than an omission (phase-46 D9). A
+# card running a diffusion pipeline has no room for a chat model beside it, so bundling one would
+# ship a combination the docs would have to tell you not to use. Want both? Run two containers and
+# let the coordinator route `image` to this one and `chat` to the other — which is exactly what
+# phase 40's (capability, model) routing exists for:
+#
+#   docker compose -f deploy/docker/docker-compose.yml -f deploy/docker/compose.diffusion.yml up -d
+#
+# YOU NEED A CARD. Unlike compose.tools.yml, the `deploy:` block below is NOT commented out: with
+# Tools:Image:RequireGpu at its default the worker refuses to start without CUDA and says which key
+# to unset. Unset it and only `sd15` is offered — 512x512, tens of seconds on a modern core. `sdxl`
+# at 1024x1024 is minutes on a CPU and is offered only behind Tools:Image:AllowSlowCpu, because a
+# feature matrix that ticks "CPU" for the whole feature is a lie told in a checkmark.
+#
+# NO MANUAL STEP. Unlike the Piper voices in compose.tools.yml, the model a caller names here is
+# unambiguous, so weights fetch themselves on first use into /data/tools/hf on the volume —
+# Tools__AllowModelDownload is on in this image because choosing it *is* the consent (phase-42 D4).
+# SDXL is ~7 GB, so the first request after a fresh volume takes a while and says what it is doing.
+
+name: inferhub-diffusion
+
+services:
+  node:
+    image: ghcr.io/dev-art-solutions/inferhub-node:diffusion
+    container_name: inferhub-node-diffusion
+    restart: unless-stopped
+    ports:
+      - "5083:8080"
+    environment:
+      LocalApi__Enabled: "true"
+      Coordinator__Enabled: "false"
+
+      # NOT optional (phase-37 D4). The container binds a wildcard, and this one occupies a GPU for
+      # a minute per call. Put INFERHUB_API_KEY in deploy/docker/.env.
+      LocalApi__ApiKeys__0: "${INFERHUB_API_KEY:?set INFERHUB_API_KEY in .env}"
+
+      # One generation at a time is the default and it is deliberate (phase-41 D4): a second
+      # pipeline on the same card is a second copy of the weights and an out-of-memory error at the
+      # worst possible moment. Capability-aware routing means that in a mesh, a node busy generating
+      # is still a candidate for chat.
+
+      # Air-gapped, or you would rather pre-fetch: turn the download off and the worker fails the
+      # *job* with the exact `huggingface-cli download` command in the message. The node keeps
+      # serving everything else.
+      # Tools__AllowModelDownload: "false"
+
+      # No card, and you have read the numbers: this offers sd15 only.
+      # Tools__Image__RequireGpu: "false"
+      #
+      # …and this offers sdxl on a CPU as well. Minutes per image. Your hardware, your call.
+      # Tools__Image__AllowSlowCpu: "true"
+
+      # A batch is bounded by bytes, not by count, and the budget is clamped by
+      # Tools:MaxAttachmentBytes because that is what sizes the mesh's message limit — exceeding it
+      # tears a connection down rather than failing a message (the v3.10.0 bug).
+      # Images__MaxBatch: "4"
+      # Images__MaxResponseBytes: "26214400"
+
+    volumes:
+      # Required in practice. Holds the model weights (~7 GB for sdxl), the corpus and the node id —
+      # without it every `up` re-downloads gigabytes.
+      - node-data:/data
+
+    # The GPU. Deliberately not commented out — see the header.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  node-data:

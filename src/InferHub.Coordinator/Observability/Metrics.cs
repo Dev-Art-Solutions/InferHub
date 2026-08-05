@@ -24,7 +24,7 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
 
     private readonly ConcurrentDictionary<string, NodeCounter> perNode = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, VectorCollectionCounter> perCollection = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<(string Kind, string Model), AudioCounter> perAudio = new();
+    private readonly ConcurrentDictionary<(string Kind, string Model), ToolUnitCounter> perAudio = new();
 
     public void RecordRequestStart(string nodeId)
     {
@@ -83,31 +83,38 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
     }
 
     /// <summary>
-    /// Audio work that succeeded, in the unit it is actually in (phase-42 D7): seconds for a
-    /// transcription, characters for a synthesis. The model name and a number — never the recording
-    /// and never the transcript, which is rule 7 in its most literal form (phase-42 D5).
+    /// Tool work that succeeded, in the unit it is actually in (phase-42 D7): seconds for a
+    /// transcription, characters for a synthesis, megapixel-steps for a generated image (phase 46).
+    /// The model name and a number — never the recording, never the transcript and never the prompt,
+    /// which is rule 7 in its most literal form (phase-42 D5).
     /// </summary>
     /// <remarks>
-    /// The two units get two counters rather than one, because a single <c>units</c> sum would add
-    /// seconds to characters and produce a number wrong in a way no reader can detect — the same
-    /// reasoning <c>UsageAggregate</c> already applies to the ledger.
+    /// Each unit gets its own counter rather than one <c>units</c> sum, because a single sum would
+    /// add seconds to characters to megapixel-steps and produce a number wrong in a way no reader
+    /// can detect — the same reasoning <c>UsageAggregate</c> already applies to the ledger.
     /// </remarks>
-    public void RecordAudioUnits(string kind, string model, double units, string unitKind)
+    public void RecordToolUnits(string kind, string model, double units, string unitKind)
     {
         if (units <= 0)
         {
             return;
         }
 
-        var counter = perAudio.GetOrAdd((kind, model), _ => new AudioCounter());
+        var counter = perAudio.GetOrAdd((kind, model), _ => new ToolUnitCounter());
 
-        if (unitKind == InferHub.Shared.Contracts.UsageUnitKinds.AudioSeconds)
+        switch (unitKind)
         {
-            counter.Add(ref counter.Seconds, units);
-        }
-        else if (unitKind == InferHub.Shared.Contracts.UsageUnitKinds.Characters)
-        {
-            counter.Add(ref counter.Characters, units);
+            case InferHub.Shared.Contracts.UsageUnitKinds.AudioSeconds:
+                counter.Add(ref counter.Seconds, units);
+                break;
+
+            case InferHub.Shared.Contracts.UsageUnitKinds.Characters:
+                counter.Add(ref counter.Characters, units);
+                break;
+
+            case InferHub.Shared.Contracts.UsageUnitKinds.MegapixelSteps:
+                counter.Add(ref counter.MegapixelSteps, units);
+                break;
         }
     }
 
@@ -179,8 +186,8 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
         var perAudioSnapshot = perAudio
             .Select(pair =>
             {
-                var (seconds, characters) = pair.Value.Read();
-                return new AudioMetricsSnapshot(pair.Key.Kind, pair.Key.Model, seconds, characters);
+                var (seconds, characters, megapixelSteps) = pair.Value.Read();
+                return new ToolUnitsSnapshot(pair.Key.Kind, pair.Key.Model, seconds, characters, megapixelSteps);
             })
             .OrderBy(snapshot => snapshot.Kind, StringComparer.OrdinalIgnoreCase)
             .ThenBy(snapshot => snapshot.Model, StringComparer.OrdinalIgnoreCase)
@@ -256,12 +263,13 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
     /// per-(kind, model) object is contended by exactly the audio requests for that pair — which are
     /// bounded by the tool runtime's worker count, i.e. one on almost every deployment.
     /// </summary>
-    private sealed class AudioCounter
+    private sealed class ToolUnitCounter
     {
         private readonly object gate = new();
 
         public double Seconds;
         public double Characters;
+        public double MegapixelSteps;
 
         public void Add(ref double field, double units)
         {
@@ -271,11 +279,11 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
             }
         }
 
-        public (double Seconds, double Characters) Read()
+        public (double Seconds, double Characters, double MegapixelSteps) Read()
         {
             lock (gate)
             {
-                return (Seconds, Characters);
+                return (Seconds, Characters, MegapixelSteps);
             }
         }
     }
@@ -312,17 +320,24 @@ public sealed record MetricsSnapshot(
     IReadOnlyList<VectorCollectionMetricsSnapshot> PerCollection,
     // Appended in phase 45 with a default, so every existing constructor call and every test that
     // builds a snapshot by hand keeps compiling and keeps meaning what it meant.
-    IReadOnlyList<AudioMetricsSnapshot>? PerAudio = null);
+    IReadOnlyList<ToolUnitsSnapshot>? PerAudio = null);
 
 /// <summary>
-/// Audio work per <c>(kind, model)</c>, in both units. A pair that has only ever transcribed has
-/// <see cref="Characters"/> at zero and emits no character series — absence stays absence (D2).
+/// Tool work per <c>(kind, model)</c>, in whichever unit that kind is measured in. A pair that has
+/// only ever transcribed has <see cref="Characters"/> at zero and emits no character series —
+/// absence stays absence (phase-45 D2, phase-28 D5).
 /// </summary>
-public sealed record AudioMetricsSnapshot(
+/// <remarks>
+/// It was <c>AudioMetricsSnapshot</c> until phase 46, and generalising it was cheaper than a second
+/// dictionary keyed the same way: image generation is metered per <c>(kind, model)</c> in exactly
+/// the same shape, and two parallel structures would be two places to forget a unit.
+/// </remarks>
+public sealed record ToolUnitsSnapshot(
     string Kind,
     string Model,
     double Seconds,
-    double Characters);
+    double Characters,
+    double MegapixelSteps = 0);
 
 public sealed record NodeMetricsSnapshot(
     string NodeId,

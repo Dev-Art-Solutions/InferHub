@@ -331,8 +331,8 @@ public class PrometheusMetricsTests
     private static PrometheusScrape TrackScrape()
     {
         var metrics = new Metrics();
-        metrics.RecordAudioUnits("transcribe", "whisper-small", 90.5, InferHub.Shared.Contracts.UsageUnitKinds.AudioSeconds);
-        metrics.RecordAudioUnits("speak", "en_US-amy", 64, InferHub.Shared.Contracts.UsageUnitKinds.Characters);
+        metrics.RecordToolUnits("transcribe", "whisper-small", 90.5, InferHub.Shared.Contracts.UsageUnitKinds.AudioSeconds);
+        metrics.RecordToolUnits("speak", "en_US-amy", 64, InferHub.Shared.Contracts.UsageUnitKinds.Characters);
 
         var now = DateTimeOffset.UtcNow;
 

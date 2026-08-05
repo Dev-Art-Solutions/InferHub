@@ -1,0 +1,13 @@
+{
+  "id": "sd15",
+  "repo": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+  "revision": "451f4fe16113bff5a5d2269ed5ad43b0592e9a14",
+  "pipeline": "StableDiffusionPipeline",
+  "license": { "id": "CreativeML-OpenRAIL-M", "permissive": true },
+  "defaults": { "steps": 30, "guidance": 7.5, "size": "512x512" },
+  "sizes": ["512x512", "512x768", "768x512", "640x640"],
+  "maxSteps": 75,
+  "vramMiB": 4000,
+  "dtype": "float16",
+  "cpuViable": true
+}

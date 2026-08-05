@@ -1,0 +1,55 @@
+# The Python for the :diffusion image (phase 46). Nothing here is a .csproj dependency — design
+# rule 5 is intact and `InferHub.Shared.csproj` is still empty. The node speaks a *process* protocol
+# and does not know what language a worker is in (phase-41 D1); this file is what the image happens
+# to install so that the diffusion worker has its libraries.
+#
+# SEPARATE FROM requirements-tools.txt, on purpose. The `:tools` image (Whisper + Piper) is 5.6 GB
+# and the torch CUDA wheels are several gigabytes more; stacking them would put PyTorch into every
+# audio deployment and Whisper into every image one. The `:diffusion` image carries this file and
+# nothing from the other, which is phase-46 D9 stated in a requirements list — see Dockerfile.diffusion.
+#
+# PINNED, for phase-39 D9's reason: two builds of the same InferHub tag containing different
+# inference engines makes "it worked in 3.14.0" a question nobody can answer. Bump deliberately,
+# rebuild, and re-run the published-image checks — not because a resolver picked something newer
+# overnight.
+#
+# PINNED BY VERSION, NOT BY HASH, and that is the same deliberate step down phase 42 took: a hash
+# set that is subtly wrong does not fail loudly, it fails the image build with something that reads
+# like a network error, after which the next person deletes the hashes. Version pins answer the
+# question D9 was protecting, and the published image's own digest is the byte-level anchor. If this
+# ever moves to hashes, generate them in CI against the image, never by hand.
+#
+# NO bitsandbytes. Nothing in this release quantizes — SDXL is ~7 GB at fp16 and SD 1.5 is ~2 GB, and
+# both fit the cards this project asks for. A pinned dependency that nothing imports is a pin nobody
+# can tell is wrong until the phase that needs it, so it arrives in phase 48 with FLUX.1-schnell and
+# Qwen-Image, which are the two models that cannot run without it.
+#
+# Installing these outside the image is supported and is how you get images on the plain node:
+#
+#   python -m venv /opt/inferhub/venv
+#   /opt/inferhub/venv/bin/pip install -r requirements-diffusion.txt
+#
+# The CUDA wheels are what pip resolves by default from PyPI for linux/amd64: torch bundles its own
+# CUDA runtime and reaches the *driver* the container runtime injects — the same split phase-39 D1
+# relies on, which is why there is no CUDA toolkit in this list and none in the image.
+
+# ONLY THE DIRECT DEPENDENCIES ARE PINNED. The transitive closure is left to pip, for the reason
+# written at the top of requirements-tools.txt: a hand-written transitive pin is a pin somebody
+# guessed, and one that only CI can check is worse than no pin at all.
+
+# The pipelines. `diffusers` is the whole client surface this worker uses; `transformers` is what
+# loads the text encoders (CLIP for both recipes here), and `accelerate` is what `from_pretrained`
+# wants for device placement.
+diffusers==0.36.0
+transformers==4.57.1
+accelerate==1.11.0
+safetensors==0.6.2
+
+# The engine. Pinned to a CUDA build; the same wheel runs on a CPU and says so on its first line
+# (phase-39 D6), which is the whole reason that log line exists.
+torch==2.9.1
+
+# PIL is what actually writes the PNG. diffusers pulls it in anyway; it is named here because this
+# worker calls `Image.save` directly and an unnamed dependency you call directly is one that
+# disappears the day the library that carried it stops needing it.
+pillow==11.3.0

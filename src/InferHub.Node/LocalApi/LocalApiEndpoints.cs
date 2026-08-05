@@ -78,6 +78,11 @@ public static class LocalApiEndpoints
         // caller — better than a 404 that reads as "wrong URL".
         app.MapLocalAudioEndpoints();
 
+        // Phase 46, and it is the same day the mesh gets it (phase-41 D8): the hub's endpoint is a
+        // formatting layer over this node's executor with routing deleted, so a solo box with one
+        // `docker run` generates images with no coordinator anywhere.
+        app.MapLocalImageEndpoints();
+
         // Phase 38, amended in phase 44 (D3): mapped unconditionally now, because a coordinator can
         // start a corpus on a running node and ASP.NET cannot add an endpoint after the application
         // has started. With nothing running they answer the same 501, with the same sentence, that a

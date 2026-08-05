@@ -208,12 +208,13 @@ public static class PrometheusFormatter
     /// metered in seconds and a synthesis in characters (phase-42 D7) — and a pair that has only
     /// ever done one of them emits only that one.
     /// </summary>
-    private static void PerAudio(StringBuilder builder, IReadOnlyList<AudioMetricsSnapshot>? audio)
+    private static void PerAudio(StringBuilder builder, IReadOnlyList<ToolUnitsSnapshot>? audio)
     {
         if (audio is not { Count: > 0 }) return;
 
         var seconds = audio.Where(a => a.Seconds > 0).ToArray();
         var characters = audio.Where(a => a.Characters > 0).ToArray();
+        var megapixelSteps = audio.Where(a => a.MegapixelSteps > 0).ToArray();
 
         if (seconds.Length > 0)
         {
@@ -225,6 +226,15 @@ public static class PrometheusFormatter
         {
             Header(builder, "inferhub_audio_characters_total", "counter", "Characters synthesised, counted at the edge.");
             foreach (var a in characters) Sample(builder, "inferhub_audio_characters_total", [("kind", a.Kind), ("model", a.Model)], a.Characters);
+        }
+
+        if (megapixelSteps.Length > 0)
+        {
+            // Phase 46. Not an image counter: width × height × steps is what a diffusion
+            // transformer actually spends, and a dashboard plotting "images" would show a flat line
+            // while somebody moved the fleet from 4-step thumbnails to 30-step 2-megapixel renders.
+            Header(builder, "inferhub_image_megapixel_steps_total", "counter", "Megapixel-steps generated (width x height x steps / 1e6), as the worker reported them.");
+            foreach (var a in megapixelSteps) Sample(builder, "inferhub_image_megapixel_steps_total", [("kind", a.Kind), ("model", a.Model)], a.MegapixelSteps);
         }
     }
 

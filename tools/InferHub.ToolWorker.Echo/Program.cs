@@ -8,6 +8,7 @@ using System.Text.Json;
 //   inferhub-echo-worker [--no-ready] [--exit-on-start] [--slow-ready <ms>]
 //                        [--capabilities <kind>:<model>,<model>;<kind>:<model>]
 //                        [--audio-fail <code>] [--audio-no-segments]
+//                        [--image-fail <code>] [--image-pad-bytes <n>]
 //
 // Phase 42 added two behaviours that are chosen by the request's *capability* rather than by a
 // "behaviour" field, because the audio edge builds the worker payload itself and a client cannot
@@ -17,6 +18,10 @@ using System.Text.Json;
 //   speak       write a real RIFF wav into the scratch directory and name it back; refuse any
 //               response_format other than wav/pcm with an `unsupported_format` code, which is how
 //               a box with no ffmpeg behaves and is what the edge renders as a 400
+//   image       (phase 46) write `n` real PNGs into the scratch directory and name them back, with
+//               the width, height, steps and seed reported per image; refuse a size outside the
+//               fixture's aspect buckets with `invalid_request` naming them, which is how a real
+//               diffusion recipe answers and is the path the edge deliberately leaves to the worker
 //
 // Behaviours are asked for in the request payload's "behaviour" field:
 //   (absent)   echo the payload back
@@ -126,6 +131,12 @@ async Task HandleRequestAsync(JsonElement frame)
     if (behaviour is null && capability is "transcribe" or "speak")
     {
         await HandleAudioAsync(id, capability, payload, frame);
+        return;
+    }
+
+    if (behaviour is null && capability is "image")
+    {
+        await HandleImageAsync(id, payload, frame);
         return;
     }
 
@@ -359,6 +370,244 @@ async Task HandleAudioAsync(string? id, string capability, JsonElement payload, 
     });
 }
 
+// ---- phase 46: the image behaviour -------------------------------------------------------------
+
+/// <summary>
+/// Answers an <c>image</c> job with real PNG files written into the scratch directory.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The <b>sizes</b> this fixture accepts are a stand-in for a recipe's aspect buckets, and it
+/// refuses anything else with <c>invalid_request</c> naming them — which is how a real diffusion
+/// worker answers, and is the path phase 46 deliberately left to the worker rather than to the edge:
+/// a recipe is a file on the node and the hub has no model catalogue until phase 48.
+/// </para>
+/// <para>
+/// The bytes are a real PNG with a real IHDR, because the alternative is a test that passes on 200
+/// bytes of zeros. Phase 42 learned this with a WAV header and it is the same lesson.
+/// </para>
+/// </remarks>
+async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame)
+{
+    if (arguments.ImageFailCode is { } failure)
+    {
+        Send(new { type = "error", id, code = failure, message = $"the echo worker was asked to fail with {failure}" });
+        return;
+    }
+
+    var width = payload.ValueKind is JsonValueKind.Object && payload.TryGetProperty("width", out var w) && w.ValueKind is JsonValueKind.Number
+        ? w.GetInt32()
+        : 512;
+
+    var height = payload.ValueKind is JsonValueKind.Object && payload.TryGetProperty("height", out var h) && h.ValueKind is JsonValueKind.Number
+        ? h.GetInt32()
+        : 512;
+
+    if ((width, height) is not ((512, 512) or (768, 768) or (1024, 1024) or (640, 384)))
+    {
+        Send(new
+        {
+            type = "error",
+            id,
+            code = "invalid_request",
+            message = $"this recipe cannot render {width}x{height}. It was trained on: 512x512, 768x768, 1024x1024, 640x384"
+        });
+
+        return;
+    }
+
+    var steps = payload.ValueKind is JsonValueKind.Object && payload.TryGetProperty("steps", out var st) && st.ValueKind is JsonValueKind.Number
+        ? st.GetInt32()
+        : 30;
+
+    var count = payload.ValueKind is JsonValueKind.Object && payload.TryGetProperty("n", out var n) && n.ValueKind is JsonValueKind.Number
+        ? n.GetInt32()
+        : 1;
+
+    var seed = payload.ValueKind is JsonValueKind.Object && payload.TryGetProperty("seed", out var s) && s.ValueKind is JsonValueKind.Number
+        ? s.GetInt64()
+        : 4242;
+
+    var scratch = frame.TryGetProperty("scratch", out var sc) ? sc.GetString() : null;
+
+    if (scratch is null)
+    {
+        Send(new { type = "error", id, message = "no scratch directory" });
+        return;
+    }
+
+    var files = new List<object>(count);
+    var images = new List<object>(count);
+
+    for (var i = 0; i < count; i++)
+    {
+        var name = $"image-{i}.png";
+        var path = Path.Combine(scratch, name);
+
+        // `--image-bytes N` pads the file, so ImageWireSizeTests can push megabytes across a real
+        // SignalR connection. The 32 KB default cap tore the connection down rather than failing the
+        // message, and phase 41 "proved" attachments with a 16-byte file.
+        await File.WriteAllBytesAsync(path, Png.Create(width, height, arguments.ImagePadBytes));
+
+        files.Add(new { name, mediaType = "image/png", path });
+        images.Add(new { width, height, steps, seed = seed + i });
+    }
+
+    Send(new
+    {
+        type = "result",
+        id,
+        payload = new { model = frame.TryGetProperty("model", out var m) ? m.GetString() : null, steps, images },
+        files
+    });
+}
+
+/// <summary>
+/// A structurally valid PNG: signature, IHDR, a zlib-stored IDAT of real scanlines, IEND.
+/// </summary>
+/// <remarks>
+/// Hand-rolled rather than taken from a library for design rule 5's reason — this worker has no
+/// project references and is not in any image — and real rather than random for phase-42's reason:
+/// an assertion on <c>Content-Length</c> passes just as happily on the wrong bytes, so the test
+/// reads the IHDR back and checks the dimensions the worker claimed.
+/// </remarks>
+internal static class Png
+{
+    public static byte[] Create(int width, int height, int padBytes)
+    {
+        using var buffer = new MemoryStream();
+
+        buffer.Write([0x89, (byte)'P', (byte)'N', (byte)'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+
+        var ihdr = new byte[13];
+        WriteBigEndian(ihdr, 0, width);
+        WriteBigEndian(ihdr, 4, height);
+        ihdr[8] = 8;   // bit depth
+        ihdr[9] = 2;   // truecolour
+        Chunk(buffer, "IHDR", ihdr);
+
+        // One filter byte plus three bytes per pixel, per scanline. A diagonal ramp rather than a
+        // constant, so a truncation is visible to anything that actually decodes it.
+        var raw = new byte[height * (1 + (width * 3))];
+        var at = 0;
+
+        for (var y = 0; y < height; y++)
+        {
+            raw[at++] = 0;
+
+            for (var x = 0; x < width; x++)
+            {
+                raw[at++] = (byte)(x & 0xFF);
+                raw[at++] = (byte)(y & 0xFF);
+                raw[at++] = (byte)((x + y) & 0xFF);
+            }
+        }
+
+        Chunk(buffer, "IDAT", ZlibStored(raw));
+
+        if (padBytes > 0)
+        {
+            // An ancillary chunk (lowercase first letter) a decoder skips. Padding the IDAT would
+            // corrupt the image; padding here keeps the file both valid and as large as asked for.
+            Chunk(buffer, "teXt", new byte[padBytes]);
+        }
+
+        Chunk(buffer, "IEND", []);
+        return buffer.ToArray();
+    }
+
+    private static void Chunk(Stream target, string type, byte[] data)
+    {
+        var length = new byte[4];
+        WriteBigEndian(length, 0, data.Length);
+        target.Write(length);
+
+        var typeBytes = System.Text.Encoding.ASCII.GetBytes(type);
+        target.Write(typeBytes);
+        target.Write(data);
+
+        var crc = new byte[4];
+        WriteBigEndian(crc, 0, (int)Crc32(typeBytes, data));
+        target.Write(crc);
+    }
+
+    /// <summary>zlib with stored (uncompressed) deflate blocks — no compressor, still a valid stream.</summary>
+    private static byte[] ZlibStored(byte[] data)
+    {
+        using var buffer = new MemoryStream();
+        buffer.WriteByte(0x78);
+        buffer.WriteByte(0x01);
+
+        var offset = 0;
+
+        while (offset < data.Length)
+        {
+            var block = Math.Min(0xFFFF, data.Length - offset);
+            var final = offset + block >= data.Length;
+
+            buffer.WriteByte((byte)(final ? 1 : 0));
+            buffer.WriteByte((byte)(block & 0xFF));
+            buffer.WriteByte((byte)((block >> 8) & 0xFF));
+            buffer.WriteByte((byte)(~block & 0xFF));
+            buffer.WriteByte((byte)((~block >> 8) & 0xFF));
+            buffer.Write(data, offset, block);
+
+            offset += block;
+        }
+
+        uint a = 1, b = 0;
+
+        foreach (var value in data)
+        {
+            a = (a + value) % 65521;
+            b = (b + a) % 65521;
+        }
+
+        var adler = new byte[4];
+        WriteBigEndian(adler, 0, (int)((b << 16) | a));
+        buffer.Write(adler);
+
+        return buffer.ToArray();
+    }
+
+    private static void WriteBigEndian(byte[] target, int offset, int value)
+    {
+        target[offset] = (byte)((value >> 24) & 0xFF);
+        target[offset + 1] = (byte)((value >> 16) & 0xFF);
+        target[offset + 2] = (byte)((value >> 8) & 0xFF);
+        target[offset + 3] = (byte)(value & 0xFF);
+    }
+
+    private static uint Crc32(byte[] first, byte[] second)
+    {
+        var crc = 0xFFFFFFFFu;
+
+        foreach (var value in first)
+        {
+            crc = Step(crc, value);
+        }
+
+        foreach (var value in second)
+        {
+            crc = Step(crc, value);
+        }
+
+        return crc ^ 0xFFFFFFFFu;
+
+        static uint Step(uint crc, byte value)
+        {
+            crc ^= value;
+
+            for (var i = 0; i < 8; i++)
+            {
+                crc = (crc & 1) != 0 ? 0xEDB88320u ^ (crc >> 1) : crc >> 1;
+            }
+
+            return crc;
+        }
+    }
+}
+
 /// <summary>
 /// A real RIFF/WAVE file, not a byte array with a plausible length. A test that asserts on
 /// `Content-Length` passes just as happily on 44 bytes of zeros, and "the header is actually a
@@ -417,7 +666,9 @@ internal sealed record Args(
     int SlowReadyMs,
     object[]? Capabilities,
     string? AudioFailCode = null,
-    bool AudioNoSegments = false)
+    bool AudioNoSegments = false,
+    string? ImageFailCode = null,
+    int ImagePadBytes = 0)
 {
     public static Args Parse(string[] args)
     {
@@ -427,6 +678,8 @@ internal sealed record Args(
         object[]? capabilities = null;
         string? audioFailCode = null;
         var audioNoSegments = false;
+        string? imageFailCode = null;
+        var imagePadBytes = 0;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -450,10 +703,24 @@ internal sealed record Args(
                 case "--audio-no-segments":
                     audioNoSegments = true;
                     break;
+                case "--image-fail" when i + 1 < args.Length:
+                    imageFailCode = args[++i];
+                    break;
+                case "--image-pad-bytes" when i + 1 < args.Length:
+                    imagePadBytes = int.Parse(args[++i]);
+                    break;
             }
         }
 
-        return new Args(noReady, exitOnStart, slowReadyMs, capabilities, audioFailCode, audioNoSegments);
+        return new Args(
+            noReady,
+            exitOnStart,
+            slowReadyMs,
+            capabilities,
+            audioFailCode,
+            audioNoSegments,
+            imageFailCode,
+            imagePadBytes);
     }
 
     /// <summary>"transcribe:a,b;speak:c" → the capability list a ready frame carries.</summary>

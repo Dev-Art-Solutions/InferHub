@@ -66,6 +66,12 @@ public static class NodeHostBuilderExtensions
             .ValidateOnStart();
         builder.Services.AddSingleton<IValidateOptions<ToolOptions>, ToolOptionsValidator>();
 
+        // Phase 46. The same section name and the same class the coordinator binds
+        // (InferHub.Shared.Images.ImageEdgeOptions), so a request refused on a hub is refused
+        // identically here — the parity is by construction rather than by a suite catching it later.
+        builder.Services.Configure<InferHub.Shared.Images.ImageEdgeOptions>(
+            builder.Configuration.GetSection(InferHub.Shared.Images.ImageEdgeOptions.SectionName));
+
         builder.Services.Configure<BackendOptions>(builder.Configuration.GetSection(BackendOptions.SectionName));
 
         builder.Services

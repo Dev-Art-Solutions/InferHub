@@ -82,6 +82,9 @@ public sealed class ToolOptions
     /// </remarks>
     public bool AllowModelDownload { get; set; }
 
+    /// <summary>Image generation (phase 46). Inert unless an image worker is loaded.</summary>
+    public ImageToolOptions Image { get; set; } = new();
+
     /// <summary>
     /// What the node tells every worker about itself. Stated into the child's environment rather
     /// than inherited — the environment is cleared first (phase-41 D3), so this is the only way a
@@ -89,7 +92,14 @@ public sealed class ToolOptions
     /// </summary>
     public IReadOnlyDictionary<string, string> WorkerEnvironment() => new Dictionary<string, string>(StringComparer.Ordinal)
     {
-        ["INFERHUB_ALLOW_MODEL_DOWNLOAD"] = AllowModelDownload ? "1" : "0"
+        ["INFERHUB_ALLOW_MODEL_DOWNLOAD"] = AllowModelDownload ? "1" : "0",
+
+        // Phase 46. A diffusion worker decides for itself whether it may run on a CPU, and it can
+        // only do that if the node tells it — the environment is cleared before spawn, so an
+        // operator's key would otherwise never reach the process that has to honour it.
+        ["INFERHUB_IMAGE_REQUIRE_GPU"] = Image.RequireGpu ? "1" : "0",
+        ["INFERHUB_IMAGE_ALLOW_SLOW_CPU"] = Image.AllowSlowCpu ? "1" : "0",
+        ["INFERHUB_IMAGE_RECIPES"] = Image.RecipeDirectory ?? string.Empty
     };
 
     /// <summary>
@@ -128,4 +138,55 @@ public sealed class ToolOptions
     public string ResolvedManifestDirectory() => Path.GetFullPath(ManifestDirectory);
 
     public string ResolvedScratchDirectory() => Path.GetFullPath(ScratchDirectory);
+}
+
+/// <summary>
+/// <c>Tools:Image</c> — the keys an image worker honours (phase 46). Every one of them is read by
+/// the <em>worker</em>; the node's job is to state them into the child's environment, because the
+/// environment is cleared before spawn (phase-41 D3) and nothing else would reach it.
+/// </summary>
+/// <remarks>
+/// The node deliberately learns nothing about diffusion. Rule 1's shape one level out: the runtime
+/// knows how to start a process, write a line and read a line, and which of those lines mean
+/// "cuda" is the worker's business (phase-41 D1).
+/// </remarks>
+public sealed class ImageToolOptions
+{
+    /// <summary>
+    /// Default <c>true</c>: an image worker refuses to start when no CUDA device is reachable, and
+    /// says why and which key to unset.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is <b>phase-35 D4 vs phase-37 D4</b>, applied to a number. A tool that loads happily on
+    /// a CPU and then serves four-minute requests is not a slow feature, it is a node the fleet will
+    /// keep routing to: the hub sees a healthy capability and every caller pays for the discovery.
+    /// A refusal at startup costs one log line and is read by the person who can fix it.
+    /// </para>
+    /// <para>
+    /// Unset it and only recipes the worker marks <c>cpuViable</c> are declared — SD 1.5 at 512², and
+    /// not SDXL at 1024². <see cref="AllowSlowCpu"/> is the third step for an operator who has read
+    /// both numbers and wants the slow one anyway: their hardware, their call, with a warning per
+    /// job.
+    /// </para>
+    /// </remarks>
+    public bool RequireGpu { get; set; } = true;
+
+    /// <summary>Declare CPU-hostile recipes on a CPU-only box anyway. Off, and loud when on.</summary>
+    public bool AllowSlowCpu { get; set; }
+
+    /// <summary>
+    /// Where model recipes are read from. Empty means the worker's own default, which in the
+    /// <c>:diffusion</c> image is <c>/opt/inferhub/recipes</c>.
+    /// </summary>
+    /// <remarks>
+    /// A recipe is a <em>model</em>; a manifest is a <em>tool</em>. They are two files on purpose
+    /// (phase-46 D3): the manifest is the operator's ceiling and is what <c>Tools:Allowed</c> names,
+    /// while recipes are a catalogue the tool reads. Collapsing them would make every new model a
+    /// new entry in <c>Tools:Allowed</c>, and a phase-43 profile could then not enable a model
+    /// without the operator having pre-named it — which is the wrong ceiling: the operator consented
+    /// to running the diffusion tool, and which of its models are on is exactly what a profile is
+    /// for.
+    /// </remarks>
+    public string? RecipeDirectory { get; set; }
 }
