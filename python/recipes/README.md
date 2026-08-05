@@ -29,6 +29,7 @@ respectively, and neither fits a 24 GB card at bf16.
   "repo": "stabilityai/…",         // where the weights come from
   "revision": "4621659840…",       // REQUIRED. A commit sha, never a branch.
   "pipeline": "StableDiffusionXLPipeline",   // a class name in `diffusers`
+  "variant": "fp16",               // WHICH FILES to download. Not the same thing as dtype.
   "license": { "id": "…", "permissive": true },
   "defaults": { "steps": 30, "guidance": 5.0, "size": "1024x1024" },
   "sizes": ["1024x1024", "1152x896", …],     // the aspect buckets, exactly
@@ -55,6 +56,19 @@ can contain different models. A recipe with no `revision` is **skipped and logge
 than loaded against `main`. Same reasoning as phase-39 D9's checksummed Ollama tarball and phase-42's
 pinned Python.
 
+### `variant` is not `dtype`, and conflating them cost 7 GB a model
+
+`dtype` is what the weights are cast to **in memory**. `variant` is which **files** are downloaded.
+These repos carry both `unet/diffusion_pytorch_model.safetensors` (fp32, 10.3 GB for SDXL) and
+`unet/diffusion_pytorch_model.fp16.safetensors` (5.1 GB), and passing only `torch_dtype=float16`
+takes the **fp32** one and casts it down — twice the download and twice the disk for a result that is
+bit-identical once loaded.
+
+v3.14.0 did exactly that. Found by pulling the published image and watching 13 GB land in the cache
+for two models documented at ~9 GB together. A repo with no such variant falls back to the default
+files and **says so in the log**, because silently doubling somebody's download is the thing this
+field exists to stop.
+
 ### `sizes` is a list, not a range
 
 SDXL was trained on a fixed set of aspect buckets. A size outside them **does not fail** — it
@@ -80,12 +94,28 @@ On a CPU-only node, recipes without `cpuViable` are **not declared**, so the hub
 them. `Tools:Image:AllowSlowCpu=true` offers them anyway — the operator has read both numbers and it
 is their hardware.
 
+### A recipe is declared only when its weights are ready
+
+The worker offers a recipe once it has **proven it loads**, and a background thread does the
+fetching. So on a fresh volume the node starts with nothing declared and fills in as models land,
+re-declaring each time — the fleet never routes at a model that is not there, and no request ever
+waits on a download.
+
+Readiness is a marker file under `$HF_HOME/.inferhub-ready/`, written after a successful load. The
+marker exists because the obvious checks lie: `snapshot_download(local_files_only=True)` and
+`DiffusionPipeline.download(local_files_only=True)` both return happily with the UNet **entirely
+absent** — verified against a half-downloaded cache. Only `from_pretrained(local_files_only=True)`
+asks the question the next request will ask, and it is also the load, so the prefetch does it once
+and records the answer. A marker without weights self-heals; weights without a marker cost one
+background load.
+
 ## Adding one
 
-Drop a `.json` file in this directory and restart the tool. Nothing is fetched on your behalf: the
-weights are pulled by `huggingface-cli download <repo> --revision <sha>`, or on first use if
+Drop a `.json` file in this directory and restart the tool. Nothing is fetched on your behalf unless
 `Tools:AllowModelDownload` is true (the `:diffusion` image sets it, because choosing that image *is*
-the consent — the same reasoning by which `:ollama` sets `Ollama__Supervisor__Enabled`).
+the consent — the same reasoning by which `:ollama` sets `Ollama__Supervisor__Enabled`). With it
+off, the log names the recipe and prints the exact `huggingface-cli download` line, including the
+`--include` patterns its variant needs.
 
 A broken recipe is skipped and logged; it never fails the tool, and it never takes the node's
 inference offline.

@@ -9,6 +9,7 @@ using System.Text.Json;
 //                        [--capabilities <kind>:<model>,<model>;<kind>:<model>]
 //                        [--audio-fail <code>] [--audio-no-segments]
 //                        [--image-fail <code>] [--image-pad-bytes <n>]
+//                        [--redeclare-on-ping <kind>:<model>,<model>] [--wedge-on-ping]
 //
 // Phase 42 added two behaviours that are chosen by the request's *capability* rather than by a
 // "behaviour" field, because the audio edge builds the worker payload itself and a client cannot
@@ -100,6 +101,23 @@ while (await stdin.ReadLineAsync() is { } line)
             continue;
 
         case "ping":
+            if (arguments.WedgeOnPing)
+            {
+                // Alive, and no longer answering. `IsAlive` is true, so only the liveness probe can
+                // tell — which is the case phase-41 D6 wrote the probe for.
+                continue;
+            }
+
+            // A LATE READY, before the pong (v3.14.1). A worker whose answer to "what can you do"
+            // changed while it ran — weights that finished downloading — says so out of band, and
+            // an idle worker's stdout is only drained by this probe. Emitting it here rather than
+            // on a timer makes the test deterministic.
+            if (arguments.RedeclareOnPing is { } later)
+            {
+                arguments = arguments with { RedeclareOnPing = null };
+                Send(new { type = "ready", protocol = 1, capabilities = later });
+            }
+
             Send(new { type = "pong" });
             continue;
 
@@ -668,7 +686,9 @@ internal sealed record Args(
     string? AudioFailCode = null,
     bool AudioNoSegments = false,
     string? ImageFailCode = null,
-    int ImagePadBytes = 0)
+    int ImagePadBytes = 0,
+    object[]? RedeclareOnPing = null,
+    bool WedgeOnPing = false)
 {
     public static Args Parse(string[] args)
     {
@@ -680,6 +700,8 @@ internal sealed record Args(
         var audioNoSegments = false;
         string? imageFailCode = null;
         var imagePadBytes = 0;
+        object[]? redeclareOnPing = null;
+        var wedgeOnPing = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -709,6 +731,12 @@ internal sealed record Args(
                 case "--image-pad-bytes" when i + 1 < args.Length:
                     imagePadBytes = int.Parse(args[++i]);
                     break;
+                case "--wedge-on-ping":
+                    wedgeOnPing = true;
+                    break;
+                case "--redeclare-on-ping" when i + 1 < args.Length:
+                    redeclareOnPing = ParseCapabilities(args[++i]);
+                    break;
             }
         }
 
@@ -720,7 +748,9 @@ internal sealed record Args(
             audioFailCode,
             audioNoSegments,
             imageFailCode,
-            imagePadBytes);
+            imagePadBytes,
+            redeclareOnPing,
+            wedgeOnPing);
     }
 
     /// <summary>"transcribe:a,b;speak:c" → the capability list a ready frame carries.</summary>

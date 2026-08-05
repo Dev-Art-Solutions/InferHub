@@ -348,12 +348,92 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
             await worker.DisposeAsync();
         }
 
+        await ProbeIdleWorkersAsync(cancellationToken);
+
         if (Volatile.Read(ref gaveUpFlag) == 1 && now - lastRecoveryProbe >= options.RecoveryProbeInterval)
         {
             lastRecoveryProbe = now;
             await ProbeRecoveryAsync(cancellationToken);
         }
     }
+
+    /// <summary>
+    /// The ping/pong liveness probe on idle workers (v3.14.1).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Phase-41 D6 specified this and nothing ever called it.</b> <c>ToolWorkerProcess.PingAsync</c>
+    /// was written, tested by nothing, and dead from v3.9.0 until v3.14.1 — found while fixing a
+    /// different bug, which is how that class of thing is always found.
+    /// </para>
+    /// <para>
+    /// It now earns its place twice: a worker that has wedged without exiting is retired here
+    /// rather than at the expense of the next caller's queue budget, and — the reason it went in —
+    /// an idle worker has <em>nobody reading its stdout</em>, so a late <c>ready</c> frame sits in
+    /// the pipe until something drains it. This is that something, which is what makes a
+    /// re-declaration reach the coordinator within one maintenance interval.
+    /// </para>
+    /// <para>
+    /// <b>It takes the concurrency slot.</b> Without that, maintenance holding the only worker out
+    /// of the idle stack would let a concurrent request conclude the pool is empty and start a
+    /// second process — two copies of a multi-gigabyte model on one card, which is the
+    /// out-of-memory error <c>MaxWorkers</c> exists to prevent. A slot that is already taken means
+    /// the worker is busy serving, and a busy worker's own read loop picks the frame up anyway.
+    /// </para>
+    /// </remarks>
+    private async Task ProbeIdleWorkersAsync(CancellationToken cancellationToken)
+    {
+        if (!await slots.WaitAsync(TimeSpan.Zero, cancellationToken))
+        {
+            return;
+        }
+
+        ToolWorkerProcess? worker = null;
+
+        try
+        {
+            worker = TakeIdle();
+
+            if (worker is null)
+            {
+                return;
+            }
+
+            if (await worker.PingAsync(ProbeTimeout, cancellationToken))
+            {
+                ReturnToIdle(worker);
+                worker = null;
+                return;
+            }
+
+            logger.LogWarning(
+                "An idle worker for tool '{ToolId}' did not answer a liveness probe; retiring it.",
+                manifest.Id);
+        }
+        catch (OperationCanceledException)
+        {
+            if (worker is not null)
+            {
+                ReturnToIdle(worker);
+                worker = null;
+            }
+        }
+        finally
+        {
+            slots.Release();
+
+            if (worker is not null)
+            {
+                await worker.DisposeAsync();
+            }
+        }
+    }
+
+    /// <summary>
+    /// How long an idle worker gets to answer a ping. Short on purpose: an idle worker is by
+    /// definition doing nothing, so anything but an immediate answer means it is wedged.
+    /// </summary>
+    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(5);
 
     public async ValueTask DisposeAsync()
     {
@@ -491,6 +571,12 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
         try
         {
             var worker = await ToolWorkerProcess.StartAsync(manifest, options.WorkerEnvironment(), logger, cancellationToken);
+
+            // v3.14.1. A worker may report a *different* set later than it did at handshake; the
+            // narrowing clamp is applied to it exactly as it is at start, so this cannot widen
+            // anything.
+            worker.CapabilitiesRedeclared += () => RefreshCapabilities(worker);
+
             OnStartSucceeded(worker);
             return worker;
         }
@@ -574,6 +660,23 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
         {
             RaiseCapabilitiesChanged();
         }
+    }
+
+    /// <summary>
+    /// Re-apply the narrowing clamp after a worker re-declared (v3.14.1), and tell the node only
+    /// when the answer actually moved.
+    /// </summary>
+    private void RefreshCapabilities(ToolWorkerProcess worker)
+    {
+        var resolved = Narrow(manifest.Capabilities, worker.ReportedCapabilities);
+
+        if (SameAs(Capabilities, resolved))
+        {
+            return;
+        }
+
+        Capabilities = resolved;
+        RaiseCapabilitiesChanged();
     }
 
     private void GiveUp()

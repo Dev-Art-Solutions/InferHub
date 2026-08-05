@@ -17,7 +17,7 @@
 #   inferhub-node            ~340 MB, multi-arch, no engine at all       — UNCHANGED
 #   inferhub-node:ollama     ~4 GB,   amd64, Ollama inside               — UNCHANGED
 #   inferhub-node:tools      ~5.6 GB, amd64, Ollama + Whisper + Piper    — UNCHANGED
-#   inferhub-node:diffusion  ~9 GB,   amd64, PyTorch + diffusers         — this file
+#   inferhub-node:diffusion  ~12 GB,  amd64, PyTorch + diffusers         — this file
 #
 # A combined :all image is deferred and named in the roadmap. Revisit it if 48 GB cards become the
 # norm; today it would be an image whose whole point is a configuration that does not fit.
@@ -46,6 +46,16 @@
 # internet from a GPU box, which phase-36 D6 refuses to do without consent; here the consent is
 # having chosen an image whose entire purpose is this, which is why Tools__AllowModelDownload is
 # true HERE and false everywhere else.
+#
+# THE FETCH HAPPENS IN THE BACKGROUND, NEVER INSIDE A REQUEST (v3.14.1, and it is why that release
+# exists). v3.14.0 let the download happen on first use, inside the manifest's
+# requestTimeoutSeconds: on a fresh volume the first `sdxl` call spent 900 seconds downloading and
+# then returned a 502, twice. Now a recipe is only DECLARED once its weights are proven loadable, a
+# background thread fetches, and the worker re-declares when one lands — so `/api/status` shows
+# `capabilities: []` for a few minutes on a fresh volume and then shows the models, and no caller
+# ever waits on a download. Watch it with:
+#
+#   docker logs -f inferhub-images | grep diffusion
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG TARGETARCH

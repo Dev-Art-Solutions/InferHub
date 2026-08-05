@@ -176,7 +176,7 @@ small one and wonders where the audio went. All tags are under
 | `inferhub-node` | ~340 MB | amd64 + arm64 | You already run Ollama, vLLM, LM Studio or a hosted OpenAI-compatible endpoint and want a node in front of it. Also the right one for **solo mode** and for a **vector-store-only** box. |
 | `inferhub-node:ollama` | ~4 GB | amd64 | You want *one* `docker run` on a GPU box with nothing installed on the host. Ollama runs inside the container, supervised. `:gpu` is an alias of the same digest — it works fine with no card. |
 | `inferhub-node:tools` | ~6 GB | amd64 | The above, **plus speech**: Python, `faster-whisper` and `piper`, so `/v1/audio/transcriptions` and `/v1/audio/speech` work out of the box. |
-| `inferhub-node:diffusion` | ~9 GB | amd64 | **Text to image** (v3.14+): PyTorch, `diffusers`, SDXL and SD 1.5, so `/v1/images/generations` works out of the box. **You need a card.** |
+| `inferhub-node:diffusion` | ~12 GB | amd64 | **Text to image** (v3.14+): PyTorch, `diffusers`, SDXL and SD 1.5, so `/v1/images/generations` works out of the box. **You need a card.** |
 
 Three rules of thumb that save the mistake each way:
 
@@ -635,7 +635,7 @@ first log line says which one it got.
 | `inferhub-node` | ~340 MB | amd64 + arm64 | A node. No inference engine — point it at an Ollama or an OpenAI-compatible server |
 | `inferhub-node:ollama` | ~4 GB | amd64 | The same node with Ollama inside it (v3.7+) |
 | `inferhub-node:tools` | ~6 GB | amd64 | The same again, plus Python, `faster-whisper` and `piper` (v3.10+) |
-| `inferhub-node:diffusion` | ~9 GB | amd64 | The **plain** node plus PyTorch, `diffusers`, SDXL and SD 1.5 (v3.14+). Does not stack — no Ollama inside |
+| `inferhub-node:diffusion` | ~12 GB | amd64 | The **plain** node plus PyTorch, `diffusers`, SDXL and SD 1.5 (v3.14+). Does not stack — no Ollama inside |
 
 The first three are **unchanged** by v3.10. The Python is ~1.5 GB and it is in a layer whether a
 flag is on or off, so a flag would grow every existing coordinator+node stack for a feature it does
@@ -755,9 +755,37 @@ a slash in it that every router and metrics label has an opinion about, and it c
 is re-hosted. That is not hypothetical — `runwayml/stable-diffusion-v1-5` was withdrawn, and `sd15`
 points at where those weights live now.
 
-Recipes are `python/recipes/*.json` — a repo, a **pinned commit sha**, the pipeline class, the
-aspect buckets and the defaults. Drop one in and restart the tool. A recipe with no pinned revision
-is skipped and logged, because "which weights were in 3.14.0" has to have an answer.
+Recipes are `python/recipes/*.json` — a repo, a **pinned commit sha**, the `fp16` variant, the
+pipeline class, the aspect buckets and the defaults. Drop one in and restart the tool. A recipe with
+no pinned revision is skipped and logged, because "which weights were in 3.14.0" has to have an
+answer.
+
+### Weights arrive in the background, and a model appears when it is ready
+
+On a fresh volume the node starts with `capabilities: []` and fills in as each model lands:
+
+```
+[diffusion] offering recipes: none yet (fetching: sd15, sdxl)
+[diffusion] fetching weights for 'sd15' from stable-diffusion-v1-5/…@451f4fe16113 (variant=fp16)
+[diffusion] 'sd15' is ready; offering recipes: sd15
+[diffusion] 'sdxl' is ready; offering recipes: sd15, sdxl
+```
+
+**No request ever waits on a download.** A recipe is declared only once its weights are proven
+loadable, so the fleet never routes at a model that is not there — and the node tells its
+coordinator the moment one becomes available, without a restart.
+
+That is v3.14.1, and v3.14.0 got it wrong: it fetched inside the request that first named the model,
+so the first `sdxl` call on a fresh volume spent the whole 900-second request budget downloading and
+returned a `502`. If you want the weights before the container ever runs:
+
+```bash
+huggingface-cli download stabilityai/stable-diffusion-xl-base-1.0 \
+  --revision 462165984030d82259a11f4367a4eed129e94a7b \
+  --include "*.fp16.safetensors" "*.json" "*.txt" "*/*"
+```
+
+With `Tools:AllowModelDownload=false` that command is exactly what the log tells you to run.
 
 ### Sizes are a list, not a range
 

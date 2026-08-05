@@ -84,7 +84,7 @@ jobs:
           # alone are several gigabytes and caching them would evict every other image from the
           # 10 GB GHA budget to save a download this job does once per tag.
           #
-          # ~9 GB, which is the largest artifact this repository publishes, so `reclaim-disk` is not
+          # ~12 GB, which is the largest artifact this repository publishes, so `reclaim-disk` is not
           # optional here — a stock runner has ~14 GB free and `pip install torch` unpacks several
           # of them. If this ever stops fitting, the named fallback is publishing this one tag from
           # the GPU box rather than silently dropping it from the matrix.

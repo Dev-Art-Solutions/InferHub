@@ -266,8 +266,17 @@ and with the same bound: the manifest decides that this tool may serve `image` a
 name the worker reports is a recipe file the operator put on the box. A list written in advance does
 not survive the first new model.
 
-What it reports depends on the card. `sd15` is marked `cpuViable` and `sdxl` is not, so a CPU-only
-node offers only the first — the hub then never routes `sdxl` there, rather than routing it and
+**It also depends on what is on disk.** A recipe is declared only once its weights are proven
+loadable; a background thread fetches the rest and calls `Worker.redeclare(...)` as each one lands.
+The node picks that up on its next liveness ping — within `Tools:MaintenanceInterval`, 30 s by
+default — re-narrows it against the manifest, and re-reports to its coordinator. **No restart, and
+no request ever waits on a download**, which is the whole of what v3.14.1 fixed.
+
+`redeclare` is the only protocol addition in that release, and it is additive: a worker that never
+calls it behaves exactly as it did, and an older node ignores the frame.
+
+What it reports also depends on the card. `sd15` is marked `cpuViable` and `sdxl` is not, so a
+CPU-only node offers only the first — the hub then never routes `sdxl` there, rather than routing it and
 making the caller discover a four-minute request. With `INFERHUB_IMAGE_REQUIRE_GPU=1` (the default,
 from `Tools:Image:RequireGpu`) the worker does not start at all without CUDA, and says which key to
 unset. `INFERHUB_IMAGE_ALLOW_SLOW_CPU=1` offers the rest anyway.

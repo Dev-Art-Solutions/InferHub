@@ -38,6 +38,7 @@ import json
 import os
 import signal
 import sys
+import threading
 import traceback
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Sequence
@@ -160,6 +161,26 @@ class Worker:
         self._stdout = stdout or sys.stdout
         self._running = True
 
+        # stdout is the protocol and one frame is one line, so a background thread emitting a
+        # `ready` (see redeclare) must not interleave with the request loop's `result`.
+        self._write_lock = threading.Lock()
+
+    def redeclare(self, capabilities: Sequence[dict[str, Any]]) -> None:
+        """
+        Report a NEW capability set, at any time (v3.14.1).
+
+        A worker whose answer to "what can you do" changes while it runs — weights that finished
+        downloading, a voice that appeared on the volume — sends a fresh ``ready`` and the node
+        picks it up on its next liveness ping (within ``Tools:MaintenanceInterval``, 30s by
+        default) or on the next request, re-narrows against the manifest, and re-reports the node
+        to its coordinator. No restart, and no request ever waits for the change.
+
+        The narrowing rule is unchanged and is still enforced on the node: this may only ever
+        report a SUBSET of what the manifest granted. Widening is refused there, not trusted here.
+        """
+        self.capabilities = list(capabilities)
+        self._send({"type": "ready", "protocol": PROTOCOL_VERSION, "capabilities": self.capabilities})
+
     def run(self, handler: Handler) -> None:
         # SIGTERM is how a node stops a worker it has decided to retire. Exiting cleanly here is
         # what lets a half-written model file get closed.
@@ -238,9 +259,11 @@ class Worker:
         self._send(result)
 
     def _send(self, frame: dict[str, Any]) -> None:
-        # separators without spaces, and no indentation: one object, one line, always.
-        self._stdout.write(json.dumps(frame, separators=(",", ":")) + "\n")
-        self._stdout.flush()
+        # separators without spaces, and no indentation: one object, one line, always. The lock is
+        # what keeps that true once `redeclare` can be called from a background thread.
+        with self._write_lock:
+            self._stdout.write(json.dumps(frame, separators=(",", ":")) + "\n")
+            self._stdout.flush()
 
     def _on_terminate(self, *_: Any) -> None:
         self._running = False

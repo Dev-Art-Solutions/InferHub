@@ -77,6 +77,42 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
     /// <summary>What the worker reported at handshake, or null when it reported nothing.</summary>
     public IReadOnlyList<NodeCapability>? ReportedCapabilities { get; private set; }
 
+    /// <summary>
+    /// Raised when a worker sends a <c>ready</c> frame <em>after</em> the handshake (v3.14.1), so
+    /// the pool can re-narrow and the node can re-report to its coordinator without a restart.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The case that forced it: a diffusion worker whose weights are still downloading declares
+    /// only the recipes it can actually serve, so the fleet never routes at a model that is not
+    /// ready. Without a way to say "and now this one too", the model would stay undeclared until
+    /// the worker was restarted — and nothing would restart it, because nothing would route to it.
+    /// </para>
+    /// <para>
+    /// The narrowing rule is unchanged: this only ever hands the pool a <em>reported</em> set,
+    /// which <c>ToolWorkerPool.Narrow</c> still clamps to the manifest. A worker cannot widen its
+    /// own grant by re-declaring, any more than it could at handshake.
+    /// </para>
+    /// </remarks>
+    public event Action? CapabilitiesRedeclared;
+
+    private void ApplyRedeclaration(ToolFrame frame)
+    {
+        if (frame.Capabilities is null)
+        {
+            return;
+        }
+
+        ReportedCapabilities = frame.Capabilities;
+
+        logger.LogInformation(
+            "Tool '{ToolId}' re-declared its capabilities: {Capabilities}",
+            manifest.Id,
+            string.Join(", ", frame.Capabilities.Select(c => $"{c.Kind}[{string.Join(' ', c.Models)}]")));
+
+        CapabilitiesRedeclared?.Invoke();
+    }
+
     public bool IsAlive
     {
         get
@@ -207,9 +243,17 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
                     LogWorkerLine(frame.Level, frame.Message);
                     continue;
 
+                case ToolFrameTypes.Ready:
+                    // A LATE READY (v3.14.1): the worker's answer to "what can you do" changed
+                    // while it was running. Until v3.14.1 this branch discarded it, which made a
+                    // worker that becomes able to do more — weights that finished downloading, a
+                    // voice dropped onto the volume — unable to say so without being restarted.
+                    ApplyRedeclaration(frame);
+                    continue;
+
                 default:
-                    // pong, a late ready, anything a future worker invents: not an answer to this
-                    // request, and not a reason to fail it.
+                    // pong, anything a future worker invents: not an answer to this request, and
+                    // not a reason to fail it.
                     continue;
             }
         }
@@ -240,6 +284,15 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
                 if (frame.Type is ToolFrameTypes.Log)
                 {
                     LogWorkerLine(frame.Level, frame.Message);
+                }
+
+                // An idle worker has nobody reading its stdout, so a late `ready` sits in the pipe
+                // until something drains it. This probe is that something — which is the second
+                // reason the maintenance loop pings (the first being the liveness check phase-41 D6
+                // specified and v3.14.0 never wired up).
+                if (frame.Type is ToolFrameTypes.Ready)
+                {
+                    ApplyRedeclaration(frame);
                 }
             }
 

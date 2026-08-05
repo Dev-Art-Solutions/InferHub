@@ -2242,6 +2242,50 @@ at `Trace` and checks the scratch directory is empty after success **and** after
 `InferHub.Shared.csproj` is still an empty `<Project Sdk="Microsoft.NET.Sdk">`. PyTorch is a
 subprocess, exactly as phase-41 D1 requires.
 
+> ### v3.14.1 — what v3.14.0 got wrong, and the two mechanisms it needed
+>
+> **v3.14.0 was dead on arrival for `sdxl` on a fresh volume.** Found by pulling the published image
+> and running it, which is the sixth time (v2.5.1, v3.0.1, v3.5.1, v3.10.0, the phase-32 D7 note).
+>
+> **Bug 1 — `variant` is not `dtype`, and conflating them doubled every download.** `dtype` is what
+> the weights are cast to in memory; `variant` is which **files** are fetched. These repos carry
+> both `unet/diffusion_pytorch_model.safetensors` (fp32, 10.3 GB for SDXL) and
+> `…fp16.safetensors` (5.1 GB), and `torch_dtype=float16` alone takes the fp32 one and casts it
+> down. The recipe said `"dtype": "float16"`, the docs said "~7 GB fp16", and 13 GB landed in the
+> cache. **Both recipes now carry `"variant": "fp16"`**, `_from_pretrained` is the one place a
+> pipeline is constructed so serving and prefetching cannot drift, and a repo without the variant
+> falls back **loudly**.
+>
+> **Bug 2 — weights were fetched inside the request that first named the model.** The manifest
+> allows 900 s and that budget included the download: two consecutive `sdxl` calls each returned
+> **502 after 899.99 s**. Phase 48 D4 in the roadmap says *"weights are pulled by an explicit
+> command, never lazily inside a request"* — written for FLUX at 24 GB, and phase 46 shipped the
+> lazy path anyway on a model big enough to hit it.
+>
+> The fix is that **a recipe is declared only once its weights are proven loadable**, with a
+> background thread fetching and the worker re-declaring as each lands. Readiness is a marker file,
+> because the obvious checks lie: `snapshot_download(local_files_only=True)` and
+> `DiffusionPipeline.download(local_files_only=True)` both return happily with the UNet entirely
+> absent (verified against a half-downloaded cache). Only `from_pretrained(local_files_only=True)`
+> asks the question the next request asks — and it *is* the load, so the prefetch does it once and
+> records the answer.
+>
+> **Two node-side mechanisms, and one of them had been dead code since v3.9.0.**
+>
+> 1. **A late `ready` re-declares** (`ToolWorkerProcess.CapabilitiesRedeclared` →
+>    `ToolWorkerPool.RefreshCapabilities`). `ExecuteAsync`'s default branch used to discard it with
+>    a comment naming it. The narrowing clamp is unchanged and still applied on the node: a worker
+>    cannot widen its own grant by re-declaring any more than it could at handshake.
+> 2. **The maintenance loop now pings idle workers.** Phase-41 D6 specified a ping/pong liveness
+>    probe, `PingAsync` was written for it, and **nothing ever called it**. It matters here because
+>    an idle worker has nobody reading its stdout, so a late `ready` sits in the pipe until
+>    something drains it. **The probe takes the concurrency slot** — without that, maintenance
+>    holding the only worker out of the idle stack would let a concurrent request start a second
+>    process, which is two copies of a multi-gigabyte model on one card.
+>
+> `ToolRedeclarationTests` drives all of it through a real child process, including the guard on the
+> guard (a worker that never re-declares must not make the node re-report twice a minute forever).
+
 ## Auth model (three independent token sets)
 
 | Scope | Config key | Guards |
