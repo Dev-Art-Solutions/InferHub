@@ -87,3 +87,27 @@ eight refusals; the node still serving with exactly one worker after both timeou
 `docker stop` in under 1.2 s with no orphaned Python.
 
 `dotnet test`: **1080 passed, 0 failed, 46 skipped**.
+
+## Verified against the published image
+
+`:3.14.1-diffusion` (12.1 GB) on a **clean volume**, RTX 3090 Ti / driver 591.86 / Docker 27.3.1
+(WSL2), so these are the fp16 path measured rather than inherited.
+
+| | v3.14.0 | v3.14.1 |
+|---|---|---|
+| `sdxl` while weights are fetching | **502 after 899.99 s**, twice | **503 in 0.018 s** |
+| Node ready after `docker run` on an empty volume | blocked | **2 s**, `capabilities: []` |
+| Both models fetched | 13 GB, SDXL's UNet still unfinished | **8.7 GB**, 0 incomplete blobs, **215 s** |
+| The capability appearing | needed a restart nothing would trigger | `t+215s`, by itself |
+
+`sd15` is serving about a minute after `docker run`; `sdxl` at 3½ minutes. Warm SDXL at 1024×1024,
+30 steps: **~8.5 s**. `n=2` at 1216×832: 16.8 s, two images with distinct seeds. A restart on a warm
+volume declares both models 23 s later from the readiness markers, with no network call.
+
+The environment leak check passes, the scratch tree is empty after everything, and `docker stop`
+exits 0 in 1019 ms.
+
+**Not covered against the image:** the mesh arm (a coordinator routing `image` to this node while
+another serves chat) and the byte-budget refusal at a lowered `Images:MaxResponseBytes`. Both are
+covered by the suite across a real SignalR wire; they are the first two items for the next release's
+verification.
