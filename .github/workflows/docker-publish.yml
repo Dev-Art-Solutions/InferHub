@@ -4,6 +4,16 @@ on:
   push:
     tags: ['v*']
 
+  # A hand trigger, added after v3.15.0 was tagged and NO run was ever created for it — not a
+  # failing run, no run at all. With only a `push` trigger there was nothing to fall back on:
+  # `gh workflow run` is a 422 without this block, and deleting and re-pushing the tag changed
+  # nothing, so a tag whose event was dropped could not be built at all.
+  #
+  # Dispatch it against the TAG, not a branch — `gh workflow run docker-publish.yml --ref v3.15.1` —
+  # because the `type=semver` patterns below read the version out of `github.ref`. Run against a
+  # branch they produce no version tag and the build would push `latest` alone.
+  workflow_dispatch:
+
 env:
   REGISTRY: ghcr.io
 
