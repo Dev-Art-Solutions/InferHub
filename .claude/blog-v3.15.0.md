@@ -180,6 +180,18 @@ Zero new dependencies, no new model, and the shared library still has an empty p
 <p>Next in this track: a catalogue of six models with real memory budgets and a quantization path,
 360° panoramas, and editing — img2img, inpainting and variations.</p>
 
+## Published (2026-08-06)
+
+Created as a **draft — both languages hidden**, ID `6a74e1ef17c0dd835aa2f494`. The connector was
+down with `Missing sessionId parameter` for ~20 minutes first; it recovered on its own, `list_posts`
+confirmed the slug was free, and **one** `create_post` succeeded. The documented recovery held
+exactly, for the third release running.
+
+**Flip it visible from the site's admin once `ghcr.io/dev-art-solutions/*:3.15.0` actually pulls.**
+The body makes no claim that is false today — it names no Docker tag and links only to the docs site
+and GitHub, both of which are live — but a release announcement people can act on should not point
+at images that 404.
+
 ## Note on publishing (2026-08-06)
 
 **GitHub Actions did not fire for the `v3.15.0` tag**, so `ghcr.io/dev-art-solutions/*:3.15.0` does
