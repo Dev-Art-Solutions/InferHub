@@ -39,6 +39,23 @@ public sealed class ImageEdgeOptions
     public long MaxResponseBytes { get; set; } = ToolAttachmentLimits.DefaultMaxBytes;
 
     /// <summary>
+    /// How long the synchronous <c>/v1/images/generations</c> waits for its own job before giving up
+    /// (phase 47). Past it: a <c>503</c> naming the async route. Default 120s.
+    /// </summary>
+    /// <remarks>
+    /// The route is <b>unchanged</b> for anyone who never reads the phase-47 notes — internally it
+    /// became "submit a job and wait for it", which is a refactor with no observable difference and
+    /// a test (<c>ImageSyncCompatTests</c>) that says so. What this bound adds is an honest ceiling:
+    /// before it, a request against a 50-step SDXL job simply held a connection open until the
+    /// node-facing dispatch timeout, and a proxy in the path usually cut it first with a status
+    /// nobody could act on.
+    /// </remarks>
+    public int SyncMaxWaitSeconds { get; set; } = 120;
+
+    /// <summary>The async job surface's own knobs (phase 47, D5/D6).</summary>
+    public ImageJobOptions Jobs { get; set; } = new();
+
+    /// <summary>
     /// The effective limits, clamped by the attachment cap.
     /// </summary>
     /// <remarks>

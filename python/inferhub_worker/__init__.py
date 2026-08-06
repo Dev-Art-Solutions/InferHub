@@ -50,6 +50,8 @@ __all__ = [
     "ERROR_INVALID_REQUEST",
     "ERROR_UNSUPPORTED_FORMAT",
     "ERROR_MODEL_UNAVAILABLE",
+    "ERROR_CANCELLED",
+    "Cancelled",
     "File",
     "Request",
     "ToolError",
@@ -63,6 +65,12 @@ __all__ = [
 ERROR_INVALID_REQUEST = "invalid_request"
 ERROR_UNSUPPORTED_FORMAT = "unsupported_format"
 ERROR_MODEL_UNAVAILABLE = "model_unavailable"
+
+# Phase 47. Neither a client error nor a server one: the job ends `cancelled`, nothing is metered,
+# and — this is the part that matters — YOUR PROCESS STAYS ALIVE. The node asked you to stop so it
+# would not have to kill you, because killing you throws away weights that took a minute to load and
+# the next caller pays for it.
+ERROR_CANCELLED = "cancelled"
 
 
 @dataclass(frozen=True)
@@ -86,6 +94,8 @@ class Request:
     files: list[File] = field(default_factory=list)
     scratch: str = ""
     _worker: "Worker | None" = None
+    _cancelled: threading.Event = field(default_factory=threading.Event)
+    _step: int = 0
 
     def log(self, message: str, level: str = "info") -> None:
         """Send a structured log line. ``print(..., file=sys.stderr)`` works just as well."""
@@ -96,6 +106,49 @@ class Request:
         """Emit a partial answer. Only a streaming caller sees these; a blocking one ignores them."""
         if self._worker is not None:
             self._worker._send({"type": "chunk", "id": self.id, "payload": payload})
+
+    # ---- progress and cancel (phase 47) --------------------------------------------------------
+
+    def progress(self, step: int, total_steps: int | None = None) -> None:
+        """
+        Report a step (1-based). Costs a callback and nothing else, so emit one per step.
+
+        In ``diffusers`` this is one line inside ``callback_on_step_end``::
+
+            def on_step(pipe, step, timestep, kwargs):
+                request.progress(step + 1, total_steps=steps)
+                request.raise_if_cancelled()
+                return kwargs
+
+        Do NOT decode the latents here to send a preview image. That costs a VAE decode per step —
+        10-15% of the run — and produces intermediate *content*, which nothing in InferHub retains
+        by design.
+        """
+        self._step = int(step)
+
+        if self._worker is not None:
+            self._worker._send(
+                {"type": "progress", "id": self.id, "step": int(step), "totalSteps": total_steps}
+            )
+
+    @property
+    def cancelled(self) -> bool:
+        """Whether the node has asked for this request to stop."""
+        return self._cancelled.is_set()
+
+    def raise_if_cancelled(self) -> None:
+        """
+        Raise :class:`Cancelled` if a cancel has arrived. Call it once per step.
+
+        Everything about cancellation is cooperative and the deadline is real: past
+        ``Tools:CancelGraceSeconds`` (20s by default) the node terminates the process and restarts
+        it, and the next caller pays the weight-load. A worker that checks once per step is never
+        anywhere near that; one that checks only between requests cannot be cancelled at all, which
+        is the most common way a first cancellable worker is written wrong and looks exactly like a
+        hang.
+        """
+        if self._cancelled.is_set():
+            raise Cancelled(f"cancelled at step {self._step}")
 
     # ---- file handoff (phase 42) ---------------------------------------------------------------
     #
@@ -123,6 +176,15 @@ class Request:
         """
         safe = os.path.basename(name) or "output"
         return File(safe, media_type, os.path.join(self.scratch, safe))
+
+
+class Cancelled(Exception):
+    """
+    Raised by :meth:`Request.raise_if_cancelled`, and caught by the worker loop.
+
+    It becomes an ``error`` frame coded ``cancelled``. Let it propagate: catching it to "clean up
+    and return a partial result" would hand the caller half an image with a 200 on it.
+    """
 
 
 class ToolError(Exception):
@@ -165,6 +227,13 @@ class Worker:
         # `ready` (see redeclare) must not interleave with the request loop's `result`.
         self._write_lock = threading.Lock()
 
+        # Phase 47. The requests currently running, so a `cancel` frame arriving mid-request can
+        # find one. A worker that handles requests on the read loop cannot be cancelled at all —
+        # it is not reading while it is working — so a request runs on its own thread and the loop
+        # stays free.
+        self._in_flight: dict[str, Request] = {}
+        self._in_flight_lock = threading.Lock()
+
     def redeclare(self, capabilities: Sequence[dict[str, Any]]) -> None:
         """
         Report a NEW capability set, at any time (v3.14.1).
@@ -189,8 +258,14 @@ class Worker:
         except (ValueError, AttributeError, OSError):
             pass  # not the main thread, or Windows
 
-        for line in self._stdin:
-            if not self._running:
+        # readline(), not `for line in self._stdin`: the iterator protocol keeps a read-ahead
+        # buffer, and the control pump below reads from the same stream while a request runs. Two
+        # readers with one hidden buffer between them lose frames — and the frame it would lose is
+        # the cancel.
+        while self._running:
+            line = self._stdin.readline()
+
+            if not line:
                 break
 
             line = line.strip()
@@ -216,10 +291,62 @@ class Worker:
                 )
             elif kind == "ping":
                 self._send({"type": "pong"})
+            elif kind == "cancel":
+                self._cancel(frame.get("id") or "")
             elif kind == "request":
-                self._handle(handler, frame)
+                worker_thread = threading.Thread(
+                    target=self._handle, args=(handler, frame), daemon=True
+                )
+                worker_thread.start()
+
+                # One request at a time is still the contract — the node's pool provides
+                # concurrency, not this loop — so we go back to reading only for `cancel` and
+                # `ping` while this one runs, and we wait for it before taking the next request.
+                while worker_thread.is_alive():
+                    if not self._pump_control_frames(worker_thread):
+                        break
 
     # ---- internals ---------------------------------------------------------------------------
+
+    def _pump_control_frames(self, worker_thread: threading.Thread) -> bool:
+        """
+        Read one line while a request runs, honouring only the frames that make sense mid-request.
+
+        Returns False when stdin has closed, which is how the node stops a worker gracefully.
+        """
+        line = self._stdin.readline()
+
+        if not line:
+            worker_thread.join(timeout=5)
+            return False
+
+        line = line.strip()
+
+        if not line:
+            return True
+
+        try:
+            frame = json.loads(line)
+        except json.JSONDecodeError:
+            return True
+
+        kind = frame.get("type")
+
+        if kind == "cancel":
+            self._cancel(frame.get("id") or "")
+        elif kind == "ping":
+            self._send({"type": "pong"})
+
+        # A `request` arriving while one is running is a node bug, not ours, and answering it here
+        # would break "one request at a time". It is ignored, and the node's own deadline reports it.
+        return True
+
+    def _cancel(self, request_id: str) -> None:
+        with self._in_flight_lock:
+            request = self._in_flight.get(request_id)
+
+        if request is not None:
+            request._cancelled.set()
 
     def _handle(self, handler: Handler, frame: dict[str, Any]) -> None:
         request = Request(
@@ -235,8 +362,29 @@ class Worker:
             _worker=self,
         )
 
+        with self._in_flight_lock:
+            self._in_flight[request.id] = request
+
+        try:
+            self._dispatch(handler, request)
+        finally:
+            with self._in_flight_lock:
+                self._in_flight.pop(request.id, None)
+
+    def _dispatch(self, handler: Handler, request: Request) -> None:
         try:
             answer = handler(request)
+        except Cancelled as cancellation:
+            # The process stays alive and keeps its weights. That is the entire point.
+            self._send(
+                {
+                    "type": "error",
+                    "id": request.id,
+                    "code": ERROR_CANCELLED,
+                    "message": str(cancellation) or "the job was cancelled",
+                }
+            )
+            return
         except ToolError as error:
             frame: dict[str, Any] = {"type": "error", "id": request.id, "message": str(error)}
 

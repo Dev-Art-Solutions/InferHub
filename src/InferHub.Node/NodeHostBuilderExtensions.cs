@@ -204,6 +204,12 @@ public static class NodeHostBuilderExtensions
         // nullable. Over NoToolRuntime it answers every job with "this node does not provide it".
         builder.Services.AddSingleton<ToolExecutor>();
 
+        // Phase 47. The solo job surface, registered either way for the same reason: the routes are
+        // mapped unconditionally and answer a 503 naming the capability when nothing serves images,
+        // rather than a 404 that reads as "wrong URL" on a node that could serve them if configured.
+        builder.Services.AddSingleton<LocalApi.LocalImageJobRunner>();
+        builder.Services.AddHostedService<LocalApi.LocalImageJobSweeper>();
+
         if (!tools.Enabled)
         {
             builder.Services.TryAddSingleton<IToolRuntime, NoToolRuntime>();

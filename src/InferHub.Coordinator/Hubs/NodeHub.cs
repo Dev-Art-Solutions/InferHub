@@ -271,6 +271,34 @@ public sealed class NodeHub(
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// One progress frame for a tool job that is <em>not</em> streaming (phase 47, D2).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An ordinary invocation carrying a <see cref="ToolChunk"/>, not a stream — so the binder trap
+    /// that has bitten <c>StreamChunks</c>, <c>StreamToolChunks</c> and
+    /// <c>StreamModelCommandProgress</c> does not apply, and this method deliberately declares no
+    /// <c>CancellationToken</c> either, because the next reader should not have to work out which
+    /// of those two rules they are looking at.
+    /// </para>
+    /// <para>
+    /// It is not a new transport: it is the connection the node already opened, carrying the
+    /// contract the tool runtime already had. What it is <b>not</b> is <c>/api/admin/stream</c> —
+    /// image progress is client-facing, and an admin channel carrying tenants' job ids is an
+    /// authorization mistake waiting for somebody to notice.
+    /// </para>
+    /// </remarks>
+    public Task ToolJobProgress(ToolChunk chunk)
+    {
+        var tools = services.GetService(typeof(IToolDispatcher)) as IToolDispatcher;
+
+        // Deliberately quiet when nobody is listening: a job whose watcher has gone away, or one
+        // that finished a beat before its last progress frame arrived, is the ordinary case.
+        tools?.WriteToolChunk(chunk);
+        return Task.CompletedTask;
+    }
+
     // Node → hub upload of tool chunks (phase 41). The THIRD method to hit the binder trap, so it
     // is written out once more rather than left to the reader: this must NOT declare a
     // CancellationToken parameter — see StreamChunks above. Use Context.ConnectionAborted.

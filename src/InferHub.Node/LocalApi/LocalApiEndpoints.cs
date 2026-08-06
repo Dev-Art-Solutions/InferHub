@@ -83,6 +83,12 @@ public static class LocalApiEndpoints
         // `docker run` generates images with no coordinator anywhere.
         app.MapLocalImageEndpoints();
 
+        // Phase 47. The async job surface, on the same day and for the same reason: an image on a
+        // standalone box takes exactly as long as it does on a fleet, and the deployment least
+        // likely to have a proxy that tolerates a two-minute request is the one somebody is running
+        // on a laptop.
+        app.MapLocalImageJobEndpoints();
+
         // Phase 38, amended in phase 44 (D3): mapped unconditionally now, because a coordinator can
         // start a corpus on a running node and ASP.NET cannot add an endpoint after the application
         // has started. With nothing running they answer the same 501, with the same sentence, that a

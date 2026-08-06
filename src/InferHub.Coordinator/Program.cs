@@ -109,6 +109,13 @@ builder.Services.AddSingleton<NodeCorpusDispatcher>();
 // Phase 45. The same mailbox for what a node's tool runtime is doing. Empty and harmless on a fleet
 // with Tools:Enabled=false, which is the default and therefore almost every deployment.
 builder.Services.AddSingleton<NodeToolRegistry>();
+
+// Phase 47. The async image-job surface. Registered unconditionally and inert on a fleet with no
+// image capability: the store holds nothing, the pump reads an empty queue, and the sweeper ticks
+// every five seconds over zero jobs. Nothing here persists — a restart forgets in-flight and
+// completed jobs, exactly like every other counter on the hub, and the docs say so (D6).
+builder.Services.AddSingleton<ImageJobRegistry>();
+builder.Services.AddHostedService<ImageJobSweeper>();
 builder.Services.AddSingleton<ThroughputTracker>();
 builder.Services.AddHostedService<NodeReaper>();
 
@@ -243,6 +250,11 @@ app.MapAudioEndpoints();
 // Phase 46. The same reasoning one modality over: /api/tools/image works and is generic, and a
 // client holding an OpenAI SDK calls /v1/images/generations.
 app.MapImageEndpoints();
+
+// Phase 47. The async surface, beside the synchronous one rather than instead of it: OpenAI has no
+// asynchronous Images API to adopt, so work with no existing shape travels as its own contract
+// under /api (D1). /v1/images/generations is unchanged for anyone who never reads this.
+app.MapImageJobEndpoints();
 app.MapAdminEndpoints();
 
 if (vectorStoreEnabled)

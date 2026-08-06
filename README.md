@@ -63,18 +63,16 @@ of one.
 
 ## Status
 
-**InferHub 3.13** closes the tools-and-fleet track by making it operable. Six releases added
-capabilities, a tool runtime, speech, node profiles and per-node corpora, and the console still showed
-a table of nodes and models — so every "I turned it on and nothing happened" was a support
-conversation. Now it is a row. The console drives the whole track without curl: a **capability
-matrix**, a **tools** panel showing what each box loaded and what it is actually running, a
-**profile editor** with the refusals each node sent back, a **node retrieval** panel, and a
-**Needs attention** strip above the fold that names the reason rather than a status word — a manifest
-`Tools:Allowed` does not list, a profile item the node clamped, a corpus that would not start.
-`/metrics` grew the series to alert on, and absence stays absence: a capability nobody serves has no
-series rather than a zero. The docs gained a four-image decision table and one end-to-end walkthrough.
-**Build-free UI, zero new dependencies, and a deployment that changes no config behaves exactly as it
-did on 3.12.**
+**InferHub 3.15** makes a two-minute image behave like a two-minute job. v3.14 put Stable Diffusion
+on the fleet behind OpenAI's Images API; the thing it did not have was any way to watch one. Now
+`POST /api/images/jobs` returns an id and a place in line, `GET …/events` streams
+`queued → running(step 7/28) → succeeded` over SSE, `GET …/content/0` collects the bytes **once**,
+and `DELETE` changes your mind — cooperatively, so the worker keeps its weights and the next caller
+does not pay for your cancel. Results live in memory for five minutes and **nothing touches disk**:
+no temp file, no cache directory, no URL. `/v1/images/generations` is unchanged for anyone who never
+reads this paragraph — internally it became "submit a job and wait for it", so both surfaces queue in
+the same line and are metered by the same code. **Zero new dependencies, no new model, and a
+deployment that changes no config behaves exactly as it did on 3.14.**
 
 | Phase | Theme | Version |
 |------:|-------|---------|
@@ -123,6 +121,8 @@ did on 3.12.**
 | 43 | Node profiles — the hub configures, the node clamps (done) | `v3.11.0` |
 | 44 | Hub-assigned retrieval — a corpus on every node (done) | `v3.12.0` |
 | 45 | The console, the metrics and the docs for the whole track (done) | `v3.13.0` |
+| 46 | Text to image — Stable Diffusion on the fleet (done) | `v3.14.0` |
+| 47 | Work measured in minutes — jobs, progress, cancel (done) | `v3.15.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -140,7 +140,15 @@ node](#a-corpus-on-every-node-v312), assigned from one place, with ownership rec
 cannot overwrite what it granted. **v3.13 closes the track**: the
 [console](#driving-all-of-it-from-one-page-v313), the Prometheus series and the docs pass that make
 six releases' worth of capabilities, tools, audio, profiles and per-node corpora operable by someone
-who did not write them.
+who did not write them. **v3.14 opened the image track** — [text to image](#text-to-image-v314) on
+OpenAI's Images API, a fifth `:diffusion` image, and the capability seam carrying a whole new
+modality with no protocol change at all — and **v3.15 gave it a clock**: [async
+jobs](#a-job-that-takes-two-minutes-v315) with per-step progress, cooperative cancellation and
+results that live in memory for five minutes and nowhere else.
+
+Next in this track: a **catalogue** of six models with real memory budgets, `qwen-360-diffusion` for
+360° panoramas, and **editing** — img2img, inpainting and variations as their own capability kind
+rather than a per-model operation list.
 Still on the table beyond that: teaching the **coordinator** about backend health as a typed signal
 (a status column and an alert, rather than a line in the node's log), **active-active**
 multi-coordinator load sharing, an **OTLP push** exporter behind an explicit opt-in, and a dedicated
@@ -870,9 +878,110 @@ and the second is 47× the work.
 
 Over it is a `402` with `Retry-After` pointing at UTC midnight, the same shape as every other budget.
 
-**Not in v3.14, and said out loud:** async jobs with progress and cancellation (next — every model
-after these two is slow enough to need it), img2img, inpainting, `/v1/images/edits`,
+**Not in v3.15, and said out loud:** img2img, inpainting, `/v1/images/edits`,
 `/v1/images/variations`, ControlNet, and any model that needs quantization to fit a card.
+
+## A job that takes two minutes (v3.15+)
+
+An SDXL render at 50 steps is not a request, it is a job. Before v3.15 you sent one and held a
+connection open, and the only two things you could learn were "it worked" and "something timed out"
+— usually from a proxy in the path, with a status nobody could act on.
+
+```bash
+# submit
+ID=$(curl -sS http://localhost:5080/api/images/jobs -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"sdxl","prompt":"a lighthouse in a storm","size":"1024x1024"}' | jq -r .id)
+
+# watch  (SSE: queued → running(step 7/28) → succeeded)
+curl -N http://localhost:5080/api/images/jobs/$ID/events -H "Authorization: Bearer $KEY"
+
+# collect (read-once, in memory, expiring)
+curl -sS http://localhost:5080/api/images/jobs/$ID/content/0 -H "Authorization: Bearer $KEY" -o out.png
+
+# or change your mind
+curl -X DELETE http://localhost:5080/api/images/jobs/$ID -H "Authorization: Bearer $KEY"
+```
+
+A submitted job answers `202` with a **place in line**, not a wait-then-503: you already accepted
+asynchrony, so making you retry would be strictly worse than telling you where you are. The states
+are `queued → running → succeeded | failed | cancelled | expired`, with `cancelling` in between, and
+the transition table is data both hosts and the tests read from the same place.
+
+### There is no `background: true` flag, and that is on purpose
+
+OpenAI has no asynchronous Images API to adopt, and where there is no dialect to adopt this project
+does not invent an OpenAI-shaped one — work with no existing shape travels as its own honest contract
+under `/api`. A `background: true` field on `/v1/images/generations` returning a non-OpenAI body
+would make one route answer two incompatible shapes depending on a flag, which every typed SDK gets
+wrong, and would turn "is this endpoint OpenAI-compatible?" into a question with a footnote.
+
+`/v1/images/generations` is **unchanged**. Internally it became "submit a job and wait for it", so a
+synchronous call and an asynchronous one queue in the same line and are metered by the same code —
+the alternative, two paths to a GPU with two ideas of fairness, is how a fleet grows a fast lane
+nobody documented. Past `Images:SyncMaxWaitSeconds` (120) it answers `503` naming the job id and the
+async route; the job **keeps running**, because throwing away a minute of GPU because an HTTP client
+got bored is your decision, not the hub's.
+
+### Cancel does not kill the worker
+
+A `DELETE` sends a `cancel` frame down to the worker, which honours it from its per-step callback and
+answers with an error coded `cancelled`. Then it is **still alive, still holding its weights**.
+
+Killing it would be simpler and is wrong. A diffusion worker's weights took tens of seconds to load —
+and twelve to twenty gigabytes taking a minute or more once the catalogue grows — so killing it to
+abandon one job punishes the *next* caller for your change of mind, and the punishment gets worse
+with every model added. A worker that has not answered within `Tools:CancelGraceSeconds` (20) is by
+definition not cooperating, and *that* one is terminated and restarted.
+
+**Cancellation is best-effort and this says so.** A job cancelled at step 27 of 28 may still succeed,
+and if it does you get your image. Discarding a finished result to honour a state name would be worse
+than telling you what actually happened.
+
+### Results live in memory for five minutes and nowhere else
+
+- `Images:Jobs:RetentionSeconds` (300) — a finished job's record and bytes are dropped this long
+  after completion, read or not.
+- `Images:Jobs:MaxRetainedBytes` (512 MB) — a global ceiling, LRU-evicting **completed** results and
+  never an in-flight one, enforced **on insert** rather than on a timer. An evicted job reads as
+  `expired` with a reason, so arriving late is a `410` that says what happened rather than a `404`
+  that looks like a bug.
+- **Read-once by default** — a delivered image is dropped immediately. `Images:Jobs:KeepAfterRead`
+  exists for a console's benefit and is the setting that makes the hub briefly an image cache.
+- **Nothing touches disk. Ever.** No temp file, no spill under memory pressure, no cache directory.
+  Under pressure the answer is eviction and a `503` on submit, not a file.
+
+A restart forgets in-flight and completed jobs, exactly like every other counter on the hub. That is
+not a limitation waiting to be fixed — it is what keeps "no persisted state" true, and durable jobs
+would have to be argued as a fourth exception to that rule rather than added quietly.
+
+### The queue is FIFO and it is not clever
+
+A GPU running diffusion is a resource there is exactly one of, so the hub gives each capable node one
+image job at a time and takes the queue in order. Shortest-job-first would let a stream of four-step
+requests starve a fifty-step one indefinitely and the starvation would be invisible; fair-share needs
+a notion of tenant weight this project's client model does not have. `Images:Jobs:MaxQueueDepth` (32)
+bounds it, and a full queue is `503` + `Retry-After` — the same status and header as every other
+limit here, so your retry logic behaves identically whichever one it hit.
+
+### A node that disappears mid-job fails the job, and never retries it
+
+An image job that died at step 22 produced no output, so it is *technically* retryable — and
+retrying it would silently double the GPU-minutes and the ledger units for one request. It fails with
+`node_lost` and you decide. A job still `queued` when its node goes away has spent nothing and is
+simply routed again.
+
+### Every route is yours only
+
+A job id belonging to another client is a `404`, byte-identical to one that does not exist — never a
+`403`. On a surface whose ids are only knowable by having been issued one, the difference between
+"not yours" and "not there" *is* the isolation boundary.
+
+### Solo mode gets the same five routes
+
+A standalone node serves `/api/images/jobs` itself, with the same bodies and the same statuses — one
+job at a time, because it is a box with a card in it. The deployment least likely to have a proxy
+that tolerates a two-minute request is the one somebody is running on a laptop.
 
 ## Configure the fleet, not the boxes (v3.11+)
 

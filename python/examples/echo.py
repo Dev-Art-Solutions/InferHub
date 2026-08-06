@@ -25,6 +25,7 @@ fails, and it looks exactly like a hang.
 
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -32,6 +33,24 @@ from inferhub_worker import File, Worker  # noqa: E402
 
 
 def handle(request):
+    # Phase 47. `{"behaviour": "slow", "steps": 30, "stepMs": 200}` makes this worker take real time,
+    # emit a real progress frame per step and honour a real cancel — which is how the whole async
+    # job model (SSE, monotonic progress, cooperative cancel, a worker that stays warm afterwards)
+    # can be exercised on a laptop with no GPU and no weights.
+    #
+    # The two lines inside the loop are exactly the two lines a diffusers worker puts inside
+    # `callback_on_step_end`. There is nothing else to it.
+    if request.payload.get("behaviour") == "slow":
+        steps = int(request.payload.get("steps", 30))
+        step_ms = int(request.payload.get("stepMs", 100))
+
+        for step in range(1, steps + 1):
+            time.sleep(step_ms / 1000.0)
+            request.progress(step, total_steps=steps)
+            request.raise_if_cancelled()
+
+        return {"slept": steps * step_ms / 1000.0, "steps": steps}
+
     payload = {"echoed": request.payload, "model": request.model}
 
     if not request.files:

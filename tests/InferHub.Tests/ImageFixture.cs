@@ -137,18 +137,31 @@ internal sealed class ImageMesh : IAsyncDisposable
     /// <summary>The node's scratch root. After every request it must be empty (phase-41 D5).</summary>
     public ToolWorkerFixture.TempDirectory Scratch { get; private set; } = null!;
 
+    /// <summary>The phase-47 job registry, so a test can reach the store directly where a route cannot.</summary>
+    public ImageJobRegistry Jobs { get; private set; } = null!;
+
+    /// <summary>The phase-47 job knobs, so a retention test does not have to wait five minutes.</summary>
+    public Action<InferHub.Shared.Images.ImageEdgeOptions>? ConfigureImages { get; set; }
+
+    /// <summary>Who the requests come from. Phase 47's routes are client-scoped and this is the scope.</summary>
+    public string ClientId { get; private set; } = "image-client";
+
     public static async Task<ImageMesh> StartAsync(
         long? maxAttachmentBytes = null,
         ClientLimits? limits = null,
         int? maxBatch = null,
         long? maxResponseBytes = null,
+        Action<InferHub.Shared.Images.ImageEdgeOptions>? configureImages = null,
+        string clientId = "image-client",
         params string[] workerArguments)
     {
         var mesh = new ImageMesh
         {
             manifests = ImageFixture.Manifests(workerArguments),
             nodeData = new ToolWorkerFixture.TempDirectory("inferhub-image-node"),
-            Scratch = new ToolWorkerFixture.TempDirectory("inferhub-image-scratch")
+            Scratch = new ToolWorkerFixture.TempDirectory("inferhub-image-scratch"),
+            ConfigureImages = configureImages,
+            ClientId = clientId
         };
 
         await mesh.StartCoordinatorAsync(maxAttachmentBytes, limits, maxBatch, maxResponseBytes);
@@ -212,29 +225,31 @@ internal sealed class ImageMesh : IAsyncDisposable
             {
                 options.MaxResponseBytes = bytes;
             }
+
+            ConfigureImages?.Invoke(options);
         });
         builder.Services.AddSingleton<Dispatcher>();
         builder.Services.AddSingleton<IDispatcher>(sp => sp.GetRequiredService<Dispatcher>());
         builder.Services.AddSingleton<IToolDispatcher>(sp => sp.GetRequiredService<Dispatcher>());
+        builder.Services.AddSingleton<ImageJobRegistry>();
         builder.Services.AddSingleton<InferHub.Coordinator.Cluster.IClusterMembership,
             InferHub.Coordinator.Cluster.SingleCoordinatorMembership>();
 
         app = builder.Build();
+        Jobs = app.Services.GetRequiredService<ImageJobRegistry>();
 
-        if (limits is not null)
+        // Stand in for BearerApiKeyMiddleware, which is not in this pipeline: the identity is what
+        // phase 47's routes scope on, and ImageEndpointTests separately asserts that the real prefix
+        // guard covers /v1/images and /api.
+        var client = new ResolvedClient(ClientId, limits, null);
+        app.Use(async (context, next) =>
         {
-            // Stand in for BearerApiKeyMiddleware, which is not in this pipeline: the limits are
-            // what the test is about, not the key parsing, and ImageEndpointTests separately asserts
-            // that the real prefix guard covers /v1/images.
-            var client = new ResolvedClient("image-client", limits, null);
-            app.Use(async (context, next) =>
-            {
-                context.Items[BearerApiKeyMiddleware.ClientItemKey] = client;
-                await next();
-            });
-        }
+            context.Items[BearerApiKeyMiddleware.ClientItemKey] = client;
+            await next();
+        });
 
         app.MapImageEndpoints();
+        app.MapImageJobEndpoints();
         app.MapHub<NodeHub>("/hubs/node");
 
         await app.StartAsync();
@@ -299,6 +314,20 @@ internal sealed class ImageMesh : IAsyncDisposable
         Directory.Exists(Scratch.Path)
             ? Directory.GetFileSystemEntries(Scratch.Path).Length
             : 0;
+
+    /// <summary>
+    /// Takes the node away mid-job, which is the only honest way to test phase-47 D7: a running job
+    /// fails with <c>node_lost</c> and is <b>not</b> silently retried.
+    /// </summary>
+    public async Task StopNodeAsync()
+    {
+        await node.StopAsync(CancellationToken.None);
+
+        for (var i = 0; i < 100 && NodeIsRegistered(); i++)
+        {
+            await Task.Delay(50);
+        }
+    }
 
     /// <summary>Whether the node is still connected — the assertion the 32 KB bug needed.</summary>
     public bool NodeIsRegistered() =>

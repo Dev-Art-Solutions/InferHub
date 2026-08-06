@@ -53,7 +53,21 @@ if (arguments.ExitOnStart)
     return 3;
 }
 
-void Send(object frame) => stdout.WriteLine(JsonSerializer.Serialize(frame, json));
+// stdout is the protocol and one frame is one line, so a progress frame written from a request
+// task must not interleave with the read loop's own writes.
+var writeLock = new object();
+
+void Send(object frame)
+{
+    lock (writeLock)
+    {
+        stdout.WriteLine(JsonSerializer.Serialize(frame, json));
+    }
+}
+
+// Phase 47. The requests currently running, so a `cancel` frame can find one.
+var inFlight = new System.Collections.Concurrent.ConcurrentDictionary<string, CancellationTokenSource>();
+Task? current = null;
 
 while (await stdin.ReadLineAsync() is { } line)
 {
@@ -122,7 +136,53 @@ while (await stdin.ReadLineAsync() is { } line)
             continue;
 
         case "request":
-            await HandleRequestAsync(frame);
+            // Phase 47. A request is handled on a background task so the read loop stays free to
+            // pick up the `cancel` frame that arrives while it is running. A worker that only reads
+            // between requests cannot be cancelled at all, which is the single most common way a
+            // first cancellable worker is written wrong — and it looks exactly like a hang.
+            {
+                var id = frame.TryGetProperty("id", out var requestId) ? requestId.GetString() : null;
+                var cancellation = new CancellationTokenSource();
+
+                if (id is not null)
+                {
+                    inFlight[id] = cancellation;
+                }
+
+                current = HandleRequestAsync(frame, cancellation.Token).ContinueWith(
+                    finished =>
+                    {
+                        if (id is not null)
+                        {
+                            inFlight.TryRemove(id, out _);
+                        }
+
+                        cancellation.Dispose();
+                        _ = finished;
+                    },
+                    TaskScheduler.Default);
+            }
+
+            continue;
+
+        case "cancel":
+            {
+                var id = frame.TryGetProperty("id", out var requestId) ? requestId.GetString() : null;
+
+                if (id is not null && inFlight.TryGetValue(id, out var cancellation))
+                {
+                    if (arguments.IgnoreCancel)
+                    {
+                        // Deliberately deaf, so the node's cancel grace has something real to
+                        // expire against and the terminate-and-restart path is exercised by a
+                        // process that actually refuses rather than by a mock that pretends to.
+                        continue;
+                    }
+
+                    cancellation.Cancel();
+                }
+            }
+
             continue;
 
         default:
@@ -130,9 +190,21 @@ while (await stdin.ReadLineAsync() is { } line)
     }
 }
 
+// Let a request that is still running finish writing its frame before stdout goes away.
+if (current is not null)
+{
+    try
+    {
+        await current.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+    catch (Exception)
+    {
+    }
+}
+
 return 0;
 
-async Task HandleRequestAsync(JsonElement frame)
+async Task HandleRequestAsync(JsonElement frame, CancellationToken cancellationToken)
 {
     var id = frame.TryGetProperty("id", out var idElement) ? idElement.GetString() : null;
     var payload = frame.TryGetProperty("payload", out var p) && p.ValueKind is not JsonValueKind.Null
@@ -154,7 +226,7 @@ async Task HandleRequestAsync(JsonElement frame)
 
     if (behaviour is null && capability is "image")
     {
-        await HandleImageAsync(id, payload, frame);
+        await HandleImageAsync(id, payload, frame, cancellationToken);
         return;
     }
 
@@ -405,7 +477,7 @@ async Task HandleAudioAsync(string? id, string capability, JsonElement payload, 
 /// bytes of zeros. Phase 42 learned this with a WAV header and it is the same lesson.
 /// </para>
 /// </remarks>
-async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame)
+async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, CancellationToken cancellationToken)
 {
     if (arguments.ImageFailCode is { } failure)
     {
@@ -452,6 +524,39 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame)
     {
         Send(new { type = "error", id, message = "no scratch directory" });
         return;
+    }
+
+    // Phase 47. `--image-step-ms N` makes each diffusion step take real time and emit a real
+    // progress frame, which is what lets the whole job model — SSE, monotonic progress, cooperative
+    // cancel, a worker that stays warm — be tested on a machine with no GPU and no weights. Every
+    // acceptance criterion in the phase is reachable from here.
+    if (arguments.ImageStepMs > 0)
+    {
+        for (var step = 1; step <= steps; step++)
+        {
+            try
+            {
+                await Task.Delay(arguments.ImageStepMs, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // Answered from `callback_on_step_end`, exactly as a real diffusion worker does:
+                // an error frame coded `cancelled`, and then this process is still alive, still
+                // holding its weights, and ready for the next request. That is the whole reason
+                // cancel is a frame and not a kill.
+                Send(new
+                {
+                    type = "error",
+                    id,
+                    code = "cancelled",
+                    message = $"cancelled at step {step} of {steps}"
+                });
+
+                return;
+            }
+
+            Send(new { type = "progress", id, step, totalSteps = steps });
+        }
     }
 
     var files = new List<object>(count);
@@ -688,7 +793,9 @@ internal sealed record Args(
     string? ImageFailCode = null,
     int ImagePadBytes = 0,
     object[]? RedeclareOnPing = null,
-    bool WedgeOnPing = false)
+    bool WedgeOnPing = false,
+    int ImageStepMs = 0,
+    bool IgnoreCancel = false)
 {
     public static Args Parse(string[] args)
     {
@@ -702,6 +809,8 @@ internal sealed record Args(
         var imagePadBytes = 0;
         object[]? redeclareOnPing = null;
         var wedgeOnPing = false;
+        var imageStepMs = 0;
+        var ignoreCancel = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -737,6 +846,12 @@ internal sealed record Args(
                 case "--redeclare-on-ping" when i + 1 < args.Length:
                     redeclareOnPing = ParseCapabilities(args[++i]);
                     break;
+                case "--image-step-ms" when i + 1 < args.Length:
+                    imageStepMs = int.Parse(args[++i]);
+                    break;
+                case "--ignore-cancel":
+                    ignoreCancel = true;
+                    break;
             }
         }
 
@@ -750,7 +865,9 @@ internal sealed record Args(
             imageFailCode,
             imagePadBytes,
             redeclareOnPing,
-            wedgeOnPing);
+            wedgeOnPing,
+            imageStepMs,
+            ignoreCancel);
     }
 
     /// <summary>"transcribe:a,b;speak:c" → the capability list a ready frame carries.</summary>

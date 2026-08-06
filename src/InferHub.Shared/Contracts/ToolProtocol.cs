@@ -107,6 +107,32 @@ public static class ToolFrameTypes
 
     /// <summary>Worker → node. The reply to <see cref="Ping"/>.</summary>
     public const string Pong = "pong";
+
+    /// <summary>
+    /// Worker → node, any number of times during a request (phase 47): <c>{step, totalSteps}</c>.
+    /// </summary>
+    /// <remarks>
+    /// <b>Additive, and silence is the old behaviour.</b> A worker written against 3.14 never sends
+    /// one and behaves exactly as it did; a caller who never watches gets exactly the response they
+    /// got before. It is separate from <see cref="Chunk"/> because a chunk is a <em>partial answer</em>
+    /// and this is not an answer at all — conflating them would put "7 of 28" into the body of a
+    /// streaming tool response, where a client is entitled to expect content.
+    /// </remarks>
+    public const string Progress = "progress";
+
+    /// <summary>
+    /// Node → worker (phase 47, D3): stop working on this request id, cooperatively.
+    /// </summary>
+    /// <remarks>
+    /// The worker is expected to answer with an <see cref="Error"/> frame coded
+    /// <see cref="ToolErrorCodes.Cancelled"/> and then be <b>reusable</b>. That is the whole point:
+    /// killing it would be simpler and would punish the next caller with a fresh multi-gigabyte
+    /// weight load, and the punishment gets worse with every model the catalogue gains. A worker
+    /// that has not answered within <c>Tools:CancelGraceSeconds</c> is by definition not
+    /// cooperating and is terminated — phase-41 deviation 6's instinct, for the case it was written
+    /// for.
+    /// </remarks>
+    public const string Cancel = "cancel";
 }
 
 /// <summary>
@@ -179,6 +205,18 @@ public sealed record ToolFrame
     [JsonPropertyName("code")]
     public string? Code { get; init; }
 
+    /// <summary>On a <c>progress</c> frame: the step just finished, 1-based.</summary>
+    [JsonPropertyName("step")]
+    public int? Step { get; init; }
+
+    /// <summary>
+    /// On a <c>progress</c> frame: how many steps this run will take, as the worker currently knows
+    /// it. A recipe may clamp the requested count, so this is the worker's number and not the
+    /// caller's — the same reason metering reads what was produced rather than what was asked.
+    /// </summary>
+    [JsonPropertyName("totalSteps")]
+    public int? TotalSteps { get; init; }
+
     /// <summary>The payload as raw JSON, or null when the frame carried none.</summary>
     public string? PayloadJson() => Payload?.GetRawText();
 }
@@ -205,6 +243,12 @@ public static class ToolErrorCodes
     /// it, and the message names the flag and the pre-fetch command for whoever runs the box.
     /// </summary>
     public const string ModelUnavailable = "model_unavailable";
+
+    /// <summary>
+    /// The worker stopped because it was asked to (phase 47, D3). Not a client error and not a
+    /// server error: the job ends <c>cancelled</c>, the worker stays warm, and nothing is metered.
+    /// </summary>
+    public const string Cancelled = "cancelled";
 
     /// <summary>Whether this code changes the status the edge renders.</summary>
     public static bool IsClientError(string? code) =>

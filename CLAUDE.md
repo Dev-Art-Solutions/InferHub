@@ -252,6 +252,17 @@ as load-bearing:
    design has drifted — stop. (Admission windows are fed in-memory by `UsageMeter`, never from
    the ledger.) Default is `none`: in-memory, reset on restart, like every other counter.
 
+   > **Phase 47's image job registry is deliberately *not* a fourth exception, and the reason is
+   > worth keeping.** It holds a job's record and its image bytes in memory, bounded by
+   > `Images:Jobs:MaxRetainedBytes` and expiring after `Images:Jobs:RetentionSeconds` (five minutes),
+   > and **nothing about it touches disk — no temp file, no spill under memory pressure, no cache
+   > directory**. A restart forgets in-flight *and* completed jobs, like every other counter here,
+   > and the docs say so unhedged. That is the whole test: the rule is about state that survives a
+   > process, and this does not. If a future phase wants *durable* jobs it is a fourth exception and
+   > must be argued **in this rule**, not added in the endpoint — because the moment a result
+   > survives a restart, "where are my pictures kept" stops having the answer "nowhere, for five
+   > minutes" and becomes a data-retention question somebody has to own.
+
    **Third recorded exception (phase 43): node profiles**, when `Fleet:Profiles:Persistence` is
    `file` or `postgres`. A profile that evaporates on hub restart is useless for the thing it was
    asked to do. The rule survives for phase-30 D2's reason: **a lost profile costs the fleet
@@ -2285,6 +2296,129 @@ subprocess, exactly as phase-41 D1 requires.
 >
 > `ToolRedeclarationTests` drives all of it through a real child process, including the guard on the
 > guard (a worker that never re-declares must not make the node re-report twice a minute forever).
+
+### Phase 47 (jobs, progress, cancel) — also load-bearing
+
+**D1 — The async surface is InferHub's own, under `/api`, and that is not a second dialect.**
+OpenAI has no asynchronous Images API to adopt. Phase-21's rule is "adopt the dialect clients already
+speak", and where there is none the rule does not say "invent an OpenAI-shaped one" — it says what
+phase-40 D3 said about `ToolJob`: **work with no existing shape travels as its own honest contract.**
+So `/api/images/jobs` and its four companions, in the house style of
+`/api/admin/models/{model}/ensure`, under the `/api` prefix `BearerApiKeyMiddleware` already guards.
+**Considered and rejected: a `background: true` field on `/v1/images/generations`** returning a
+non-OpenAI body — one route answering two incompatible shapes depending on a flag, which every typed
+SDK gets wrong. The repo has refused this trade five times (21 D3, 22 D1, 34 D1, 38 D2, 40 D3).
+
+**`/v1/images/generations` became "submit a job and wait for it", and nothing about it changed for a
+caller.** Both surfaces queue in one line and are metered by one code path; two paths to a GPU with
+two ideas of fairness is how a fleet grows a fast lane nobody documented. `ImageSyncCompatTests` pins
+the envelope field-for-field. What is new is a bound: past `Images:SyncMaxWaitSeconds` (120) it is a
+`503` naming the job id and the async route, and **the job keeps running** — cancelling it because an
+HTTP client got bored is the caller's decision.
+
+> **The refactor lost a status once, and the suite caught it.** Flattening a failed job to a `502`
+> at the sync edge dropped the `400` a worker's `invalid_request` earns and the `503` a busy tool
+> earns — phase-29 D6's inference by the back door, reached by *discarding* information rather than
+> by guessing. `ImageJobFailure` now rides on the record: the node states the kind, `ImageRenderer`
+> decides the status, and the job carries that decision to whichever surface asks.
+
+**D2 — Progress travels on the existing streams; there is no new transport.** Worker → node:
+`progress` frames (`{step, totalSteps}`), a new frame type and **additive** — a worker written
+against 3.14 never sends one and behaves exactly as it did. Node → hub: the same `ToolChunk` contract
+phase 41 built, on an ordinary `NodeHub.ToolJobProgress` invocation. Hub → client: SSE framed by
+hand, exactly as phase-21's SSE and phase-28's exposition format are, because a stream of six-field
+objects does not justify a dependency. Phase-26 D2's precedent is exact (a model pull relays progress
+on an existing SSE channel) with one deliberate difference: image progress is **client-facing**, so
+it does not go on `/api/admin/stream` — an admin channel carrying tenants' job ids is an
+authorization mistake waiting for somebody to notice.
+
+*`progress` is a separate frame type from `chunk`, and the distinction is load-bearing:* a chunk is a
+partial **answer**, and putting "7 of 28" into the body of a streaming tool response would hand a
+client that expects content something that is not. `ToolExecutor.StreamAsync` names it explicitly for
+a sharper reason — the default branch there is the *terminal* one, so a progress frame falling
+through would end the stream at step one.
+
+**Image jobs dispatch *blocking*, not streaming, and that is not a contradiction.** A streaming tool
+response deliberately carries no attachments (phase-41's `StreamAsync` refuses them), and an image
+*is* an attachment. So the answer is one `ToolResult` on the result path and the progress arrives out
+of band — `Dispatcher.toolProgress` is checked only after `pendingToolStreams` misses, so every job
+with no sink registered takes the 3.14 path byte for byte.
+
+**D3 — Cancel is cooperative first and a kill only as a last resort, because the weights cost a
+minute.** A `cancel` frame (node → worker) carrying the request id; the worker honours it from its
+per-step callback and answers `error` coded `cancelled`, and **is then still alive and still holding
+its weights**. Past `Tools:CancelGraceSeconds` (20) it is terminated and restarted — the existing
+path. **Killing first would be simpler and is wrong**: it punishes the *next* caller for the first
+one's change of mind, and the punishment grows with every model the catalogue gains. Phase-41
+deviation 6 established the opposite instinct for a worker that blew its deadline — that one is by
+definition not cooperative — and this is the complementary case, stated so the two do not read as a
+contradiction later.
+
+**Cancellation is best-effort and the API says so.** `running → cancelling → cancelled | succeeded`
+is legal, and `ImageJobTests` asserts the `succeeded` outcome as **legal, not flaky**. Discarding a
+finished image to honour a state name would be worse than reporting what happened.
+
+*The node's cancel plumbing is the part that is easy to get subtly wrong:* `ToolExecutor.RunAsync`
+drives the read loop on a token that is **not** the caller's. The caller's token sends the frame and
+arms the grace clock; only when that expires does the hard token fire and take the worker down.
+Wiring the caller's token straight through would make every cancel a kill with extra steps.
+
+**D4 — Per-step progress is free; previews are not, and are off.** `{step, totalSteps}` costs a
+callback. A preview costs a VAE decode per step (~10–15% of the run) and produces intermediate
+*content*, which is rule 7's business. *Recorded deviation: the preview opt-in is **not** in 3.15.*
+The brief specified `X-InferHub-Image-Preview: every-n` and `Images:AllowPreview`; shipping a header
+whose only effect is more of what a caller already gets, on a fixture with no VAE to decode, would be
+a documented feature nobody could verify — the category phase 40's non-goals refuse by name. The
+refusal is what survives here: previews are content, they are off, and a phase that adds them adds
+them with a worker that actually produces one.
+
+**D5 — The queue is per capability and it is FIFO, deliberately.** A queued image job is a **202 with
+a queue position**, not a wait-then-503: the client already accepted asynchrony, so making it retry
+would be strictly worse than telling it where it is in line. FIFO, not shortest-job-first (a stream
+of 4-step requests would starve a 50-step one invisibly) and not fair-share-by-client (needs a tenant
+weight phase 25's client model does not have). `Images:Jobs:MaxQueueDepth` (32) bounds it and a full
+queue is `503` + `Retry-After`, the same status and header as every other limit here.
+
+*Recorded deviation: the queue is `ImageJobRegistry`'s own, not a path added to `RequestQueue`.*
+`RequestQueue` answers "wait for a model's fleet to free a declared concurrency slot, then 503",
+which is a different question with a different answer shape; the fairness this phase needs is "one
+image job per capable node, head-of-line". Grafting a 202 onto a class whose whole contract is a
+`QueueOutcome` enum would have made both harder to read. The pump is event-driven — it runs on every
+submission, completion, cancel and loss rather than on a timer — so a freed GPU is used in
+milliseconds instead of at the next tick.
+
+**D6 — The job store is in memory, bounded, expiring and read-once. This is what keeps rule 4
+whole.** See the note at rule 4 above for why it is not a fourth exception. The byte budget is
+enforced **on insert**, not on a timer: a timer means the ceiling is a suggestion for one sweep
+interval, and one sweep interval of 4096² batches is how a hub gets OOM-killed. Eviction sets the job
+to `expired` with a reason so a late arrival is a `410` that says what happened rather than a `404`
+that reads like a bug.
+
+*Recorded deviation: `ImageJobStore` lives in `InferHub.Shared`, not in `InferHub.Coordinator` where
+the brief put it.* Phase-38 D2's reasoning: solo mode serves the same five routes, and two
+implementations of "when do the bytes go away" is one answer too many. It is a plain class with no
+ASP.NET and no logging package, so rule 2 holds and **`InferHub.Shared.csproj` is still an empty
+`<Project Sdk="Microsoft.NET.Sdk">`**. What stayed per host is everything that needs a fleet —
+routing, dispatch, metering, the ledger — which is exactly the line phase 38 drew.
+
+**D7 — A node failure mid-job is a failed job with a reason, and never a silent retry.** Phase-21
+D3's pre-stream failover retries a request that has not produced output; an image job that died at
+step 22 has produced none and is *technically* retryable — and retrying it would silently double the
+GPU-minutes and the ledger units for one request. So **no automatic retry once a job is `running`**:
+it fails `node_lost` and the client decides. A job still `queued` is re-routed, because nothing has
+been spent. There is deliberately **no hook for this**: `NodeHub.OnDisconnectedAsync` already faults
+the pending dispatch through `Dispatcher.FailForConnection`, and that lands in the one `catch` that
+owns the decision. `ImageJobTests` takes a real node away mid-job and asserts both the reason **and
+an empty ledger** — a silent retry would have doubled those numbers rather than left them empty.
+
+**The echo worker grew a slow, cancellable, progress-emitting image mode** (`--image-step-ms`,
+`--ignore-cancel`), and that is what makes the whole job model testable with no GPU and no weights —
+phase-41's echo-worker discipline, and the reason this phase's suite runs in CI. Two things only a
+**real child process** can produce are exactly what this phase is about: a frame arriving *while* a
+request is in flight, and a worker that is still warm afterwards. The Python reference library gained
+the same (`request.progress`, `request.raise_if_cancelled`, `Cancelled`), and its loop now reads with
+`readline()` rather than `for line in stdin` — **the iterator protocol keeps a read-ahead buffer, and
+the frame two readers would lose between them is the cancel.**
 
 ## Auth model (three independent token sets)
 

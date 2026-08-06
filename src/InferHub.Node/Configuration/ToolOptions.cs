@@ -111,6 +111,25 @@ public sealed class ToolOptions
     public int QueueMaxWaitSeconds { get; set; } = 30;
 
     /// <summary>
+    /// How long a worker gets to honour a <c>cancel</c> frame before it is terminated and restarted
+    /// (phase 47, D3). Default 20s.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Killing first would be simpler and is wrong.</b> A diffusion worker holds weights that took
+    /// tens of seconds to load — SDXL today, and twelve to twenty gigabytes taking a minute or more
+    /// once the catalogue grows. Killing it to abandon one job punishes the <em>next</em> caller for
+    /// the first one's change of mind, and the punishment gets worse with every model added.
+    /// </para>
+    /// <para>
+    /// Past this budget the worker is by definition not cooperating, and phase-41 deviation 6's
+    /// instinct applies unchanged: terminate, release the slot only once the process is gone, and
+    /// start a fresh one. The two are complementary cases rather than a contradiction.
+    /// </para>
+    /// </remarks>
+    public int CancelGraceSeconds { get; set; } = 20;
+
+    /// <summary>
     /// The restart budget, lifted from <c>Ollama:Supervisor</c> (phase-36 D4) rather than
     /// re-derived. Past the budget a pool stops starting workers, logs once at Error, withdraws its
     /// capabilities, and keeps probing — so a tool that recovers is noticed and one that does not

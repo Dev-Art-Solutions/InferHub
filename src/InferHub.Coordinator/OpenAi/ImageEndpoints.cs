@@ -22,6 +22,16 @@ namespace InferHub.Coordinator.OpenAi;
 /// built to make possible.
 /// </para>
 /// <para>
+/// <b>Phase 47 turned this route into "submit a job and wait for it", and nothing about it changed
+/// for a caller.</b> Same body, same headers, same envelope, same statuses; the request now runs
+/// through <see cref="ImageJobRegistry"/> so a synchronous call and an asynchronous one queue in the
+/// same line and are metered by the same code — the alternative, two paths to a GPU with two ideas
+/// of fairness, is how a fleet develops a fast lane nobody documented. <c>ImageSyncCompatTests</c>
+/// asserts the response is byte-identical to 3.14 modulo ids. What is new is an honest ceiling:
+/// past <c>Images:SyncMaxWaitSeconds</c> the answer is a <c>503</c> naming the async route, rather
+/// than a connection held open until a proxy in the path cuts it with a status nobody can act on.
+/// </para>
+/// <para>
 /// These routes sit under <c>/v1</c>, which <c>BearerApiKeyMiddleware</c> guards (phase-21 D2) —
 /// <c>ImageEndpointTests.TheImageRouteRejectsAMissingKey</c> fails if that ever stops being true,
 /// because a client-facing route under an unguarded prefix is an unauthenticated inference API and
@@ -37,8 +47,6 @@ namespace InferHub.Coordinator.OpenAi;
 /// </remarks>
 public static class ImageEndpoints
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-
     public static IEndpointRouteBuilder MapImageEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/v1/images/generations", HandleGenerationAsync);
@@ -47,9 +55,8 @@ public static class ImageEndpoints
 
     private static async Task<IResult> HandleGenerationAsync(
         HttpContext httpContext,
-        Services.IRouter router,
+        ImageJobRegistry jobs,
         INodeRegistry registry,
-        IToolDispatcher tools,
         Metrics metrics,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
@@ -62,19 +69,19 @@ public static class ImageEndpoints
 
         if (string.IsNullOrWhiteSpace(raw))
         {
-            return Error(400, "request body is required", OpenAiErrorTypes.InvalidRequest);
+            return ImageEndpointSupport.Error(400, "request body is required", OpenAiErrorTypes.InvalidRequest);
         }
 
         var request = ImageGenerationRequest.TryParse(
             raw,
             name => httpContext.Request.Headers.TryGetValue(name, out var values) ? values.ToString() : null,
-            Limits(httpContext),
+            ImageEndpointSupport.Limits(httpContext),
             out var invalid,
             out var invalidParam);
 
         if (request is null)
         {
-            return Error(400, invalid, OpenAiErrorTypes.InvalidRequest, param: invalidParam);
+            return ImageEndpointSupport.Error(400, invalid, OpenAiErrorTypes.InvalidRequest, param: invalidParam);
         }
 
         var context = InferenceCore.ClientContext.From(httpContext);
@@ -88,115 +95,122 @@ public static class ImageEndpoints
                 admission.Status,
                 admission.Message);
 
-            return Rejected(httpContext, admission);
+            return ImageEndpointSupport.Rejected(httpContext, admission);
         }
 
-        using var lease = admission.Lease;
-
-        var node = router.Route(request.Model, capability: CapabilityKinds.Image);
-
-        if (node is null)
+        if (ImageEndpointSupport.NoNode(httpContext, registry, request.Model, admission.Lease) is { } refusal)
         {
-            return NoNode(httpContext, registry, request.Model);
+            return refusal;
         }
 
-        var job = new ToolJob(Guid.NewGuid(), CapabilityKinds.Image, request.Model, request.ToToolPayload());
+        var record = jobs.TrySubmit(context.Client, request, admission.Lease);
 
-        var result = await tools.DispatchToolAsync(node, job, cancellationToken);
-        var outcome = ImageRenderer.Generation(result, request, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        if (record is null)
+        {
+            httpContext.Response.Headers.RetryAfter = "30";
 
-        // Model, count, megapixel-steps, outcome. Never the prompt, and never a byte of the image.
-        logger.LogInformation(
-            "Image job {JobId} ({Model}) on node {NodeId}: {Status}, {Images} image(s), {Units:F1} megapixel-steps",
-            job.JobId,
-            request.Model,
-            node.NodeId,
-            outcome.Status,
-            outcome.ImageCount,
-            outcome.Units);
+            return ImageEndpointSupport.Error(
+                503,
+                $"the image job queue is full ({jobs.Store.Options.MaxQueueDepth} waiting, Images:Jobs:MaxQueueDepth)",
+                OpenAiErrorTypes.ApiError,
+                code: "queue_full");
+        }
+
+        var budget = TimeSpan.FromSeconds(Math.Max(
+            1,
+            httpContext.RequestServices.GetService<IOptions<ImageEdgeOptions>>()?.Value.SyncMaxWaitSeconds
+                ?? new ImageEdgeOptions().SyncMaxWaitSeconds));
+
+        var finished = await ImageJobWait.ForTerminalAsync(jobs.Store, record, budget, cancellationToken);
 
         httpContext.Response.Headers[InferenceCore.ServedByHeader] = "node";
 
-        if (!outcome.IsError)
+        if (!finished)
         {
-            context.Usage.RecordUnits(context.Client, CapabilityKinds.Image, request.Model, outcome.Units, outcome.UnitKind);
-            metrics.RecordToolUnits(CapabilityKinds.Image, request.Model, outcome.Units, outcome.UnitKind);
-        }
+            // The job is still running and keeps running — the caller has a real id and can watch
+            // it. Cancelling it here would throw away a minute of GPU because an HTTP client got
+            // bored, which is a decision only the caller can make.
+            httpContext.Response.Headers.RetryAfter = "5";
 
-        return Render(httpContext, outcome);
-    }
-
-    private static ImageLimits Limits(HttpContext httpContext)
-    {
-        var images = httpContext.RequestServices.GetService<IOptions<ImageEdgeOptions>>()?.Value ?? new ImageEdgeOptions();
-
-        var attachments = httpContext.RequestServices.GetService<IOptions<ToolEdgeOptions>>()?.Value.MaxAttachmentBytes
-            ?? ToolAttachmentLimits.DefaultMaxBytes;
-
-        return images.Resolve(attachments);
-    }
-
-    /// <summary>
-    /// Phase-40 D5, unchanged and reused rather than re-argued: a capability nobody provides is
-    /// fleet state and gets the saturation shape; a model nobody holds at all is still the 404 that
-    /// is byte-identical to the one a scoped-out model produces (phase-25 D4).
-    /// </summary>
-    private static IResult NoNode(HttpContext httpContext, INodeRegistry registry, string model)
-    {
-        if (ToolEndpoints.KnownToTheFleet(registry, model))
-        {
-            httpContext.Response.Headers.RetryAfter = ToolEndpoints.CapabilityRetryAfterSeconds.ToString();
-
-            return Error(
+            return ImageEndpointSupport.Error(
                 503,
-                $"no node currently provides '{CapabilityKinds.Image}' for model '{model}'",
+                $"this image is taking longer than {budget.TotalSeconds:F0}s (Images:SyncMaxWaitSeconds). It is still " +
+                $"running as job {record.Id}: watch GET /api/images/jobs/{record.Id}/events and collect it from " +
+                $"GET /api/images/jobs/{record.Id}/content/0.",
                 OpenAiErrorTypes.ApiError,
-                code: "capability_unavailable");
+                code: "job_still_running");
         }
 
-        return Error(404, $"model '{model}' not found", OpenAiErrorTypes.NotFound, param: "model", code: "model_not_found");
-    }
-
-    private static IResult Rejected(HttpContext httpContext, AdmissionDecision admission)
-    {
-        if (admission.RetryAfterSeconds is { } retryAfter)
-        {
-            httpContext.Response.Headers.RetryAfter = retryAfter.ToString();
-        }
-
-        var (type, code) = admission.Status switch
-        {
-            404 => (OpenAiErrorTypes.NotFound, "model_not_found"),
-            429 => (OpenAiErrorTypes.RateLimit, "rate_limit_exceeded"),
-            402 => (OpenAiErrorTypes.RateLimit, "insufficient_quota"),
-            _ => (OpenAiErrorTypes.ApiError, (string?)null)
-        };
-
-        return Error(admission.Status, admission.Message!, type, code: code);
+        return Render(httpContext, jobs, record);
     }
 
     /// <summary>
-    /// The ten lines phase-37 D6 keeps per host. Everything above them — the status, the envelope,
-    /// the base64 — was decided by <see cref="ImageRenderer"/>, which the solo node calls too.
+    /// The 3.14 response, reproduced from the job the request became.
     /// </summary>
-    internal static IResult Render(HttpContext httpContext, ImageOutcome outcome)
+    /// <remarks>
+    /// The outcome is <b>not</b> logged here: <see cref="ImageJobRegistry"/> already logged it, once,
+    /// where a job actually finishes — so a synchronous call and an asynchronous one produce the same
+    /// single line, and <c>ImagePrivacyTests</c>'s "exactly one line, and it names the model rather
+    /// than the prompt" stays a statement about the hub rather than about one route.
+    /// </remarks>
+    private static IResult Render(HttpContext httpContext, ImageJobRegistry jobs, ImageJobRecord record)
     {
-        if (outcome.IsError)
+        if (record.State != ImageJobStates.Succeeded)
         {
-            if (outcome.RetryAfterSeconds is { } retryAfter)
+            // The status the *worker's* answer earned, carried on the job. Flattening every failure
+            // to a 502 here would lose the 400 a refused size earns and the 503 a busy tool earns —
+            // phase-29 D6's inference by the back door, reached by discarding information rather
+            // than by guessing.
+            if (record.Failure is { } failure)
             {
-                httpContext.Response.Headers.RetryAfter = retryAfter.ToString();
+                if (failure.RetryAfterSeconds is { } retryAfter)
+                {
+                    httpContext.Response.Headers.RetryAfter = retryAfter.ToString();
+                }
+
+                return ImageEndpointSupport.Error(
+                    failure.Status,
+                    failure.Message ?? $"the image job ended {record.State}",
+                    failure.ErrorType,
+                    failure.ErrorParam,
+                    failure.ErrorCode);
             }
 
-            return Error(outcome.Status, outcome.Error!, outcome.ErrorType, outcome.ErrorParam, outcome.ErrorCode);
+            return ImageEndpointSupport.Error(
+                // A cancel can only have come from this client's own DELETE, so it is a conflict
+                // between two of their requests rather than a server failure.
+                record.Reason == ImageJobReasons.Cancelled ? 409 : 502,
+                record.Error ?? $"the image job ended {record.State}",
+                OpenAiErrorTypes.ApiError,
+                code: record.Reason);
         }
 
-        return Results.Text(outcome.Json ?? "{}", ImageRenderer.ContentType);
-    }
+        // Read-once applies here too, and that is the point of routing the sync path through the
+        // same store: one code path decides when bytes go away, so "the synchronous route quietly
+        // keeps a copy" is not a state this hub can be in.
+        var items = jobs.Store.TryTakeAll(record.Id, record.ClientId)
+            .Select(object (image) => new
+            {
+                b64_json = Convert.ToBase64String(image.Bytes),
 
-    private static IResult Error(int status, string message, string type, string? param = null, string? code = null)
-        => Results.Json(
-            OpenAiErrorEnvelope.Create(message, type, code, param),
-            JsonOptions,
-            statusCode: status);
+                // Additive extras beside OpenAI's own field. A client that has never heard of them
+                // is unaffected; one that wants to reproduce an image needs both, and asking it to
+                // guess the seed a worker chose would make `seed` useless for the thing it is for.
+                size = image.Size,
+                seed = image.Seed,
+                revised_prompt = (string?)null
+            })
+            .ToArray();
+
+        if (items.Length == 0)
+        {
+            return ImageEndpointSupport.Error(502, "the image worker returned no image", OpenAiErrorTypes.ApiError);
+        }
+
+        return Results.Text(
+            JsonSerializer.Serialize(
+                new { created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), data = items },
+                ImageEndpointSupport.Json),
+            ImageRenderer.ContentType);
+    }
 }

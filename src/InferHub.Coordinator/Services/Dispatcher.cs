@@ -25,6 +25,11 @@ public sealed class Dispatcher(
     private readonly ConcurrentDictionary<Guid, PendingResult<ToolResult>> pendingToolResults = new();
     private readonly ConcurrentDictionary<Guid, PendingStream<ToolChunk>> pendingToolStreams = new();
 
+    // Phase 47. Where a *blocking* tool job's progress frames go. Separate from the stream map
+    // because these jobs have no stream: the answer is one ToolResult with attachments on it, and a
+    // streaming tool response cannot carry an attachment at all.
+    private readonly ConcurrentDictionary<Guid, IProgress<ToolChunk>> toolProgress = new();
+
     public async Task<InferenceResult> DispatchAsync(
         RoutableNode node,
         InferenceJob job,
@@ -120,9 +125,16 @@ public sealed class Dispatcher(
         }
     }
 
+    public Task<ToolResult> DispatchToolAsync(
+        RoutableNode node,
+        ToolJob job,
+        CancellationToken cancellationToken)
+        => DispatchToolAsync(node, job, progress: null, cancellationToken);
+
     public async Task<ToolResult> DispatchToolAsync(
         RoutableNode node,
         ToolJob job,
+        IProgress<ToolChunk>? progress,
         CancellationToken cancellationToken)
     {
         var tcs = new TaskCompletionSource<ToolResult>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -131,6 +143,11 @@ public sealed class Dispatcher(
         if (!pendingToolResults.TryAdd(job.JobId, pending))
         {
             throw new InvalidOperationException($"Job '{job.JobId}' is already pending.");
+        }
+
+        if (progress is not null)
+        {
+            toolProgress[job.JobId] = progress;
         }
 
         registry.IncrementInFlight(node.ConnectionId);
@@ -166,6 +183,8 @@ public sealed class Dispatcher(
         }
         finally
         {
+            toolProgress.TryRemove(job.JobId, out _);
+
             if (pendingToolResults.TryRemove(job.JobId, out _))
             {
                 registry.DecrementInFlight(node.ConnectionId);
@@ -295,6 +314,14 @@ public sealed class Dispatcher(
     {
         if (!pendingToolStreams.TryGetValue(chunk.JobId, out var pending))
         {
+            // A blocking job that is being watched (phase 47). Checked second so the streaming path
+            // is byte-identical to 3.14 for every job that has no progress sink registered.
+            if (toolProgress.TryGetValue(chunk.JobId, out var sink))
+            {
+                sink.Report(chunk);
+                return true;
+            }
+
             logger.LogWarning("Received tool chunk for unknown or expired job {JobId}", chunk.JobId);
             return false;
         }

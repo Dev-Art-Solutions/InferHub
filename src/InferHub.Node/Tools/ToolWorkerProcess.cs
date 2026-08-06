@@ -230,6 +230,7 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
             switch (frame.Type)
             {
                 case ToolFrameTypes.Chunk:
+                case ToolFrameTypes.Progress:
                     yield return frame;
                     continue;
 
@@ -256,6 +257,47 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
                     // not a reason to fail it.
                     continue;
             }
+        }
+    }
+
+    /// <summary>
+    /// Asks the worker to stop working on a request, cooperatively (phase 47, D3).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It writes one frame and returns; it does not wait, and it deliberately does not touch the
+    /// read loop. The worker's answer — an <c>error</c> coded <c>cancelled</c>, or the result it
+    /// finished anyway — arrives on the same enumeration the request is already being read from, so
+    /// there is exactly one reader of this process's stdout at any moment.
+    /// </para>
+    /// <para>
+    /// False means the frame could not be written: the worker is gone, or its stdin is closed. The
+    /// caller falls straight through to the grace deadline rather than treating it as a failure of
+    /// its own, because a worker that cannot be asked will not be answering either.
+    /// </para>
+    /// </remarks>
+    public async Task<bool> CancelAsync(string requestId, CancellationToken cancellationToken)
+    {
+        if (!IsAlive)
+        {
+            return false;
+        }
+
+        try
+        {
+            await SendAsync(new ToolFrame { Type = ToolFrameTypes.Cancel, Id = requestId }, cancellationToken);
+
+            logger.LogInformation(
+                "Asked tool '{ToolId}' to cancel request {RequestId}; it has the cancel grace to answer.",
+                manifest.Id,
+                requestId);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Could not send a cancel frame to tool '{ToolId}'", manifest.Id);
+            return false;
         }
     }
 

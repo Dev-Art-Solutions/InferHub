@@ -277,7 +277,10 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
                 worker = await StartWorkerAsync(cancellationToken);
             }
 
-            return new ToolWorkerLease(this, worker, manifest);
+            return new ToolWorkerLease(this, worker, manifest)
+            {
+                CancelGrace = TimeSpan.FromSeconds(Math.Max(1, options.CancelGraceSeconds))
+            };
         }
         catch
         {
@@ -850,6 +853,16 @@ public sealed class ToolWorkerLease : IAsyncDisposable
 
     public IAsyncEnumerable<ToolFrame> ExecuteAsync(ToolFrame request, CancellationToken cancellationToken)
         => worker.ExecuteAsync(request, cancellationToken);
+
+    /// <summary>
+    /// Asks the worker to stop, cooperatively (phase 47, D3). The worker stays leased and stays
+    /// warm — whatever it answers arrives on the enumeration the caller is already reading.
+    /// </summary>
+    public Task<bool> CancelAsync(string requestId, CancellationToken cancellationToken)
+        => worker.CancelAsync(requestId, cancellationToken);
+
+    /// <summary>How long this tool's worker gets to honour a cancel before it is terminated.</summary>
+    public TimeSpan CancelGrace { get; init; } = TimeSpan.FromSeconds(20);
 
     /// <summary>Marks the worker as not fit to serve the next request; it is retired on release.</summary>
     public void MarkUnhealthy() => healthy = false;

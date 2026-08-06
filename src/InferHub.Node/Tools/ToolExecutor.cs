@@ -37,9 +37,22 @@ public sealed class ToolExecutor(
             string.Equals(c.Kind, capability, StringComparison.OrdinalIgnoreCase)
             && c.Models.Any(m => string.Equals(m, model, StringComparison.OrdinalIgnoreCase)));
 
-    public async Task<ToolResult> RunAsync(ToolJob job, CancellationToken cancellationToken)
+    /// <param name="progress">
+    /// Where per-step <c>progress</c> frames go (phase 47, D2). Null is the pre-3.15 behaviour and
+    /// is what every caller that does not watch a job passes — progress costs a callback and
+    /// nothing else, but a caller that discards it should not pay for the allocation either.
+    /// </param>
+    public async Task<ToolResult> RunAsync(
+        ToolJob job,
+        IProgress<ToolChunk>? progress,
+        CancellationToken cancellationToken)
     {
         var scratch = CreateScratch(job.JobId);
+
+        // The read loop is NOT driven by the caller's token. Cancellation is cooperative first
+        // (D3): the caller's token sends a `cancel` frame and starts the grace clock, and only when
+        // that clock runs out does this one fire and take the worker down with it.
+        using var hard = new CancellationTokenSource();
 
         try
         {
@@ -53,19 +66,60 @@ public sealed class ToolExecutor(
                 lease.ToolId,
                 job.Model);
 
+            var requestId = job.JobId.ToString("N");
+            var grace = lease.CancelGrace;
+            var cancelAsked = 0;
+
+            await using var registration = cancellationToken.Register(() =>
+            {
+                if (Interlocked.Exchange(ref cancelAsked, 1) == 1)
+                {
+                    return;
+                }
+
+                _ = lease.CancelAsync(requestId, CancellationToken.None);
+
+                // The grace is armed whether or not the frame was written: a worker that cannot be
+                // asked will not be answering either, and the alternative is a request that hangs
+                // until its own deadline for a client who already walked away.
+                hard.CancelAfter(grace);
+            });
+
             try
             {
-                await foreach (var frame in lease.ExecuteAsync(request, cancellationToken))
+                await foreach (var frame in lease.ExecuteAsync(request, hard.Token))
                 {
+                    if (frame.Type is ToolFrameTypes.Progress)
+                    {
+                        progress?.Report(ProgressChunk(job.JobId, frame));
+                        continue;
+                    }
+
                     if (frame.Type is ToolFrameTypes.Chunk)
                     {
-                        // A blocking caller asked for one answer. Progress frames are the worker
-                        // being helpful; they are not the answer, and they are not an error either.
+                        // A blocking caller asked for one answer. A partial answer is the worker
+                        // being helpful; it is not the answer, and it is not an error either.
                         continue;
                     }
 
                     if (frame.Type is ToolFrameTypes.Error)
                     {
+                        // A worker that stopped because it was told to is not a failure, and the
+                        // worker that did it is still warm — which is the whole reason cancel is a
+                        // frame rather than a kill. It is NOT marked unhealthy.
+                        if (string.Equals(frame.Code, ToolErrorCodes.Cancelled, StringComparison.Ordinal))
+                        {
+                            logger.LogInformation(
+                                "Tool job {JobId} on '{ToolId}' was cancelled; the worker stays warm.",
+                                job.JobId,
+                                lease.ToolId);
+
+                            return ToolResult.Refused(
+                                job.JobId,
+                                frame.Message ?? "the job was cancelled",
+                                ToolErrorCodes.Cancelled);
+                        }
+
                         logger.LogWarning(
                             "Tool job {JobId} on '{ToolId}' failed: {Error}",
                             job.JobId,
@@ -88,13 +142,28 @@ public sealed class ToolExecutor(
                         job.JobId,
                         lease.ToolId);
 
+                    // A job cancelled at step 27 of 28 may still succeed, and that is legal rather
+                    // than a race to paper over: discarding a finished image to honour a state name
+                    // would be worse than telling the caller what actually happened.
                     return ToolResult.Succeeded(job.JobId, frame.PayloadJson(), attachments);
                 }
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (hard.IsCancellationRequested)
             {
+                // The grace ran out, or the request was cancelled before a cooperative worker
+                // existed to ask. Either way this worker is not cooperating and is retired.
                 lease.MarkUnhealthy();
-                throw;
+
+                logger.LogWarning(
+                    "Tool job {JobId} on '{ToolId}' did not stop within the {Grace} cancel grace; terminating the worker.",
+                    job.JobId,
+                    lease.ToolId,
+                    grace);
+
+                return ToolResult.Refused(
+                    job.JobId,
+                    $"the job was cancelled and tool '{lease.ToolId}' did not stop within {grace.TotalSeconds:F0}s; its worker was terminated",
+                    ToolErrorCodes.Cancelled);
             }
             catch (Exception ex)
             {
@@ -110,7 +179,8 @@ public sealed class ToolExecutor(
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return ToolResult.Failed(job.JobId, "tool job was canceled");
+            // Cancelled before a worker was ever leased — nothing to ask, nothing spent.
+            return ToolResult.Refused(job.JobId, "the job was cancelled", ToolErrorCodes.Cancelled);
         }
         catch (ToolBusyException ex)
         {
@@ -229,6 +299,14 @@ public sealed class ToolExecutor(
                             yield return new ToolChunk(job.JobId, frame.PayloadJson() ?? "{}", false);
                             continue;
 
+                        // Not a partial answer, so it carries its own shape rather than the
+                        // worker's payload — and it must be named here, because the default branch
+                        // below is the terminal one and a progress frame falling into it would end
+                        // the stream at step one.
+                        case ToolFrameTypes.Progress:
+                            yield return ProgressChunk(job.JobId, frame);
+                            continue;
+
                         case ToolFrameTypes.Error:
                             yield return Terminal(job.JobId, frame.Message ?? "the tool reported an error");
                             yield break;
@@ -264,8 +342,24 @@ public sealed class ToolExecutor(
         }
     }
 
+    /// <summary>The 3.14 signature, kept so nothing that never watches a job had to change.</summary>
+    public Task<ToolResult> RunAsync(ToolJob job, CancellationToken cancellationToken)
+        => RunAsync(job, progress: null, cancellationToken);
+
     /// <summary>Matches the hub's capability refusal (phase-40 D5), so backoff is the same everywhere.</summary>
     internal const int CapabilityRetryAfterSeconds = 30;
+
+    /// <summary>
+    /// A <c>progress</c> frame as it travels to the hub: a <see cref="ToolChunk"/> on the transport
+    /// phase 41 already built, with the step in its payload. There is no new wire type, which is
+    /// D2's "there is no new transport" made concrete.
+    /// </summary>
+    internal static ToolChunk ProgressChunk(Guid jobId, ToolFrame frame) => new(
+        jobId,
+        JsonSerializer.Serialize(
+            new { type = ToolFrameTypes.Progress, step = frame.Step, totalSteps = frame.TotalSteps },
+            ToolProtocol.Json),
+        Done: false);
 
     private static ToolChunk Terminal(Guid jobId, string error) =>
         new(jobId, JsonSerializer.Serialize(new { error, done = true }, ToolProtocol.Json), true);

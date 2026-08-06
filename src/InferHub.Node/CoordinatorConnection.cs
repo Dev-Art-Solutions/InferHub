@@ -747,11 +747,33 @@ public sealed class CoordinatorConnection(
                 job.JobId,
                 job.Model);
 
-            var result = await toolExecutor.RunAsync(job, jobCts.Token);
+            // Per-step progress goes up the same connection as everything else (phase 47, D2).
+            // Fire-and-forget on purpose: a progress frame the hub never sees costs a client one
+            // stale number, while awaiting it would put the coordinator's round trip inside the
+            // worker's read loop and make a slow hub slow the GPU down.
+            var progress = new Progress<ToolChunk>(chunk =>
+            {
+                if (activeConnection.State is not HubConnectionState.Connected)
+                {
+                    return;
+                }
+
+                _ = activeConnection.InvokeAsync("ToolJobProgress", chunk, CancellationToken.None)
+                    .ContinueWith(
+                        task => logger.LogDebug(task.Exception, "Could not report progress for tool job {JobId}", job.JobId),
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted,
+                        TaskScheduler.Default);
+            });
+
+            var result = await toolExecutor.RunAsync(job, progress, jobCts.Token);
 
             if (activeConnection.State is HubConnectionState.Connected)
             {
-                await activeConnection.InvokeAsync("ToolJobResult", result, jobCts.Token);
+                // CancellationToken.None, not jobCts.Token: a cancelled job still has a result the
+                // hub is waiting for, and sending it on the job's own token means every cancel is
+                // followed by the hub timing out on a job the node already finished.
+                await activeConnection.InvokeAsync("ToolJobResult", result, CancellationToken.None);
             }
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
