@@ -755,9 +755,9 @@ capability kind, and the router already knew how to find `(capability, model)`.
 |---|---|---:|---:|---:|---|---|
 | `sdxl` | 2.6B UNet | 30 | ~8 GB fp16 | — | CreativeML OpenRAIL++-M | yes |
 | `sd15` | 0.9B | 30 | ~4 GB fp16 | — | CreativeML OpenRAIL-M | yes — the only CPU-viable one |
-| `flux-schnell` | 12B | **4** | ~12 GB nf4 | **~33 GB** | Apache-2.0 | yes |
+| `flux-schnell` | 12B | **4** | ~12 GB nf4 | **~33 GB** | Apache-2.0 | **needs an HF token** — gated repo |
 | `qwen-image` | 20B + 8.3B encoder | 30 | ~19 GB nf4 | **~60 GB** | Apache-2.0 | yes |
-| `sd35-medium` | 2.5B MMDiT | 40 | ~16 GB bf16 | — | Stability AI Community | **accept the licence** |
+| `sd35-medium` | 2.5B MMDiT | 40 | ~16 GB bf16 | — | Stability AI Community | **licence + HF token** |
 | `sdxl-turbo` | 2.6B | **1** | ~8 GB fp16 | — | Stability AI Non-Commercial | **accept the licence** |
 
 Two of those numbers are the whole point. **`flux-schnell` and `qwen-image` do not fit a 24 GB card
@@ -765,9 +765,21 @@ at bf16** — 33 GB and 60 GB — and nf4 quantization is what makes them one-ca
 are in the table because "Qwen-Image needs 19 GB" and "Qwen-Image needs 60 GB" are both true
 sentences about different recipes, and a table that gives one is lying to somebody.
 
-`sd35-medium`'s repository is also **gated** on Hugging Face. Accepting the licence tells *this node*
-it may run the model; getting the weights is separate — accept the terms on the model page and set
-`HF_TOKEN`.
+**Two repositories are *gated* on Hugging Face, and that is a different thing from the licence.**
+`black-forest-labs/FLUX.1-schnell` and `stabilityai/stable-diffusion-3.5-medium` both require you to
+accept terms on the model page and present a read token, regardless of what their licence says —
+FLUX is Apache-2.0 and still gated. Accepting a licence in `Tools:Image:AcceptedLicenses` tells
+*this node* it may run a model; a token is how *Hugging Face* decides whether to hand the weights
+over. Set `Tools:Image:HuggingFaceToken`, and note it has to be **that key** rather than an
+`HF_TOKEN` environment variable, because the node clears a worker's environment before spawning it.
+
+Without it the fetch fails with a message that says exactly this, rather than a bare `401`:
+
+```
+[diffusion] could not fetch 'flux-schnell': GatedRepoError: this repository is GATED on Hugging Face.
+            Accept the terms at https://huggingface.co/black-forest-labs/FLUX.1-schnell with the
+            account you are using, then set Tools:Image:HuggingFaceToken to a read token.
+```
 
 **The `model` you send is a recipe id, not a Hugging Face repo id.** A repo id is a location: it has
 a slash in it that every router and metrics label has an opinion about, and it changes when a model

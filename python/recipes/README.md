@@ -17,19 +17,29 @@ is for.
 |---|---|---|---|---|---|
 | `sdxl` | 2.6B UNet | 30 | ~8 GB, fp16 | CreativeML OpenRAIL++-M | yes |
 | `sd15` | 0.9B | 30 | ~4 GB, fp16 | CreativeML OpenRAIL-M | yes — and the only CPU-viable one |
-| `flux-schnell` | 12B | **4** | ~12 GB at nf4 (**~33 GB** at bf16) | Apache-2.0 | yes |
+| `flux-schnell` | 12B | **4** | ~12 GB at nf4 (**~33 GB** at bf16) | Apache-2.0 | **no — HF token**, gated repo |
 | `qwen-image` | 20B + 8.3B text encoder | 30 | ~19 GB at nf4 (**~60 GB** at bf16) | Apache-2.0 | yes |
-| `sd35-medium` | 2.5B MMDiT | 40 | ~16 GB, bf16 | Stability AI Community | **no — accept the licence** |
+| `sd35-medium` | 2.5B MMDiT | 40 | ~16 GB, bf16 | Stability AI Community | **no — licence + HF token** |
 | `sdxl-turbo` | 2.6B | **1** | ~8 GB, fp16 | Stability AI Non-Commercial | **no — accept the licence** |
 
 Two of those numbers are the point of this phase. `flux-schnell` and `qwen-image` **do not fit a
 24 GB card at bf16** — 33 GB and 60 GB respectively — and nf4 is what makes them one-card models.
 `sd35-medium` and `sdxl-turbo` fit fine and need a *licence decision*, which is not ours to make.
 
-`sd35-medium`'s repository is also **gated** on Hugging Face: accepting the licence in
-`Tools:Image:AcceptedLicenses` tells this node it may run it, and it is a separate thing from
-Hugging Face letting you download it. For that, accept the terms on the model page and put a read
-token in `HF_TOKEN`.
+**`flux-schnell` and `sd35-medium` are *gated* on Hugging Face, and that is a different axis from the
+licence.** FLUX is Apache-2.0 — so this project's licence gate lets it straight through, correctly —
+and Hugging Face *still* requires you to accept terms on the model page and present a read token.
+Accepting a licence in `Tools:Image:AcceptedLicenses` tells **this node** it may run a model; a token
+is how **Hugging Face** decides whether to hand the weights over. Set
+`Tools:Image:HuggingFaceToken`, which has to be that key rather than an `HF_TOKEN` environment
+variable because the node clears a worker's environment before spawning it (phase-41 D3).
+
+`"gated": true` in a recipe is documentation only — nothing reads it. The failure it describes is
+reported when the fetch actually happens, naming the model page and the key rather than surfacing a
+bare `401` that reads as "the model is gone".
+
+> Found by running the published v3.16.0 image: FLUX's fetch failed with
+> `GatedRepoError: 401 Client Error` and a request id, while the docs said it ran out of the box.
 
 ## The fields
 

@@ -275,10 +275,21 @@ class Worker:
         except (ValueError, AttributeError, OSError):
             pass  # not the main thread, or Windows
 
-        # readline(), not `for line in self._stdin`: the iterator protocol keeps a read-ahead
-        # buffer, and the control pump below reads from the same stream while a request runs. Two
-        # readers with one hidden buffer between them lose frames — and the frame it would lose is
-        # the cancel.
+        # ONE READER, ALWAYS, and this is the shape to keep (v3.16.2).
+        #
+        # v3.15 had two: the loop below read a request, and a second "control pump" read from the
+        # same stream while that request ran, honouring `cancel` and `ping` and DISCARDING anything
+        # else. The frame it discarded was the next `request` — so on a worker that finishes
+        # quickly, every other job vanished and hung until its deadline. It shipped in the v3.16.0
+        # diffusion image, where it dropped every second image generation.
+        #
+        # The reader never blocks on a request now: a request runs on its own thread and this loop
+        # goes straight back to reading, so a `cancel` still arrives mid-request. One-at-a-time is
+        # kept by joining the previous thread before starting the next, which means a frame is
+        # never read and thrown away. `readline()` rather than `for line in self._stdin`, still:
+        # the iterator protocol keeps a read-ahead buffer nothing else can see.
+        worker_thread: threading.Thread | None = None
+
         while self._running:
             line = self._stdin.readline()
 
@@ -314,52 +325,22 @@ class Worker:
             elif kind == "idle":
                 self._idle()
             elif kind == "request":
+                # The node sends one at a time (its pool provides the concurrency, not this loop),
+                # so this join is belt and braces — but it is what makes the contract true here
+                # rather than assumed of the caller.
+                if worker_thread is not None and worker_thread.is_alive():
+                    worker_thread.join()
+
                 worker_thread = threading.Thread(
                     target=self._handle, args=(handler, frame), daemon=True
                 )
                 worker_thread.start()
 
-                # One request at a time is still the contract — the node's pool provides
-                # concurrency, not this loop — so we go back to reading only for `cancel` and
-                # `ping` while this one runs, and we wait for it before taking the next request.
-                while worker_thread.is_alive():
-                    if not self._pump_control_frames(worker_thread):
-                        break
+        if worker_thread is not None and worker_thread.is_alive():
+            # stdin closed: let a cooperative request finish writing its result before we go.
+            worker_thread.join(timeout=5)
 
     # ---- internals ---------------------------------------------------------------------------
-
-    def _pump_control_frames(self, worker_thread: threading.Thread) -> bool:
-        """
-        Read one line while a request runs, honouring only the frames that make sense mid-request.
-
-        Returns False when stdin has closed, which is how the node stops a worker gracefully.
-        """
-        line = self._stdin.readline()
-
-        if not line:
-            worker_thread.join(timeout=5)
-            return False
-
-        line = line.strip()
-
-        if not line:
-            return True
-
-        try:
-            frame = json.loads(line)
-        except json.JSONDecodeError:
-            return True
-
-        kind = frame.get("type")
-
-        if kind == "cancel":
-            self._cancel(frame.get("id") or "")
-        elif kind == "ping":
-            self._send({"type": "pong"})
-
-        # A `request` arriving while one is running is a node bug, not ours, and answering it here
-        # would break "one request at a time". It is ignored, and the node's own deadline reports it.
-        return True
 
     def _idle(self) -> None:
         """An `idle` hint is advice, so a handler that throws is logged and forgotten."""

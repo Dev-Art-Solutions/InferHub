@@ -872,6 +872,57 @@ def cache_bytes() -> int:
 # ---- startup -----------------------------------------------------------------------------------
 
 
+def describe_fetch_failure(recipe: dict[str, Any], error: Exception) -> str:
+    """
+    Say what to do about it, not only what happened (v3.16.2).
+
+    A GATED REPOSITORY is the case worth spelling out, and it was found by running the published
+    image: `black-forest-labs/FLUX.1-schnell` is Apache-2.0 — so InferHub's licence gate lets it
+    through, correctly — and Hugging Face *still* requires you to accept terms on the model page and
+    present a token. The raw error for that is ``GatedRepoError: 401 Client Error`` plus a request
+    id, which reads as "the model is gone" rather than "click accept".
+
+    It is deliberately a different sentence from the licence refusal. Accepting a licence tells THIS
+    NODE it may run a model; a token is how HUGGING FACE decides whether to hand the weights over,
+    and telling somebody to edit `AcceptedLicenses` when the fix is a token wastes their afternoon.
+    """
+    name = type(error).__name__
+    detail = str(error)[:300]
+
+    if "GatedRepo" in name or "401" in detail or "gated" in detail.lower():
+        return (
+            f"{name}: this repository is GATED on Hugging Face. Accept the terms at "
+            f"https://huggingface.co/{recipe['repo']} with the account you are using, then set "
+            f"Tools:Image:HuggingFaceToken to a read token. This is separate from "
+            f"Tools:Image:AcceptedLicenses, which is this node's own consent and does not carry a "
+            f"credential."
+        )
+
+    return f"{name}: {detail}"
+
+
+def fetch_order(recipes: dict[str, dict[str, Any]], missing: list[str]) -> list[str]:
+    """
+    Cheapest first, and anything already in the cache before anything that is not (v3.16.2).
+
+    ALPHABETICAL ORDER WAS A BUG. `missing` used to be walked in sorted order, so on a box where
+    `sd15` and `sdxl` were already downloaded and only needed re-proving, a 40 GB `qwen-image`
+    fetch queued ahead of them and the node declared NOTHING for as long as it ran. "The model
+    appears when it is ready" stops being true the moment an unrelated large model is in front of
+    it — and the one somebody is waiting for is almost never the alphabetically first.
+
+    So: already-downloaded first (seconds to re-prove), then by declared VRAM ascending as the only
+    proxy for download size a recipe carries.
+    """
+    hub = os.path.join(hf_home(), "hub")
+
+    def cached(identifier: str) -> bool:
+        repo = recipes[identifier]["repo"].replace("/", "--")
+        return os.path.isdir(os.path.join(hub, f"models--{repo}"))
+
+    return sorted(missing, key=lambda i: (not cached(i), int(recipes[i].get("vramMiB") or 0), i))
+
+
 def prefetch_missing(worker: Worker, recipes: dict[str, dict[str, Any]], offerable: list[str]) -> None:
     """
     Fetch, prove, and RE-DECLARE — on a background thread, never inside a request (v3.14.1).
@@ -879,7 +930,7 @@ def prefetch_missing(worker: Worker, recipes: dict[str, dict[str, Any]], offerab
     Each model that lands re-declares immediately rather than waiting for the batch, because the
     first one is usually the one somebody is waiting for.
     """
-    missing = [identifier for identifier in offerable if not is_ready(recipes[identifier])]
+    missing = fetch_order(recipes, [i for i in offerable if not is_ready(recipes[i])])
 
     if not missing:
         return
@@ -907,7 +958,7 @@ def prefetch_missing(worker: Worker, recipes: dict[str, dict[str, Any]], offerab
             )
             fetch(recipe)
         except Exception as error:  # noqa: BLE001 - one bad model must not stop the others
-            log(f"could not fetch '{identifier}': {type(error).__name__}: {str(error)[:300]}")
+            log(f"could not fetch '{identifier}': {describe_fetch_failure(recipe, error)}")
             continue
 
         ready = [i for i in offerable if is_ready(recipes[i])]
