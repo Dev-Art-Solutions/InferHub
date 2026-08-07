@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
-"""Text to image for InferHub, on diffusers (phase 46).
+"""Text to image for InferHub, on diffusers (phase 46, catalogued in phase 48).
 
     python -u diffusion_worker.py
 
-STABLE DIFFUSION, and deliberately nothing heavier in this release. ``sdxl`` is ~7 GB at fp16 and
-fits an 8 GB card with no quantization; ``sd15`` is ~2 GB at 512² and is the only recipe that is
-honestly usable without a card. FLUX.1-schnell and Qwen-Image are 12B and 20B, neither fits a 24 GB
-card at bf16, and both arrive in phase 48 together with the quantization path they need — leading
-with a model that cannot run unquantized would have meant shipping the client dialect, the VRAM
-budget and bitsandbytes in one release, and the first bug would have had three plausible causes.
+SIX RECIPES, AND FOUR OF THEM NEED SOMETHING PHASE 46 DID NOT HAVE. ``sdxl`` and ``sd15`` run at
+fp16 on any card this project has ever asked for. ``flux-schnell`` is 12B and ``qwen-image`` is 20B
+plus an 8.3B text encoder — *neither fits a 24 GB card at bf16*, and nf4 quantization is what makes
+them one-card models. ``sd35-medium`` and ``sdxl-turbo`` fit fine and need a LICENCE DECISION that
+is not ours to make. See ``../recipes/README.md``.
 
 A RECIPE IS A MODEL; A MANIFEST IS A TOOL (phase-46 D3). The manifest is the operator's ceiling and
 is what ``Tools:Allowed`` names; recipes are a catalogue this worker reads from
-``INFERHUB_IMAGE_RECIPES``. Each one pins a Hugging Face repo AND A REVISION — "it worked in 3.14.0"
+``INFERHUB_IMAGE_RECIPES``. Each one pins a Hugging Face repo AND A REVISION — "it worked in 3.16.0"
 has to have an answer, and a repo's ``main`` is not one.
 
 SIZES ARE A LIST, NOT A RANGE, and for SDXL that is load-bearing rather than fussy: it was trained on
@@ -21,17 +20,29 @@ and doubled horizons, which reads as "this model is bad" rather than "you asked 
 size the recipe does not have is refused with ``invalid_request`` naming the ones it does, and the
 edge renders that as a 400 without reading the message.
 
-WEIGHTS ARE NEVER FETCHED INSIDE A REQUEST (v3.14.1, and it is why that release exists). v3.14.0
-let ``from_pretrained`` download on first use, inside the manifest's ``requestTimeoutSeconds``: on a
-fresh volume the first ``sdxl`` call spent 900 seconds downloading and then returned 502, twice.
-So a recipe is only DECLARED once its weights are proven loadable, a background thread does the
-fetching, and the worker RE-DECLARES when one lands (``Worker.redeclare``). The fleet therefore
-never routes at a model that is not ready, and no caller ever waits on a download.
+WEIGHTS ARE NEVER FETCHED INSIDE A GENERATE REQUEST (v3.14.1, and it is why that release exists).
+v3.14.0 let ``from_pretrained`` download on first use, inside the manifest's
+``requestTimeoutSeconds``: on a fresh volume the first ``sdxl`` call spent 900 seconds downloading
+and then returned 502, twice. So a recipe is only DECLARED once its weights are proven loadable, a
+background thread does the fetching, and the worker RE-DECLARES when one lands
+(``Worker.redeclare``). Phase 48 adds the other half: a ``pull`` op an operator drives from the hub,
+which reports progress on the phase-26 model-command channel instead of guessing when to start.
 
 ``variant`` IS NOT ``dtype``, and conflating them cost 7 GB per model in v3.14.0. Passing
-``torch_dtype=float16`` makes diffusers download the **fp32** files and cast them in memory; the
-repo also carries ``*.fp16.safetensors`` at half the size, and only ``variant="fp16"`` asks for
-them. Both are set in the recipes, and a repo without the variant falls back loudly.
+``torch_dtype=float16`` makes diffusers download the **fp32** files and cast them in memory; a repo
+that carries ``*.fp16.safetensors`` at half the size only hands them over for ``variant="fp16"``.
+Both are per-recipe fields, and a repo without the variant falls back loudly.
+
+QUANTIZATION IS A PROPERTY OF THE RECIPE, NOT OF THE REQUEST (phase-48 D6). Two requests to
+``qwen-image`` that quantized differently would produce different images from the same seed, and a
+per-request knob would make reproducibility a function of a header nobody logged. An operator who
+wants both ships two recipes with two ids.
+
+ONE PIPELINE AT A TIME BY DEFAULT, SWAPPED INSIDE A WARM PROCESS (phase-48 D3). Loading FLUX is
+40-90 s and a pool that restarted the process per recipe would pay that on every alternation, plus
+the interpreter and the import of torch. ``INFERHUB_IMAGE_RESIDENT_RECIPES`` allows more than one
+resident on a box with the VRAM for it; the default is 1 because the expensive default is the one
+nobody realises they chose.
 
 THE DEVICE IS LOGGED ON THE FIRST LINE (phase-39 D6). Four gigabytes of CUDA and a silent CPU
 fallback is an afternoon of blaming the model. With ``INFERHUB_IMAGE_REQUIRE_GPU=1`` — the default —
@@ -51,6 +62,7 @@ import json
 import os
 import sys
 import threading
+import time
 from typing import Any
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -67,12 +79,19 @@ TOOL_ID = "diffusion"
 
 DEFAULT_RECIPES = "/opt/inferhub/recipes"
 
-# One pipeline at a time. Loading SDXL is tens of seconds, so a worker that reloaded per request
-# would spend more time loading than generating; a worker that kept several resident would need the
-# VRAM budget that phase 48 adds, and guessing at it here is how a box OOMs at 2am.
+# What is on the card right now, most-recently-used last. Bounded by RESIDENT_RECIPES; the node's
+# VramBudget knows the same numbers from the same recipe files and admits work against them, but
+# this dict is the truth about this process and it is what the result frame reports back.
 _loaded: dict[str, Any] = {}
+_loaded_lock = threading.RLock()
+
 _device: str = "cpu"
-_dtype: Any = None
+
+# What this box would offer if every recipe's weights were present — set once at startup, after the
+# licence and CPU gates. `pull` and `delete` re-declare against it so the fleet learns about a model
+# that has just landed (or just left) without waiting for a restart.
+_offerable: list[str] = []
+_worker: Worker | None = None
 
 
 def log(message: str) -> None:
@@ -87,6 +106,52 @@ def recipes_directory() -> str:
 def flag(name: str, default: bool = False) -> bool:
     value = os.environ.get(name)
     return default if value is None or value == "" else value not in ("0", "false", "False")
+
+
+def resident_limit() -> int:
+    try:
+        return max(1, int(os.environ.get("INFERHUB_IMAGE_RESIDENT_RECIPES") or "1"))
+    except ValueError:
+        return 1
+
+
+def accepted_licenses() -> set[str]:
+    """
+    ``Tools:Image:AcceptedLicenses``, lower-cased.
+
+    A BLANK ENTRY IS IGNORED, NOT COUNTED. An array that arrives from a container's environment
+    cannot have an element *removed* — ``-e Tools__Image__AcceptedLicenses__0=`` is the only lever
+    ``docker run`` gives you — and a blank that matched a licence with a blank id would be a grant
+    nobody typed. Same bug the v3.10.0 note records for ``Tools:Allowed``.
+    """
+    raw = os.environ.get("INFERHUB_IMAGE_ACCEPTED_LICENSES") or ""
+    return {entry.strip().lower() for entry in raw.split(",") if entry.strip()}
+
+
+# ---- the catalogue -----------------------------------------------------------------------------
+
+
+def licence_of(recipe: dict[str, Any]) -> dict[str, Any]:
+    licence = recipe.get("license")
+    return licence if isinstance(licence, dict) else {}
+
+
+def is_permissive(recipe: dict[str, Any]) -> bool:
+    """
+    Absent metadata is treated as NOT permissive, on purpose.
+
+    A recipe that forgot to say is a recipe nobody has read the licence of, and defaulting to
+    "permissive" would make the consent opt-out by accident of a missing field.
+    """
+    return licence_of(recipe).get("permissive") is True
+
+
+def licence_id(recipe: dict[str, Any]) -> str:
+    return str(licence_of(recipe).get("id") or "unknown").strip()
+
+
+def is_licensed(recipe: dict[str, Any], accepted: set[str]) -> bool:
+    return is_permissive(recipe) or licence_id(recipe).lower() in accepted
 
 
 def load_recipes() -> dict[str, dict[str, Any]]:
@@ -106,7 +171,7 @@ def load_recipes() -> dict[str, dict[str, Any]]:
             log(f"skipping {os.path.basename(path)}: no 'id'")
             continue
 
-        # A pin is not optional. Without it "which weights are in 3.14.0" has no answer, and two
+        # A pin is not optional. Without it "which weights are in 3.16.0" has no answer, and two
         # builds of the same tag can contain different models (phase-39 D9, phase-42 D2).
         if not recipe.get("revision"):
             log(f"skipping {identifier}: 'revision' is required — pin a commit sha, not a branch")
@@ -117,9 +182,12 @@ def load_recipes() -> dict[str, dict[str, Any]]:
     return found
 
 
+_vram_total_mib: int | None = None
+
+
 def select_device() -> str:
     """``cuda`` when it is reachable, else ``cpu``. Said out loud either way."""
-    global _dtype
+    global _vram_total_mib
 
     try:
         import torch
@@ -127,12 +195,11 @@ def select_device() -> str:
         raise SystemExit(f"[{TOOL_ID}] torch is not importable: {error}") from error
 
     if torch.cuda.is_available():
-        _dtype = torch.float16
         name = torch.cuda.get_device_name(0)
-        log(f"device: cuda ({name})")
+        free, total = torch.cuda.mem_get_info()
+        _vram_total_mib = total // (1024 ** 2)
+        log(f"device: cuda ({name}), {free // (1024 ** 2)} MiB free of {_vram_total_mib} MiB")
         return "cuda"
-
-    _dtype = torch.float32
 
     # The CUDA-is-present-but-unusable case, said plainly. Under WSL2 there are no /dev/nvidia*
     # nodes and the only honest signal is whether the driver library loads, so "no GPU" here can
@@ -142,24 +209,59 @@ def select_device() -> str:
     return "cpu"
 
 
+def dtype_of(recipe: dict[str, Any]):
+    """
+    The recipe's ``dtype``, honoured. FLUX, SD 3.5 and Qwen-Image are bf16 models and loading them
+    at fp16 produces black images on some cards rather than an error — the exact failure phase-46
+    D8 refuses to ship for a different reason.
+    """
+    import torch
+
+    if _device != "cuda":
+        return torch.float32
+
+    return {
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+        "float32": torch.float32,
+    }.get(str(recipe.get("dtype") or "float16").lower(), torch.float16)
+
+
 def offered(recipes: dict[str, dict[str, Any]], device: str) -> list[str]:
     """
-    Which recipes this box will actually accept work for.
+    Which recipes this box will actually accept work for, before readiness is considered.
 
-    A recipe that is not ``cpuViable`` on a CPU-only node is *not declared*, so the hub never routes
-    to it — 41 D6's withdraw-on-failure, applied before the first failure rather than after it. An
-    operator who wants the four-minute path anyway sets ``Tools:Image:AllowSlowCpu``.
+    Two gates, and both are refusals rather than warnings because the cost lands on somebody else:
+    a recipe that is not ``cpuViable`` on a CPU-only node is *not declared*, so the hub never routes
+    to it (41 D6's withdraw-on-failure, applied before the first failure), and a recipe whose
+    licence the operator has not accepted is not declared either — accepting a licence on somebody's
+    behalf is the one thing in this phase that is definitely not ours to do.
     """
-    if device == "cuda" or flag("INFERHUB_IMAGE_ALLOW_SLOW_CPU"):
-        return sorted(recipes)
+    accepted = accepted_licenses()
+    viable: list[str] = []
 
-    viable = sorted(identifier for identifier, recipe in recipes.items() if recipe.get("cpuViable"))
+    for identifier in sorted(recipes):
+        recipe = recipes[identifier]
 
-    for identifier in sorted(set(recipes) - set(viable)):
-        log(
-            f"not offering '{identifier}' on a CPU-only node: it is not marked cpuViable. "
-            "Set Tools:Image:AllowSlowCpu=true to offer it anyway (minutes per image)."
-        )
+        if not is_licensed(recipe, accepted):
+            log(
+                f"not offering '{identifier}': its licence is '{licence_id(recipe)}', which is not "
+                f"permissive and is not in Tools:Image:AcceptedLicenses. Read it at "
+                f"{licence_of(recipe).get('url') or 'the model repository'} and, if you accept it, "
+                f"add \"{licence_id(recipe)}\" to that list."
+            )
+            continue
+
+        if device != "cuda" and not recipe.get("cpuViable") and not flag("INFERHUB_IMAGE_ALLOW_SLOW_CPU"):
+            log(
+                f"not offering '{identifier}' on a CPU-only node: it is not marked cpuViable. "
+                "Set Tools:Image:AllowSlowCpu=true to offer it anyway (minutes per image)."
+            )
+            continue
+
+        viable.append(identifier)
 
     return viable
 
@@ -192,10 +294,20 @@ def pipeline_class(name: str):
 # background load. Neither costs a caller anything.
 
 
+def hf_home() -> str:
+    return os.environ.get("HF_HOME") or os.path.join("/data", "tools", "hf")
+
+
 def ready_marker(recipe: dict[str, Any]) -> str:
-    home = os.environ.get("HF_HOME") or os.path.join("/data", "tools", "hf")
-    name = f"{recipe['id']}-{recipe['revision'][:12]}-{recipe.get('variant') or 'default'}"
-    return os.path.join(home, ".inferhub-ready", name)
+    name = "-".join(
+        [
+            recipe["id"],
+            recipe["revision"][:12],
+            recipe.get("variant") or "default",
+            str(recipe.get("quantization") or "none"),
+        ]
+    )
+    return os.path.join(hf_home(), ".inferhub-ready", name)
 
 
 def is_ready(recipe: dict[str, Any]) -> bool:
@@ -218,7 +330,7 @@ def prefetch_command(recipe: dict[str, Any]) -> str:
 
 def fetch(recipe: dict[str, Any]) -> None:
     """
-    Download and PROVE loadable, on a background thread. Never called from a request.
+    Download and PROVE loadable. Never called from a generate request.
 
     Loading it here rather than only downloading is deliberate: it is the same call the next
     request makes, so "the prefetch succeeded" and "a request will work" cannot diverge. A pattern
@@ -228,12 +340,60 @@ def fetch(recipe: dict[str, Any]) -> None:
     pipe = _from_pretrained(recipe, local_files_only=False)
     del pipe
 
+    free_vram()
+    mark_ready(recipe)
+
+
+def free_vram() -> None:
     import torch
 
     if _device == "cuda":
         torch.cuda.empty_cache()
 
-    mark_ready(recipe)
+
+# ---- loading -----------------------------------------------------------------------------------
+
+
+def quantization_config(recipe: dict[str, Any]):
+    """
+    ``bitsandbytes`` nf4/int8 through ``diffusers``' native integration (phase-48 D6).
+
+    ONE MECHANISM, DELIBERATELY. GGUF, Nunchaku and TensorRT are all faster on some model on some
+    card, and each is a second thing to reason about when an image comes out worse than expected.
+    One path means one answer to "why does this look like that".
+    """
+    mode = str(recipe.get("quantization") or "none").lower()
+
+    if mode in ("", "none"):
+        return None
+
+    if mode not in ("nf4", "int8"):
+        raise ToolError(
+            f"'{recipe['id']}' asks for quantization '{mode}'; this worker does nf4, int8 or none",
+            ERROR_INVALID_REQUEST,
+        )
+
+    import torch
+    from diffusers import PipelineQuantizationConfig
+
+    components = list(recipe.get("quantizeComponents") or ["transformer"])
+
+    if mode == "nf4":
+        backend = "bitsandbytes_4bit"
+        kwargs = {
+            "load_in_4bit": True,
+            "bnb_4bit_quant_type": "nf4",
+            "bnb_4bit_compute_dtype": dtype_of(recipe) if _device == "cuda" else torch.float32,
+        }
+    else:
+        backend = "bitsandbytes_8bit"
+        kwargs = {"load_in_8bit": True}
+
+    return PipelineQuantizationConfig(
+        quant_backend=backend,
+        quant_kwargs=kwargs,
+        components_to_quantize=components,
+    )
 
 
 def _from_pretrained(recipe: dict[str, Any], local_files_only: bool):
@@ -242,12 +402,17 @@ def _from_pretrained(recipe: dict[str, Any], local_files_only: bool):
 
     kwargs: dict[str, Any] = {
         "revision": recipe["revision"],
-        "torch_dtype": _dtype,
+        "torch_dtype": dtype_of(recipe),
         "local_files_only": local_files_only,
     }
 
     if recipe.get("variant"):
         kwargs["variant"] = recipe["variant"]
+
+    quantization = quantization_config(recipe)
+
+    if quantization is not None:
+        kwargs["quantization_config"] = quantization
 
     # A safety checker that returns a BLACK IMAGE on a positive is disqualifying: the operator gets
     # a bug report rather than a policy signal, and the failure is indistinguishable from a broken
@@ -264,7 +429,7 @@ def _from_pretrained(recipe: dict[str, Any], local_files_only: bool):
             raise
 
         # The repo has no such variant. Fall back to the default files LOUDLY — silently doubling
-        # somebody's download is exactly the class of thing this release exists to stop.
+        # somebody's download is exactly the class of thing v3.14.1 exists to stop.
         log(
             f"{recipe['id']}: '{recipe['repo']}' has no '{recipe['variant']}' variant; falling back "
             f"to the default weights, which are roughly twice the size. Remove \"variant\" from the "
@@ -276,35 +441,78 @@ def _from_pretrained(recipe: dict[str, Any], local_files_only: bool):
     return cls.from_pretrained(recipe["repo"], **kwargs)
 
 
-def load(recipe: dict[str, Any]):
+def evict_for(identifier: str) -> list[str]:
+    """
+    Make room for one more resident, least-recently-used first.
+
+    Freed BEFORE the next allocation rather than after it: otherwise the peak is both models at
+    once and the box goes out of memory on the swap rather than on the load, which is a much harder
+    failure to read.
+    """
+    evicted: list[str] = []
+    limit = resident_limit()
+
+    with _loaded_lock:
+        while len(_loaded) >= limit and _loaded:
+            oldest = next(iter(_loaded))
+
+            if oldest == identifier:
+                break
+
+            log(f"unloading {oldest} to make room for {identifier}")
+            del _loaded[oldest]
+            evicted.append(oldest)
+
+    if evicted:
+        free_vram()
+
+    return evicted
+
+
+def load(recipe: dict[str, Any], accepted: set[str]) -> tuple[Any, float, list[str]]:
+    """Returns (pipeline, load milliseconds, evicted recipe ids)."""
     identifier = recipe["id"]
 
-    if identifier in _loaded:
-        return _loaded[identifier]
+    # Defence in depth (phase-48 D5). The node refuses to declare an unlicensed recipe and the hub
+    # therefore never routes at one; this is the second lock, on the process that would actually
+    # download and run the weights. A solo caller naming the recipe directly hits it here.
+    if not is_licensed(recipe, accepted):
+        raise ToolError(
+            f"'{identifier}' is licensed under '{licence_id(recipe)}', which is not permissive. "
+            f"This node has not accepted it: add \"{licence_id(recipe)}\" to "
+            f"Tools:Image:AcceptedLicenses if you have read it "
+            f"({licence_of(recipe).get('url') or 'see the model repository'}).",
+            ERROR_MODEL_UNAVAILABLE,
+        )
+
+    with _loaded_lock:
+        if identifier in _loaded:
+            # Touch it: the residency map is ordered least-recently-used first, and dict insertion
+            # order is what makes that true without a second structure.
+            pipe = _loaded.pop(identifier)
+            _loaded[identifier] = pipe
+            return pipe, 0.0, []
 
     if not is_ready(recipe):
         # Not reachable through routing — an unready recipe is not declared — but a solo caller can
         # race a fetch that is still running, and the honest answer is immediate rather than a
-        # request that quietly turns into a 7 GB download.
+        # request that quietly turns into a 20 GB download.
         raise ToolError(
             f"'{identifier}' is not ready on this node: its weights are still being fetched, or "
-            "this node may not fetch them (Tools:AllowModelDownload). Pre-fetch them with:\n"
-            f"  {prefetch_command(recipe)}",
+            "this node may not fetch them (Tools:AllowModelDownload). Pull them from the hub with "
+            "POST /api/admin/nodes/{nodeId}/tools/diffusion/models/"
+            f"{identifier}/pull, or pre-fetch them with:\n  {prefetch_command(recipe)}",
             ERROR_MODEL_UNAVAILABLE,
         )
 
-    # One at a time: free the previous pipeline before the next allocation rather than after it,
-    # or the peak is both models at once and the box OOMs on the swap rather than on the load.
-    for other in list(_loaded):
-        log(f"unloading {other}")
-        del _loaded[other]
+    evicted = evict_for(identifier)
 
-    if _device == "cuda":
-        import torch
+    log(
+        f"loading {identifier} ({recipe['repo']}@{recipe['revision'][:12]}, "
+        f"{recipe.get('quantization') or 'none'}) on {_device}"
+    )
 
-        torch.cuda.empty_cache()
-
-    log(f"loading {identifier} ({recipe['repo']}@{recipe['revision'][:12]}) on {_device}")
+    started = time.monotonic()
 
     try:
         # local_files_only: the marker says these are here, so a request must never reach the
@@ -317,12 +525,47 @@ def load(recipe: dict[str, Any]):
             ERROR_MODEL_UNAVAILABLE,
         ) from error
 
-    pipe = pipe.to(_device)
+    if quantization_config(recipe) is None:
+        pipe = pipe.to(_device)
+    elif _device == "cuda":
+        # A bitsandbytes-quantized module is already placed and cannot be cast or moved wholesale;
+        # `enable_model_cpu_offload` is the documented path and is also what keeps a 20B transformer
+        # and an 8.3B text encoder from needing to be resident at the same instant.
+        pipe.enable_model_cpu_offload()
+
     pipe.set_progress_bar_config(disable=True)
 
-    _loaded[identifier] = pipe
-    log(f"{identifier} is ready on {_device}")
-    return pipe
+    elapsed = (time.monotonic() - started) * 1000.0
+
+    with _loaded_lock:
+        _loaded[identifier] = pipe
+
+    log(f"{identifier} is ready on {_device} ({elapsed / 1000:.1f}s)")
+    return pipe, elapsed, evicted
+
+
+def unload_all(reason: str) -> None:
+    """
+    The ``idle`` hint (phase-48 D3), honoured by the worker rather than by the node.
+
+    The node knows nothing about torch, and a node-side unload would be the node reaching into a
+    tool's internals — phase-41 D1's line. What the node knows is that nobody has asked this pool
+    for anything in ``idleTimeoutSeconds``; what to do about that is the worker's business. A warm
+    process with no weights reloads in ~40 s; a cold one costs that plus the interpreter and the
+    import of torch, which is not free.
+    """
+    with _loaded_lock:
+        if not _loaded:
+            return
+
+        names = ", ".join(_loaded)
+        _loaded.clear()
+
+    free_vram()
+    log(f"freed VRAM held by {names} ({reason})")
+
+
+# ---- requests ----------------------------------------------------------------------------------
 
 
 def resolve_size(recipe: dict[str, Any], payload: dict[str, Any]) -> tuple[int, int]:
@@ -349,7 +592,32 @@ def resolve_size(recipe: dict[str, Any], payload: dict[str, Any]) -> tuple[int, 
     return int(width), int(height)
 
 
-def generate(request: Request):
+def resident() -> list[str]:
+    with _loaded_lock:
+        return list(_loaded)
+
+
+def handle(request: Request):
+    """
+    One entry point, dispatched on ``op``. Absent means ``generate``, which is every request a
+    client can make; ``pull`` and ``delete`` arrive only from the node's model-command path and are
+    an operator action (phase-48 D4).
+    """
+    op = str((request.payload or {}).get("op") or "generate").lower()
+
+    if op == "generate":
+        return generate(request)
+
+    if op == "pull":
+        return pull(request)
+
+    if op == "delete":
+        return delete(request)
+
+    raise ToolError(f"unknown op '{op}'; this tool does generate, pull and delete", ERROR_INVALID_REQUEST)
+
+
+def recipe_for(request: Request) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     recipes = load_recipes()
     recipe = recipes.get(request.model)
 
@@ -358,6 +626,12 @@ def generate(request: Request):
             f"no recipe '{request.model}' on this node. Available: {', '.join(sorted(recipes)) or 'none'}",
             ERROR_INVALID_REQUEST,
         )
+
+    return recipe, recipes
+
+
+def generate(request: Request):
+    recipe, _ = recipe_for(request)
 
     payload = request.payload or {}
     prompt = payload.get("prompt") or ""
@@ -384,29 +658,61 @@ def generate(request: Request):
     count = int(payload.get("n") or 1)
     seed = payload.get("seed")
 
-    pipe = load(recipe)
+    pipe, load_ms, evicted = load(recipe, accepted_licenses())
 
     import torch
 
     files = []
     images = []
+    started = time.monotonic()
 
     for index in range(count):
         # Every image in a batch gets its own seed, derived from the caller's when they gave one, so
         # `n=4` returns four different pictures AND each one is individually reproducible. A single
         # generator across the batch would make image 3 unreproducible without also rendering 1 and 2.
         image_seed = int(seed) + index if seed is not None else int(torch.seed() % (2**31))
-        generator = torch.Generator(device=_device).manual_seed(image_seed)
+        generator = torch.Generator(device="cpu").manual_seed(image_seed)
 
-        result = pipe(
-            prompt=prompt,
-            negative_prompt=payload.get("negative_prompt"),
-            width=width,
-            height=height,
-            num_inference_steps=steps,
-            guidance_scale=guidance,
-            generator=generator,
-        )
+        # Per-step progress and cooperative cancellation (phase 47), on the real worker rather than
+        # only on the echo one. Both cost a callback: `progress` is a frame the node relays, and
+        # `raise_if_cancelled` is what lets a cancel keep the weights — killing the process to
+        # abandon one job makes the next caller pay the load.
+        #
+        # Deliberately NOT decoding the latents to send a preview: that is a VAE decode per step
+        # (10-15% of the run) producing intermediate *content*, which nothing here retains.
+        def on_step(_pipe, step, _timestep, kwargs, _total=steps):
+            request.progress(step + 1, total_steps=_total)
+            request.raise_if_cancelled()
+            return kwargs
+
+        arguments: dict[str, Any] = {
+            "prompt": prompt,
+            "width": width,
+            "height": height,
+            "num_inference_steps": steps,
+            "guidance_scale": guidance,
+            "generator": generator,
+            "callback_on_step_end": on_step,
+        }
+
+        negative = payload.get("negative_prompt")
+
+        if negative:
+            arguments["negative_prompt"] = negative
+
+        try:
+            result = pipe(**arguments)
+        except TypeError as error:
+            # A pipeline class that takes neither callback nor negative prompt. Retry once without
+            # the optional arguments rather than failing the job: the picture is what was asked for
+            # and the progress bar is not.
+            if "callback_on_step_end" not in str(error) and "negative_prompt" not in str(error):
+                raise
+
+            log(f"{request.model}: {type(pipe).__name__} does not take {error}; retrying without it")
+            arguments.pop("callback_on_step_end", None)
+            arguments.pop("negative_prompt", None)
+            result = pipe(**arguments)
 
         output = request.output(f"image-{index}.png", "image/png")
         result.images[0].save(output.path, format="PNG")
@@ -414,11 +720,156 @@ def generate(request: Request):
         files.append(output)
         images.append({"width": width, "height": height, "steps": steps, "seed": image_seed})
 
+    generate_ms = (time.monotonic() - started) * 1000.0
+
     # The model, the geometry and the seeds. Not the prompt — the node logs this line's *shape*, and
     # a payload that carried the prompt would put it in the one place rule 7 forbids.
-    log(f"{request.model}: {count} image(s) at {width}x{height}, {steps} steps on {_device}")
+    log(
+        f"{request.model}: {count} image(s) at {width}x{height}, {steps} steps on {_device} "
+        f"(load {load_ms / 1000:.1f}s, generate {generate_ms / 1000:.1f}s)"
+    )
 
-    return {"model": request.model, "steps": steps, "device": _device, "images": images}, files
+    return {
+        "model": request.model,
+        "steps": steps,
+        "device": _device,
+        "images": images,
+        # The timing breakdown is what makes a slow request explicable: a swap shows up as seconds
+        # of `loadMs` on a request whose `generateMs` is ordinary, and without it the operator's
+        # only evidence is "it was slow that one time".
+        "timing": {"loadMs": round(load_ms), "generateMs": round(generate_ms)},
+        "resident": resident(),
+        "evicted": evicted,
+        "quantization": recipe.get("quantization") or "none",
+    }, files
+
+
+def pull(request: Request):
+    """
+    Fetch a recipe's weights and prove them loadable, reporting progress as chunks (phase-48 D4).
+
+    THE PERCENTAGE IS DELIBERATELY ABSENT. `huggingface_hub` gives no download callback, and a
+    denominator this worker would have to guess is a number a dashboard would happily plot —
+    phase-28 D5's line. What it reports instead is a fact: how many mebibytes have landed in the
+    cache since the pull started.
+    """
+    recipe, _ = recipe_for(request)
+    accepted = accepted_licenses()
+
+    if not is_licensed(recipe, accepted):
+        raise ToolError(
+            f"'{recipe['id']}' is licensed under '{licence_id(recipe)}', which this node has not "
+            f"accepted. Add \"{licence_id(recipe)}\" to Tools:Image:AcceptedLicenses if you have "
+            f"read it ({licence_of(recipe).get('url') or 'see the model repository'}).",
+            ERROR_MODEL_UNAVAILABLE,
+        )
+
+    if not flag("INFERHUB_ALLOW_MODEL_DOWNLOAD"):
+        raise ToolError(
+            f"this node may not fetch weights: Tools:AllowModelDownload is false. Pre-fetch "
+            f"'{recipe['id']}' out of band with:\n  {prefetch_command(recipe)}",
+            ERROR_MODEL_UNAVAILABLE,
+        )
+
+    if is_ready(recipe):
+        request.chunk({"status": "already-present", "model": recipe["id"]})
+        return {"model": recipe["id"], "status": "already-present", "ready": True}
+
+    request.chunk({"status": "downloading", "model": recipe["id"], "repo": recipe["repo"]})
+
+    baseline = cache_bytes()
+    stop = threading.Event()
+
+    def watch() -> None:
+        while not stop.wait(5.0):
+            landed = max(0, cache_bytes() - baseline) // (1024 ** 2)
+            request.chunk({"status": f"downloading ({landed} MiB)", "model": recipe["id"], "mib": landed})
+
+    monitor = threading.Thread(target=watch, daemon=True, name="pull-progress")
+    monitor.start()
+
+    try:
+        fetch(recipe)
+    finally:
+        stop.set()
+
+    request.chunk({"status": "verifying", "model": recipe["id"]})
+    log(f"'{recipe['id']}' is ready")
+    redeclare()
+
+    return {"model": recipe["id"], "status": "ready", "ready": True}
+
+
+def delete(request: Request):
+    """Drop the readiness marker and the cached revision. Never touches another recipe's blobs."""
+    recipe, _ = recipe_for(request)
+
+    marker = ready_marker(recipe)
+
+    if os.path.exists(marker):
+        os.remove(marker)
+
+    removed = 0
+
+    try:
+        from huggingface_hub import scan_cache_dir
+
+        cache = scan_cache_dir()
+        revisions = [
+            revision.commit_hash
+            for repo in cache.repos
+            if repo.repo_id == recipe["repo"]
+            for revision in repo.revisions
+        ]
+
+        if revisions:
+            strategy = cache.delete_revisions(*revisions)
+            removed = strategy.expected_freed_size
+            strategy.execute()
+    except Exception as error:  # noqa: BLE001 - a cache we cannot scan is not a failed command
+        log(f"could not remove '{recipe['id']}' from the cache: {type(error).__name__}: {error}")
+
+    with _loaded_lock:
+        _loaded.pop(recipe["id"], None)
+
+    free_vram()
+    log(f"'{recipe['id']}' removed ({removed // (1024 ** 2)} MiB freed)")
+    redeclare()
+
+    return {"model": recipe["id"], "status": "deleted", "freedBytes": removed}
+
+
+def redeclare() -> None:
+    """
+    Re-report what is ready, after a pull or a delete moved the answer.
+
+    The node re-applies its own narrowing clamp to this and re-reports the node to its coordinator
+    (v3.14.1). Widening is still refused there: every id here is a recipe file the operator put on
+    the box, and this can only ever be a subset of what the manifest granted.
+    """
+    if _worker is None:
+        return
+
+    recipes = load_recipes()
+    ready = [i for i in _offerable if i in recipes and is_ready(recipes[i])]
+    log(f"offering recipes: {', '.join(ready) or 'none'}")
+    _worker.redeclare([{"kind": "image", "models": ready}])
+
+
+def cache_bytes() -> int:
+    total = 0
+
+    for root, _dirs, names in os.walk(os.path.join(hf_home(), "hub")):
+        for name in names:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                continue
+
+    return total
+
+
+# ---- startup -----------------------------------------------------------------------------------
 
 
 def prefetch_missing(worker: Worker, recipes: dict[str, dict[str, Any]], offerable: list[str]) -> None:
@@ -450,7 +901,8 @@ def prefetch_missing(worker: Worker, recipes: dict[str, dict[str, Any]], offerab
         try:
             log(
                 f"fetching weights for '{identifier}' from {recipe['repo']}@{recipe['revision'][:12]} "
-                f"(variant={recipe.get('variant') or 'default'}) into {os.environ.get('HF_HOME')}. "
+                f"(variant={recipe.get('variant') or 'default'}, "
+                f"quantization={recipe.get('quantization') or 'none'}) into {hf_home()}. "
                 "This runs in the background; the recipe is offered when it completes."
             )
             fetch(recipe)
@@ -464,13 +916,13 @@ def prefetch_missing(worker: Worker, recipes: dict[str, dict[str, Any]], offerab
 
 
 def main() -> None:
-    global _device
+    global _device, _offerable, _worker
 
     recipes = load_recipes()
 
     if not recipes:
         log(f"no recipes found under {recipes_directory()}, so this worker offers nothing")
-        Worker(capabilities=[{"kind": "image", "models": []}]).run(generate)
+        Worker(capabilities=[{"kind": "image", "models": []}]).run(handle)
         return
 
     _device = select_device()
@@ -486,15 +938,25 @@ def main() -> None:
             "(sd15 at 512x512 is tens of seconds; sdxl at 1024x1024 is minutes)."
         )
 
-    offerable = offered(recipes, _device)
+    _offerable = offered(recipes, _device)
+    offerable = _offerable
     ready = [identifier for identifier in offerable if is_ready(recipes[identifier])]
 
+    log(
+        f"catalogue: {len(recipes)} recipe(s), {len(offerable)} offerable on this box, "
+        f"at most {resident_limit()} resident at a time"
+    )
     log(
         f"offering recipes: {', '.join(ready) or 'none yet'}"
         + (f" (fetching: {', '.join(i for i in offerable if i not in ready)})" if len(ready) < len(offerable) else "")
     )
 
-    worker = Worker(capabilities=[{"kind": "image", "models": ready}])
+    worker = Worker(
+        capabilities=[{"kind": "image", "models": ready}],
+        on_idle=lambda: unload_all("idle"),
+        vram_total_mib=_vram_total_mib,
+    )
+    _worker = worker
 
     # Daemon: a fetch in flight must not keep the process alive past a SIGTERM. An interrupted
     # download resumes from its `.incomplete` blob on the next start, so nothing is lost.
@@ -502,7 +964,7 @@ def main() -> None:
         target=prefetch_missing, args=(worker, recipes, offerable), daemon=True, name="prefetch"
     ).start()
 
-    worker.run(generate)
+    worker.run(handle)
 
 
 if __name__ == "__main__":

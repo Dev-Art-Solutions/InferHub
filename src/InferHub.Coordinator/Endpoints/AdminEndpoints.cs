@@ -125,6 +125,23 @@ public static class AdminEndpoints
             ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
             RunModelCommandAsync(ModelCommand.KindWarm, nodeId, model, context, registry, commands, audit, loggerFactory, cancellationToken));
 
+        // Tool models (phase 48, D4). The SAME channel, the same coalescing, the same SSE relay —
+        // what changes is that the command names a tool, so the node runs it against that tool's
+        // catalogue instead of its inference backend. Weights measured in tens of gigabytes take
+        // longer to fetch than any request timeout should tolerate, which is why this is an operator
+        // action and not something a generation request does on the caller's behalf.
+        group.MapPost("/nodes/{nodeId}/tools/{tool}/models/{model}/pull", (
+            string nodeId, string tool, string model, HttpContext context,
+            INodeRegistry registry, ModelCommandCoordinator commands, IAuditLog audit,
+            ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
+            RunToolModelCommandAsync(ModelCommand.KindPull, nodeId, tool, model, context, registry, commands, audit, loggerFactory, cancellationToken));
+
+        group.MapDelete("/nodes/{nodeId}/tools/{tool}/models/{model}", (
+            string nodeId, string tool, string model, HttpContext context,
+            INodeRegistry registry, ModelCommandCoordinator commands, IAuditLog audit,
+            ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
+            RunToolModelCommandAsync(ModelCommand.KindDelete, nodeId, tool, model, context, registry, commands, audit, loggerFactory, cancellationToken));
+
         // Fleet-wide model matrix (phase 26): model × node, with sizes and which nodes hold each.
         // The view that makes the whole feature make sense.
         group.MapGet("/models", (INodeRegistry registry) =>
@@ -419,6 +436,69 @@ public static class AdminEndpoints
         return Results.Accepted($"/api/admin/nodes/{node.NodeId}/models", new
         {
             nodeId = node.NodeId,
+            model,
+            kind,
+            commandId = result.CommandId,
+            reused = result.Reused
+        });
+    }
+
+    /// <summary>
+    /// Pull or delete a <em>tool's</em> model on one node (phase 48, D4).
+    /// </summary>
+    /// <remarks>
+    /// It deliberately does <b>not</b> check <c>SupportsModelManagement</c>: that flag is about the
+    /// node's inference backend (phase-26 D3), and an OpenAI-backed node reports false while running
+    /// a diffusion tool it manages perfectly well. Whether the tool exists and is allowed is the
+    /// node's own answer, and it arrives as a terminal error frame naming the tool — the same shape
+    /// a backend that cannot manage models already gives.
+    /// </remarks>
+    private static async Task<IResult> RunToolModelCommandAsync(
+        string kind,
+        string nodeId,
+        string tool,
+        string model,
+        HttpContext context,
+        INodeRegistry registry,
+        ModelCommandCoordinator commands,
+        IAuditLog audit,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin");
+        model = (model ?? string.Empty).Trim();
+        tool = (tool ?? string.Empty).Trim();
+
+        if (string.IsNullOrWhiteSpace(model) || string.IsNullOrWhiteSpace(tool))
+        {
+            return Results.BadRequest(new { error = "a tool id and a model name are both required" });
+        }
+
+        var node = registry.Snapshot(DateTimeOffset.UtcNow)
+            .FirstOrDefault(n => string.Equals(n.NodeId, nodeId, StringComparison.OrdinalIgnoreCase));
+
+        if (node is null)
+        {
+            return Results.NotFound(new { error = $"node '{nodeId}' not found" });
+        }
+
+        var result = await commands.SendAsync(node.NodeId, kind, model, cancellationToken, tool);
+
+        if (result is null)
+        {
+            return Results.NotFound(new { error = $"node '{nodeId}' is no longer connected" });
+        }
+
+        audit.Record(node.NodeId, $"tool.{tool}.model.{kind}", ActorOf(context), DateTimeOffset.UtcNow);
+
+        logger.LogInformation(
+            "Tool model command {Kind} '{Model}' on tool '{Tool}' at node {NodeId} → command {CommandId} (reused={Reused})",
+            kind, model, tool, node.NodeId, result.CommandId, result.Reused);
+
+        return Results.Accepted($"/api/admin/nodes/{node.NodeId}/tools/{tool}/models", new
+        {
+            nodeId = node.NodeId,
+            tool,
             model,
             kind,
             commandId = result.CommandId,

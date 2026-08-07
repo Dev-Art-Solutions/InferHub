@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using InferHub.Node.Backends;
+using InferHub.Node.Tools;
 using InferHub.Shared.Contracts;
 
 namespace InferHub.Node;
@@ -11,13 +12,29 @@ namespace InferHub.Node;
 /// whose <see cref="ModelCommandProgress.Done"/> is set — with <see cref="ModelCommandProgress.Error"/>
 /// populated iff it failed — so the coordinator always learns the outcome.
 /// </summary>
-public sealed class ModelCommandExecutor(IInferenceBackend backend, ILogger<ModelCommandExecutor> logger)
+public sealed class ModelCommandExecutor(
+    IInferenceBackend backend,
+    ILogger<ModelCommandExecutor> logger,
+    ToolExecutor? tools = null)
 {
     public async IAsyncEnumerable<ModelCommandProgress> ExecuteAsync(
         ModelCommand command,
         string nodeId,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        // Phase 48. A command that names a tool is about that tool's models, not the backend's —
+        // and it deliberately reuses this whole path rather than growing a second one, so the
+        // coalescing, the progress relay and the "no persistent state" property come with it.
+        if (command.IsToolCommand)
+        {
+            await foreach (var frame in RunToolCommandAsync(command, nodeId, cancellationToken))
+            {
+                yield return frame;
+            }
+
+            yield break;
+        }
+
         if (!backend.SupportsModelManagement)
         {
             yield return Terminal(command, nodeId, "unsupported",
@@ -74,6 +91,49 @@ public sealed class ModelCommandExecutor(IInferenceBackend backend, ILogger<Mode
         yield return Terminal(command, nodeId,
             error is null ? (command.Kind == ModelCommand.KindDelete ? "deleted" : "warmed") : "error",
             error);
+    }
+
+    /// <summary>
+    /// A pull or a delete against a tool's model catalogue (phase 48, D4).
+    /// </summary>
+    /// <remarks>
+    /// Every failure is a terminal frame with <see cref="ModelCommandProgress.Error"/> set — a tool
+    /// this node does not have, a licence nobody accepted, a download that died — because the
+    /// coordinator's only contract is that exactly one frame arrives with <c>Done</c> on it. A
+    /// throw here would leave an operator watching a progress bar that simply stops.
+    /// </remarks>
+    private async IAsyncEnumerable<ModelCommandProgress> RunToolCommandAsync(
+        ModelCommand command,
+        string nodeId,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        if (tools is null)
+        {
+            yield return Terminal(command, nodeId, "unsupported", "this node has no tool runtime");
+            yield break;
+        }
+
+        if (!ModelCommand.IsKnownToolKind(command.Kind))
+        {
+            yield return Terminal(command, nodeId, "unsupported",
+                $"'{command.Kind}' is not something a tool's models can do; pull and delete are");
+
+            yield break;
+        }
+
+        logger.LogInformation(
+            "Running {Kind} model command {CommandId} for '{Model}' on tool '{Tool}'",
+            command.Kind, command.CommandId, command.ModelName, command.Tool);
+
+        yield return Progress(command, nodeId, command.Kind == ModelCommand.KindPull ? "queued" : "deleting", null);
+
+        await foreach (var step in tools.ManageModelAsync(
+                           command.Tool!, command.Kind, command.ModelName, cancellationToken))
+        {
+            yield return step.Done
+                ? Terminal(command, nodeId, step.Error is null ? step.Status : "error", step.Error)
+                : Progress(command, nodeId, step.Status, null);
+        }
     }
 
     private async IAsyncEnumerable<ModelCommandProgress> RunPullAsync(
@@ -135,8 +195,8 @@ public sealed class ModelCommandExecutor(IInferenceBackend backend, ILogger<Mode
         p is { Total: > 0, Completed: >= 0 } ? Math.Clamp(100.0 * p.Completed.Value / p.Total.Value, 0, 100) : null;
 
     private static ModelCommandProgress Progress(ModelCommand c, string nodeId, string status, double? percent) =>
-        new(c.CommandId, nodeId, c.Kind, c.ModelName, status, percent, Done: false, Error: null);
+        new(c.CommandId, nodeId, c.Kind, c.ModelName, status, percent, Done: false, Error: null, Tool: c.Tool);
 
     private static ModelCommandProgress Terminal(ModelCommand c, string nodeId, string status, string? error) =>
-        new(c.CommandId, nodeId, c.Kind, c.ModelName, status, error is null ? 100 : null, Done: true, Error: error);
+        new(c.CommandId, nodeId, c.Kind, c.ModelName, status, error is null ? 100 : null, Done: true, Error: error, Tool: c.Tool);
 }

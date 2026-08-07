@@ -51,7 +51,20 @@ public sealed record NodeProfile(
     /// the collection and excludes it from replication (phase-44 D1). Null leaves retrieval exactly
     /// as the box has it.
     /// </summary>
-    [property: JsonPropertyName("retrieval")] RetrievalProfile? Retrieval = null);
+    [property: JsonPropertyName("retrieval")] RetrievalProfile? Retrieval = null,
+    /// <summary>
+    /// Phase 48. Image recipe id → whether this node should offer it. <c>false</c> narrows and
+    /// always works; <c>true</c> is honoured only for a recipe the box already has, has accepted the
+    /// licence of, and has the VRAM for.
+    /// </summary>
+    /// <remarks>
+    /// This is the <b>third</b> thing a hub can narrow and the first one where the ceiling is
+    /// arithmetic rather than a list: a profile that names a recipe needing 19 GB on a box that
+    /// budgets 12 is refused with the numbers in the message, exactly as one naming a tool outside
+    /// <c>Tools:Allowed</c> is refused with the list in it. The hub still narrows and never widens
+    /// (phase-43 D1) — it cannot make a node accept a licence, find weights or grow a card.
+    /// </remarks>
+    [property: JsonPropertyName("imageRecipes")] IReadOnlyDictionary<string, bool>? ImageRecipes = null);
 
 /// <summary>
 /// A corpus the coordinator wants a node to host (phase 44): which engine, where it is, which

@@ -1,3 +1,4 @@
+using InferHub.Node.Tools;
 using InferHub.Shared.Contracts;
 
 namespace InferHub.Node.Profiles;
@@ -39,7 +40,7 @@ public static class NodeProfileClamp
         {
             // No profile: the box runs its own configuration, which is the state it boots in.
             return new ClampResult(
-                new EffectiveProfile(local.DisabledCapabilities, Array.Empty<string>(), local.MaxConcurrency),
+                new EffectiveProfile(local.DisabledCapabilities, Array.Empty<string>(), local.MaxConcurrency, Array.Empty<string>()),
                 Array.Empty<string>(),
                 Array.Empty<NodeProfileRefusal>(),
                 Array.Empty<string>(),
@@ -53,8 +54,11 @@ public static class NodeProfileClamp
         var disabledCapabilities = new HashSet<string>(local.DisabledCapabilities, StringComparer.OrdinalIgnoreCase);
         var disabledTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        var disabledRecipes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         ClampCapabilities(local, desired, disabledCapabilities, applied, refusals);
         ClampTools(local, desired, disabledTools, applied, refusals);
+        ClampImageRecipes(local, desired, disabledRecipes, applied, refusals);
 
         var concurrency = ClampConcurrency(local, desired, applied, refusals);
         var (ensure, remove) = ClampModels(local, desired, applied, refusals);
@@ -64,7 +68,8 @@ public static class NodeProfileClamp
             new EffectiveProfile(
                 disabledCapabilities.OrderBy(kind => kind, StringComparer.OrdinalIgnoreCase).ToArray(),
                 disabledTools.OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToArray(),
-                concurrency),
+                concurrency,
+                disabledRecipes.OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToArray()),
             applied,
             refusals,
             ensure,
@@ -174,6 +179,82 @@ public static class NodeProfileClamp
 
             disabled.Remove(toolId);
             applied.Add($"tool '{toolId}' on");
+        }
+    }
+
+    /// <summary>
+    /// Phase 48. A profile may switch an image recipe off; switching one on requires the box to
+    /// already have it, to have accepted its licence, and to have the VRAM for it.
+    /// </summary>
+    /// <remarks>
+    /// <b>The first ceiling in this function that is arithmetic rather than a list</b>, and it is the
+    /// same ceiling either way: the operator's configuration decides what is possible, and a hub
+    /// asking for the impossible gets a refusal naming the numbers rather than a node that tries and
+    /// dies. A recipe a hub could enable past the VRAM budget would put the out-of-memory error back
+    /// exactly where phase-48 D2 took it out of.
+    /// </remarks>
+    private static void ClampImageRecipes(
+        LocalCeiling local,
+        NodeProfile desired,
+        HashSet<string> disabled,
+        List<string> applied,
+        List<NodeProfileRefusal> refusals)
+    {
+        if (desired.ImageRecipes is null)
+        {
+            return;
+        }
+
+        foreach (var pair in desired.ImageRecipes)
+        {
+            var recipeId = pair.Key?.Trim();
+
+            if (string.IsNullOrEmpty(recipeId))
+            {
+                continue;
+            }
+
+            if (!pair.Value)
+            {
+                // Narrowing, so it is honoured even for a recipe this box has never heard of — the
+                // answer to "stop offering that" is never "I decline to not offer it".
+                disabled.Add(recipeId);
+                applied.Add($"image recipe '{recipeId}' off");
+                continue;
+            }
+
+            var recipe = local.ImageRecipes.FirstOrDefault(r =>
+                string.Equals(r.Id, recipeId, StringComparison.OrdinalIgnoreCase));
+
+            if (recipe is null)
+            {
+                refusals.Add(new NodeProfileRefusal(
+                    $"imageRecipe:{recipeId}",
+                    $"this node has no image recipe '{recipeId}'; recipes are files an operator put on the box and a profile cannot add one"));
+
+                continue;
+            }
+
+            if (!recipe.IsLicensed(local.AcceptedLicenses))
+            {
+                refusals.Add(new NodeProfileRefusal(
+                    $"imageRecipe:{recipeId}",
+                    $"'{recipeId}' is licensed under '{recipe.LicenseId}', which this node has not accepted; add it to Tools:Image:AcceptedLicenses on the box, not in a profile"));
+
+                continue;
+            }
+
+            if (!VramBudget.Fits(local.VramBudgetMiB, local.VramReserveMiB, recipe.VramMiB))
+            {
+                refusals.Add(new NodeProfileRefusal(
+                    $"imageRecipe:{recipeId}",
+                    $"'{recipeId}' needs {recipe.VramMiB} MiB and this node budgets {local.VramBudgetMiB - local.VramReserveMiB} MiB for models (Node:Vram:BudgetMiB {local.VramBudgetMiB} minus Node:Vram:ReserveMiB {local.VramReserveMiB})"));
+
+                continue;
+            }
+
+            disabled.Remove(recipeId);
+            applied.Add($"image recipe '{recipeId}' on");
         }
     }
 
@@ -359,13 +440,25 @@ public sealed record LocalCeiling(
     bool ToolsEnabled,
     IReadOnlyList<string> AllowedTools,
     int? MaxConcurrency,
-    bool SupportsModelManagement);
+    bool SupportsModelManagement,
+    /// <summary>The image catalogue on this box (phase 48). Empty on a node with no image tool.</summary>
+    IReadOnlyList<ImageRecipeInfo>? ImageRecipeCatalogue = null,
+    IReadOnlyList<string>? AcceptedLicenseIds = null,
+    int VramBudgetMiB = 0,
+    int VramReserveMiB = 0)
+{
+    public IReadOnlyList<ImageRecipeInfo> ImageRecipes => ImageRecipeCatalogue ?? Array.Empty<ImageRecipeInfo>();
+
+    public IReadOnlyList<string> AcceptedLicenses => AcceptedLicenseIds ?? Array.Empty<string>();
+}
 
 /// <summary>What the node will run after clamping.</summary>
 public sealed record EffectiveProfile(
     IReadOnlyList<string> DisabledCapabilities,
     IReadOnlyList<string> DisabledTools,
-    int? MaxConcurrency);
+    int? MaxConcurrency,
+    /// <summary>Image recipes a profile switched off (phase 48). Narrowing only.</summary>
+    IReadOnlyList<string> DisabledImageRecipes);
 
 public sealed record ClampResult(
     EffectiveProfile Effective,

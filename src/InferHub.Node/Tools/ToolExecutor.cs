@@ -7,6 +7,13 @@ using Microsoft.Extensions.Options;
 namespace InferHub.Node.Tools;
 
 /// <summary>
+/// One step of a tool-model command: what the worker says it is doing, and whether that was the
+/// last word (phase 48). Deliberately not a <c>ModelCommandProgress</c> — that record carries a
+/// command id and a node id this class has no business knowing.
+/// </summary>
+public sealed record ToolModelProgress(string Model, string Status, string? Error, bool Done);
+
+/// <summary>
 /// <see cref="InferenceExecutor"/>'s sibling: a <see cref="ToolJob"/> in, a
 /// <see cref="ToolResult"/> or a stream of <see cref="ToolChunk"/> out (phase 41).
 /// </summary>
@@ -186,6 +193,14 @@ public sealed class ToolExecutor(
         {
             return ToolResult.Retry(job.JobId, ex.Message, options.QueueMaxWaitSeconds);
         }
+        catch (ToolVramExhaustedException ex)
+        {
+            // Phase 48. The same 503 + Retry-After a busy pool gets: from a client's side "no worker
+            // free" and "no room on the card" are the same fact — come back shortly — and giving
+            // them different statuses would make a retry loop behave differently for no reason it
+            // could act on.
+            return ToolResult.Retry(job.JobId, ex.Message, options.QueueMaxWaitSeconds);
+        }
         catch (ToolUnavailableException ex)
         {
             return ToolResult.Retry(job.JobId, ex.Message, CapabilityRetryAfterSeconds);
@@ -345,6 +360,146 @@ public sealed class ToolExecutor(
     /// <summary>The 3.14 signature, kept so nothing that never watches a job had to change.</summary>
     public Task<ToolResult> RunAsync(ToolJob job, CancellationToken cancellationToken)
         => RunAsync(job, progress: null, cancellationToken);
+
+    /// <summary>
+    /// Runs a model-management op against a tool and reports what it says, frame by frame
+    /// (phase 48, D4). <c>status</c> is the worker's own word for what it is doing;
+    /// <c>error</c> is set on the terminal item iff it failed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It reuses the <em>ordinary</em> request path — one worker, one slot, one deadline — rather
+    /// than inventing a management channel. A pull therefore queues behind a generation and a
+    /// generation queues behind a pull, which is the honest answer for a resource there is one of.
+    /// </para>
+    /// <para>
+    /// <b>There is no scratch directory.</b> Nothing about a pull moves bytes through the node; the
+    /// weights land in the worker's own cache, on the volume, where the next process finds them.
+    /// </para>
+    /// </remarks>
+    public async IAsyncEnumerable<ToolModelProgress> ManageModelAsync(
+        string toolId,
+        string op,
+        string model,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        ToolWorkerLease? lease = null;
+        string? refusal = null;
+
+        try
+        {
+            lease = await runtime.AcquireToolAsync(toolId, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            yield break;
+        }
+        catch (Exception ex)
+        {
+            refusal = ex.Message;
+        }
+
+        if (refusal is not null)
+        {
+            yield return new ToolModelProgress(model, "error", refusal, Done: true);
+            yield break;
+        }
+
+        var request = new ToolFrame
+        {
+            Type = ToolFrameTypes.Request,
+            Id = Guid.NewGuid().ToString("N"),
+            Capability = lease!.Manifest.Capabilities.FirstOrDefault()?.Kind ?? string.Empty,
+            Model = model,
+            Payload = JsonSerializer.SerializeToElement(new { op }, ToolProtocol.Json)
+        };
+
+        logger.LogInformation("Running a '{Op}' model command for '{Model}' on tool '{ToolId}'", op, model, toolId);
+
+        var frames = lease.ExecuteAsync(request, cancellationToken).GetAsyncEnumerator(cancellationToken);
+
+        try
+        {
+            while (true)
+            {
+                ToolFrame? frame = null;
+                string? failure = null;
+                var hasNext = false;
+
+                try
+                {
+                    hasNext = await frames.MoveNextAsync();
+
+                    if (hasNext)
+                    {
+                        frame = frames.Current;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lease.MarkUnhealthy();
+                    failure = ex.Message;
+                }
+
+                if (failure is not null)
+                {
+                    yield return new ToolModelProgress(model, "error", failure, Done: true);
+                    yield break;
+                }
+
+                if (!hasNext)
+                {
+                    yield return new ToolModelProgress(model, "error", "the tool ended without answering", Done: true);
+                    yield break;
+                }
+
+                switch (frame!.Type)
+                {
+                    case ToolFrameTypes.Chunk:
+                        yield return new ToolModelProgress(model, StatusOf(frame) ?? op, null, Done: false);
+                        continue;
+
+                    case ToolFrameTypes.Progress:
+                        continue;
+
+                    case ToolFrameTypes.Error:
+                        yield return new ToolModelProgress(
+                            model,
+                            "error",
+                            frame.Message ?? "the tool reported an error",
+                            Done: true);
+
+                        yield break;
+
+                    default:
+                        yield return new ToolModelProgress(model, StatusOf(frame) ?? "success", null, Done: true);
+                        yield break;
+                }
+            }
+        }
+        finally
+        {
+            await frames.DisposeAsync();
+            await lease.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// The worker's own <c>status</c> word, if it sent one. Read out of the payload rather than
+    /// invented here: "downloading (2140 MiB)" is a sentence only the process doing it can write,
+    /// and the alternative is a progress bar that says the same thing for four minutes.
+    /// </summary>
+    private static string? StatusOf(ToolFrame frame)
+    {
+        if (frame.Payload is not { } payload || payload.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        return payload.TryGetProperty("status", out var status) && status.ValueKind == JsonValueKind.String
+            ? status.GetString()
+            : null;
+    }
 
     /// <summary>Matches the hub's capability refusal (phase-40 D5), so backoff is the same everywhere.</summary>
     internal const int CapabilityRetryAfterSeconds = 30;

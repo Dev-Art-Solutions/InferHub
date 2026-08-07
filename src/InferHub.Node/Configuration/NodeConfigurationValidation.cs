@@ -111,7 +111,7 @@ public sealed class NodeOptionsValidator : IValidateOptions<NodeOptions>
             if (!CapabilityKinds.IsWellKnown(disabled?.Trim()))
             {
                 failures.Add(
-                    $"{NodeOptions.SectionName}:Capabilities:Disabled contains '{disabled}', which is not a capability this release knows. Expected one of: {CapabilityKinds.Chat}, {CapabilityKinds.Embed}, {CapabilityKinds.Transcribe}, {CapabilityKinds.Speak}.");
+                    $"{NodeOptions.SectionName}:Capabilities:Disabled contains '{disabled}', which is not a capability this release knows. Expected one of: {CapabilityKinds.Chat}, {CapabilityKinds.Embed}, {CapabilityKinds.Transcribe}, {CapabilityKinds.Speak}, {CapabilityKinds.Image}.");
             }
         }
 
@@ -124,6 +124,21 @@ public sealed class NodeOptionsValidator : IValidateOptions<NodeOptions>
         {
             failures.Add(
                 $"{NodeOptions.SectionName}:Capabilities:Disabled turns off both '{CapabilityKinds.Chat}' and '{CapabilityKinds.Embed}', which is every kind of work this node's backend can do. Leave one on.");
+        }
+
+        // Phase 48. A reserve at or above the budget is not a strict configuration, it is one that
+        // can never admit anything — every model refused, at startup, with arithmetic nobody typed
+        // on purpose. Refusing the config is the only place this is cheap to notice.
+        if (options.Vram.BudgetMiB > 0 && options.Vram.ReserveMiB >= options.Vram.BudgetMiB)
+        {
+            failures.Add(
+                $"{NodeOptions.SectionName}:Vram:{nameof(VramOptions.ReserveMiB)} is {options.Vram.ReserveMiB} and {NodeOptions.SectionName}:Vram:{nameof(VramOptions.BudgetMiB)} is {options.Vram.BudgetMiB}, which leaves nothing for a model. The reserve is what is held back for the inference backend and the display; it must be less than the budget.");
+        }
+
+        if (options.Vram.BudgetMiB < 0 || options.Vram.ReserveMiB < 0)
+        {
+            failures.Add(
+                $"{NodeOptions.SectionName}:Vram figures are in MiB and cannot be negative (budget {options.Vram.BudgetMiB}, reserve {options.Vram.ReserveMiB}).");
         }
 
         return failures.Count == 0
@@ -158,6 +173,12 @@ public sealed class ToolOptionsValidator : IValidateOptions<ToolOptions>
         {
             failures.Add(
                 $"{ToolOptions.SectionName}:{nameof(ToolOptions.MaxStartAttempts)} must be >= 1 (got {options.MaxStartAttempts}).");
+        }
+
+        if (options.Image.ResidentRecipes < 1)
+        {
+            failures.Add(
+                $"{ToolOptions.SectionName}:Image:{nameof(ImageToolOptions.ResidentRecipes)} must be >= 1 (got {options.Image.ResidentRecipes}); a worker that may hold no model can serve nothing.");
         }
 
         foreach (var (key, value) in new[]

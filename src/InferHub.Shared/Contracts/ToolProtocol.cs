@@ -133,6 +133,25 @@ public static class ToolFrameTypes
     /// for.
     /// </remarks>
     public const string Cancel = "cancel";
+
+    /// <summary>
+    /// Node → worker (phase 48, D3): nobody has asked for anything in <c>idleTimeoutSeconds</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A <b>hint</b>, not an instruction, and there is no reply. What to do about it is the worker's
+    /// business: the node knows nothing about torch, and a node-side unload would be the node
+    /// reaching into a tool's internals — phase-41 D1's line. A diffusion worker frees its pipelines
+    /// and stays alive; a worker that holds nothing worth freeing ignores it.
+    /// </para>
+    /// <para>
+    /// The worker must <b>not</b> exit on it. A warm process with no weights reloads a model in
+    /// ~40 s; a cold one costs that plus the interpreter and the import of torch, which is not free
+    /// — and retiring a worker is already what <c>idleTimeoutSeconds</c> does at the pool level when
+    /// it is above <c>minWorkers</c>.
+    /// </para>
+    /// </remarks>
+    public const string Idle = "idle";
 }
 
 /// <summary>
@@ -183,6 +202,19 @@ public sealed record ToolFrame
     /// </summary>
     [JsonPropertyName("capabilities")]
     public IReadOnlyList<NodeCapability>? Capabilities { get; init; }
+
+    /// <summary>
+    /// On <c>ready</c>: total VRAM the worker can see, in MiB (phase 48, D1). Optional.
+    /// </summary>
+    /// <remarks>
+    /// <b>It is a cross-check, never an override.</b> <c>Node:Vram:BudgetMiB</c> is what the operator
+    /// declared and it is what the admission gate uses; this is what a process on the card actually
+    /// measured, and the node logs the two side by side when they disagree materially. A node that
+    /// silently adopted this number would be detecting VRAM after all — and would get it wrong on
+    /// a shared card, or on a box where somebody else's process is already holding half of it.
+    /// </remarks>
+    [JsonPropertyName("vramTotalMiB")]
+    public int? VramTotalMiB { get; init; }
 
     [JsonPropertyName("level")]
     public string? Level { get; init; }

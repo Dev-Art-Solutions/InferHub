@@ -27,11 +27,41 @@ public sealed record NodeToolState(
     /// <summary><c>Tools:Enabled</c>. False means no runtime was ever constructed on this box.</summary>
     [property: JsonPropertyName("enabled")] bool Enabled,
     [property: JsonPropertyName("tools")] IReadOnlyList<NodeToolInfo> Tools,
-    [property: JsonPropertyName("atUtc")] DateTimeOffset AtUtc)
+    [property: JsonPropertyName("atUtc")] DateTimeOffset AtUtc,
+    /// <summary>
+    /// The VRAM arithmetic this box is running under (phase 48), or null when no budget is declared.
+    /// </summary>
+    /// <remarks>
+    /// <b>Null rather than zeros</b> — phase-28 D5 for the fifth time. A node with no declared
+    /// budget has not measured anything and has no gate; reporting <c>budgetMiB: 0</c> would put a
+    /// number on a dashboard that reads as "this box has no VRAM" rather than "nobody said".
+    /// </remarks>
+    [property: JsonPropertyName("vram")] NodeVramState? Vram = null)
 {
     public static NodeToolState Off(string nodeId) =>
         new(nodeId, Enabled: false, Array.Empty<NodeToolInfo>(), DateTimeOffset.UtcNow);
 }
+
+/// <summary>
+/// What a node says about its card (phase 48, D1/D2): what the operator declared, what is held back,
+/// and what is on it right now.
+/// </summary>
+/// <remarks>
+/// <see cref="MeasuredMiB"/> is the worker's own <c>torch.cuda.mem_get_info()</c> reading and is
+/// reported <em>beside</em> the declared figure rather than instead of it, precisely so a
+/// disagreement is visible to whoever can fix it. Nothing routes, budgets or admits on it.
+/// </remarks>
+public sealed record NodeVramState(
+    [property: JsonPropertyName("budgetMiB")] int BudgetMiB,
+    [property: JsonPropertyName("reserveMiB")] int ReserveMiB,
+    [property: JsonPropertyName("measuredMiB")] int? MeasuredMiB,
+    /// <summary>Models believed to be on the card, and how much each is budgeted at.</summary>
+    [property: JsonPropertyName("resident")] IReadOnlyList<NodeResidentModel> Resident);
+
+public sealed record NodeResidentModel(
+    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("vramMiB")] int VramMiB,
+    [property: JsonPropertyName("inUse")] bool InUse);
 
 /// <summary>One manifest on the box, and what became of it.</summary>
 public sealed record NodeToolInfo(

@@ -144,11 +144,13 @@ who did not write them. **v3.14 opened the image track** — [text to image](#te
 OpenAI's Images API, a fifth `:diffusion` image, and the capability seam carrying a whole new
 modality with no protocol change at all — and **v3.15 gave it a clock**: [async
 jobs](#a-job-that-takes-two-minutes-v315) with per-step progress, cooperative cancellation and
-results that live in memory for five minutes and nowhere else.
+results that live in memory for five minutes and nowhere else. **v3.16 makes it a catalogue**: [six
+models](#the-catalogue-v316), quantization that fits a 20B transformer and its 8.3B text encoder on
+one consumer card, a **VRAM budget you declare rather than one we guess**, hub-driven weight pulls,
+and a licence consent per model — because two of the six are not ours to accept for you.
 
-Next in this track: a **catalogue** of six models with real memory budgets, `qwen-360-diffusion` for
-360° panoramas, and **editing** — img2img, inpainting and variations as their own capability kind
-rather than a per-model operation list.
+Next in this track: `qwen-360-diffusion` for 360° panoramas, and **editing** — img2img, inpainting
+and variations as their own capability kind rather than a per-model operation list.
 Still on the table beyond that: teaching the **coordinator** about backend health as a typed signal
 (a status column and an alert, rather than a line in the node's log), **active-active**
 multi-coordinator load sharing, an **OTLP push** exporter behind an explicit opt-in, and a dedicated
@@ -184,7 +186,7 @@ small one and wonders where the audio went. All tags are under
 | `inferhub-node` | ~340 MB | amd64 + arm64 | You already run Ollama, vLLM, LM Studio or a hosted OpenAI-compatible endpoint and want a node in front of it. Also the right one for **solo mode** and for a **vector-store-only** box. |
 | `inferhub-node:ollama` | ~4 GB | amd64 | You want *one* `docker run` on a GPU box with nothing installed on the host. Ollama runs inside the container, supervised. `:gpu` is an alias of the same digest — it works fine with no card. |
 | `inferhub-node:tools` | ~6 GB | amd64 | The above, **plus speech**: Python, `faster-whisper` and `piper`, so `/v1/audio/transcriptions` and `/v1/audio/speech` work out of the box. |
-| `inferhub-node:diffusion` | ~12 GB | amd64 | **Text to image** (v3.14+): PyTorch, `diffusers`, SDXL and SD 1.5, so `/v1/images/generations` works out of the box. **You need a card.** |
+| `inferhub-node:diffusion` | ~12 GB | amd64 | **Text to image** (v3.14+): PyTorch, `diffusers`, `bitsandbytes` and six recipes — SDXL, SD 1.5, FLUX.1-schnell, Qwen-Image, SD 3.5 Medium and SDXL-Turbo — so `/v1/images/generations` works out of the box. **You need a card.** |
 
 Three rules of thumb that save the mistake each way:
 
@@ -643,7 +645,7 @@ first log line says which one it got.
 | `inferhub-node` | ~340 MB | amd64 + arm64 | A node. No inference engine — point it at an Ollama or an OpenAI-compatible server |
 | `inferhub-node:ollama` | ~4 GB | amd64 | The same node with Ollama inside it (v3.7+) |
 | `inferhub-node:tools` | ~6 GB | amd64 | The same again, plus Python, `faster-whisper` and `piper` (v3.10+) |
-| `inferhub-node:diffusion` | ~12 GB | amd64 | The **plain** node plus PyTorch, `diffusers`, SDXL and SD 1.5 (v3.14+). Does not stack — no Ollama inside |
+| `inferhub-node:diffusion` | ~12 GB | amd64 | The **plain** node plus PyTorch, `diffusers`, `bitsandbytes` and six recipes (v3.14+). Does not stack — no Ollama inside |
 
 The first three are **unchanged** by v3.10. The Python is ~1.5 GB and it is in a layer whether a
 flag is on or off, so a flag would grow every existing coordinator+node stack for a feature it does
@@ -747,30 +749,137 @@ It is OpenAI's Images API, so pointing an existing app at your own hardware is a
 The capability seam took the whole modality with **no protocol change**: `image` is one more
 capability kind, and the router already knew how to find `(capability, model)`.
 
-### The two models
+### The catalogue (v3.16)
 
-| Recipe | Repo | Size | Licence | On a CPU |
-|---|---|---:|---|---|
-| `sdxl` | `stabilityai/stable-diffusion-xl-base-1.0` | ~7 GB fp16 | CreativeML OpenRAIL++-M | no — minutes per image |
-| `sd15` | `stable-diffusion-v1-5/stable-diffusion-v1-5` | ~2 GB fp16 | CreativeML OpenRAIL-M | yes, at 512×512 |
+| Recipe | Params | Steps | VRAM | Unquantized | Licence | Out of the box? |
+|---|---|---:|---:|---:|---|---|
+| `sdxl` | 2.6B UNet | 30 | ~8 GB fp16 | — | CreativeML OpenRAIL++-M | yes |
+| `sd15` | 0.9B | 30 | ~4 GB fp16 | — | CreativeML OpenRAIL-M | yes — the only CPU-viable one |
+| `flux-schnell` | 12B | **4** | ~12 GB nf4 | **~33 GB** | Apache-2.0 | yes |
+| `qwen-image` | 20B + 8.3B encoder | 30 | ~19 GB nf4 | **~60 GB** | Apache-2.0 | yes |
+| `sd35-medium` | 2.5B MMDiT | 40 | ~16 GB bf16 | — | Stability AI Community | **accept the licence** |
+| `sdxl-turbo` | 2.6B | **1** | ~8 GB fp16 | — | Stability AI Non-Commercial | **accept the licence** |
 
-Both run at fp16 with **no quantization**: `sdxl` fits an 8 GB card. FLUX.1-schnell and Qwen-Image
-are next, with the quantization path they need — they are 12B and 20B, and neither fits a 24 GB card
-at bf16.
+Two of those numbers are the whole point. **`flux-schnell` and `qwen-image` do not fit a 24 GB card
+at bf16** — 33 GB and 60 GB — and nf4 quantization is what makes them one-card models. Both figures
+are in the table because "Qwen-Image needs 19 GB" and "Qwen-Image needs 60 GB" are both true
+sentences about different recipes, and a table that gives one is lying to somebody.
+
+`sd35-medium`'s repository is also **gated** on Hugging Face. Accepting the licence tells *this node*
+it may run the model; getting the weights is separate — accept the terms on the model page and set
+`HF_TOKEN`.
 
 **The `model` you send is a recipe id, not a Hugging Face repo id.** A repo id is a location: it has
 a slash in it that every router and metrics label has an opinion about, and it changes when a model
 is re-hosted. That is not hypothetical — `runwayml/stable-diffusion-v1-5` was withdrawn, and `sd15`
 points at where those weights live now.
 
-Recipes are `python/recipes/*.json` — a repo, a **pinned commit sha**, the `fp16` variant, the
-pipeline class, the aspect buckets and the defaults. Drop one in and restart the tool. A recipe with
-no pinned revision is skipped and logged, because "which weights were in 3.14.0" has to have an
-answer.
+Recipes are `python/recipes/*.json` — a repo, a **pinned commit sha**, the variant, the pipeline
+class, the aspect buckets, the VRAM figure, the licence and the quantization. Drop one in and restart
+the tool. A recipe with no pinned revision is skipped and logged, because "which weights were in
+3.16.0" has to have an answer.
 
-### Weights arrive in the background, and a model appears when it is ready
+### Quantization is a property of the model, not of the request
 
-On a fresh volume the node starts with `capabilities: []` and fills in as each model lands:
+`"quantization": "none" | "int8" | "nf4"`, through `diffusers`' native `bitsandbytes` integration,
+applied to the components the recipe names. For `qwen-image` that has to include the **text
+encoder**: 8.3B left at bf16 is the difference between fitting on a 24 GB card and not.
+
+It is a recipe field rather than a header because it changes what the model *is*. Two requests to
+`qwen-image` that quantized differently would produce different images from the same seed, and a
+per-request knob would make reproducibility a function of a header nobody logged. Want both? Ship two
+recipes with two ids — which is honest, and is also how you will describe it to your users.
+
+**One mechanism, deliberately.** GGUF, Nunchaku and TensorRT are each faster on some model on some
+card, and each is a second thing to reason about when a picture comes out worse than expected.
+
+### A licence you have not read is a model this node will not start
+
+Two of the six are not permissively licensed. They are **loaded, logged by name and not started**
+until their licence id is in `Tools:Image:AcceptedLicenses`:
+
+```
+[diffusion] not offering 'sdxl-turbo': its licence is 'sai-nc-community', which is not permissive
+            and is not in Tools:Image:AcceptedLicenses. Read it at https://huggingface.co/…/LICENSE.md
+            and, if you accept it, add "sai-nc-community" to that list.
+```
+
+This is a **fourth** opt-in, and it is not redundant with the other three: `Tools:Enabled` consents
+to the feature, `Tools:Allowed` consents to *these tools*, `Tools:AllowModelDownload` consents to
+reaching the internet, and none of them says "and I accept the Stability AI Non-Commercial Research
+Community License". It is a **list** rather than a boolean for the same reason `Tools:Allowed` is:
+`sd35-medium` is free for most people who will run it and `sdxl-turbo` is not usable commercially at
+all, so one flag would let somebody who read one licence enable both.
+
+A recipe that says nothing about its licence is treated as **not** permissive — a recipe that forgot
+to say is one nobody has read the licence of.
+
+**None of this is legal advice.** It is a refusal to make that call on your behalf, silently.
+
+### The VRAM arithmetic, written down
+
+`Node:Vram:BudgetMiB` is a number **you** set; `Node:Vram:ReserveMiB` (2048) is what is held back for
+the inference backend and the display. Unset means no gate and v3.15's behaviour exactly.
+
+| Card | `BudgetMiB` | Headroom | Runs |
+|---|---:|---:|---|
+| 8 GB | `8192` | 6144 | `sd15` |
+| 12 GB | `12288` | 10240 | `sd15`, `sdxl`, `sdxl-turbo` |
+| 24 GB | `24576` | 22528 | all six |
+| 24 GB, with `:ollama` holding an 8B model beside it | `24576`, reserve `8192` | 16384 | all but `qwen-image` |
+
+A recipe that cannot fit is **not declared**, so the fleet never routes at it and nobody spends a
+request finding out. One that would fit but does not *right now* — something else is mid-job on the
+card — waits on the tool queue and then gets the same `503` + `Retry-After` as every other limit
+here. Never an out-of-memory error inside somebody's job, which is the failure this replaces.
+
+**Declared, not detected**, and that is the decision this section turns on. A node cannot reliably
+measure the card it is on: under WSL2 — the most common GPU-with-Docker setup there is — there are no
+`/dev/nvidia*` device nodes, the host's `nvidia-smi` cannot see the VM's VRAM, and the only reliable
+signal that a GPU exists at all is that `libcuda.so.1` loads. A node that guessed would guess wrong on
+the exact platform this project is developed on. A budget that is usually right is worse than one that
+is explicitly absent, because the first failure is an OOM at 2am rather than a startup message.
+
+The worker reports what it measures and the node **logs a disagreement**; it never overrides you.
+
+### Switching models swaps weights; it does not restart anything
+
+Loading FLUX is 40–90 seconds. A pool that restarted the process per recipe would pay the interpreter
+and the import of torch on top of that, on every alternation. So the worker frees the old pipeline,
+empties the cache, loads the new one, and reports the swap in the result's `timing` block — so a slow
+request has a visible reason rather than being the one somebody remembers as "it was slow that time".
+
+`Tools:Image:ResidentRecipes` (default **1**) allows more than one resident where the budget permits:
+a 48 GB card genuinely can hold SDXL and FLUX together and should not thrash. The default is 1
+because the expensive default is the one nobody realises they chose.
+
+After `idleTimeoutSeconds` the node sends the worker an **idle hint** and the worker frees its VRAM
+and stays alive. What to free is the worker's business — the node knows nothing about torch, and a
+node-side unload would be the node reaching into a tool's internals.
+
+### Weights arrive by an explicit pull, or in the background
+
+FLUX is ~24 GB on the wire and Qwen-Image is larger. Since v3.16 you pull them **deliberately**, on
+the model-command channel the fleet has had since v2.8:
+
+```
+POST   /api/admin/nodes/{nodeId}/tools/diffusion/models/flux-schnell/pull
+DELETE /api/admin/nodes/{nodeId}/tools/diffusion/models/flux-schnell
+```
+
+Progress relays on the existing `/api/admin/stream` as `model-progress` events, so the console gets a
+progress bar for free — along with the coalescing (a second pull of the same model rides the first)
+and the property that a hub restart forgets in-flight commands like everything else.
+
+The progress carries **no percentage**, deliberately: Hugging Face gives no download callback, and a
+denominator we would have to guess is a number a dashboard would happily plot. What it reports is a
+fact — how many mebibytes have landed.
+
+A generation request for a recipe whose weights are absent is a **failed job** naming both that
+command and the `huggingface-cli` one. Never a forty-minute wait.
+
+On a fresh volume the node also fetches in the background and starts with `capabilities: []`, filling
+in as each model lands:
 
 ```
 [diffusion] offering recipes: none yet (fetching: sd15, sdxl)
@@ -805,6 +914,14 @@ duplicated limbs and doubled horizons, which reads as "this model is bad" rather
 |---|---|
 | `sdxl` | `1024x1024`, `1152x896`, `896x1152`, `1216x832`, `832x1216`, `1344x768`, `768x1344` |
 | `sd15` | `512x512`, `512x768`, `768x512`, `640x640` |
+| `flux-schnell` | `1024x1024`, `1152x896`, `896x1152`, `1216x832`, `832x1216`, `1344x768`, `768x1344` |
+| `qwen-image` | `1328x1328`, `1664x928`, `928x1664` |
+| `sd35-medium` | `1024x1024`, `1152x896`, `896x1152`, `1216x832`, `832x1216` |
+| `sdxl-turbo` | `512x512` |
+
+Qwen-Image publishes a 4:3 bucket at 1472×1140, and 1140 is not a multiple of 8 — the edge refuses it
+before the request reaches a node. Rather than ship a size that 400s or quietly round it to a
+neighbour, `qwen-image` offers the three buckets that are expressible.
 
 ### Steps, guidance and seed
 
@@ -1686,6 +1803,8 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `Node:Models:Include` | `[]` | Whitelist of model names to advertise (empty = all). |
 | `Node:Models:Exclude` | `[]` | Names dropped before reporting. |
 | `Node:Capabilities:Disabled` | `[]` | v3.8. What this node is **not** routed for — `["chat"]` makes it an embeddings-only box. Subtractive only; disabling both `chat` and `embed` fails startup. See [What a node is for](#what-a-node-is-for-v38). |
+| `Node:Vram:BudgetMiB` | `0` | v3.16. Total VRAM to plan around, in MiB. **0 = no gate**, which is v3.15's behaviour exactly. **Declared, not detected**: under WSL2 there are no `/dev/nvidia*` nodes and the host's `nvidia-smi` cannot see the VM's VRAM, so a node that guessed would guess wrong on the most common GPU-with-Docker setup there is. A recipe that cannot fit `Budget − Reserve` is not declared; one that would fit but does not right now waits and then gets a `503` + `Retry-After`. |
+| `Node:Vram:ReserveMiB` | `2048` | v3.16. Held back for the inference backend and the display — really about the **second** thing on the card, an `:ollama` container beside the `:diffusion` one. A reserve at or above the budget fails startup: that is not strict, it is a configuration that can never admit anything. |
 | `Backend:Type` | `ollama` | Inference backend selector: `ollama` or `openai`. See [Inference backends](#inference-backends). |
 | `Ollama:Endpoint` | `http://localhost:11434/` | Local Ollama URL (absolute http/https). Used when `Backend:Type=ollama`. |
 | `Ollama:RequestTimeout` | `00:05:00` | Timeout for a single Ollama call. Matches the coordinator's `Dispatcher:TimeoutSeconds`; raise it for very large models whose cold load is slow. |
@@ -1724,7 +1843,12 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `Tools:RestartWindow` | `00:10:00` | The budget's window. |
 | `Tools:RestartBackoff` | `00:00:10` | Wait before the second and later attempts; doubles each time. |
 | `Tools:RecoveryProbeInterval` | `00:01:00` | How often a pool that gave up tries one worker anyway. A success restores its capabilities without a restart. |
-| `Tools:MaintenanceInterval` | `00:00:30` | How often idle workers are retired and given-up pools are probed. |
+| `Tools:MaintenanceInterval` | `00:00:30` | How often idle workers are retired, given-up pools are probed and idle workers are hinted to free what they hold. |
+| `Tools:Image:RequireGpu` | `true` | v3.14. The image worker refuses to start with no reachable CUDA device, and names the key to unset. A tool that loads happily on a CPU and then serves four-minute requests is a node the fleet keeps routing to. |
+| `Tools:Image:AllowSlowCpu` | `false` | v3.14. Offer the CPU-hostile recipes on a CPU-only box anyway. Your hardware, your call — loud when on. |
+| `Tools:Image:RecipeDirectory` | _(worker default)_ | v3.14. Where `python/recipes/*.json` live; `/opt/inferhub/recipes` in the `:diffusion` image. Since v3.16 the **node** reads it too, for three fields only — id, licence, VRAM — because the profile clamp must refuse an oversized or unlicensed recipe with no worker running. |
+| `Tools:Image:AcceptedLicenses` | `[]` | v3.16. Licence ids you have read and accepted. A recipe whose `license.permissive` is not `true` is loaded, logged by name and **not started** until its id is here — `sd35-medium` needs `stabilityai-ai-community`, `sdxl-turbo` needs `sai-nc-community`. The **fourth** consent, and a list rather than a boolean so accepting one licence never enables another. A blank entry is ignored, which is how you clear one that came from an image. Not legal advice — a refusal to make that call for you, silently. |
+| `Tools:Image:ResidentRecipes` | `1` | v3.16. How many models may be on the card at once. Switching recipes swaps weights inside the **warm** process; more than one resident stops a box that alternates from thrashing. The default is 1 because the expensive default is the one nobody realises they chose. |
 
 ### Keeping the local Ollama alive (v3.4+)
 

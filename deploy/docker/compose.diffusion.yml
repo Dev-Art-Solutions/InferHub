@@ -22,9 +22,18 @@
 # feature matrix that ticks "CPU" for the whole feature is a lie told in a checkmark.
 #
 # NO MANUAL STEP. Unlike the Piper voices in compose.tools.yml, the model a caller names here is
-# unambiguous, so weights fetch themselves on first use into /data/tools/hf on the volume —
+# unambiguous, so weights fetch themselves in the background into /data/tools/hf on the volume —
 # Tools__AllowModelDownload is on in this image because choosing it *is* the consent (phase-42 D4).
-# SDXL is ~7 GB, so the first request after a fresh volume takes a while and says what it is doing.
+# A recipe is offered only once its weights are proven loadable, so no request ever waits on a
+# download, and from v3.16 you can also pull one deliberately from a coordinator:
+#
+#   POST /api/admin/nodes/{nodeId}/tools/diffusion/models/flux-schnell/pull
+#
+# TWO OF THE SIX RECIPES DO NOT START UNTIL YOU ACCEPT THEIR LICENCE (v3.16, phase-48 D5).
+# `sd35-medium` is under the Stability AI Community licence and `sdxl-turbo` is non-commercial;
+# both are loaded, logged by name and not started until their licence id is in
+# Tools:Image:AcceptedLicenses. That is a refusal to make that call for you, silently — not legal
+# advice, and not a boolean, because accepting one licence must never enable the other.
 
 name: inferhub-diffusion
 
@@ -65,9 +74,34 @@ services:
       # Images__MaxBatch: "4"
       # Images__MaxResponseBytes: "26214400"
 
+      # v3.16 — THE VRAM ARITHMETIC, WRITTEN DOWN. Unset means no gate, which is v3.15's behaviour.
+      # Set it and a recipe that cannot fit Budget minus Reserve is not declared at all, so the
+      # fleet never routes at it; one that would fit but does not right now waits and then gets the
+      # same 503 + Retry-After as every other limit here — never an out-of-memory error inside
+      # somebody's job. On a 24 GB card:
+      # Node__Vram__BudgetMiB: "24576"
+      # Node__Vram__ReserveMiB: "2048"
+
+      # v3.16 — the licence consent. Per licence id, because sd35-medium is free for most people who
+      # will run it and sdxl-turbo is not usable commercially at all.
+      # Tools__Image__AcceptedLicenses__0: "stabilityai-ai-community"
+      # Tools__Image__AcceptedLicenses__1: "sai-nc-community"
+
+      # v3.16 — how many models may be on the card at once. Switching recipes swaps weights inside
+      # the WARM process, so the default of 1 costs a load and not a restart; raise it on a 48 GB
+      # card that alternates between two models and would otherwise thrash.
+      # Tools__Image__ResidentRecipes: "2"
+
+      # sd35-medium's repository is GATED on Hugging Face. Accepting its licence above tells this
+      # node it may run the model; getting the weights is separate — accept the terms on the model
+      # page and put a read token here. It has to be OUR key rather than a plain HF_TOKEN env var:
+      # the node clears the child's environment before spawn (phase-41 D3), so a variable set on the
+      # container reaches the node and stops there.
+      # Tools__Image__HuggingFaceToken: "${HF_TOKEN}"
+
     volumes:
-      # Required in practice. Holds the model weights (~7 GB for sdxl), the corpus and the node id —
-      # without it every `up` re-downloads gigabytes.
+      # Required in practice. Holds the model weights (~8.7 GB for sdxl + sd15, ~35 GB for all six),
+      # the corpus and the node id — without it every `up` re-downloads gigabytes.
       - node-data:/data
 
     # The GPU. Deliberately not commented out — see the header.

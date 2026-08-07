@@ -3,12 +3,17 @@
   "repo": "stable-diffusion-v1-5/stable-diffusion-v1-5",
   "revision": "451f4fe16113bff5a5d2269ed5ad43b0592e9a14",
   "pipeline": "StableDiffusionPipeline",
-  "license": { "id": "CreativeML-OpenRAIL-M", "permissive": true },
+  "license": {
+    "id": "CreativeML-OpenRAIL-M",
+    "permissive": true,
+    "url": "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/blob/main/README.md"
+  },
   "defaults": { "steps": 30, "guidance": 7.5, "size": "512x512" },
   "sizes": ["512x512", "512x768", "768x512", "640x640"],
   "maxSteps": 75,
   "vramMiB": 4000,
   "variant": "fp16",
   "dtype": "float16",
+  "quantization": "none",
   "cpuViable": true
 }

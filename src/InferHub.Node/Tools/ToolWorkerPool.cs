@@ -48,17 +48,31 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
     private volatile string? lastError;
     private long lastErrorAtTicks;
 
-    public ToolWorkerPool(ToolManifest manifest, ToolOptions options, TimeProvider time, ILogger logger)
+    private readonly int declaredVramMiB;
+
+    public ToolWorkerPool(
+        ToolManifest manifest,
+        ToolOptions options,
+        TimeProvider time,
+        ILogger logger,
+        int declaredVramMiB = 0)
     {
         this.manifest = manifest;
         this.options = options;
         this.time = time;
         this.logger = logger;
+        this.declaredVramMiB = declaredVramMiB;
         slots = new SemaphoreSlim(manifest.MaxWorkers, manifest.MaxWorkers);
         lastRecoveryProbe = time.GetUtcNow();
     }
 
     public ToolManifest Manifest => manifest;
+
+    /// <summary>
+    /// The last VRAM figure a worker of this pool measured, in MiB (phase 48, D1). Reported beside
+    /// the declared budget on <c>/api/status</c>; never used to decide anything.
+    /// </summary>
+    public int? ReportedVramTotalMiB { get; private set; }
 
     /// <summary>
     /// Switched off by a coordinator profile (phase 43). A suspended pool holds no workers, declares
@@ -72,6 +86,21 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
     /// must start one worker eagerly — see <see cref="StartAsync"/>.
     /// </summary>
     private bool HasOpenModelSet => manifest.Capabilities.Any(capability => capability.Models.Count == 0);
+
+    /// <summary>
+    /// How many warm workers this pool must keep, whatever <c>minWorkers</c> says.
+    /// </summary>
+    /// <remarks>
+    /// <b>An open model set forces a floor of one, and this is a bug fix as much as a feature</b>
+    /// (phase 48). The eager start exists because nothing declares an open-ended capability until a
+    /// worker has reported (the v3.10.0 deadlock) — but until now the maintenance pass would happily
+    /// retire that very worker after <c>idleTimeoutSeconds</c>, leaving a pool that declares models
+    /// with no process able to re-declare when one lands or leaves, and killing a prefetch in
+    /// flight. The last worker of such a pool is kept and hinted instead (D3): a Python process that
+    /// has freed its pipelines costs a few hundred megabytes of RAM and no VRAM at all, and it
+    /// saves the next caller the interpreter and the import of torch on top of the weights.
+    /// </remarks>
+    private int WorkerFloor => Math.Max(manifest.MinWorkers, HasOpenModelSet ? 1 : 0);
 
     /// <summary>Idle workers this pool is holding. Test-only: nothing in the runtime branches on it.</summary>
     internal int LiveWorkerCount
@@ -94,6 +123,12 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
 
     /// <summary>Raised when <see cref="Capabilities"/> changes, so the node can re-report at once.</summary>
     public event Action? CapabilitiesChanged;
+
+    /// <summary>
+    /// Raised when this pool has told a worker it is idle (phase 48, D3), so whatever was tracking
+    /// what the worker held can stop believing it holds it.
+    /// </summary>
+    public event Action? WentIdle;
 
     /// <summary>
     /// What the hub is told about this pool (phase 45). Read-only over what the pool already tracks
@@ -309,6 +344,7 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
 
         var now = time.GetUtcNow();
         var retire = new List<ToolWorkerProcess>();
+        var hint = new List<ToolWorkerProcess>();
 
         lock (gate)
         {
@@ -324,12 +360,22 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
                     continue;
                 }
 
-                // A rarely-used tool must not hold VRAM forever; MinWorkers is the floor an
-                // operator set precisely to avoid paying the load cost again.
-                if (keep.Count >= manifest.MinWorkers && now - worker.LastUsed > manifest.IdleTimeout)
+                var gone = now - worker.LastUsed > manifest.IdleTimeout;
+
+                // A rarely-used tool must not hold VRAM forever; WorkerFloor is the number below
+                // which retiring would leave this pool unable to do its job at all.
+                if (gone && keep.Count >= WorkerFloor)
                 {
                     retire.Add(worker);
                     continue;
+                }
+
+                if (gone && !worker.IdleHinted)
+                {
+                    // Kept, but told (phase-48 D3). This is the last worker of a pool that must
+                    // hold one, so retiring it is not an option — but a diffusion worker sitting on
+                    // twelve gigabytes of VRAM nobody is using is exactly what the hint is for.
+                    hint.Add(worker);
                 }
 
                 keep.Add(worker);
@@ -349,6 +395,26 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
                 manifest.IdleTimeout);
 
             await worker.DisposeAsync();
+        }
+
+        foreach (var worker in hint)
+        {
+            logger.LogInformation(
+                "Tool '{ToolId}' has been idle for {IdleTimeout}; hinting it to free what it is holding. The process stays alive.",
+                manifest.Id,
+                manifest.IdleTimeout);
+
+            if (await worker.HintIdleAsync(cancellationToken))
+            {
+                try
+                {
+                    WentIdle?.Invoke();
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "An idle subscriber threw for tool '{ToolId}'", manifest.Id);
+                }
+            }
         }
 
         await ProbeIdleWorkersAsync(cancellationToken);
@@ -639,12 +705,53 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// The cross-check (phase 48, D1): the operator declared a budget and the worker measured the
+    /// card. Logged when they disagree materially, and <b>never</b> acted on.
+    /// </summary>
+    /// <remarks>
+    /// Adopting the worker's number would be detecting VRAM after all, which is wrong under WSL2,
+    /// wrong on a shared card and wrong the moment somebody else's process is on the GPU. What is
+    /// worth having is the sentence an operator reads when a model they expected to fit does not:
+    /// the two numbers, side by side, in one line.
+    /// </remarks>
+    private void CheckDeclaredVram(ToolWorkerProcess worker)
+    {
+        if (worker.ReportedVramTotalMiB is not { } measured || measured <= 0)
+        {
+            return;
+        }
+
+        ReportedVramTotalMiB = measured;
+
+        if (declaredVramMiB <= 0)
+        {
+            return;
+        }
+
+        // A tenth is wide on purpose: reserved regions, ECC and the driver's own overhead mean a
+        // card advertised as 24 GB reports about 23.5, and an operator who typed the number on the
+        // box should not get a warning for being right.
+        if (Math.Abs(declaredVramMiB - measured) * 10 <= measured)
+        {
+            return;
+        }
+
+        logger.LogWarning(
+            "Node:Vram:BudgetMiB is {Declared} MiB but tool '{ToolId}' reports the card has {Measured} MiB. The declared figure is what this node budgets against — it is not overridden — so check which one is wrong.",
+            declaredVramMiB,
+            manifest.Id,
+            measured);
+    }
+
     private void OnStartSucceeded(ToolWorkerProcess worker)
     {
         lock (gate)
         {
             startFailures.Clear();
         }
+
+        CheckDeclaredVram(worker);
 
         // Cleared, not accumulated: `lastError` means "the most recent thing that happened to this
         // pool was a failure". A pool that failed once at 3am and has served every request since
@@ -864,11 +971,23 @@ public sealed class ToolWorkerLease : IAsyncDisposable
     /// <summary>How long this tool's worker gets to honour a cancel before it is terminated.</summary>
     public TimeSpan CancelGrace { get; init; } = TimeSpan.FromSeconds(20);
 
+    /// <summary>
+    /// Run when the lease is released, whatever became of the request (phase 48). The one consumer
+    /// is the VRAM residency map: a model stops being <em>busy</em> the moment its request ends,
+    /// even though its weights stay on the card.
+    /// </summary>
+    internal Action? Released { get; set; }
+
     /// <summary>Marks the worker as not fit to serve the next request; it is retired on release.</summary>
     public void MarkUnhealthy() => healthy = false;
 
     public ValueTask DisposeAsync()
     {
+        // Before the pool release, and outside it: a residency map that stayed marked busy because
+        // the pool threw would refuse every later request on this box, forever.
+        Released?.Invoke();
+        Released = null;
+
         pool.ReleaseLease(worker, healthy);
         return ValueTask.CompletedTask;
     }
@@ -884,6 +1003,17 @@ internal sealed class ToolBusyException(string toolId, int maxWorkers, int waite
 
 /// <summary>The tool exists on this node but is not currently runnable.</summary>
 internal sealed class ToolUnavailableException(string message) : InvalidOperationException(message);
+
+/// <summary>
+/// The model would fit this box but not beside what is running on it right now (phase 48, D2).
+/// </summary>
+/// <remarks>
+/// Rendered as a <c>503</c> + <c>Retry-After</c>, the same status and header as every other
+/// saturation refusal in the project — deliberately, so a client's retry logic behaves identically
+/// whichever limit it hit. It is not a <c>ToolBusyException</c> because the pool had a free worker:
+/// the card did not.
+/// </remarks>
+internal sealed class ToolVramExhaustedException(string message) : InvalidOperationException(message);
 
 /// <summary>No tool on this node provides the requested (capability, model) pair.</summary>
 internal sealed class ToolNotProvidedException(string capability, string model)

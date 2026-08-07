@@ -1,0 +1,19 @@
+{
+  "id": "sd35-medium",
+  "repo": "stabilityai/stable-diffusion-3.5-medium",
+  "revision": "b940f670f0eda2d07fbb75229e779da1ad11eb80",
+  "pipeline": "StableDiffusion3Pipeline",
+  "license": {
+    "id": "stabilityai-ai-community",
+    "permissive": false,
+    "url": "https://huggingface.co/stabilityai/stable-diffusion-3.5-medium/blob/main/LICENSE.md"
+  },
+  "gated": true,
+  "defaults": { "steps": 40, "guidance": 4.5, "size": "1024x1024" },
+  "sizes": ["1024x1024", "1152x896", "896x1152", "1216x832", "832x1216"],
+  "maxSteps": 60,
+  "vramMiB": 16000,
+  "dtype": "bfloat16",
+  "quantization": "none",
+  "cpuViable": false
+}

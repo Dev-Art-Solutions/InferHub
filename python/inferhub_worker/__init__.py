@@ -212,6 +212,8 @@ class Worker:
         capabilities: Sequence[dict[str, Any]] | None = None,
         stdin: Any = None,
         stdout: Any = None,
+        on_idle: Callable[[], None] | None = None,
+        vram_total_mib: int | None = None,
     ) -> None:
         # Reported at handshake. The node treats it as a NARROWING of the manifest: you may say
         # you found only one of the two models the manifest names, and you may never add one.
@@ -233,6 +235,21 @@ class Worker:
         # stays free.
         self._in_flight: dict[str, Request] = {}
         self._in_flight_lock = threading.Lock()
+
+        # Phase 48. The node sends `idle` when nothing has asked this pool for anything in
+        # `idleTimeoutSeconds`, and WHAT TO DO ABOUT IT IS YOURS. The node knows nothing about your
+        # libraries — a node-side unload would be the node reaching into a tool's internals — so it
+        # states the fact and you decide whether you hold a gigabyte of weights worth freeing. Do
+        # not exit here: the process staying alive is the point, because a warm interpreter that
+        # reloads weights is much cheaper than a cold start that also re-imports torch.
+        self._on_idle = on_idle
+
+        # Phase 48. Reported on `ready` as a CROSS-CHECK, never as a source of truth: the operator
+        # declares `Node:Vram:BudgetMiB` and that is what the node's admission gate uses. The node
+        # logs the two side by side when they disagree materially, which is the whole value — a node
+        # that adopted this number would be detecting VRAM after all, and would be wrong on a shared
+        # card or on a box where somebody else's process already holds half of it.
+        self._vram_total_mib = vram_total_mib
 
     def redeclare(self, capabilities: Sequence[dict[str, Any]]) -> None:
         """
@@ -287,12 +304,15 @@ class Worker:
                         "type": "ready",
                         "protocol": PROTOCOL_VERSION,
                         **({"capabilities": self.capabilities} if self.capabilities else {}),
+                        **({"vramTotalMiB": self._vram_total_mib} if self._vram_total_mib else {}),
                     }
                 )
             elif kind == "ping":
                 self._send({"type": "pong"})
             elif kind == "cancel":
                 self._cancel(frame.get("id") or "")
+            elif kind == "idle":
+                self._idle()
             elif kind == "request":
                 worker_thread = threading.Thread(
                     target=self._handle, args=(handler, frame), daemon=True
@@ -340,6 +360,16 @@ class Worker:
         # A `request` arriving while one is running is a node bug, not ours, and answering it here
         # would break "one request at a time". It is ignored, and the node's own deadline reports it.
         return True
+
+    def _idle(self) -> None:
+        """An `idle` hint is advice, so a handler that throws is logged and forgotten."""
+        if self._on_idle is None:
+            return
+
+        try:
+            self._on_idle()
+        except Exception:  # noqa: BLE001 - freeing memory must never kill a healthy worker
+            traceback.print_exc(file=sys.stderr)
 
     def _cancel(self, request_id: str) -> None:
         with self._in_flight_lock:

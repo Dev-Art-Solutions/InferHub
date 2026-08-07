@@ -1,0 +1,19 @@
+{
+  "id": "sdxl-turbo",
+  "repo": "stabilityai/sdxl-turbo",
+  "revision": "71153311d3dbb46851df1931d3ca6e939de83304",
+  "pipeline": "StableDiffusionXLPipeline",
+  "license": {
+    "id": "sai-nc-community",
+    "permissive": false,
+    "url": "https://huggingface.co/stabilityai/sdxl-turbo/blob/main/LICENSE.md"
+  },
+  "defaults": { "steps": 1, "guidance": 0.0, "size": "512x512" },
+  "sizes": ["512x512"],
+  "maxSteps": 4,
+  "vramMiB": 8000,
+  "variant": "fp16",
+  "dtype": "float16",
+  "quantization": "none",
+  "cpuViable": false
+}

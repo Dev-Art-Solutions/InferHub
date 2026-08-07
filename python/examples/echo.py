@@ -29,10 +29,43 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from inferhub_worker import File, Worker  # noqa: E402
+from inferhub_worker import ERROR_MODEL_UNAVAILABLE, File, ToolError, Worker  # noqa: E402
+
+
+_pulled: set[str] = set()
 
 
 def handle(request):
+    # Phase 48. `{"op": "pull"}` / `{"op": "delete"}` is what a hub-issued model command sends a
+    # tool, and the echo worker answers it with the same shape a real one does: a `chunk` per step
+    # of progress, then a terminal result. That is what makes the model-command path testable with
+    # no GPU, no network and no weights — phase-41's echo-worker discipline, one release on.
+    #
+    # `{"op": "pull", "fail": "..."}` refuses, because the interesting half of a pull is what a
+    # coordinator does with one that does not work.
+    op = (request.payload or {}).get("op")
+
+    if op in ("pull", "delete"):
+        if request.payload.get("fail"):
+            raise ToolError(request.payload["fail"], ERROR_MODEL_UNAVAILABLE)
+
+        if op == "delete":
+            _pulled.discard(request.model)
+            return {"model": request.model, "status": "deleted"}
+
+        if request.model in _pulled:
+            request.chunk({"status": "already-present", "model": request.model})
+            return {"model": request.model, "status": "already-present"}
+
+        for landed in (128, 512, 1024):
+            time.sleep(int(request.payload.get("stepMs", 5)) / 1000.0)
+            request.chunk({"status": "downloading (%d MiB)" % landed, "model": request.model, "mib": landed})
+
+        _pulled.add(request.model)
+        request.chunk({"status": "verifying", "model": request.model})
+
+        return {"model": request.model, "status": "ready", "ready": True}
+
     # Phase 47. `{"behaviour": "slow", "steps": 30, "stepMs": 200}` makes this worker take real time,
     # emit a real progress frame per step and honour a real cancel — which is how the whole async
     # job model (SSE, monotonic progress, cooperative cancel, a worker that stays warm afterwards)

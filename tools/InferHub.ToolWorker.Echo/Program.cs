@@ -65,6 +65,11 @@ void Send(object frame)
     }
 }
 
+// Phase 48. Models this worker has "pulled", so a second pull of the same one coalesces into
+// "already-present" rather than pretending to download it again — which is the behaviour a real
+// worker has, because it checks its readiness marker first.
+var pulledModels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
 // Phase 47. The requests currently running, so a `cancel` frame can find one.
 var inFlight = new System.Collections.Concurrent.ConcurrentDictionary<string, CancellationTokenSource>();
 Task? current = null;
@@ -217,6 +222,18 @@ async Task HandleRequestAsync(JsonElement frame, CancellationToken cancellationT
             : null;
 
     var capability = frame.TryGetProperty("capability", out var kind) ? kind.GetString() : null;
+
+    // Phase 48. A hub-issued model command reaches a tool as a request whose payload names an `op`,
+    // and answering it here is what makes the whole pull path — coalescing, the SSE relay, a
+    // progress bar in the console — testable with no GPU, no network and no weights. Same
+    // discipline as phase 41's echo worker and phase 47's slow image mode.
+    if (payload.ValueKind is JsonValueKind.Object
+        && payload.TryGetProperty("op", out var opElement)
+        && opElement.GetString() is { } op and ("pull" or "delete"))
+    {
+        await HandleModelCommandAsync(id, op, frame, payload, cancellationToken);
+        return;
+    }
 
     if (behaviour is null && capability is "transcribe" or "speak")
     {
@@ -458,6 +475,66 @@ async Task HandleAudioAsync(string? id, string capability, JsonElement payload, 
             new { name, mediaType = format == "wav" ? "audio/wav" : "audio/pcm", path }
         }
     });
+}
+
+// ---- phase 48: model commands ------------------------------------------------------------------
+
+/// <summary>
+/// A <c>pull</c> or a <c>delete</c> against this worker's model catalogue.
+/// </summary>
+/// <remarks>
+/// <para>
+/// A pull emits a <c>chunk</c> per step with a <c>status</c> string and ends with a result — the
+/// same shape the diffusion worker produces, so what the node relays onto the phase-26 progress
+/// channel is exercised for real rather than stubbed.
+/// </para>
+/// <para>
+/// <b>The status carries no percentage, deliberately.</b> Hugging Face gives no download callback,
+/// and a denominator a worker had to guess is a number a dashboard would happily plot — phase-28
+/// D5's line. What it reports instead is a fact: how much has landed.
+/// </para>
+/// </remarks>
+async Task HandleModelCommandAsync(
+    string? id,
+    string op,
+    JsonElement frame,
+    JsonElement payload,
+    CancellationToken cancellationToken)
+{
+    var model = frame.TryGetProperty("model", out var m) ? m.GetString() ?? "unknown" : "unknown";
+
+    if (payload.TryGetProperty("fail", out var fail) && fail.ValueKind is JsonValueKind.String)
+    {
+        Send(new { type = "error", id, code = "model_unavailable", message = fail.GetString() });
+        return;
+    }
+
+    if (op is "delete")
+    {
+        pulledModels.Remove(model);
+        Send(new { type = "result", id, payload = new { model, status = "deleted", freedBytes = 4096 } });
+        return;
+    }
+
+    if (!pulledModels.Add(model))
+    {
+        Send(new { type = "chunk", id, payload = new { status = "already-present", model } });
+        Send(new { type = "result", id, payload = new { model, status = "already-present", ready = true } });
+        return;
+    }
+
+    var stepMs = payload.TryGetProperty("stepMs", out var ms) && ms.ValueKind is JsonValueKind.Number
+        ? ms.GetInt32()
+        : 5;
+
+    foreach (var landed in new[] { 128, 512, 1024 })
+    {
+        await Task.Delay(stepMs, cancellationToken);
+        Send(new { type = "chunk", id, payload = new { status = $"downloading ({landed} MiB)", model, mib = landed } });
+    }
+
+    Send(new { type = "chunk", id, payload = new { status = "verifying", model } });
+    Send(new { type = "result", id, payload = new { model, status = "ready", ready = true } });
 }
 
 // ---- phase 46: the image behaviour -------------------------------------------------------------

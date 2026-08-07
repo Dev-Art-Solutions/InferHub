@@ -78,6 +78,20 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
     public IReadOnlyList<NodeCapability>? ReportedCapabilities { get; private set; }
 
     /// <summary>
+    /// Total VRAM the worker could see, in MiB, or null when it did not say (phase 48, D1). A
+    /// <b>cross-check</b> for the node to log against the declared budget — never an override.
+    /// </summary>
+    public int? ReportedVramTotalMiB { get; private set; }
+
+    /// <summary>
+    /// Whether this worker has already been told it is idle in the current idle period. Cleared the
+    /// moment it serves anything, so a worker that goes quiet again is hinted again — and hinted
+    /// <em>once</em> rather than every maintenance tick, which would be a frame every 30 seconds
+    /// forever on a box nobody is using.
+    /// </summary>
+    public bool IdleHinted { get; private set; }
+
+    /// <summary>
     /// Raised when a worker sends a <c>ready</c> frame <em>after</em> the handshake (v3.14.1), so
     /// the pool can re-narrow and the node can re-report to its coordinator without a restart.
     /// </summary>
@@ -237,6 +251,7 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
                 case ToolFrameTypes.Result:
                 case ToolFrameTypes.Error:
                     LastUsed = DateTimeOffset.UtcNow;
+                    IdleHinted = false;
                     yield return frame;
                     yield break;
 
@@ -297,6 +312,36 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
         catch (Exception ex)
         {
             logger.LogDebug(ex, "Could not send a cancel frame to tool '{ToolId}'", manifest.Id);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Tells the worker nobody has asked it for anything in <c>idleTimeoutSeconds</c> (phase 48, D3).
+    /// </summary>
+    /// <remarks>
+    /// <b>A hint, not an instruction, and there is no reply to wait for.</b> The node does not know
+    /// what this worker is holding or how to free it — that would be the node reaching into a tool's
+    /// internals, which is phase-41 D1's line. A diffusion worker frees its pipelines and stays
+    /// alive; anything else ignores the frame. Failing to send it is a debug line: an idle worker
+    /// holding memory is a waste, not a fault.
+    /// </remarks>
+    public async Task<bool> HintIdleAsync(CancellationToken cancellationToken)
+    {
+        if (!IsAlive)
+        {
+            return false;
+        }
+
+        try
+        {
+            await SendAsync(new ToolFrame { Type = ToolFrameTypes.Idle }, cancellationToken);
+            IdleHinted = true;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Could not send an idle hint to tool '{ToolId}'", manifest.Id);
             return false;
         }
     }
@@ -505,6 +550,7 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
             }
 
             ReportedCapabilities = frame.Capabilities;
+            ReportedVramTotalMiB = frame.VramTotalMiB;
             LastUsed = DateTimeOffset.UtcNow;
             return;
         }

@@ -434,6 +434,15 @@ public class ToolRuntimeTests
         public Task<ToolWorkerLease> AcquireAsync(string capability, string model, CancellationToken cancellationToken)
             => pool.AcquireAsync(cancellationToken);
 
+        public Task<ToolWorkerLease> AcquireToolAsync(string toolId, CancellationToken cancellationToken)
+            => pool.AcquireAsync(cancellationToken);
+
+        public IReadOnlyList<string> ToolIds => [pool.Manifest.Id];
+
+        public IReadOnlyList<ImageRecipeInfo> ImageRecipes => [];
+
+        public void SetDisabledModels(IReadOnlyCollection<string> models) { }
+
         public Task SetDisabledToolsAsync(IReadOnlyCollection<string> toolIds, CancellationToken cancellationToken)
             => toolIds.Contains(pool.Manifest.Id, StringComparer.OrdinalIgnoreCase)
                 ? pool.SuspendAsync()

@@ -19,10 +19,10 @@
 # question D9 was protecting, and the published image's own digest is the byte-level anchor. If this
 # ever moves to hashes, generate them in CI against the image, never by hand.
 #
-# NO bitsandbytes. Nothing in this release quantizes — SDXL is ~7 GB at fp16 and SD 1.5 is ~2 GB, and
-# both fit the cards this project asks for. A pinned dependency that nothing imports is a pin nobody
-# can tell is wrong until the phase that needs it, so it arrives in phase 48 with FLUX.1-schnell and
-# Qwen-Image, which are the two models that cannot run without it.
+# bitsandbytes ARRIVED IN PHASE 48, WITH ITS FIRST CONSUMER, and that is the whole reason phase 46
+# deliberately did not carry it: a pinned dependency nothing imports is a pin nobody can tell is
+# wrong until the release that needs it. FLUX.1-schnell (12B) and Qwen-Image (20B + an 8.3B text
+# encoder) do not fit a 24 GB card at bf16, and nf4 is what makes them one-card models.
 #
 # Installing these outside the image is supported and is how you get images on the plain node:
 #
@@ -53,3 +53,17 @@ torch==2.9.1
 # worker calls `Image.save` directly and an unnamed dependency you call directly is one that
 # disappears the day the library that carried it stops needing it.
 pillow==11.3.0
+
+# Quantization (phase 48). `diffusers` drives this through `PipelineQuantizationConfig`; the recipe
+# says nf4 or int8 and the worker applies it to the components the recipe names — for Qwen-Image
+# that is the text encoder as well as the transformer, because an 8.3B encoder left at bf16 is the
+# difference between fitting on a 24 GB card and not.
+bitsandbytes==0.48.1
+
+# FLUX's second text encoder is T5, and SD 3.5's third one is T5-XXL. `transformers` loads their
+# tokenizers through `sentencepiece`, which it does NOT pull in itself, and `protobuf` is what the
+# slow-tokenizer conversion path needs. CHECKED RATHER THAN ASSUMED, because a missing tokenizer
+# dependency fails at first load and not at build — the v3.10.0 class of bug, where the image looks
+# perfect until somebody makes a request.
+sentencepiece==0.2.1
+protobuf==6.33.1

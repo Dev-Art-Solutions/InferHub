@@ -2420,6 +2420,137 @@ the same (`request.progress`, `request.raise_if_cancelled`, `Cancelled`), and it
 `readline()` rather than `for line in stdin` — **the iterator protocol keeps a read-ahead buffer, and
 the frame two readers would lose between them is the cancel.**
 
+### Phase 48 (the catalogue: six models, quantized, budgeted) — also load-bearing
+
+**Four more recipes, and every one of them needed something phase 46 did not have.**
+`flux-schnell` (12B) and `qwen-image` (20B + an 8.3B text encoder) **do not fit a 24 GB card at
+bf16** — 33 GB and 60 GB — so they exist only because of nf4. `sd35-medium` and `sdxl-turbo` fit
+fine and need a *licence decision that is not ours to make*.
+
+**D1 — The VRAM budget is declared, not detected, and the worker's reading is a cross-check.**
+`Node:Vram:BudgetMiB` is a number the operator sets and `Node:Vram:ReserveMiB` (2048) is what is
+held back for the inference backend and the display. **Considered and rejected: detecting VRAM and
+defaulting the budget to it.** It works on bare-metal Linux, is wrong under WSL2 — where this
+project's own GPU box lives, and where there are no `/dev/nvidia*` device nodes, the host's
+`nvidia-smi` cannot see the VM's VRAM, and the only reliable signal a GPU exists is that
+`libcuda.so.1` loads (phase-39 D5) — is wrong on a shared card, and is wrong the moment somebody
+else's process is on the GPU. **A budget that is usually right is worse than one that is explicitly
+absent**, because the first failure is an OOM inside somebody's job rather than a startup message.
+The worker reports `torch.cuda.mem_get_info()` on its `ready` frame purely so `ToolWorkerPool`
+can **log a disagreement** past a 10% band; nothing routes, budgets or admits on it. Unset (0) means
+no gate and v3.15's behaviour exactly.
+
+**D2 — The budget is an admission gate on the node, before the job starts — and it is consulted
+*after* the worker slot is taken.** That ordering is the trick: only then is "what is in flight" a
+fact rather than a guess. [VramBudget](src/InferHub.Node/Tools/VramBudget.cs) is **pure**
+(`budget, reserve, residents, candidate → admit | wait | refuse`) for `NodeProfileClamp`'s reason —
+it is the piece whose off-by-one costs somebody an OOM at 2am, and a pure function is the piece a
+test can pin exhaustively. **Only what is *in use* counts against a candidate**: an idle pipeline is
+freed by the worker *before* it allocates the next one, so the peak is never both models at once,
+and a model somebody is mid-job on is never evicted — over the budget the request **waits** on the
+existing tool queue and then gets `503` + `Retry-After`, the same status and header as every other
+limit here. `Refuse` and `Wait` must not collapse: one is "come back shortly", the other is "this
+box will never run that", and the second is also why such a recipe is **never declared** (41 D6's
+withdraw-on-failure, applied before the first failure).
+
+> **`ImageResidency` mirrors the worker's own LRU policy rather than measuring anything**, so the
+> two agree without a round trip. Where they can differ is a load that *fails*: the node then
+> believes the new model is resident when nothing is, which errs toward **refusing** work rather
+> than toward an OOM. That asymmetry is the right one. An idle hint clears only the idle entries —
+> anything a lease still covers stays, or the gate would admit a second model onto a busy card.
+
+**D3 — Switching recipes swaps weights inside a warm worker; it does not restart it.** Loading FLUX
+is 40–90 s and a restart pays the interpreter and the import of torch on top of that, on every
+alternation. `Tools:Image:ResidentRecipes` (default **1**) allows more than one resident where the
+budget permits — the default is 1 for phase-41 D4's reason, that the expensive default is the one
+nobody realises they chose. **Idle unloading is the worker's decision, not the node's**: the node
+sends an `idle` hint frame after `idleTimeoutSeconds` and the worker frees its VRAM and stays alive.
+A node-side unload would be the node reaching into a tool's internals (41 D1).
+
+> **`ToolWorkerPool.WorkerFloor` is a bug fix as much as a feature.** An open model set forces an
+> eager worker because nothing declares such a capability until a worker reports (the v3.10.0
+> deadlock) — and until v3.16 the maintenance pass would happily **retire that very worker** after
+> `idleTimeoutSeconds`, leaving a pool that still declares models with no process able to re-declare
+> when one lands, and killing a prefetch in flight. The last worker of an open-set pool is now kept
+> and hinted instead. Hinted **once** per idle period, not every tick.
+
+**D4 — Weights are pulled by an explicit command, never lazily inside a request.** FLUX is ~24 GB on
+the wire and Qwen-Image is larger; a lazy first-use download blows `requestTimeoutSeconds`
+(v3.14.0 shipped exactly that and every first `sdxl` call was a 502 after 899.99 s), and raising the
+timeout to cover it means every genuinely wedged job also takes forty minutes to fail. So phase 26's
+model-command channel is extended: `ModelCommand` gains a nullable `Tool` — **null means the
+inference backend**, which is every command that existed before v3.16 — and
+`POST /api/admin/nodes/{id}/tools/{tool}/models/{recipe}/pull` sends it down the node's own outbound
+connection, with progress relayed on the existing `/api/admin/stream`. No new transport; the
+coalescing, the reused-command-id behaviour and the "no persistent state" property all come with it.
+**`warm` is refused for a tool model** rather than given an invented meaning — residency is already
+decided by `ResidentRecipes` and the idle hint, and a third opinion is a third thing to be wrong.
+
+**The progress carries no percentage, deliberately.** `huggingface_hub` gives no download callback,
+and a denominator a worker would have to guess is a number a dashboard would happily plot
+(phase-28 D5). It reports how many mebibytes have landed instead.
+
+> `IToolRuntime.AcquireToolAsync` is **the one path that does not go through a capability**, and it
+> has to be: a pull exists precisely because the model is not there, so it is not declared, so
+> `AcquireAsync` would answer "this node does not provide it" — correctly, and uselessly. The
+> ceiling is intact, because what is addressed is the *tool*, which `Tools:Allowed` named. It takes
+> an ordinary worker lease, so a pull queues behind a generation and vice versa: a node does not
+> quietly grow a second lane to the GPU.
+
+**D5 — A non-permissive licence needs a fourth opt-in, named per model.** A recipe with
+`license.permissive != true` is **loaded, logged by name and not started** unless its licence id is
+in `Tools:Image:AcceptedLicenses`, with the log line naming the licence and linking to it. It is not
+redundant with the other three (41 D2, 42 D4): `Enabled` is the feature, `Allowed` is *these tools*,
+`AllowModelDownload` is reaching the internet, and none of them says "and I accept the Stability AI
+Non-Commercial Research Community License". **A list, not a boolean** — `sd35-medium` is free for
+most people who will run it and `sdxl-turbo` is not usable commercially at all, so one flag would let
+somebody who read one licence enable both. **A recipe that says nothing is treated as *not*
+permissive**: one that forgot to say is one nobody has read the licence of, and the other default
+would make the consent opt-out by accident of a missing field. Enforced **twice** — the node refuses
+to declare it (so the hub never routes at one) and the worker refuses to download or load it (the
+lock on the process that would actually do those things, which a solo caller meets directly).
+
+> *Recorded deviation from the brief:* the key names **licence ids**, not recipe ids. What is being
+> accepted is a licence — you read it once and it covers every model under it — and the key's name
+> says so. Both shipped non-permissive recipes have distinct licence ids, so the two readings behave
+> identically for this catalogue; the refusal prints the exact string to add and a link to the text.
+
+**D6 — Quantization is a recipe field with three values and a stated cost.** `none | int8 | nf4` via
+`diffusers`' native `bitsandbytes` integration, applied to the components `quantizeComponents`
+names — which for Qwen-Image **has to include the text encoder**, because 8.3B left at bf16 is the
+difference between fitting a 24 GB card and not. **It is a recipe field rather than a request
+parameter because it changes what the model *is*:** two requests to `qwen-image` that quantized
+differently produce different images from the same seed, and a per-request knob would make
+reproducibility a function of a header nobody logged. An operator who wants both ships two recipes
+with two ids. `vramMiB` is the **quantized** figure (what the gate admits against) and
+`vramUnquantizedMiB` is documentation, because "Qwen-Image needs 19 GB" and "Qwen-Image needs 60 GB"
+are both true sentences about different recipes. **One mechanism** — GGUF, Nunchaku and TensorRT are
+each faster on some model on some card and each is a second thing to reason about when a picture
+comes out worse than expected.
+
+**The node reads recipe files, and that is not the node learning about diffusion.**
+[ImageRecipeCatalogue](src/InferHub.Node/Tools/ImageRecipeCatalogue.cs) parses exactly three things —
+id, licence, VRAM — and never `repo`, `pipeline`, `variant`, `dtype` or the aspect buckets. Two
+consumers need the answer with **no worker running**: `NodeProfileClamp` is pure and must refuse an
+oversized or unlicensed recipe synchronously, and the decision not to *fetch* an unlicensed model has
+to precede the process that would fetch it. What the node learns is licences and megabytes, which are
+facts about the box. A recipe with no `revision` is skipped by name here exactly as it is in the
+worker — a catalogue that counted a model the worker will never offer would budget VRAM for something
+that cannot run.
+
+**Profiles gain `imageRecipes`, the third thing a hub can narrow and the first whose ceiling is
+arithmetic.** `false` narrows and always works; `true` is honoured only for a recipe the box has,
+has accepted the licence of, and has the VRAM for — refused otherwise with the numbers in the
+message. 43 D1 is unchanged: the hub cannot make a node accept a licence, find weights or grow a
+card. A narrowed recipe **stops being declared**; the pool keeps running, so switching `sdxl-turbo`
+off does not take `sdxl` down with it (phase-43 D6's in-place shape).
+
+**Rule 5 survived again.** **Zero** new `PackageReference`, `InferHub.Shared.csproj` still an empty
+`<Project Sdk="Microsoft.NET.Sdk">`, and `bitsandbytes` is a line in `requirements-diffusion.txt` —
+the same category as phase-39's `curl`. It arrived **with its first consumer**, which is exactly why
+phase 46 refused to carry it: a pinned dependency nothing imports is a pin nobody can tell is wrong
+until the release that needs it.
+
 ## Auth model (three independent token sets)
 
 | Scope | Config key | Guards |

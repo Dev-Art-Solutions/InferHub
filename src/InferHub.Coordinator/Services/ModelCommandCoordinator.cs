@@ -32,7 +32,17 @@ public sealed class ModelCommandCoordinator(
     /// running — return that command's id instead of starting a second. Throws if the node is not
     /// connected. Returns <c>null</c> if the node is unknown.
     /// </summary>
-    public async Task<StartResult?> SendAsync(string nodeId, string kind, string model, CancellationToken cancellationToken)
+    /// <param name="tool">
+    /// Phase 48: which tool's models this is about, or null for the node's inference backend. It is
+    /// part of the coalescing key because an Ollama model and a diffusion recipe may share a name
+    /// and are not the same thing to pull.
+    /// </param>
+    public async Task<StartResult?> SendAsync(
+        string nodeId,
+        string kind,
+        string model,
+        CancellationToken cancellationToken,
+        string? tool = null)
     {
         var connectionId = registry.FindConnectionIdByNodeId(nodeId);
         if (connectionId is null)
@@ -40,7 +50,7 @@ public sealed class ModelCommandCoordinator(
             return null;
         }
 
-        var key = new CommandKey(nodeId, kind, model);
+        var key = new CommandKey(nodeId, kind, model, tool);
         if (active.TryGetValue(key, out var existing))
         {
             logger.LogInformation("Coalescing {Kind} '{Model}' on node {NodeId} onto command {CommandId}", kind, model, nodeId, existing);
@@ -54,8 +64,8 @@ public sealed class ModelCommandCoordinator(
             return new StartResult(active[key], Reused: true);
         }
 
-        var command = new ModelCommand(commandId, kind, model);
-        latest[commandId] = new ModelCommandProgress(commandId, nodeId, kind, model, "queued", null, Done: false, Error: null);
+        var command = new ModelCommand(commandId, kind, model, tool);
+        latest[commandId] = new ModelCommandProgress(commandId, nodeId, kind, model, "queued", null, Done: false, Error: null, Tool: tool);
 
         try
         {
@@ -78,7 +88,7 @@ public sealed class ModelCommandCoordinator(
 
         if (progress.Done)
         {
-            active.TryRemove(new CommandKey(progress.NodeId, progress.Kind, progress.ModelName), out _);
+            active.TryRemove(new CommandKey(progress.NodeId, progress.Kind, progress.ModelName, progress.Tool), out _);
             // Keep the terminal frame briefly discoverable, then forget it — a restart forgets anyway.
             _ = ForgetLaterAsync(progress.CommandId);
         }
@@ -92,5 +102,5 @@ public sealed class ModelCommandCoordinator(
         latest.TryRemove(commandId, out _);
     }
 
-    private readonly record struct CommandKey(string NodeId, string Kind, string Model);
+    private readonly record struct CommandKey(string NodeId, string Kind, string Model, string? Tool);
 }

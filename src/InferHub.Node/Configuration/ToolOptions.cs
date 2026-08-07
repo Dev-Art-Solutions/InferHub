@@ -1,3 +1,4 @@
+using System.Globalization;
 using InferHub.Shared.Contracts;
 
 namespace InferHub.Node.Configuration;
@@ -90,7 +91,22 @@ public sealed class ToolOptions
     /// than inherited — the environment is cleared first (phase-41 D3), so this is the only way a
     /// consent flag reaches a worker, and a worker cannot pick one up by accident.
     /// </summary>
-    public IReadOnlyDictionary<string, string> WorkerEnvironment() => new Dictionary<string, string>(StringComparer.Ordinal)
+    public IReadOnlyDictionary<string, string> WorkerEnvironment()
+    {
+        var environment = BaseWorkerEnvironment();
+
+        // Only when it is set. An empty HF_TOKEN is not the same as no HF_TOKEN to
+        // `huggingface_hub`: it sends the blank one and gets a 401 on a repo that would have been
+        // readable anonymously, which reads as "the model is gone" rather than "your token is empty".
+        if (!string.IsNullOrWhiteSpace(Image.HuggingFaceToken))
+        {
+            environment["HF_TOKEN"] = Image.HuggingFaceToken.Trim();
+        }
+
+        return environment;
+    }
+
+    private Dictionary<string, string> BaseWorkerEnvironment() => new(StringComparer.Ordinal)
     {
         ["INFERHUB_ALLOW_MODEL_DOWNLOAD"] = AllowModelDownload ? "1" : "0",
 
@@ -99,7 +115,18 @@ public sealed class ToolOptions
         // operator's key would otherwise never reach the process that has to honour it.
         ["INFERHUB_IMAGE_REQUIRE_GPU"] = Image.RequireGpu ? "1" : "0",
         ["INFERHUB_IMAGE_ALLOW_SLOW_CPU"] = Image.AllowSlowCpu ? "1" : "0",
-        ["INFERHUB_IMAGE_RECIPES"] = Image.RecipeDirectory ?? string.Empty
+        ["INFERHUB_IMAGE_RECIPES"] = Image.RecipeDirectory ?? string.Empty,
+
+        // Phase 48. The licence grant reaches the worker the same way, and for the same reason: it
+        // is DEFENCE IN DEPTH rather than a duplicate. The node refuses to declare an unaccepted
+        // recipe so the hub never routes at one; the worker refuses to download or load it, which is
+        // the lock on the process that would actually do those things. A solo caller naming the
+        // recipe directly meets the second one.
+        ["INFERHUB_IMAGE_ACCEPTED_LICENSES"] = string.Join(
+            ",",
+            Image.AcceptedLicenses.Where(entry => !string.IsNullOrWhiteSpace(entry)).Select(entry => entry.Trim())),
+
+        ["INFERHUB_IMAGE_RESIDENT_RECIPES"] = Math.Max(1, Image.ResidentRecipes).ToString(CultureInfo.InvariantCulture)
     };
 
     /// <summary>
@@ -193,6 +220,70 @@ public sealed class ImageToolOptions
 
     /// <summary>Declare CPU-hostile recipes on a CPU-only box anyway. Off, and loud when on.</summary>
     public bool AllowSlowCpu { get; set; }
+
+    /// <summary>
+    /// Licence ids this operator has read and accepted (phase 48, D5). A recipe whose
+    /// <c>license.permissive</c> is not <c>true</c> is <b>loaded, logged by name and not started</b>
+    /// unless its licence id appears here.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the fourth opt-in and it is not redundant with the other three.</b>
+    /// <c>Tools:Enabled</c> consents to the feature, <c>Tools:Allowed</c> consents to <em>these
+    /// tools</em>, <c>Tools:AllowModelDownload</c> consents to reaching the internet — and none of
+    /// them says "and I accept the Stability AI Non-Commercial Research Community License". None of
+    /// this is legal advice; it is a refusal to make a licence decision on the operator's behalf and
+    /// silently, which is the only part of it that is ours to get right.
+    /// </para>
+    /// <para>
+    /// <b>A list, not a boolean</b>, for phase-41 D2's reason exactly: <c>sd35-medium</c> is free for
+    /// most people who will run it and <c>sdxl-turbo</c> is not usable commercially at all, so a
+    /// single <c>AcceptNonPermissiveLicenses=true</c> would let somebody who read one licence enable
+    /// both. Per item, or the grant means nothing.
+    /// </para>
+    /// <para>
+    /// <b>It names licence ids rather than recipe ids.</b> What is being accepted is a licence — you
+    /// read it once and it covers every model under it — and the key's name says so. The refusal
+    /// prints the exact string to add and a link to the text.
+    /// </para>
+    /// </remarks>
+    public List<string> AcceptedLicenses { get; set; } = new();
+
+    /// <summary>
+    /// How many recipes may be resident on the card at once (phase 48, D3). Default <b>1</b>.
+    /// </summary>
+    /// <remarks>
+    /// A box with 48 GB genuinely can hold SDXL and FLUX together and should not thrash. The default
+    /// is 1 for phase-41 D4's reason: the expensive default is the one nobody realises they chose,
+    /// and two multi-gigabyte pipelines on one card is an out-of-memory error at the worst possible
+    /// moment. Raising it is knowing.
+    /// </remarks>
+    public int ResidentRecipes { get; set; } = 1;
+
+    /// <summary>
+    /// A Hugging Face read token, for a <b>gated</b> repository (phase 48). Empty by default.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It has to be a key rather than an inherited variable, and that is phase-41 D3 rather than an
+    /// oversight: the node <em>clears</em> the child's environment before spawn, so
+    /// <c>docker run -e HF_TOKEN=…</c> reaches the node and stops there. Stating it here is the only
+    /// way it reaches the process that needs it, and it is the same shape
+    /// <c>INFERHUB_ALLOW_MODEL_DOWNLOAD</c> already has.
+    /// </para>
+    /// <para>
+    /// It is a <em>separate thing</em> from <see cref="AcceptedLicenses"/>, and conflating them
+    /// would be wrong in both directions: accepting a licence tells <b>this node</b> it may run a
+    /// model, and a token is how <b>Hugging Face</b> decides whether to hand the weights over. Of
+    /// what ships, only <c>sd35-medium</c> needs one.
+    /// </para>
+    /// </remarks>
+    public string? HuggingFaceToken { get; set; }
+
+    /// <summary>Whether a licence id has been accepted. A blank entry never counts.</summary>
+    public bool AcceptsLicense(string licenseId) =>
+        AcceptedLicenses.Any(entry => !string.IsNullOrWhiteSpace(entry)
+            && string.Equals(entry.Trim(), licenseId, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Where model recipes are read from. Empty means the worker's own default, which in the

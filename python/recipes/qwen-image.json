@@ -1,0 +1,20 @@
+{
+  "id": "qwen-image",
+  "repo": "Qwen/Qwen-Image",
+  "revision": "75e0b4be04f60ec59a75f475837eced720f823b6",
+  "pipeline": "QwenImagePipeline",
+  "license": {
+    "id": "Apache-2.0",
+    "permissive": true,
+    "url": "https://huggingface.co/Qwen/Qwen-Image/blob/main/LICENSE"
+  },
+  "defaults": { "steps": 30, "guidance": 4.0, "size": "1328x1328" },
+  "sizes": ["1328x1328", "1664x928", "928x1664"],
+  "maxSteps": 50,
+  "vramMiB": 19000,
+  "vramUnquantizedMiB": 60000,
+  "dtype": "bfloat16",
+  "quantization": "nf4",
+  "quantizeComponents": ["transformer", "text_encoder"],
+  "cpuViable": false
+}

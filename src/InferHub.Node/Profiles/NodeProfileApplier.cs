@@ -42,7 +42,8 @@ public sealed class NodeProfileApplier(
             .Select(kind => kind.Trim())
             .ToArray(),
         Array.Empty<string>(),
-        nodeOptions.Value.MaxConcurrency);
+        nodeOptions.Value.MaxConcurrency,
+        Array.Empty<string>());
 
     /// <summary>What the node is currently running. Read by the capability declaration and by registration.</summary>
     public EffectiveProfile Effective => Volatile.Read(ref effective);
@@ -85,6 +86,13 @@ public sealed class NodeProfileApplier(
             var previous = Volatile.Read(ref effective);
 
             await toolRuntime.SetDisabledToolsAsync(result.Effective.DisabledTools, cancellationToken);
+
+            // Phase 48. A recipe is narrowed rather than stopped: the pool keeps running and simply
+            // stops declaring that model, so a profile that switches `sdxl-turbo` off on one box
+            // does not take its `sdxl` down with it. There is nothing to restart and nothing to
+            // reload — the same in-place shape phase-43 D6 requires of a suspended tool.
+            toolRuntime.SetDisabledModels(result.Effective.DisabledImageRecipes);
+
             Volatile.Write(ref effective, result.Effective);
 
             // Phase 44. The corpus is the one part of a profile whose application can fail against the
@@ -187,7 +195,14 @@ public sealed class NodeProfileApplier(
             .Select(id => id.Trim())
             .ToArray(),
         node.MaxConcurrency,
-        backend.SupportsModelManagement);
+        backend.SupportsModelManagement,
+        toolRuntime.ImageRecipes,
+        tools.Image.AcceptedLicenses
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id.Trim())
+            .ToArray(),
+        node.Vram.BudgetMiB,
+        node.Vram.ReserveMiB);
 
     private void Log(NodeProfile? profile, NodeProfileState state)
     {
@@ -221,7 +236,8 @@ public sealed class NodeProfileApplier(
     private static bool SameCapabilityNarrowing(EffectiveProfile a, EffectiveProfile b) =>
         a.MaxConcurrency == b.MaxConcurrency
         && a.DisabledCapabilities.SequenceEqual(b.DisabledCapabilities, StringComparer.OrdinalIgnoreCase)
-        && a.DisabledTools.SequenceEqual(b.DisabledTools, StringComparer.OrdinalIgnoreCase);
+        && a.DisabledTools.SequenceEqual(b.DisabledTools, StringComparer.OrdinalIgnoreCase)
+        && a.DisabledImageRecipes.SequenceEqual(b.DisabledImageRecipes, StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>
