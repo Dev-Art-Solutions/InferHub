@@ -185,7 +185,7 @@ internal static class LocalImageJobEndpoints
         }
     }
 
-    private static IResult Content(LocalImageJobRunner jobs, string id, int index)
+    private static IResult Content(HttpContext httpContext, LocalImageJobRunner jobs, string id, int index)
     {
         if (Find(jobs, id) is not { } record)
         {
@@ -194,6 +194,10 @@ internal static class LocalImageJobEndpoints
 
         if (jobs.Store.TryTakeContent(record.Id, SoloClient, index) is { } image)
         {
+            // The same header the hub sets (phase 49, D4). A client must not be able to tell which
+            // of the two answered it.
+            httpContext.Response.Headers[ImageProjections.Header] = ImageProjections.Normalise(image.Projection);
+
             return Results.Bytes(image.Bytes, image.MediaType);
         }
 

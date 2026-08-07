@@ -48,7 +48,37 @@ public sealed class ImageJobOptions
 }
 
 /// <summary>One produced image, held in memory and nowhere else.</summary>
-public sealed record ImageJobImage(byte[] Bytes, string MediaType, string? Size, long? Seed);
+/// <param name="Projection">
+/// <c>flat</c> or <c>equirectangular</c> (phase 49, D4). It rides on the image rather than on the
+/// job because the content route hands back <em>one</em> image and has nowhere else to say it.
+/// </param>
+/// <param name="SeamDelta">
+/// For an equirectangular render, how far its left and right columns are apart, 0–1. Measured by the
+/// worker and never repaired (D5) — and never <em>computed</em> here, because nothing in this
+/// codebase's C# decodes a pixel (phase-46 D6).
+/// </param>
+public sealed record ImageJobImage(
+    byte[] Bytes,
+    string MediaType,
+    ImageSize? Size,
+    long? Seed,
+    string? Projection = null,
+    double? SeamDelta = null,
+    int? Steps = null);
+
+/// <summary>
+/// What is true of a finished request as a whole, as opposed to of one of its images.
+/// </summary>
+/// <remarks>
+/// <b>The trigger is a recipe constant and therefore not content.</b> That is what makes it safe to
+/// put on a job document, in a response and in a log line — "why does this not look like a panorama"
+/// is almost always "the trigger did not apply", and a diagnosis nobody can see is not one. The
+/// prompt it was appended to is still never recorded anywhere (rule 7).
+/// </remarks>
+public sealed record ImageJobSummary(bool PromptAugmented, string? Trigger, IReadOnlyList<string> Warnings)
+{
+    public static ImageJobSummary None { get; } = new(false, null, []);
+}
 
 /// <summary>
 /// How a failed job renders, carried on the record rather than re-derived per surface.
@@ -123,6 +153,9 @@ public sealed class ImageJobRecord
 
     /// <summary>Ticks upward on every observable change, so an SSE writer can skip a repeat.</summary>
     public long Revision { get; internal set; }
+
+    /// <summary>The trigger and the warnings (phase 49). Empty until the job succeeds.</summary>
+    public ImageJobSummary Summary { get; internal set; } = ImageJobSummary.None;
 
     internal List<ImageJobImage> Images { get; } = new();
 
@@ -373,7 +406,11 @@ public sealed class ImageJobStore(ImageJobOptions options, TimeProvider? time = 
     /// budget that could evict work in progress would be a budget that fails the request it was
     /// protecting.
     /// </summary>
-    public bool TrySucceed(Guid id, IReadOnlyList<ImageJobImage> images, double units)
+    public bool TrySucceed(
+        Guid id,
+        IReadOnlyList<ImageJobImage> images,
+        double units,
+        ImageJobSummary? summary = null)
     {
         ImageJobRecord? changed = null;
         var evicted = new List<ImageJobRecord>();
@@ -417,6 +454,7 @@ public sealed class ImageJobStore(ImageJobOptions options, TimeProvider? time = 
             record.CompletedAt = now;
             record.LastTouched = now;
             record.Units = units;
+            record.Summary = summary ?? ImageJobSummary.None;
             record.Revision++;
             record.Images.Clear();
             record.Images.AddRange(images);
@@ -645,13 +683,25 @@ public static class ImageJobView
                 {
                     index,
                     url = $"/api/images/jobs/{record.Id}/content/{index}",
-                    size = record.Images[index].Size,
+                    size = record.Images[index].Size?.ToString(),
                     seed = record.Images[index].Seed,
-                    bytes = record.Images[index].Bytes.Length
+                    bytes = record.Images[index].Bytes.Length,
+
+                    // Phase 49. A viewer picks a renderer from this rather than from the aspect
+                    // ratio, which is what everyone does today and is wrong for every 2:1 photo.
+                    projection = record.Images[index].Projection,
+                    seamDelta = record.Images[index].SeamDelta
                 })
                 .ToArray()
             : null,
         megapixelSteps = record.Units > 0 ? record.Units : (double?)null,
+
+        // Present whenever the recipe HAS a trigger, false included: a client that had to infer
+        // "nothing was appended" from an absent key is a client guessing about its own prompt (D2).
+        // A recipe with no trigger reports nothing rather than a permanent false.
+        promptAugmented = record.Summary.Trigger is null ? (bool?)null : record.Summary.PromptAugmented,
+        trigger = record.Summary.Trigger,
+        warnings = record.Summary.Warnings.Count > 0 ? record.Summary.Warnings : null,
         reason = record.Reason,
         error = record.Error,
 

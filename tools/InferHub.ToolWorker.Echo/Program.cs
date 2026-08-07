@@ -9,6 +9,8 @@ using System.Text.Json;
 //                        [--capabilities <kind>:<model>,<model>;<kind>:<model>]
 //                        [--audio-fail <code>] [--audio-no-segments]
 //                        [--image-fail <code>] [--image-pad-bytes <n>]
+//                        [--image-projection equirectangular] [--image-seam wrap|break]
+//                        [--image-no-auto-trigger]
 //                        [--redeclare-on-ping <kind>:<model>,<model>] [--wedge-on-ping]
 //
 // Phase 42 added two behaviours that are chosen by the request's *capability* rather than by a
@@ -562,15 +564,41 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, 
         return;
     }
 
+    // Phase 49. An equirectangular fixture recipe: 2:1 buckets only, a projection on every result,
+    // a measured seam, and the trigger phrase appended when the prompt lacks it.
+    var equirectangular = arguments.ImageProjection == "equirectangular";
+    var projection = equirectangular ? "equirectangular" : "flat";
+
     var width = payload.ValueKind is JsonValueKind.Object && payload.TryGetProperty("width", out var w) && w.ValueKind is JsonValueKind.Number
         ? w.GetInt32()
-        : 512;
+        : equirectangular ? 1024 : 512;
 
     var height = payload.ValueKind is JsonValueKind.Object && payload.TryGetProperty("height", out var h) && h.ValueKind is JsonValueKind.Number
         ? h.GetInt32()
-        : 512;
+        : equirectangular ? 512 : 512;
 
-    if ((width, height) is not ((512, 512) or (768, 768) or (1024, 1024) or (640, 384)))
+    if (equirectangular)
+    {
+        if ((width, height) is not ((1024, 512) or (2048, 1024) or (640, 320)))
+        {
+            // The REASON, not only the list. A wrong size on a flat recipe gives you duplicated
+            // limbs; a non-2:1 size here gives you a picture that looks perfectly fine and wraps
+            // wrongly, and the person who finds out is wearing a headset three days later.
+            Send(new
+            {
+                type = "error",
+                id,
+                code = "invalid_request",
+                message = $"this recipe renders 360-degree equirectangular panoramas, which are always 2:1 " +
+                          $"(360 degrees of longitude over 180 of latitude), so it cannot render {width}x{height}. " +
+                          "It was trained on: 1024x512, 2048x1024, 640x320. A non-2:1 render does not fail — it " +
+                          "wraps wrongly in a viewer, which is why this is refused rather than attempted."
+            });
+
+            return;
+        }
+    }
+    else if ((width, height) is not ((512, 512) or (768, 768) or (1024, 1024) or (640, 384)))
     {
         Send(new
         {
@@ -636,8 +664,35 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, 
         }
     }
 
+    // The trigger phrase, appended when absent and reported either way (phase-49 D2). A real
+    // recipe's `trigger` is a constant of the model rather than the caller's words, which is what
+    // makes it safe to put in a response and in a log line.
+    const string Trigger = "360 degree panorama with equirectangular projection";
+
+    var prompt = payload.ValueKind is JsonValueKind.Object && payload.TryGetProperty("prompt", out var pr)
+        ? pr.GetString() ?? string.Empty
+        : string.Empty;
+
+    var promptAugmented = equirectangular
+        && !arguments.ImageNoAutoTrigger
+        && !prompt.Contains(Trigger, StringComparison.OrdinalIgnoreCase);
+
+    // The node states this into the child's environment (phase-41 D3 clears it first), so reading
+    // it here is also what proves `Tools:Image:SeamWarnThreshold` reaches the process that honours it.
+    var seamThreshold =
+        double.TryParse(
+            Environment.GetEnvironmentVariable("INFERHUB_IMAGE_SEAM_WARN_THRESHOLD"),
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var parsedThreshold)
+            ? parsedThreshold
+            : 0.08;
+
+    var seamless = arguments.ImageSeam != "break";
+
     var files = new List<object>(count);
     var images = new List<object>(count);
+    var warnings = new List<string>();
 
     for (var i = 0; i < count; i++)
     {
@@ -647,17 +702,42 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, 
         // `--image-bytes N` pads the file, so ImageWireSizeTests can push megabytes across a real
         // SignalR connection. The 32 KB default cap tore the connection down rather than failing the
         // message, and phase 41 "proved" attachments with a 16-byte file.
-        await File.WriteAllBytesAsync(path, Png.Create(width, height, arguments.ImagePadBytes));
+        await File.WriteAllBytesAsync(path, Png.Create(width, height, arguments.ImagePadBytes, seamless));
 
         files.Add(new { name, mediaType = "image/png", path });
-        images.Add(new { width, height, steps, seed = seed + i });
+
+        if (!equirectangular)
+        {
+            images.Add(new { width, height, steps, seed = seed + i, projection });
+            continue;
+        }
+
+        // Measured off the raster this worker just wrote, exactly as the real one measures it off
+        // the array the VAE produced. Reported, and never repaired.
+        var delta = Math.Round(Png.SeamDelta(width, height, seamless), 5);
+
+        if (seamThreshold > 0 && delta > seamThreshold && !warnings.Contains("seam"))
+        {
+            warnings.Add("seam");
+        }
+
+        images.Add(new { width, height, steps, seed = seed + i, projection, seamDelta = delta });
     }
 
     Send(new
     {
         type = "result",
         id,
-        payload = new { model = frame.TryGetProperty("model", out var m) ? m.GetString() : null, steps, images },
+        payload = new
+        {
+            model = frame.TryGetProperty("model", out var m) ? m.GetString() : null,
+            steps,
+            projection,
+            promptAugmented,
+            trigger = equirectangular ? Trigger : null,
+            warnings,
+            images
+        },
         files
     });
 }
@@ -673,7 +753,7 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, 
 /// </remarks>
 internal static class Png
 {
-    public static byte[] Create(int width, int height, int padBytes)
+    public static byte[] Create(int width, int height, int padBytes, bool seamless = false)
     {
         using var buffer = new MemoryStream();
 
@@ -686,24 +766,7 @@ internal static class Png
         ihdr[9] = 2;   // truecolour
         Chunk(buffer, "IHDR", ihdr);
 
-        // One filter byte plus three bytes per pixel, per scanline. A diagonal ramp rather than a
-        // constant, so a truncation is visible to anything that actually decodes it.
-        var raw = new byte[height * (1 + (width * 3))];
-        var at = 0;
-
-        for (var y = 0; y < height; y++)
-        {
-            raw[at++] = 0;
-
-            for (var x = 0; x < width; x++)
-            {
-                raw[at++] = (byte)(x & 0xFF);
-                raw[at++] = (byte)(y & 0xFF);
-                raw[at++] = (byte)((x + y) & 0xFF);
-            }
-        }
-
-        Chunk(buffer, "IDAT", ZlibStored(raw));
+        Chunk(buffer, "IDAT", ZlibStored(Raster(width, height, seamless)));
 
         if (padBytes > 0)
         {
@@ -714,6 +777,72 @@ internal static class Png
 
         Chunk(buffer, "IEND", []);
         return buffer.ToArray();
+    }
+
+    /// <summary>
+    /// The scanlines, with their filter bytes. One filter byte plus three bytes per pixel.
+    /// </summary>
+    /// <remarks>
+    /// Two rasters, and the difference is the whole of phase 49's seam test. <b>Seamless</b> is a
+    /// horizontal sinusoid whose period is exactly the width, so column 0 and column
+    /// <c>width-1</c> are one step apart — what a correctly wrapping panorama looks like.
+    /// <b>Not</b> seamless is a linear 0→255 ramp, so those two columns are as far apart as they
+    /// can be. Neither is random: an assertion on a byte count passes just as happily on noise, and
+    /// a metric measured over noise says nothing about the metric.
+    /// </remarks>
+    public static byte[] Raster(int width, int height, bool seamless)
+    {
+        var raw = new byte[height * (1 + (width * 3))];
+        var at = 0;
+
+        for (var y = 0; y < height; y++)
+        {
+            raw[at++] = 0;
+
+            for (var x = 0; x < width; x++)
+            {
+                if (seamless)
+                {
+                    var angle = 2 * Math.PI * x / width;
+                    raw[at++] = (byte)(127.5 * (1 + Math.Sin(angle)));
+                    raw[at++] = (byte)(y & 0xFF);
+                    raw[at++] = (byte)(127.5 * (1 + Math.Cos(angle)));
+                }
+                else
+                {
+                    var ramp = (byte)(x * 255 / Math.Max(1, width - 1));
+                    raw[at++] = ramp;
+                    raw[at++] = ramp;
+                    raw[at++] = ramp;
+                }
+            }
+        }
+
+        return raw;
+    }
+
+    /// <summary>
+    /// The mean absolute difference between the first and last columns, 0–1 — what a real worker
+    /// computes with two numpy operations on the array the VAE handed it.
+    /// </summary>
+    public static double SeamDelta(int width, int height, bool seamless)
+    {
+        var raw = Raster(width, height, seamless);
+        var stride = 1 + (width * 3);
+        var total = 0d;
+
+        for (var y = 0; y < height; y++)
+        {
+            var first = (y * stride) + 1;
+            var last = first + ((width - 1) * 3);
+
+            for (var channel = 0; channel < 3; channel++)
+            {
+                total += Math.Abs(raw[first + channel] - raw[last + channel]);
+            }
+        }
+
+        return total / (height * 3) / 255.0;
     }
 
     private static void Chunk(Stream target, string type, byte[] data)
@@ -872,7 +1001,10 @@ internal sealed record Args(
     object[]? RedeclareOnPing = null,
     bool WedgeOnPing = false,
     int ImageStepMs = 0,
-    bool IgnoreCancel = false)
+    bool IgnoreCancel = false,
+    string? ImageProjection = null,
+    string? ImageSeam = null,
+    bool ImageNoAutoTrigger = false)
 {
     public static Args Parse(string[] args)
     {
@@ -888,6 +1020,9 @@ internal sealed record Args(
         var wedgeOnPing = false;
         var imageStepMs = 0;
         var ignoreCancel = false;
+        string? imageProjection = null;
+        string? imageSeam = null;
+        var imageNoAutoTrigger = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -929,6 +1064,15 @@ internal sealed record Args(
                 case "--ignore-cancel":
                     ignoreCancel = true;
                     break;
+                case "--image-projection" when i + 1 < args.Length:
+                    imageProjection = args[++i];
+                    break;
+                case "--image-seam" when i + 1 < args.Length:
+                    imageSeam = args[++i];
+                    break;
+                case "--image-no-auto-trigger":
+                    imageNoAutoTrigger = true;
+                    break;
             }
         }
 
@@ -944,7 +1088,10 @@ internal sealed record Args(
             redeclareOnPing,
             wedgeOnPing,
             imageStepMs,
-            ignoreCancel);
+            ignoreCancel,
+            imageProjection,
+            imageSeam,
+            imageNoAutoTrigger);
     }
 
     /// <summary>"transcribe:a,b;speak:c" → the capability list a ready frame carries.</summary>

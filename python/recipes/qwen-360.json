@@ -1,0 +1,39 @@
+{
+  "id": "qwen-360",
+  "notes": "Phase 49. The base is Qwen/Qwen-Image quantized to nf4 exactly as the `qwen-image` recipe does, and the LoRA is loaded on top with pipe.load_lora_weights(repo, weight_name=...) — which is the loading path ProGamerGov's own run_qwen_image_nf4.py uses. Two facts settled from that script and the model card, because guessing either one produces images that are plausible and not panoramic: (a) the pipeline is built from the ordinary Qwen/Qwen-Image repo with a bitsandbytes quantization config, NOT from a pre-merged quantized checkpoint; (b) the LoRA's quantization variant does NOT have to match the base's — upstream pairs an nf4 base with the int8-TRAINED adapter, and the int4-trained ones are for fp8 transformers, where downcasting artifacts are the problem. guidanceParameter is true_cfg_scale because Qwen's MMDiT has two guidance inputs and this pipeline's real classifier-free guidance is the second one.",
+  "repo": "Qwen/Qwen-Image",
+  "revision": "75e0b4be04f60ec59a75f475837eced720f823b6",
+  "pipeline": "QwenImagePipeline",
+  "license": {
+    "id": "Apache-2.0",
+    "permissive": true,
+    "url": "https://huggingface.co/Qwen/Qwen-Image/blob/main/LICENSE"
+  },
+  "adapters": [
+    {
+      "name": "qwen-360",
+      "repo": "ProGamerGov/qwen-360-diffusion",
+      "revision": "f63e5de60bd27b7d9af9c64f8c591381775ea9aa",
+      "weightFile": "qwen-360-diffusion-int8-bf16-v1.safetensors",
+      "scale": 1.0,
+      "license": {
+        "id": "MIT",
+        "permissive": true,
+        "url": "https://huggingface.co/ProGamerGov/qwen-360-diffusion/blob/main/LICENSE"
+      }
+    }
+  ],
+  "projection": "equirectangular",
+  "trigger": "360 degree panorama with equirectangular projection",
+  "autoTrigger": true,
+  "defaults": { "steps": 25, "guidance": 4.0, "size": "2048x1024" },
+  "sizes": ["2048x1024", "1536x768", "1024x512"],
+  "maxSteps": 50,
+  "guidanceParameter": "true_cfg_scale",
+  "vramMiB": 19500,
+  "vramUnquantizedMiB": 60000,
+  "dtype": "bfloat16",
+  "quantization": "nf4",
+  "quantizeComponents": ["transformer", "text_encoder"],
+  "cpuViable": false
+}

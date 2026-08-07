@@ -1205,8 +1205,13 @@
 
   const setClientKey = (value) => {
     clientKey = value && value.trim().length > 0 ? value.trim() : null;
-    const badge = document.getElementById("documents-key-state");
-    if (badge) badge.style.display = clientKey ? "" : "none";
+
+    // One client key, two panels that need one (phase 49 added the second). Both badges, or the
+    // 360° viewer would keep saying "no key" after the documents panel has just been given one.
+    for (const id of ["documents-key-state", "pano-key-state"]) {
+      const badge = document.getElementById(id);
+      if (badge) badge.style.display = clientKey ? "" : "none";
+    }
   };
 
   const promptForClientKey = (reason) => {
@@ -1836,6 +1841,106 @@
   });
   document.getElementById("profile-apply")?.addEventListener("click", applyProfile);
   document.getElementById("profile-delete")?.addEventListener("click", deleteProfile);
+
+  // ---------------------------------------------------------------- 360° viewer (phase 49)
+  //
+  // The one rule here: the renderer is chosen from `X-InferHub-Image-Projection`, never from the
+  // aspect ratio. A 2048×1024 photograph and a 2048×1024 panorama are indistinguishable as pixels,
+  // and guessing gets one of them wrong every time — which is exactly why the worker declares it
+  // and the header carries it to the one request that has no JSON to read it from.
+
+  let pano = null;
+  let panoObjectUrl = null;
+
+  const panoNote = (message, kind) => {
+    const note = document.getElementById("pano-note");
+    if (!note) return;
+    note.textContent = message;
+    note.className = kind === "err" ? "row-msg" : "row-msg info";
+  };
+
+  const panoViewer = () => {
+    if (!pano) {
+      const canvas = document.getElementById("pano-canvas");
+      if (!canvas || !window.InferHubPano) return null;
+      pano = window.InferHubPano.mount(canvas);
+      if (pano.reason) panoNote(pano.reason, "err");
+    }
+    return pano;
+  };
+
+  const panoLoad = async () => {
+    const viewer = panoViewer();
+    if (!viewer) return;
+
+    const raw = (document.getElementById("pano-job")?.value ?? "").trim();
+    const index = Math.max(0, Number(document.getElementById("pano-index")?.value ?? 0) | 0);
+
+    if (!raw) {
+      panoNote("Give it a job id, or a URL to any equirectangular image.", "err");
+      return;
+    }
+
+    // A bare id addresses this hub's own job; anything else is taken at face value, so a panorama
+    // hosted anywhere can be checked in the same viewer without a round trip through the fleet.
+    const isJobId = /^[0-9a-f-]{36}$/i.test(raw);
+    const url = isJobId ? `/api/images/jobs/${raw}/content/${index}` : raw;
+
+    try {
+      let projection = "flat";
+      let source = url;
+
+      if (isJobId) {
+        const res = await fetch(url, { headers: clientHeaders() });
+
+        if (res.status === 401) {
+          if (!promptForClientKey("Client key required: image jobs are guarded by Auth:ApiKeys.")) return;
+          return panoLoad();
+        }
+
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body?.error?.message ?? `HTTP ${res.status}`);
+        }
+
+        projection = res.headers.get("X-InferHub-Image-Projection") ?? "flat";
+
+        if (panoObjectUrl) URL.revokeObjectURL(panoObjectUrl);
+        panoObjectUrl = URL.createObjectURL(await res.blob());
+        source = panoObjectUrl;
+      } else {
+        projection = "equirectangular";
+      }
+
+      const size = await viewer.load(source);
+      const equirectangular = projection === "equirectangular";
+      viewer.setFlat(!equirectangular);
+
+      const dimensions = size ? `${size.width}×${size.height}` : "loaded";
+
+      panoNote(
+        equirectangular
+          ? `${dimensions}, equirectangular — drag to look, scroll to zoom, arrow keys when focused.`
+          : `${dimensions}, projection "${projection}" — shown flat, because it is not a panorama.`,
+        "info");
+    } catch (err) {
+      panoNote(err.message, "err");
+    }
+  };
+
+  document.getElementById("pano-load")?.addEventListener("click", panoLoad);
+  document.getElementById("pano-job")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") panoLoad();
+  });
+  document.getElementById("pano-reset")?.addEventListener("click", () => panoViewer()?.reset());
+  document.getElementById("pano-flat")?.addEventListener("click", (event) => {
+    const viewer = panoViewer();
+    if (!viewer) return;
+    const flat = event.currentTarget.dataset.on !== "1";
+    event.currentTarget.dataset.on = flat ? "1" : "0";
+    event.currentTarget.classList.toggle("primary", flat);
+    viewer.setFlat(flat);
+  });
 
   setKey(null);
   refreshProfiles();

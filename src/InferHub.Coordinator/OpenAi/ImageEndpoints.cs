@@ -1,4 +1,3 @@
-using System.Text.Json;
 using InferHub.Coordinator.Endpoints;
 using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
@@ -188,29 +187,19 @@ public static class ImageEndpoints
         // Read-once applies here too, and that is the point of routing the sync path through the
         // same store: one code path decides when bytes go away, so "the synchronous route quietly
         // keeps a copy" is not a state this hub can be in.
-        var items = jobs.Store.TryTakeAll(record.Id, record.ClientId)
-            .Select(object (image) => new
-            {
-                b64_json = Convert.ToBase64String(image.Bytes),
+        var summary = record.Summary;
+        var images = jobs.Store.TryTakeAll(record.Id, record.ClientId);
 
-                // Additive extras beside OpenAI's own field. A client that has never heard of them
-                // is unaffected; one that wants to reproduce an image needs both, and asking it to
-                // guess the seed a worker chose would make `seed` useless for the thing it is for.
-                size = image.Size,
-                seed = image.Seed,
-                revised_prompt = (string?)null
-            })
-            .ToArray();
-
-        if (items.Length == 0)
+        if (images.Count == 0)
         {
             return ImageEndpointSupport.Error(502, "the image worker returned no image", OpenAiErrorTypes.ApiError);
         }
 
+        // The envelope is built by ImageRenderer for both hosts (phase 49). Two hand-written copies
+        // of the field list is one field away from a difference a caller can see, and this release
+        // adds four fields to it.
         return Results.Text(
-            JsonSerializer.Serialize(
-                new { created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), data = items },
-                ImageEndpointSupport.Json),
+            ImageRenderer.Envelope(images, summary, DateTimeOffset.UtcNow.ToUnixTimeSeconds()),
             ImageRenderer.ContentType);
     }
 }

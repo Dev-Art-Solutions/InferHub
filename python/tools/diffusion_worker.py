@@ -50,9 +50,29 @@ this worker refuses to start at all when no CUDA device is reachable, and says w
 without a GPU only recipes marked ``cpuViable`` are offered, unless
 ``INFERHUB_IMAGE_ALLOW_SLOW_CPU=1`` says the operator has read both numbers and wants the slow one.
 
+ADAPTERS ARE A RECIPE FIELD, AND A RECIPE WITH ADAPTERS IS A DISTINCT MODEL ID (phase-49 D1).
+``qwen-image`` and ``qwen-360`` are two ids over one base, not one model with a flag: the router
+keys on ``(capability, model)`` and a client asking for ``qwen-image`` must never receive a
+panorama. Swapping only the LoRA on a base that is already resident is seconds rather than a minute,
+and it is an optimisation this worker makes — invisible to the contract, reported in the timing.
+
+A PROJECTION IS A DECLARED PROPERTY OF A RESULT (phase-49 D4), and a flat recipe says ``flat``
+rather than omitting it. A 2048x1024 panorama and a 2048x1024 landscape photograph are the same
+bytes in the same shape and are two different pictures; every client guesses from the aspect ratio
+today, and it is wrong for every 2:1 photo.
+
+THE SEAM IS MEASURED AND NEVER REPAIRED (phase-49 D5). An equirectangular render whose left edge
+does not continue into its right edge is not a failure anybody can see — it is a panorama that wraps
+wrongly, and the person who finds out is wearing a headset three days later. So the mean absolute
+difference between the first and last columns is reported, and over the node's threshold it is a
+WARNING rather than a failed job: a visible seam is the operator's own aesthetic judgement, and a
+repair would be a second generation pass they did not ask for and would be billed for.
+
 NOTHING IS RETAINED. Images are written into the node's per-request scratch directory and named
 back; the node deletes the whole directory in a ``finally``. The prompt is never logged, at any
-level, by anything here — it is content in exactly the sense design rule 7 means.
+level, by anything here — it is content in exactly the sense design rule 7 means. The recipe's
+TRIGGER PHRASE is not: it is a constant of the model, it is the answer to "why does this not look
+like a panorama", and a diagnosis nobody can see is not one.
 """
 
 from __future__ import annotations
@@ -85,6 +105,10 @@ DEFAULT_RECIPES = "/opt/inferhub/recipes"
 _loaded: dict[str, Any] = {}
 _loaded_lock = threading.RLock()
 
+# The base each resident pipeline was built from, so a recipe that differs from a resident one only
+# by its adapters can take the pipeline over instead of loading a second copy of a 20B transformer.
+_base_of: dict[str, tuple] = {}
+
 _device: str = "cpu"
 
 # What this box would offer if every recipe's weights were present — set once at startup, after the
@@ -113,6 +137,18 @@ def resident_limit() -> int:
         return max(1, int(os.environ.get("INFERHUB_IMAGE_RESIDENT_RECIPES") or "1"))
     except ValueError:
         return 1
+
+
+def seam_warn_threshold() -> float:
+    """
+    ``Tools:Image:SeamWarnThreshold``. Invariant parsing, always — a decimal comma here would be a
+    threshold nobody typed, on exactly the hosts nobody runs CI on.
+    """
+    try:
+        return float(os.environ.get("INFERHUB_IMAGE_SEAM_WARN_THRESHOLD") or "0.08")
+    except ValueError:
+        log("INFERHUB_IMAGE_SEAM_WARN_THRESHOLD is not a number; using 0.08")
+        return 0.08
 
 
 def accepted_licenses() -> set[str]:
@@ -298,6 +334,25 @@ def hf_home() -> str:
     return os.environ.get("HF_HOME") or os.path.join("/data", "tools", "hf")
 
 
+def adapters_of(recipe: dict[str, Any]) -> list[dict[str, Any]]:
+    adapters = recipe.get("adapters")
+    return [entry for entry in adapters if isinstance(entry, dict) and entry.get("repo")] if isinstance(adapters, list) else []
+
+
+def adapter_fingerprint(recipe: dict[str, Any]) -> str:
+    """
+    Part of the readiness marker, so a recipe whose adapter revision moved is re-proved rather than
+    trusted. The base is unchanged and already cached, so being wrong here costs seconds — but
+    trusting a marker written for a *different* LoRA would serve the wrong model under the right id.
+    """
+    adapters = adapters_of(recipe)
+
+    if not adapters:
+        return "noadapters"
+
+    return "+".join(f"{a['repo'].split('/')[-1]}@{str(a.get('revision') or 'main')[:8]}" for a in adapters)
+
+
 def ready_marker(recipe: dict[str, Any]) -> str:
     name = "-".join(
         [
@@ -305,6 +360,7 @@ def ready_marker(recipe: dict[str, Any]) -> str:
             recipe["revision"][:12],
             recipe.get("variant") or "default",
             str(recipe.get("quantization") or "none"),
+            adapter_fingerprint(recipe),
         ]
     )
     return os.path.join(hf_home(), ".inferhub-ready", name)
@@ -325,7 +381,19 @@ def mark_ready(recipe: dict[str, Any]) -> None:
 def prefetch_command(recipe: dict[str, Any]) -> str:
     variant = recipe.get("variant")
     pattern = f' --include "*.{variant}.safetensors" "*.json" "*.txt" "*/*"' if variant else ""
-    return f"huggingface-cli download {recipe['repo']} --revision {recipe['revision']}{pattern}"
+    command = f"huggingface-cli download {recipe['repo']} --revision {recipe['revision']}{pattern}"
+
+    # An adapter is a second repository and a second download. A pre-fetch command that named only
+    # the base would look complete and leave the recipe unloadable, which is the worst shape an
+    # instruction can have.
+    for adapter in adapters_of(recipe):
+        weight = f" {adapter['weightFile']}" if adapter.get("weightFile") else ""
+        command += (
+            f"\n  huggingface-cli download {adapter['repo']} "
+            f"--revision {adapter.get('revision') or 'main'}{weight}"
+        )
+
+    return command
 
 
 def fetch(recipe: dict[str, Any]) -> None:
@@ -396,6 +464,67 @@ def quantization_config(recipe: dict[str, Any]):
     )
 
 
+def apply_adapters(pipe, recipe: dict[str, Any], local_files_only: bool) -> list[str]:
+    """
+    Stack the recipe's LoRAs onto a pipeline, replacing whatever was on it (phase-49 D1).
+
+    ``unload_lora_weights`` first, unconditionally, because this is also the swap path: a base that
+    is already resident under another id still carries that id's adapter, and loading a second one
+    on top would silently produce a *blend* of two models under one name — a picture that is neither
+    what was asked for nor obviously wrong.
+
+    The names are the recipe's own, so ``set_adapters`` addresses exactly what was loaded. A LoRA
+    whose keys do not match the base fails HERE, at load, which is why the prefetch does it too:
+    finding that out inside somebody's request is the v3.14.0 failure with a different cause.
+    """
+    try:
+        pipe.unload_lora_weights()
+    except (AttributeError, ValueError):
+        # A pipeline class with no LoRA support, or one with nothing loaded. Both are fine; a
+        # recipe with adapters against a class that cannot take them fails loudly two lines down.
+        pass
+
+    adapters = adapters_of(recipe)
+
+    if not adapters:
+        return []
+
+    names: list[str] = []
+    scales: list[float] = []
+
+    for index, adapter in enumerate(adapters):
+        name = str(adapter.get("name") or f"adapter{index}")
+        kwargs: dict[str, Any] = {"adapter_name": name, "local_files_only": local_files_only}
+
+        if adapter.get("weightFile"):
+            kwargs["weight_name"] = adapter["weightFile"]
+
+        if adapter.get("revision"):
+            kwargs["revision"] = adapter["revision"]
+
+        pipe.load_lora_weights(adapter["repo"], **kwargs)
+        names.append(name)
+        scales.append(float(adapter.get("scale", 1.0)))
+
+    pipe.set_adapters(names, adapter_weights=scales)
+    log(f"{recipe['id']}: adapters {', '.join(f'{n}@{s}' for n, s in zip(names, scales))}")
+    return names
+
+
+def base_key(recipe: dict[str, Any]) -> tuple:
+    """
+    What two recipes must share for one's loaded pipeline to be reusable for the other: the same
+    weights, at the same revision, quantized and cast the same way. Everything a LoRA sits on top of.
+    """
+    return (
+        recipe["repo"],
+        recipe["revision"],
+        str(recipe.get("variant") or ""),
+        str(recipe.get("dtype") or ""),
+        str(recipe.get("quantization") or "none"),
+    )
+
+
 def _from_pretrained(recipe: dict[str, Any], local_files_only: bool):
     """The one place a pipeline is constructed, so serving and prefetching cannot drift apart."""
     cls = pipeline_class(recipe.get("pipeline", "AutoPipelineForText2Image"))
@@ -418,8 +547,10 @@ def _from_pretrained(recipe: dict[str, Any], local_files_only: bool):
     # a bug report rather than a policy signal, and the failure is indistinguishable from a broken
     # VAE, a bad seed or an OOM. Phase-46 D8 — this box generates what it is asked to generate and
     # the policy is the operator's. Not every pipeline class accepts these two (SDXL does not).
+    pipe = None
+
     try:
-        return cls.from_pretrained(
+        pipe = cls.from_pretrained(
             recipe["repo"], safety_checker=None, requires_safety_checker=False, **kwargs
         )
     except TypeError:
@@ -438,7 +569,15 @@ def _from_pretrained(recipe: dict[str, Any], local_files_only: bool):
         kwargs.pop("variant")
         recipe.pop("variant", None)
 
-    return cls.from_pretrained(recipe["repo"], **kwargs)
+    if pipe is None:
+        pipe = cls.from_pretrained(recipe["repo"], **kwargs)
+
+    # Adapters here rather than at the call sites: this is the one place a pipeline is constructed,
+    # so the prefetch downloads and PROVES the LoRA exactly as a request will load it. A recipe
+    # whose adapter is missing or mismatched is never declared, rather than failing on first use.
+    apply_adapters(pipe, recipe, local_files_only)
+
+    return pipe
 
 
 def evict_for(identifier: str) -> list[str]:
@@ -461,12 +600,31 @@ def evict_for(identifier: str) -> list[str]:
 
             log(f"unloading {oldest} to make room for {identifier}")
             del _loaded[oldest]
+            _base_of.pop(oldest, None)
             evicted.append(oldest)
 
     if evicted:
         free_vram()
 
     return evicted
+
+
+def donor_for(recipe: dict[str, Any]) -> str | None:
+    """
+    A resident recipe whose pipeline this one can take over: same base, different adapters.
+
+    Least-recently-used first, so a swap costs whichever resident was least likely to be asked for
+    next — the same order `evict_for` would have chosen anyway, which is the point: this is an
+    eviction that happens to be cheap, not an extra one.
+    """
+    wanted = base_key(recipe)
+
+    with _loaded_lock:
+        for identifier in _loaded:
+            if identifier != recipe["id"] and _base_of.get(identifier) == wanted:
+                return identifier
+
+    return None
 
 
 def load(recipe: dict[str, Any], accepted: set[str]) -> tuple[Any, float, list[str]]:
@@ -505,6 +663,33 @@ def load(recipe: dict[str, Any], accepted: set[str]) -> tuple[Any, float, list[s
             ERROR_MODEL_UNAVAILABLE,
         )
 
+    # THE ADAPTER SWAP (phase-49 D1). `qwen-image` and `qwen-360` are one 20B base and one 378 MB
+    # LoRA; reloading the base to change the LoRA is 40-90 s of the caller's time to move half a
+    # gigabyte. Tried first, and it is only ever an optimisation: any failure falls through to the
+    # full load below, having thrown away a pipeline whose adapter state is now unknown.
+    if (donor := donor_for(recipe)) is not None:
+        started = time.monotonic()
+
+        with _loaded_lock:
+            pipe = _loaded.pop(donor, None)
+            _base_of.pop(donor, None)
+
+        if pipe is not None:
+            try:
+                apply_adapters(pipe, recipe, local_files_only=True)
+                elapsed = (time.monotonic() - started) * 1000.0
+
+                with _loaded_lock:
+                    _loaded[identifier] = pipe
+                    _base_of[identifier] = base_key(recipe)
+
+                log(f"{identifier} is ready on {_device} ({elapsed / 1000:.1f}s, adapter swap from {donor})")
+                return pipe, elapsed, [donor]
+            except Exception as error:  # noqa: BLE001 - an optimisation must never fail a request
+                log(f"could not swap adapters {donor} -> {identifier} ({error}); loading from scratch")
+                del pipe
+                free_vram()
+
     evicted = evict_for(identifier)
 
     log(
@@ -539,6 +724,7 @@ def load(recipe: dict[str, Any], accepted: set[str]) -> tuple[Any, float, list[s
 
     with _loaded_lock:
         _loaded[identifier] = pipe
+        _base_of[identifier] = base_key(recipe)
 
     log(f"{identifier} is ready on {_device} ({elapsed / 1000:.1f}s)")
     return pipe, elapsed, evicted
@@ -560,12 +746,24 @@ def unload_all(reason: str) -> None:
 
         names = ", ".join(_loaded)
         _loaded.clear()
+        _base_of.clear()
 
     free_vram()
     log(f"freed VRAM held by {names} ({reason})")
 
 
 # ---- requests ----------------------------------------------------------------------------------
+
+
+EQUIRECTANGULAR = "equirectangular"
+
+
+def projection_of(recipe: dict[str, Any]) -> str:
+    """
+    ``flat`` unless the recipe says otherwise (phase-49 D4). Declared, never inferred from a shape:
+    a 2:1 landscape photograph is not a panorama and there is no way to tell from the pixels.
+    """
+    return str(recipe.get("projection") or "flat").strip().lower() or "flat"
 
 
 def resolve_size(recipe: dict[str, Any], payload: dict[str, Any]) -> tuple[int, int]:
@@ -584,12 +782,74 @@ def resolve_size(recipe: dict[str, Any], payload: dict[str, Any]) -> tuple[int, 
     asked = f"{width}x{height}"
 
     if sizes and asked not in sizes:
+        # THE REASON MATTERS, NOT ONLY THE LIST (phase-49 D3). A wrong size on a flat recipe gives
+        # you duplicated limbs, which reads as "this model is bad"; a non-2:1 size on an
+        # equirectangular one gives you a picture that looks perfectly fine and wraps wrongly, and
+        # the person who finds out is wearing a headset three days later. Say which failure this is.
+        if projection_of(recipe) == EQUIRECTANGULAR:
+            raise ToolError(
+                f"this recipe renders 360-degree equirectangular panoramas, which are always 2:1 "
+                f"(360 degrees of longitude over 180 of latitude), so it cannot render {asked}. "
+                f"It was trained on: {', '.join(sizes)}. A non-2:1 render does not fail — it wraps "
+                f"wrongly in a viewer, which is why this is refused rather than attempted.",
+                ERROR_INVALID_REQUEST,
+            )
+
         raise ToolError(
             f"this recipe cannot render {asked}. It was trained on: {', '.join(sizes)}",
             ERROR_INVALID_REQUEST,
         )
 
     return int(width), int(height)
+
+
+def apply_trigger(recipe: dict[str, Any], prompt: str) -> tuple[str, bool, str | None]:
+    """
+    Append the recipe's trigger phrase when it is not already there (phase-49 D2).
+
+    Three options were on the table and two were rejected. SILENTLY REWRITING the prompt is out —
+    this repository's most-repeated sentence is that nothing is silently substituted, and a prompt
+    is the user's own words. REFUSING a prompt without the trigger is out too: it is pedantry about
+    a model whose entire purpose is one thing, and it makes the first request everybody sends a 400.
+    So: append when absent, and SAY SO in the response, with the phrase that was added.
+
+    ``autoTrigger: false`` turns it off. The reported flag is present either way, so a client never
+    has to infer whether anything happened to its own prompt.
+    """
+    trigger = str(recipe.get("trigger") or "").strip()
+
+    if not trigger:
+        return prompt, False, None
+
+    if recipe.get("autoTrigger") is False or trigger.lower() in prompt.lower():
+        return prompt, False, trigger
+
+    return f"{prompt}, {trigger}", True, trigger
+
+
+def seam_delta(image) -> float | None:
+    """
+    How far an equirectangular image's left edge is from its right edge, 0-1 (phase-49 D5).
+
+    Mean absolute difference between the first and last columns — which are ADJACENT once the image
+    is wrapped onto a sphere — over 255. It is a couple of numpy operations on an array the VAE has
+    already produced, which is the whole reason it can be unconditional: a metric that cost a second
+    per image would be a flag, and a flag nobody sets is a metric nobody has.
+
+    Returns None rather than raising if anything about the array is unexpected. A measurement that
+    could fail a two-minute job would be worse than no measurement.
+    """
+    try:
+        import numpy
+
+        pixels = numpy.asarray(image.convert("RGB"), dtype=numpy.float32)
+
+        if pixels.ndim != 3 or pixels.shape[1] < 2:
+            return None
+
+        return float(numpy.abs(pixels[:, 0, :] - pixels[:, -1, :]).mean() / 255.0)
+    except Exception:  # noqa: BLE001 - see above
+        return None
 
 
 def resident() -> list[str]:
@@ -640,6 +900,8 @@ def generate(request: Request):
         raise ToolError("prompt is required", ERROR_INVALID_REQUEST)
 
     width, height = resolve_size(recipe, payload)
+    prompt, prompt_augmented, trigger = apply_trigger(recipe, prompt)
+    projection = projection_of(recipe)
     defaults = recipe.get("defaults") or {}
 
     steps = int(payload.get("steps") or defaults.get("steps") or 30)
@@ -664,6 +926,8 @@ def generate(request: Request):
 
     files = []
     images = []
+    warnings: list[str] = []
+    threshold = seam_warn_threshold()
     started = time.monotonic()
 
     for index in range(count):
@@ -690,7 +954,14 @@ def generate(request: Request):
             "width": width,
             "height": height,
             "num_inference_steps": steps,
-            "guidance_scale": guidance,
+
+            # WHICH GUIDANCE (phase 49). Qwen's MMDiT pipelines have two: `guidance_scale` is the
+            # distilled embedding a step conditions on, and `true_cfg_scale` is real
+            # classifier-free guidance against the negative prompt. Passing the wrong one does not
+            # error — it produces a picture that is plausible and not what the recipe was tuned
+            # for, which is exactly the failure this phase's seam check exists to catch a cousin
+            # of. So the recipe names it, defaulting to what every SD-family pipeline calls it.
+            str(recipe.get("guidanceParameter") or "guidance_scale"): guidance,
             "generator": generator,
             "callback_on_step_end": on_step,
         }
@@ -717,15 +988,34 @@ def generate(request: Request):
         output = request.output(f"image-{index}.png", "image/png")
         result.images[0].save(output.path, format="PNG")
 
+        described: dict[str, Any] = {
+            "width": width,
+            "height": height,
+            "steps": steps,
+            "seed": image_seed,
+            "projection": projection,
+        }
+
+        # Measured, reported, and NEVER repaired (phase-49 D5). A roll-and-inpaint fix would be a
+        # second generation pass with its own cost and its own artifacts, run without being asked.
+        if projection == EQUIRECTANGULAR and (delta := seam_delta(result.images[0])) is not None:
+            described["seamDelta"] = round(delta, 5)
+
+            if threshold > 0 and delta > threshold and "seam" not in warnings:
+                warnings.append("seam")
+
         files.append(output)
-        images.append({"width": width, "height": height, "steps": steps, "seed": image_seed})
+        images.append(described)
 
     generate_ms = (time.monotonic() - started) * 1000.0
 
     # The model, the geometry and the seeds. Not the prompt — the node logs this line's *shape*, and
     # a payload that carried the prompt would put it in the one place rule 7 forbids.
+    # The trigger is a recipe constant and may be named; the prompt it was appended to may not.
     log(
-        f"{request.model}: {count} image(s) at {width}x{height}, {steps} steps on {_device} "
+        f"{request.model}: {count} image(s) at {width}x{height}, {steps} steps on {_device}, "
+        f"{projection}{', trigger appended' if prompt_augmented else ''}"
+        f"{', warnings: ' + ', '.join(warnings) if warnings else ''} "
         f"(load {load_ms / 1000:.1f}s, generate {generate_ms / 1000:.1f}s)"
     )
 
@@ -733,6 +1023,10 @@ def generate(request: Request):
         "model": request.model,
         "steps": steps,
         "device": _device,
+        "projection": projection,
+        "promptAugmented": prompt_augmented,
+        "trigger": trigger,
+        "warnings": warnings,
         "images": images,
         # The timing breakdown is what makes a slow request explicable: a swap shows up as seconds
         # of `loadMs` on a request whose `generateMs` is ordinary, and without it the operator's
@@ -831,6 +1125,7 @@ def delete(request: Request):
 
     with _loaded_lock:
         _loaded.pop(recipe["id"], None)
+        _base_of.pop(recipe["id"], None)
 
     free_vram()
     log(f"'{recipe['id']}' removed ({removed // (1024 ** 2)} MiB freed)")

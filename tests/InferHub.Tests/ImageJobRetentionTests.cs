@@ -149,7 +149,7 @@ public class ImageJobRetentionTests
     {
         store.TryCreate(Guid.NewGuid(), clientId, "sd-test", 1, out var record);
         store.TryTransition(record.Id, ImageJobStates.Running);
-        store.TrySucceed(record.Id, [new ImageJobImage(Png, "image/png", "512x512", 42)], units: 7.5);
+        store.TrySucceed(record.Id, [new ImageJobImage(Png, "image/png", new ImageSize(512, 512), 42)], units: 7.5);
         return record;
     }
 

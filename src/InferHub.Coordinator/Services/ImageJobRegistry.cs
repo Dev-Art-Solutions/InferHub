@@ -291,7 +291,7 @@ public sealed class ImageJobRegistry
                 return;
             }
 
-            if (store.TrySucceed(id, ImageResults.Collect(result), outcome.Units))
+            if (store.TrySucceed(id, outcome.Images, outcome.Units, outcome.Summary))
             {
                 // Metered exactly where phase 46 meters it — the one place that already decides a
                 // job succeeded — so the number on a dashboard and the number on a bill cannot come

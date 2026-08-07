@@ -1,3 +1,4 @@
+using System.Text.Json;
 using InferHub.Node.Configuration;
 using InferHub.Node.Tools;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -210,16 +211,17 @@ public class RecipeCatalogueTests : IDisposable
         var shipped = ImageRecipeCatalogue.LoadDirectory(RepositoryRecipeDirectory(), NullLogger.Instance);
 
         Assert.Equal(
-            ["flux-schnell", "qwen-image", "sd15", "sd35-medium", "sdxl", "sdxl-turbo"],
+            ["flux-schnell", "qwen-360", "qwen-image", "sd15", "sd35-medium", "sdxl", "sdxl-turbo"],
             shipped.Keys.OrderBy(id => id, StringComparer.Ordinal).ToArray());
 
         // The two that need a licence decision, and only those two.
         var nonPermissive = shipped.Values.Where(r => !r.Permissive).Select(r => r.Id).OrderBy(id => id).ToArray();
         Assert.Equal(["sd35-medium", "sdxl-turbo"], nonPermissive);
 
-        // The two that only exist because they are quantized.
+        // The three that only exist because they are quantized.
         Assert.Equal("nf4", shipped["flux-schnell"].Quantization);
         Assert.Equal("nf4", shipped["qwen-image"].Quantization);
+        Assert.Equal("nf4", shipped["qwen-360"].Quantization);
 
         // …and every one of them fits a 24 GB card at the documented reserve, which is the claim
         // the README makes and the only place it is checked.
@@ -229,6 +231,44 @@ public class RecipeCatalogueTests : IDisposable
                 VramBudget.Fits(24576, 2048, recipe.VramMiB),
                 $"'{recipe.Id}' declares {recipe.VramMiB} MiB, which does not fit a 24 GB card with the default 2048 MiB reserve.");
         }
+    }
+
+    /// <summary>
+    /// Phase 49: <c>qwen-360</c> is a LoRA over <c>qwen-image</c>'s base, and the worker's adapter
+    /// swap only fires when the two agree on repo, revision, dtype and quantization.
+    /// </summary>
+    /// <remarks>
+    /// Bumping one recipe's pin and not the other's does not fail anything — it silently turns every
+    /// alternation between them into a full 20B reload, which is 40–90 s a caller pays and nobody
+    /// can see the reason for. That is exactly the class of thing a pinned assertion is for, and it
+    /// reads the shipped files rather than the parsed catalogue because <c>ImageRecipeCatalogue</c>
+    /// deliberately knows only id, licence and VRAM (phase-48 deviation 3).
+    /// </remarks>
+    [Fact]
+    public void TheThreeHundredAndSixtyRecipeSharesQwenImagesBaseExactly()
+    {
+        var directory = RepositoryRecipeDirectory();
+
+        using var panorama = JsonDocument.Parse(File.ReadAllText(Path.Combine(directory, "qwen-360.json")));
+        using var basic = JsonDocument.Parse(File.ReadAllText(Path.Combine(directory, "qwen-image.json")));
+
+        foreach (var field in new[] { "repo", "revision", "dtype", "quantization", "pipeline" })
+        {
+            Assert.Equal(
+                basic.RootElement.GetProperty(field).GetString(),
+                panorama.RootElement.GetProperty(field).GetString());
+        }
+
+        // …and it is a different model to a client, which is the other half of D1: two recipe ids
+        // over one base, never one id with a scale on it.
+        Assert.Equal("equirectangular", panorama.RootElement.GetProperty("projection").GetString());
+        Assert.False(basic.RootElement.TryGetProperty("projection", out _));
+
+        var adapter = Assert.Single(panorama.RootElement.GetProperty("adapters").EnumerateArray());
+
+        // A second repository is a second pin. Without it, "which LoRA was in 3.17.0" has no answer.
+        Assert.False(string.IsNullOrWhiteSpace(adapter.GetProperty("revision").GetString()));
+        Assert.False(string.IsNullOrWhiteSpace(adapter.GetProperty("weightFile").GetString()));
     }
 
     private static string RepositoryRecipeDirectory()

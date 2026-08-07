@@ -124,6 +124,13 @@ internal sealed class ImageMesh : IAsyncDisposable
     /// </summary>
     private ToolWorkerFixture.TempDirectory nodeData = null!;
 
+    /// <summary>
+    /// <c>Tools:Image:SeamWarnThreshold</c>, which the node states into the worker's environment
+    /// (phase-41 D3 clears it first) — so setting it here is also how <c>SeamMetricTests</c> proves
+    /// the key travels rather than assuming it.
+    /// </summary>
+    private double? seamWarnThreshold;
+
     public HttpClient Client { get; private set; } = null!;
 
     public NodeRegistry Registry { get; } = new();
@@ -153,6 +160,7 @@ internal sealed class ImageMesh : IAsyncDisposable
         long? maxResponseBytes = null,
         Action<InferHub.Shared.Images.ImageEdgeOptions>? configureImages = null,
         string clientId = "image-client",
+        double? seamWarnThreshold = null,
         params string[] workerArguments)
     {
         var mesh = new ImageMesh
@@ -161,7 +169,8 @@ internal sealed class ImageMesh : IAsyncDisposable
             nodeData = new ToolWorkerFixture.TempDirectory("inferhub-image-node"),
             Scratch = new ToolWorkerFixture.TempDirectory("inferhub-image-scratch"),
             ConfigureImages = configureImages,
-            ClientId = clientId
+            ClientId = clientId,
+            seamWarnThreshold = seamWarnThreshold
         };
 
         await mesh.StartCoordinatorAsync(maxAttachmentBytes, limits, maxBatch, maxResponseBytes);
@@ -260,6 +269,11 @@ internal sealed class ImageMesh : IAsyncDisposable
     {
         var toolOptions = ToolWorkerFixture.Options(Scratch.Path, "diffusion");
         toolOptions.ManifestDirectory = manifests.Path;
+
+        if (seamWarnThreshold is { } threshold)
+        {
+            toolOptions.Image.SeamWarnThreshold = threshold;
+        }
 
         if (maxAttachmentBytes is { } cap)
         {

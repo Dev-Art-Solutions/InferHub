@@ -126,7 +126,13 @@ public sealed class ToolOptions
             ",",
             Image.AcceptedLicenses.Where(entry => !string.IsNullOrWhiteSpace(entry)).Select(entry => entry.Trim())),
 
-        ["INFERHUB_IMAGE_RESIDENT_RECIPES"] = Math.Max(1, Image.ResidentRecipes).ToString(CultureInfo.InvariantCulture)
+        ["INFERHUB_IMAGE_RESIDENT_RECIPES"] = Math.Max(1, Image.ResidentRecipes).ToString(CultureInfo.InvariantCulture),
+
+        // Phase 49. Invariant culture, always: a decimal comma reaches the worker as a string it
+        // parses to something else or not at all, and the failure would only appear on a Bulgarian
+        // or German host — the same locale bug PrometheusFormatter and the guidance header already
+        // guard against.
+        ["INFERHUB_IMAGE_SEAM_WARN_THRESHOLD"] = Image.SeamWarnThreshold.ToString(CultureInfo.InvariantCulture)
     };
 
     /// <summary>
@@ -279,6 +285,25 @@ public sealed class ImageToolOptions
     /// </para>
     /// </remarks>
     public string? HuggingFaceToken { get; set; }
+
+    /// <summary>
+    /// Above this, an equirectangular render carries a <c>seam</c> warning (phase 49, D5). Default
+    /// <c>0.08</c>; <c>0</c> or less turns the warning off without turning the measurement off.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>It is a warning and never a failure</b>, which is phase-35 D4 against phase-37 D4 one more
+    /// time: a slightly visible seam is the operator's own problem and their own aesthetic judgement,
+    /// and failing a two-minute job over a metric threshold would be the tool overriding the person
+    /// about a picture only they can see. And it is never <em>repaired</em> — a repair is a second
+    /// generation pass the caller did not ask for, did not pay attention to, and would be billed for.
+    /// </para>
+    /// <para>
+    /// The worker measures it either way, so the number is on every equirectangular result whatever
+    /// this is set to. Only the warning is thresholded.
+    /// </para>
+    /// </remarks>
+    public double SeamWarnThreshold { get; set; } = 0.08;
 
     /// <summary>Whether a licence id has been accepted. A blank entry never counts.</summary>
     public bool AcceptsLicense(string licenseId) =>

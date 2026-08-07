@@ -2551,6 +2551,109 @@ the same category as phase-39's `curl`. It arrived **with its first consumer**, 
 phase 46 refused to carry it: a pinned dependency nothing imports is a pin nobody can tell is wrong
 until the release that needs it.
 
+### Phase 49 (qwen-360-diffusion: adapters and 360° panoramas) — also load-bearing
+
+**The model this whole track was asked for, and it needed four things phase 48 did not have:** an
+adapter stack in the recipe format, a projection that survives to the client, a 2:1 refusal that says
+why, and a seam number nobody repairs.
+
+**D1 — Adapters are a recipe field, and a recipe with adapters is a distinct model id.**
+`adapters[]` carries a repo, its **own pinned revision**, a `weightFile`, a scale and its own
+licence — a permissive base with a non-permissive LoRA on it is not a permissive model.
+`qwen-image` and `qwen-360` are **two recipe ids over one base**, not one model with a flag: the
+router keys on `(capability, model)` and nothing else (40 D1), so a client asking for `qwen-image`
+must never receive a panorama, and a `loraScale` header would make what you get depend on a header —
+the reproducibility problem 48 D6 already refused for quantization.
+
+What the *worker* does about two recipes sharing a base is an optimisation and is **not part of the
+contract**: `donor_for` finds a resident pipeline with the same `base_key` (repo, revision, variant,
+dtype, quantization), `unload_lora_weights` + `load_lora_weights` swaps the adapter in seconds rather
+than the 40–90 s a 20B reload costs, and **any failure falls through to a full load** having
+discarded the pipeline whose adapter state is now unknown. Adapters are applied inside
+`_from_pretrained` — the one place a pipeline is constructed (v3.14.1) — so the background prefetch
+*proves* the LoRA loadable exactly as a request will load it, and a mismatched one is never declared
+rather than failing on somebody's first request. The readiness marker carries an adapter fingerprint
+for the same reason: trusting a marker written for different weights would serve the wrong model
+under the right id.
+
+**D2 — The trigger phrase is appended when missing, and the response says it happened.** Three
+options, and two were rejected out loud. *Silently rewriting the prompt* — no: this repository's
+most-repeated sentence is that nothing is silently substituted, and a prompt is the user's own words.
+*Refusing a prompt without the trigger* — no: pedantry about a model whose entire purpose is one
+thing, and it makes the first request everybody sends a `400`. So it is appended when absent, and
+`prompt_augmented` plus the phrase travel in the response. `autoTrigger: false` turns it off and the
+flag is reported **either way**, for a recipe that has a trigger — a client that had to infer
+"nothing happened" from a missing key is a client guessing about its own prompt. A recipe with *no*
+trigger reports neither, because a permanent `false` on every SDXL response is a field that means
+nothing.
+
+**The trigger is a recipe constant and therefore not content**, which is what makes it loggable and
+is worth having: "why does this not look like a panorama" is almost always "the trigger did not
+apply", and a diagnosis nobody can see is not one. The prompt it was appended to is still never
+written anywhere — `ImagePrivacyTests` asserts the augmented form is absent from the logs too, since
+a worker echoing the rewritten prompt back into a payload the hub logs would leak the original with
+three words on the end of it.
+
+**D3 — A 2:1 aspect is enforced, and the refusal names the reason rather than only the list.**
+360° of longitude over 180° of latitude is exactly two to one. A wrong size on a flat recipe gives
+you duplicated limbs — visibly bad. A non-2:1 equirectangular render gives you a picture that looks
+perfectly fine and wraps wrongly, and the person who finds out is wearing a headset three days later.
+*Recorded deviation:* the brief listed this under `ImageRenderer`, and the edge still cannot do it —
+phase-46 D6's deviation is unchanged, a recipe is a file on the node and the hub has no catalogue.
+The **worker** writes the sentence and `ImageRenderer` renders the 400 without reading it (29 D6).
+
+**D4 — Projection is a declared property of a result, on every surface, including `flat`.**
+`ImageProjections` in `InferHub.Shared`; the response body per image, the job document, and
+`X-InferHub-Image-Projection` on the content route — which is the one request with no JSON to carry
+it. **A flat recipe reports `flat` rather than omitting the field**, and that is a deliberate
+exception to phase-28 D5's "absence is a fact": there, absence meant nothing had been *measured*;
+here the field is a declaration, and an omitted one is indistinguishable from a node too old to have
+an opinion. A client that has to tell those apart has learnt nothing. Nothing infers a projection
+from an aspect ratio — a 2048×1024 photograph and a 2048×1024 panorama are the same pixels.
+
+**D5 — The seam is measured and reported, never repaired.** Mean absolute difference between the
+first and last columns — adjacent once wrapped — over 255. Two numpy operations on an array the VAE
+already produced, which is why it is unconditional: a metric behind a flag is a metric nobody has.
+Over `Tools:Image:SeamWarnThreshold` (0.08) the result carries a `seam` warning, and it is a
+**warning on a 200**: phase-35 D4 against phase-37 D4 again, because a visible seam is the operator's
+own aesthetic judgement and failing a two-minute job over a threshold would be the tool overriding
+the person. **And it is not repaired** — upstream's `fix_seam` is a second generation pass with its
+own cost and its own artifacts, and running it unasked would bill somebody for a decision they never
+made. `seam_delta` returns `None` rather than raising on anything unexpected: a measurement that
+could fail a two-minute job is worse than no measurement.
+
+**The viewer is hand-written WebGL, and rule 3 is why.** `wwwroot/pano.js` — a sphere, a texture and
+two matrices, no npm, no bundler. three.js from a CDN would also put a third-party script on an admin
+console that holds cordon and model-pull rights, which is a worse trade than an afternoon of
+`gl.texImage2D`. It picks its renderer from the **declared projection**, never from the aspect ratio,
+and a browser with no WebGL gets the flat image and a sentence saying so rather than a black
+rectangle (39 D6's instinct, in a canvas).
+
+*Recorded deviations, on purpose:*
+- **`ImageRenderer.Envelope` is now the one place the OpenAI Images envelope is written**, and it
+  builds dictionaries rather than anonymous types. Three surfaces produced it by hand, and the
+  global `WhenWritingNull` policy is how the hub came to emit `revised_prompt: null` while a solo
+  node **omitted** it — for three releases, with a parity suite running. Which keys are *present* is
+  part of this contract, so it is spelled rather than inherited from a serializer option.
+- **`qwen-image` gained `guidanceParameter: "true_cfg_scale"`.** Qwen's MMDiT has two guidance
+  inputs and this pipeline's real classifier-free guidance is the second one; passing the wrong one
+  does not error, it produces a picture that is plausible and not what the recipe was tuned for.
+  Upstream's own `run_qwen_image_nf4.py` uses `true_cfg_scale`, and phase 48's verification never
+  generated a Qwen image at all, so no observed behaviour changed under it.
+- **The LoRA's quantization variant does not have to match the base's.** Settled from upstream's
+  reference script rather than assumed: it pairs an **nf4 base** with the **int8-trained** adapter,
+  and the int4-trained ones exist for fp8 transformers, where downcasting artifacts are the problem.
+  Written into the recipe's `notes` field, because "which loading path" is exactly the thing a later
+  reader will otherwise re-derive wrongly.
+- **The console panel holds its own client key**, like the documents panel: image jobs are guarded
+  by `Auth:ApiKeys` and the admin key the rest of the console uses will not open one. There is no
+  *list* of image jobs — the hub has no route for one, and inventing a client-scoped listing here
+  would be phase 51's job done in the wrong phase.
+
+**Rule 5 survived again.** **Zero** new `PackageReference`, no npm, no CDN script, no image library —
+`InferHub.Shared.csproj` is still an empty `<Project Sdk="Microsoft.NET.Sdk">`, and the only thing
+that ever decodes a pixel is the browser.
+
 ## Auth model (three independent token sets)
 
 | Scope | Config key | Guards |

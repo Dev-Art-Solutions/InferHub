@@ -1,4 +1,4 @@
-# Image recipes (phase 46, catalogued in phase 48)
+# Image recipes (phase 46, catalogued in phase 48, adapters in phase 49)
 
 A **recipe** is a model the diffusion worker can run. A **manifest** (`../manifests/diffusion.json`)
 is the *tool* — the argv, the environment, the timeouts, and the thing `Tools:Allowed` names.
@@ -21,6 +21,7 @@ is for.
 | `qwen-image` | 20B + 8.3B text encoder | 30 | ~19 GB at nf4 (**~60 GB** at bf16) | Apache-2.0 | yes |
 | `sd35-medium` | 2.5B MMDiT | 40 | ~16 GB, bf16 | Stability AI Community | **no — licence + HF token** |
 | `sdxl-turbo` | 2.6B | **1** | ~8 GB, fp16 | Stability AI Non-Commercial | **no — accept the licence** |
+| `qwen-360` | 20B + a rank-128 LoRA | 25 | ~19.5 GB at nf4 | Apache-2.0 base, **MIT** adapter | yes — and it produces 360° panoramas |
 
 Two of those numbers are the point of this phase. `flux-schnell` and `qwen-image` **do not fit a
 24 GB card at bf16** — 33 GB and 60 GB respectively — and nf4 is what makes them one-card models.
@@ -60,7 +61,20 @@ bare `401` that reads as "the model is gone".
   "vramUnquantizedMiB": 33000,     // documentation only: what it would need without nf4
   "quantization": "nf4",           // none | int8 | nf4
   "quantizeComponents": ["transformer", "text_encoder_2"],
-  "cpuViable": false
+  "cpuViable": false,
+
+  // Phase 49, and all five are optional.
+  "adapters": [                    // LoRAs stacked on the base, in order
+    { "name": "qwen-360",
+      "repo": "ProGamerGov/qwen-360-diffusion",
+      "revision": "f63e5de6…",     // REQUIRED here too — a second repo is a second pin
+      "weightFile": "qwen-360-diffusion-int8-bf16-v1.safetensors",
+      "scale": 1.0 }
+  ],
+  "projection": "equirectangular", // flat (default) | equirectangular
+  "trigger": "360 degree panorama with equirectangular projection",
+  "autoTrigger": true,             // append the trigger when the prompt lacks it
+  "guidanceParameter": "true_cfg_scale"   // default: guidance_scale
 }
 ```
 
@@ -214,6 +228,53 @@ WSL2 — where this project's own GPU box lives — there are no `/dev/nvidia*` 
 because the first failure is an out-of-memory error inside somebody's job rather than a startup
 message. The worker reports `torch.cuda.mem_get_info()` at startup purely so a **disagreement** gets
 logged.
+
+### `adapters` make a recipe a distinct model id, never a flag on an existing one
+
+`qwen-image` and `qwen-360` are the same 20B base and one 378 MB rank-128 LoRA, and they are **two
+recipe ids**. The router keys on `(capability, model)` and nothing else, so a client asking for
+`qwen-image` must never receive a panorama; a `loraScale` header on a shared id would make what you
+get depend on a header, which is the reproducibility problem `quantization` is a recipe field to
+avoid.
+
+An adapter carries its **own** `revision` — a second repository is a second pin — and its own
+`license`, because a permissive base with a non-permissive LoRA on it is not a permissive model.
+The readiness marker includes an adapter fingerprint, so moving an adapter's revision re-proves the
+recipe rather than trusting a marker written for different weights.
+
+What the *worker* does with two recipes over one base is an optimisation and is not part of the
+contract: if the base is already resident it calls `unload_lora_weights` and loads the new one,
+which is seconds instead of the 40–90 s a 20B reload costs. Any failure in that path falls back to a
+full load, having discarded the pipeline whose adapter state is now unknown.
+
+### `projection`, `trigger` and the seam
+
+`projection` is `flat` unless the recipe says otherwise, and a flat recipe **reports** `flat` rather
+than omitting it: an absent field is indistinguishable from a node too old to have an opinion, and a
+client that has to tell those apart has learnt nothing. It reaches the caller in the response body,
+on the job document, and as `X-InferHub-Image-Projection` on the content route — so a viewer picks a
+renderer from a declaration instead of guessing from the aspect ratio, which is what everyone does
+today and is wrong for every 2:1 landscape photo.
+
+An equirectangular recipe's `sizes` are all **2:1**, and that is not fussiness. 360° of longitude
+over 180° of latitude is exactly two to one, and a render at any other ratio does not fail — it
+produces a panorama that wraps wrongly and looks perfectly fine until somebody puts on a headset. So
+the refusal for one of those recipes says *why*, not only which sizes exist.
+
+`trigger` is appended to a prompt that does not already contain it, and the response says so
+(`prompt_augmented`, plus the phrase). Silently rewriting a prompt is out — nothing in this project
+is silently substituted, and a prompt is the user's own words. Refusing a prompt without the trigger
+is out too — that is pedantry about a model whose entire purpose is one thing, and it makes the
+first request everybody sends a 400. `autoTrigger: false` turns it off; the flag is reported either
+way. The trigger **is** a recipe constant, so unlike the prompt it may be logged, which matters:
+"why does this not look like a panorama" is almost always "the trigger did not apply".
+
+The **seam** — the mean absolute difference between the first and last columns, 0–1 — is measured on
+every equirectangular result and reported as `seamDelta`. Over `Tools:Image:SeamWarnThreshold`
+(default 0.08) the result carries a `seam` warning. It is a warning and never a failure, and it is
+**never repaired**: a roll-and-inpaint fix is a second generation pass the caller did not ask for,
+did not watch, and would be billed for. Upstream ships one (`run_qwen_image_nf4.py`'s `fix_seam`)
+and it is a good tool to reach for deliberately.
 
 ## Adding one
 

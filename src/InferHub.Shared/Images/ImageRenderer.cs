@@ -49,6 +49,20 @@ public sealed record ImageOutcome
     /// <summary>How many images came back, for the log line. Never what is in them.</summary>
     public int ImageCount { get; init; }
 
+    /// <summary>
+    /// The images themselves, already paired with what the worker said about each one.
+    /// </summary>
+    /// <remarks>
+    /// Collected here rather than a second time by each caller: a hub that ran <c>ImageResults</c>
+    /// once for the envelope and again for the job store would be two readings of one worker's
+    /// answer, and the day they disagreed the difference would be a size in the JSON that did not
+    /// match the size on the job document.
+    /// </remarks>
+    public IReadOnlyList<ImageJobImage> Images { get; init; } = [];
+
+    /// <summary>What is true of the request as a whole: the trigger, and any warnings (phase 49).</summary>
+    public ImageJobSummary Summary { get; init; } = ImageJobSummary.None;
+
     public bool IsError => Status >= 400;
 }
 
@@ -76,7 +90,6 @@ public static class ImageRenderer
             return failure;
         }
 
-        var report = ImageWorkerReport.TryParse(result.Payload);
         var attachments = result.Attachments ?? [];
 
         if (attachments.Count == 0)
@@ -88,14 +101,9 @@ public static class ImageRenderer
             };
         }
 
-        var items = new List<object>(attachments.Count);
-        var units = 0d;
-
         for (var i = 0; i < attachments.Count; i++)
         {
-            var attachment = attachments[i];
-
-            if (attachment.Bytes.Length == 0)
+            if (attachments[i].Bytes.Length == 0)
             {
                 return new ImageOutcome
                 {
@@ -103,42 +111,118 @@ public static class ImageRenderer
                     Error = $"the image worker returned an empty file for image {i}"
                 };
             }
-
-            // The worker's own numbers, not the request's. A recipe may clamp a size or a step
-            // count, and metering the *asked* figures would bill for work that was not done — the
-            // same reason a transcription is metered from the duration the worker measured rather
-            // than from the upload's byte count (phase-42 D7).
-            var described = report?.ImageAt(i);
-            var size = described?.Size ?? request.Size;
-            var steps = described?.Steps ?? report?.Steps ?? request.Steps ?? 0;
-
-            if (size is { } known && steps > 0)
-            {
-                units += known.Megapixels * steps;
-            }
-
-            items.Add(new
-            {
-                b64_json = Convert.ToBase64String(attachment.Bytes),
-
-                // Additive extras beside OpenAI's own field. A client that has never heard of them
-                // is unaffected; one that wants to reproduce an image needs both, and asking it to
-                // guess the seed a worker chose would make `seed` useless for the thing it is for.
-                size = size?.ToString(),
-                seed = described?.Seed,
-                revised_prompt = (string?)null
-            });
         }
+
+        var images = ImageResults.Collect(result, request);
+        var summary = ImageResults.Summarise(result);
 
         return new ImageOutcome
         {
             Status = 200,
-            Json = JsonSerializer.Serialize(new { created = createdUnixSeconds, data = items }, Json),
-            Units = units,
+            Json = Envelope(images, summary, createdUnixSeconds),
+            Units = Units(images),
             UnitKind = UsageUnitKinds.MegapixelSteps,
-            ImageCount = attachments.Count
+            ImageCount = images.Count,
+            Images = images,
+            Summary = summary
         };
     }
+
+    /// <summary>
+    /// The OpenAI Images envelope, written in exactly one place.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Three surfaces produce it — the hub's synchronous <c>/v1</c> route, the node's, and phase 46's
+    /// direct render — and until phase 49 two of them built it by hand from their own local copy of
+    /// the field list. That was one field away from a parity bug on every release that adds one, and
+    /// this release adds four.
+    /// </para>
+    /// <para>
+    /// <c>projection</c>, <c>prompt_augmented</c>, <c>trigger</c>, <c>seam_delta</c> and
+    /// <c>warnings</c> are additive beside OpenAI's own fields (phase-46 D1's shape).
+    /// <b><c>prompt_augmented</c> is present whether or not anything was appended</b>, for a recipe
+    /// that <em>has</em> a trigger (D2): a client that had to infer "nothing happened" from a
+    /// missing key is a client guessing about its own prompt. A recipe with no trigger reports
+    /// neither, because a permanent <c>false</c> on every SDXL response is a field that means
+    /// nothing.
+    /// </para>
+    /// <para>
+    /// <b>The prompt itself is never echoed back.</b> <c>revised_prompt</c> stays null and the
+    /// response carries the <em>recipe's</em> trigger constant instead — which is a fact about the
+    /// model, not the caller's words, and is therefore the one half of this that may also be logged
+    /// (rule 7).
+    /// </para>
+    /// </remarks>
+    public static string Envelope(
+        IReadOnlyList<ImageJobImage> images,
+        ImageJobSummary summary,
+        long createdUnixSeconds)
+    {
+        // Dictionaries rather than anonymous types, because which keys are PRESENT is part of the
+        // contract here and an anonymous type can only express that through a global null-ignoring
+        // policy. That policy is how the hub came to emit `revised_prompt: null` while a solo node
+        // omitted it — for three releases, with a parity suite running.
+        var items = new List<Dictionary<string, object?>>(images.Count);
+
+        foreach (var image in images)
+        {
+            var item = new Dictionary<string, object?>
+            {
+                ["b64_json"] = Convert.ToBase64String(image.Bytes),
+
+                // Additive extras beside OpenAI's own fields. A client that has never heard of them
+                // is unaffected; one that wants to reproduce an image needs both, and asking it to
+                // guess the seed a worker chose would make `seed` useless for the thing it is for.
+                ["size"] = image.Size?.ToString(),
+                ["seed"] = image.Seed,
+                ["projection"] = ImageProjections.Normalise(image.Projection)
+            };
+
+            // Only where there is a seam to have. A flat recipe measures nothing, and a permanent
+            // zero would read as "perfectly seamless" rather than "not applicable".
+            if (image.SeamDelta is { } seam)
+            {
+                item["seam_delta"] = seam;
+            }
+
+            // OpenAI's own field, always present and always null: nothing here revises a prompt, and
+            // phase 49's augmentation is reported as `trigger` — a recipe constant — rather than by
+            // echoing the caller's own words back at them.
+            item["revised_prompt"] = null;
+            items.Add(item);
+        }
+
+        var envelope = new Dictionary<string, object?>
+        {
+            ["created"] = createdUnixSeconds,
+            ["data"] = items
+        };
+
+        if (summary.Trigger is { } trigger)
+        {
+            envelope["prompt_augmented"] = summary.PromptAugmented;
+            envelope["trigger"] = trigger;
+        }
+
+        if (summary.Warnings.Count > 0)
+        {
+            envelope["warnings"] = summary.Warnings;
+        }
+
+        return JsonSerializer.Serialize(envelope, Json);
+    }
+
+    /// <summary>
+    /// Megapixel-steps, from what the worker <em>produced</em> rather than from what was asked for.
+    /// </summary>
+    /// <remarks>
+    /// A recipe may clamp a size or a step count, and metering the asked figures would bill for work
+    /// that was not done — the same reason a transcription is metered from the duration the worker
+    /// measured rather than from the upload's byte count (phase-42 D7).
+    /// </remarks>
+    public static double Units(IEnumerable<ImageJobImage> images) =>
+        images.Sum(image => image.Size is { } size && image.Steps is > 0 ? size.Megapixels * image.Steps.Value : 0d);
 
     /// <summary>
     /// The failure shapes. Nothing here reads the error <em>text</em> to decide a status — the node
@@ -200,7 +284,13 @@ public static class ImageRenderer
 /// returns bytes and no description still produces images, it just cannot be metered precisely, and
 /// failing the request over a missing field would turn a bookkeeping gap into a user-visible outage.
 /// </remarks>
-public sealed record ImageWorkerReport(int? Steps, IReadOnlyList<GeneratedImage> Images)
+public sealed record ImageWorkerReport(
+    int? Steps,
+    IReadOnlyList<GeneratedImage> Images,
+    string? Projection = null,
+    bool PromptAugmented = false,
+    string? Trigger = null,
+    IReadOnlyList<string>? Warnings = null)
 {
     public GeneratedImage? ImageAt(int index) => index < Images.Count ? Images[index] : null;
 
@@ -222,6 +312,7 @@ public sealed record ImageWorkerReport(int? Steps, IReadOnlyList<GeneratedImage>
             }
 
             var steps = Int(root, "steps");
+            var projection = ImageProjections.Normalise(Text(root, "projection"));
             var images = new List<GeneratedImage>();
 
             if (root.TryGetProperty("images", out var array) && array.ValueKind is JsonValueKind.Array)
@@ -239,11 +330,23 @@ public sealed record ImageWorkerReport(int? Steps, IReadOnlyList<GeneratedImage>
                     images.Add(new GeneratedImage(
                         width is { } w && height is { } h ? new ImageSize(w, h) : null,
                         Int(element, "steps") ?? steps,
-                        Long(element, "seed")));
+                        Long(element, "seed"),
+
+                        // Per image, falling back to the request-level declaration. A worker that
+                        // says it once for a batch is saying the true thing once rather than four
+                        // times, and every recipe produces one projection per request.
+                        ImageProjections.Normalise(Text(element, "projection") ?? projection),
+                        Number(element, "seamDelta")));
                 }
             }
 
-            return new ImageWorkerReport(steps, images);
+            return new ImageWorkerReport(
+                steps,
+                images,
+                projection,
+                root.TryGetProperty("promptAugmented", out var augmented) && augmented.ValueKind is JsonValueKind.True,
+                Text(root, "trigger"),
+                Strings(root, "warnings"));
         }
         catch (JsonException)
         {
@@ -260,6 +363,40 @@ public sealed record ImageWorkerReport(int? Steps, IReadOnlyList<GeneratedImage>
         root.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.Number && value.TryGetInt64(out var parsed)
             ? parsed
             : null;
+
+    private static double? Number(JsonElement root, string name) =>
+        root.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.Number && value.TryGetDouble(out var parsed)
+            ? parsed
+            : null;
+
+    private static string? Text(JsonElement root, string name) =>
+        root.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static IReadOnlyList<string>? Strings(JsonElement root, string name)
+    {
+        if (!root.TryGetProperty(name, out var value) || value.ValueKind is not JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var items = value.EnumerateArray()
+            .Where(entry => entry.ValueKind is JsonValueKind.String)
+            .Select(entry => entry.GetString()!)
+            .ToArray();
+
+        return items.Length > 0 ? items : null;
+    }
 }
 
-public sealed record GeneratedImage(ImageSize? Size, int? Steps, long? Seed);
+/// <summary>
+/// One image as the worker described it: geometry, seed, projection, and — for an equirectangular
+/// recipe — how far apart its left and right edges are (phase 49, D5).
+/// </summary>
+public sealed record GeneratedImage(
+    ImageSize? Size,
+    int? Steps,
+    long? Seed,
+    string? Projection = null,
+    double? SeamDelta = null);

@@ -42,9 +42,16 @@ public class ImageSyncCompatTests
 
         foreach (var item in items)
         {
+            // `projection` joined this list in 3.17 and is the one deliberate addition since 3.14.
+            // It is here rather than omitted for a flat recipe because an absent projection is
+            // indistinguishable from a node too old to have one, and a client that has to tell
+            // those apart has learnt nothing (phase-49 D4). Everything else is unchanged, and the
+            // list is pinned exactly so the *next* addition is a decision rather than a drift.
             Assert.Equal(
-                new[] { "b64_json", "size", "seed", "revised_prompt" },
+                new[] { "b64_json", "size", "seed", "projection", "revised_prompt" },
                 item.EnumerateObject().Select(property => property.Name).ToArray());
+
+            Assert.Equal("flat", item.GetProperty("projection").GetString());
 
             var bytes = Convert.FromBase64String(item.GetProperty("b64_json").GetString()!);
 

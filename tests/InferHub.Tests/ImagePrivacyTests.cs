@@ -86,6 +86,39 @@ public class ImagePrivacyTests
     }
 
     /// <summary>
+    /// Phase 49 put a second string beside the prompt, and the two are not the same kind of thing.
+    /// </summary>
+    /// <remarks>
+    /// The <b>trigger</b> is a constant of the recipe — the model's own words, identical for every
+    /// caller — so it may appear in a response and in a log, and it should: "why does this not look
+    /// like a panorama" is almost always "the trigger did not apply", and a diagnosis nobody can see
+    /// is not one. The <b>prompt it was appended to</b> is still the caller's, and augmenting it must
+    /// not become a reason to write it down.
+    /// </remarks>
+    [Fact]
+    public async Task AnAugmentedPromptIsStillNeverLoggedThoughTheTriggerMayBe()
+    {
+        await using var mesh = await ImageMesh.StartAsync(
+            workerArguments: ["--image-projection", "equirectangular"]);
+
+        var response = await mesh.Client.PostAsJsonAsync(
+            "/v1/images/generations",
+            new { model = ImageFixture.Model, prompt = ImageFixture.KnownPrompt, size = "1024x512" });
+
+        Assert.True(response.IsSuccessStatusCode);
+
+        var log = string.Join("\n", mesh.Logs.Lines);
+
+        Assert.DoesNotContain(ImageFixture.KnownPrompt, log, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("lighthouse", log, StringComparison.OrdinalIgnoreCase);
+
+        // …and the augmented form is not there either. A worker that echoed the whole rewritten
+        // prompt back into a payload the hub logs would leak the original with three words on the
+        // end of it, which is a leak that reads like a feature.
+        Assert.DoesNotContain("360 degree panorama", log, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// The log line that <em>is</em> written. It has to carry enough to operate a fleet — which
     /// model, how much work, what happened — and the assertion is here so that a future change which
     /// adds "and the prompt was…" fails in the file that explains why it must not.

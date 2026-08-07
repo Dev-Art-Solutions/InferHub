@@ -67,7 +67,12 @@ public static class ImageProgress
 /// </remarks>
 public static class ImageResults
 {
-    public static IReadOnlyList<ImageJobImage> Collect(ToolResult result)
+    /// <param name="request">
+    /// What was asked for, used only where the worker described nothing. A worker that reports its
+    /// own numbers always wins: a recipe may clamp a size or a step count, and taking the request's
+    /// figures over the worker's would bill for work that was not done.
+    /// </param>
+    public static IReadOnlyList<ImageJobImage> Collect(ToolResult result, ImageGenerationRequest? request = null)
     {
         var attachments = result.Attachments ?? [];
 
@@ -86,10 +91,26 @@ public static class ImageResults
             images.Add(new ImageJobImage(
                 attachments[i].Bytes,
                 string.IsNullOrWhiteSpace(attachments[i].MediaType) ? "image/png" : attachments[i].MediaType,
-                described?.Size?.ToString(),
-                described?.Seed));
+                described?.Size ?? request?.Size,
+                described?.Seed,
+                ImageProjections.Normalise(described?.Projection ?? report?.Projection),
+                described?.SeamDelta,
+                described?.Steps ?? report?.Steps ?? request?.Steps));
         }
 
         return images;
+    }
+
+    /// <summary>
+    /// What is true of the whole request rather than of one image: whether the recipe's trigger
+    /// phrase was appended, and any warnings the worker attached (phase 49, D2 and D5).
+    /// </summary>
+    public static ImageJobSummary Summarise(ToolResult result)
+    {
+        var report = ImageWorkerReport.TryParse(result.Payload);
+
+        return report is null
+            ? ImageJobSummary.None
+            : new ImageJobSummary(report.PromptAugmented, report.Trigger, report.Warnings ?? []);
     }
 }

@@ -759,6 +759,7 @@ capability kind, and the router already knew how to find `(capability, model)`.
 | `qwen-image` | 20B + 8.3B encoder | 30 | ~19 GB nf4 | **~60 GB** | Apache-2.0 | yes |
 | `sd35-medium` | 2.5B MMDiT | 40 | ~16 GB bf16 | — | Stability AI Community | **licence + HF token** |
 | `sdxl-turbo` | 2.6B | **1** | ~8 GB fp16 | — | Stability AI Non-Commercial | **accept the licence** |
+| `qwen-360` | 20B + a rank-128 LoRA | 25 | ~19.5 GB nf4 | **~60 GB** | Apache-2.0 base, **MIT** adapter | yes — see [360° panoramas](#360-panoramas-v317) |
 
 Two of those numbers are the whole point. **`flux-schnell` and `qwen-image` do not fit a 24 GB card
 at bf16** — 33 GB and 60 GB — and nf4 quantization is what makes them one-card models. Both figures
@@ -930,6 +931,7 @@ duplicated limbs and doubled horizons, which reads as "this model is bad" rather
 | `qwen-image` | `1328x1328`, `1664x928`, `928x1664` |
 | `sd35-medium` | `1024x1024`, `1152x896`, `896x1152`, `1216x832`, `832x1216` |
 | `sdxl-turbo` | `512x512` |
+| `qwen-360` | `2048x1024`, `1536x768`, `1024x512` — **all 2:1**, and that is not a coincidence |
 
 Qwen-Image publishes a 4:3 bucket at 1472×1140, and 1140 is not a multiple of 8 — the edge refuses it
 before the request reaches a node. Rather than ship a size that 400s or quietly round it to a
@@ -951,6 +953,68 @@ part of a request every proxy in the path writes into a log.
 
 Every returned image carries the `seed` that produced it, so the one of four you liked is
 reproducible without re-rolling the other three.
+
+### 360° panoramas (v3.17)
+
+`qwen-360` is [`ProGamerGov/qwen-360-diffusion`](https://huggingface.co/ProGamerGov/qwen-360-diffusion)
+— a **rank-128 LoRA**, MIT licensed, over Qwen-Image's 20B MMDiT — and it produces **equirectangular**
+panoramas whose left edge continues into their right edge.
+
+```bash
+curl http://localhost:5080/api/images/jobs \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"qwen-360","prompt":"a Bulgarian mountain monastery courtyard at golden hour, photograph","size":"2048x1024"}'
+```
+
+The response, once it succeeds, carries the projection on every image:
+
+```json
+{
+  "created": 1785000000,
+  "data": [{ "b64_json": "iVBORw0…", "size": "2048x1024", "seed": 42,
+             "projection": "equirectangular", "seam_delta": 0.014, "revised_prompt": null }],
+  "prompt_augmented": true,
+  "trigger": "360 degree panorama with equirectangular projection"
+}
+```
+
+**A 2:1 aspect is not a suggestion.** 360° of longitude over 180° of latitude is exactly two to one,
+and a render at any other ratio does not fail — it produces a panorama that looks perfectly fine flat
+and wraps wrongly in a viewer, which somebody discovers three days later wearing a headset. So a
+non-2:1 size for this recipe is a `400` that says *why*, not only which sizes exist.
+
+**The trigger phrase is appended, not demanded and not silently inserted.** The model wants
+"equirectangular" or "360 panorama" in the prompt. Refusing a prompt without it would make the first
+request everybody sends a `400`; rewriting one silently would be the one thing nothing in InferHub
+does. So it is appended when absent and the response says so — `prompt_augmented`, plus the phrase.
+Turn it off with `"autoTrigger": false` in the recipe; the flag is reported either way. The trigger is
+a **recipe constant**, so unlike your prompt it may appear in a log — which matters, because "why does
+this not look like a panorama" is almost always "the trigger did not apply".
+
+**The seam is measured and never repaired.** `seam_delta` is the mean absolute difference between the
+first and last columns — the pair that becomes adjacent once the image is wrapped — normalised to 0–1.
+Over `Tools:Image:SeamWarnThreshold` (default `0.08`) the result carries a `"warnings": ["seam"]`
+entry. It is a warning and never a failure: a slightly visible seam is your own problem and your own
+aesthetic judgement. And it is not repaired, because a roll-and-inpaint fix is a second generation
+pass you did not ask for, did not watch, and would be billed for. Upstream ships one and it is a good
+tool to reach for on purpose.
+
+**Where the projection turns up:** in the response body per image, on the job document
+(`GET /api/images/jobs/{id}`), and as `X-InferHub-Image-Projection` on the content route — which is
+the one request that has no JSON to read it from. A flat recipe reports `"flat"` rather than omitting
+the field, because an absent projection is indistinguishable from a node too old to have one.
+
+**A viewer ships with it**, at `/console.html` → *360° viewer*: paste a job id, and it picks its
+renderer from the declared projection rather than from the aspect ratio — which is what everything
+else does, and is wrong for every 2:1 landscape photo. It is
+[`wwwroot/pano.js`](src/InferHub.Coordinator/wwwroot/pano.js), ~330 lines of hand-written WebGL, no
+npm, no CDN script, no three.js.
+
+**`qwen-image` and `qwen-360` are two model ids over one base.** Not one model with a scale
+parameter: the router keys on `(capability, model)` and a client asking for `qwen-image` must never
+receive a panorama. The worker keeps the base resident and swaps only the LoRA when you alternate
+between them, which is seconds rather than the 40–90 s a 20B reload costs — an optimisation, invisible
+to the contract, and reported in the result's timing block.
 
 ### You need a card, and this says so rather than being quietly slow
 
@@ -1860,6 +1924,7 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `Tools:Image:AllowSlowCpu` | `false` | v3.14. Offer the CPU-hostile recipes on a CPU-only box anyway. Your hardware, your call — loud when on. |
 | `Tools:Image:RecipeDirectory` | _(worker default)_ | v3.14. Where `python/recipes/*.json` live; `/opt/inferhub/recipes` in the `:diffusion` image. Since v3.16 the **node** reads it too, for three fields only — id, licence, VRAM — because the profile clamp must refuse an oversized or unlicensed recipe with no worker running. |
 | `Tools:Image:AcceptedLicenses` | `[]` | v3.16. Licence ids you have read and accepted. A recipe whose `license.permissive` is not `true` is loaded, logged by name and **not started** until its id is here — `sd35-medium` needs `stabilityai-ai-community`, `sdxl-turbo` needs `sai-nc-community`. The **fourth** consent, and a list rather than a boolean so accepting one licence never enables another. A blank entry is ignored, which is how you clear one that came from an image. Not legal advice — a refusal to make that call for you, silently. |
+| `Tools:Image:SeamWarnThreshold` | `0.08` | v3.17. Above this, an equirectangular result carries a `seam` warning — the mean absolute difference between its first and last columns, 0–1. A warning and never a failure, and the seam is never repaired: a roll-and-inpaint fix is a second generation pass you did not ask for. `0` silences the warning, not the measurement. |
 | `Tools:Image:ResidentRecipes` | `1` | v3.16. How many models may be on the card at once. Switching recipes swaps weights inside the **warm** process; more than one resident stops a box that alternates from thrashing. The default is 1 because the expensive default is the one nobody realises they chose. |
 
 ### Keeping the local Ollama alive (v3.4+)

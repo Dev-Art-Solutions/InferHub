@@ -181,7 +181,7 @@ public sealed class LocalImageJobRunner(
                 return;
             }
 
-            Store.TrySucceed(id, ImageResults.Collect(result), outcome.Units);
+            Store.TrySucceed(id, outcome.Images, outcome.Units, outcome.Summary);
             Forget(id);
         }
         catch (OperationCanceledException)

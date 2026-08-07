@@ -250,6 +250,10 @@ public static class ImageJobEndpoints
 
         if (jobs.TryTakeContent(record.Id, client.Id, index) is { } image)
         {
+            // Phase 49, D4. A caller fetching one image has nowhere else to learn this: the JSON
+            // that carried it is a different request, and one they may never have made.
+            httpContext.Response.Headers[ImageProjections.Header] = ImageProjections.Normalise(image.Projection);
+
             return Results.Bytes(image.Bytes, image.MediaType);
         }
 

@@ -9,6 +9,7 @@
     "url": "https://huggingface.co/Qwen/Qwen-Image/blob/main/LICENSE"
   },
   "defaults": { "steps": 30, "guidance": 4.0, "size": "1328x1328" },
+  "guidanceParameter": "true_cfg_scale",
   "sizes": ["1328x1328", "1664x928", "928x1664"],
   "maxSteps": 50,
   "vramMiB": 19000,
