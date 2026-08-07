@@ -58,12 +58,26 @@ jobs:
           # (D2); `gpu` is published as an alias of the same digest for whoever goes looking.
           # The per-tag `suffix=` on those two clears the flavour, which otherwise applies to
           # every tag and would produce `ollama-ollama`.
+          #
+          # `latest=false` IS LOAD-BEARING, and its absence shipped a bug from v3.7 to v3.16.0.
+          # `docker/metadata-action` defaults to `latest=auto`, which adds a `latest` tag on any
+          # semver push — and the suffix does NOT apply to it (`onlatest` is false by default), so
+          # every suffixed entry here was pushing a BARE `:latest` alongside its own tags. Four
+          # matrix jobs racing for one tag, won by whichever finished last: in practice the
+          # diffusion image, because it is the slowest. So `docker pull …/inferhub-node` with no
+          # tag handed you a 12 GB, amd64-only, GPU-required image while every document in this
+          # repository says the plain node is ~340 MB and multi-arch.
+          #
+          # Found by asking the registry what the tags actually point at after a release, not by
+          # reading this file. `:latest` belongs to exactly one entry — the plain node.
           - name: inferhub-node
             scope: node-ollama
             dockerfile: src/InferHub.Node/Dockerfile.ollama
             platforms: linux/amd64
             cache: min
-            flavor: suffix=-ollama
+            flavor: |
+              suffix=-ollama
+              latest=false
             extra-tags: |
               type=raw,value=ollama,suffix=
               type=raw,value=gpu,suffix=
@@ -80,7 +94,9 @@ jobs:
             dockerfile: src/InferHub.Node/Dockerfile.tools
             platforms: linux/amd64
             cache: min
-            flavor: suffix=-tools
+            flavor: |
+              suffix=-tools
+              latest=false
             extra-tags: type=raw,value=tools,suffix=
             reclaim-disk: true
 
@@ -103,7 +119,9 @@ jobs:
             dockerfile: src/InferHub.Node/Dockerfile.diffusion
             platforms: linux/amd64
             cache: none
-            flavor: suffix=-diffusion
+            flavor: |
+              suffix=-diffusion
+              latest=false
             extra-tags: type=raw,value=diffusion,suffix=
             reclaim-disk: true
 
