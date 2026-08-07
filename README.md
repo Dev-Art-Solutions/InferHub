@@ -144,13 +144,17 @@ who did not write them. **v3.14 opened the image track** — [text to image](#te
 OpenAI's Images API, a fifth `:diffusion` image, and the capability seam carrying a whole new
 modality with no protocol change at all — and **v3.15 gave it a clock**: [async
 jobs](#a-job-that-takes-two-minutes-v315) with per-step progress, cooperative cancellation and
-results that live in memory for five minutes and nowhere else. **v3.16 makes it a catalogue**: [six
-models](#the-catalogue-v316), quantization that fits a 20B transformer and its 8.3B text encoder on
-one consumer card, a **VRAM budget you declare rather than one we guess**, hub-driven weight pulls,
-and a licence consent per model — because two of the six are not ours to accept for you.
+results that live in memory for five minutes and nowhere else. **v3.16 makes it a
+[catalogue](#the-catalogue-v316)**: six models at the time, quantization that fits a 20B transformer
+and its 8.3B text encoder on one consumer card, a **VRAM budget you declare rather than one we
+guess**, hub-driven weight pulls, and a licence consent per model — because two of them are not ours
+to accept for you. **v3.17 ships the model the track was asked for**:
+[360° panoramas](#360-panoramas-v317) from a rank-128 LoRA over that 20B base, with the projection
+*declared* rather than guessed from an aspect ratio, a seam that is measured and never repaired, and
+a hand-written WebGL viewer.
 
-Next in this track: `qwen-360-diffusion` for 360° panoramas, and **editing** — img2img, inpainting
-and variations as their own capability kind rather than a per-model operation list.
+Next in this track: **editing** — img2img, inpainting and variations as their own capability kind
+rather than a per-model operation list.
 Still on the table beyond that: teaching the **coordinator** about backend health as a typed signal
 (a status column and an alert, rather than a line in the node's log), **active-active**
 multi-coordinator load sharing, an **OTLP push** exporter behind an explicit opt-in, and a dedicated
@@ -186,7 +190,7 @@ small one and wonders where the audio went. All tags are under
 | `inferhub-node` | ~340 MB | amd64 + arm64 | You already run Ollama, vLLM, LM Studio or a hosted OpenAI-compatible endpoint and want a node in front of it. Also the right one for **solo mode** and for a **vector-store-only** box. |
 | `inferhub-node:ollama` | ~4 GB | amd64 | You want *one* `docker run` on a GPU box with nothing installed on the host. Ollama runs inside the container, supervised. `:gpu` is an alias of the same digest — it works fine with no card. |
 | `inferhub-node:tools` | ~6 GB | amd64 | The above, **plus speech**: Python, `faster-whisper` and `piper`, so `/v1/audio/transcriptions` and `/v1/audio/speech` work out of the box. |
-| `inferhub-node:diffusion` | ~12 GB | amd64 | **Text to image** (v3.14+): PyTorch, `diffusers`, `bitsandbytes` and six recipes — SDXL, SD 1.5, FLUX.1-schnell, Qwen-Image, SD 3.5 Medium and SDXL-Turbo — so `/v1/images/generations` works out of the box. **You need a card.** |
+| `inferhub-node:diffusion` | ~12 GB | amd64 | **Text to image** (v3.14+): PyTorch, `diffusers`, `bitsandbytes` and seven recipes — SDXL, SD 1.5, FLUX.1-schnell, Qwen-Image, SD 3.5 Medium, SDXL-Turbo and [`qwen-360`](#360-panoramas-v317) — so `/v1/images/generations` works out of the box. **You need a card.** |
 
 Three rules of thumb that save the mistake each way:
 
@@ -645,7 +649,7 @@ first log line says which one it got.
 | `inferhub-node` | ~340 MB | amd64 + arm64 | A node. No inference engine — point it at an Ollama or an OpenAI-compatible server |
 | `inferhub-node:ollama` | ~4 GB | amd64 | The same node with Ollama inside it (v3.7+) |
 | `inferhub-node:tools` | ~6 GB | amd64 | The same again, plus Python, `faster-whisper` and `piper` (v3.10+) |
-| `inferhub-node:diffusion` | ~12 GB | amd64 | The **plain** node plus PyTorch, `diffusers`, `bitsandbytes` and six recipes (v3.14+). Does not stack — no Ollama inside |
+| `inferhub-node:diffusion` | ~12 GB | amd64 | The **plain** node plus PyTorch, `diffusers`, `bitsandbytes` and seven recipes (v3.14+). Does not stack — no Ollama inside |
 
 The first three are **unchanged** by v3.10. The Python is ~1.5 GB and it is in a layer whether a
 flag is on or off, so a flag would grow every existing coordinator+node stack for a feature it does
@@ -761,10 +765,10 @@ capability kind, and the router already knew how to find `(capability, model)`.
 | `sdxl-turbo` | 2.6B | **1** | ~8 GB fp16 | — | Stability AI Non-Commercial | **accept the licence** |
 | `qwen-360` | 20B + a rank-128 LoRA | 25 | ~19.5 GB nf4 | **~60 GB** | Apache-2.0 base, **MIT** adapter | yes — see [360° panoramas](#360-panoramas-v317) |
 
-Two of those numbers are the whole point. **`flux-schnell` and `qwen-image` do not fit a 24 GB card
-at bf16** — 33 GB and 60 GB — and nf4 quantization is what makes them one-card models. Both figures
-are in the table because "Qwen-Image needs 19 GB" and "Qwen-Image needs 60 GB" are both true
-sentences about different recipes, and a table that gives one is lying to somebody.
+Two of those numbers are the whole point. **`flux-schnell`, `qwen-image` and `qwen-360` do not fit a
+24 GB card at bf16** — 33 GB and 60 GB — and nf4 quantization is what makes them one-card models.
+Both figures are in the table because "Qwen-Image needs 19 GB" and "Qwen-Image needs 60 GB" are both
+true sentences about different recipes, and a table that gives one is lying to somebody.
 
 **Two repositories are *gated* on Hugging Face, and that is a different thing from the licence.**
 `black-forest-labs/FLUX.1-schnell` and `stabilityai/stable-diffusion-3.5-medium` both require you to
@@ -808,7 +812,7 @@ card, and each is a second thing to reason about when a picture comes out worse 
 
 ### A licence you have not read is a model this node will not start
 
-Two of the six are not permissively licensed. They are **loaded, logged by name and not started**
+Two of the seven are not permissively licensed. They are **loaded, logged by name and not started**
 until their licence id is in `Tools:Image:AcceptedLicenses`:
 
 ```
@@ -838,8 +842,8 @@ the inference backend and the display. Unset means no gate and v3.15's behaviour
 |---|---:|---:|---|
 | 8 GB | `8192` | 6144 | `sd15` |
 | 12 GB | `12288` | 10240 | `sd15`, `sdxl`, `sdxl-turbo` |
-| 24 GB | `24576` | 22528 | all six |
-| 24 GB, with `:ollama` holding an 8B model beside it | `24576`, reserve `8192` | 16384 | all but `qwen-image` |
+| 24 GB | `24576` | 22528 | all seven |
+| 24 GB, with `:ollama` holding an 8B model beside it | `24576`, reserve `8192` | 16384 | all but `qwen-image` and `qwen-360` |
 
 A recipe that cannot fit is **not declared**, so the fleet never routes at it and nobody spends a
 request finding out. One that would fit but does not *right now* — something else is mid-job on the
