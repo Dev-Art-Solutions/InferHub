@@ -33,6 +33,13 @@ internal static class LocalImageEndpoints
     public static IEndpointRouteBuilder MapLocalImageEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/v1/images/generations", HandleGenerationAsync);
+
+        app.MapPost("/v1/images/edits", (HttpContext httpContext, ToolExecutor executor, CancellationToken cancellationToken)
+            => HandleEditAsync(ImageOperations.Edit, httpContext, executor, cancellationToken));
+
+        app.MapPost("/v1/images/variations", (HttpContext httpContext, ToolExecutor executor, CancellationToken cancellationToken)
+            => HandleEditAsync(ImageOperations.Variation, httpContext, executor, cancellationToken));
+
         return app;
     }
 
@@ -66,43 +73,69 @@ internal static class LocalImageEndpoints
             return Error(400, invalid, OpenAiErrorTypes.InvalidRequest, param: invalidParam);
         }
 
-        if (!executor.Provides(CapabilityKinds.Image, request.Model))
+        return await RunAsync(httpContext, executor, request, cancellationToken);
+    }
+
+    /// <summary>
+    /// <c>POST /v1/images/edits</c> and <c>POST /v1/images/variations</c>, on a solo node (phase 50).
+    /// </summary>
+    private static async Task<IResult> HandleEditAsync(
+        string operation,
+        HttpContext httpContext,
+        ToolExecutor executor,
+        CancellationToken cancellationToken)
+    {
+        if (LocalApiEndpoints.CapabilityDisabled(httpContext, CapabilityKinds.ImageEdit, out var refused))
         {
-            return NotProvided(httpContext, request.Model);
+            return Error(503, refused, OpenAiErrorTypes.ApiError, code: "capability_disabled");
         }
 
-        var job = new ToolJob(Guid.NewGuid(), CapabilityKinds.Image, request.Model, request.ToToolPayload());
+        var (request, refusal) = await LocalImageForm.ReadEditAsync(httpContext, operation, cancellationToken);
+
+        return refusal ?? await RunAsync(httpContext, executor, request!, cancellationToken);
+    }
+
+    private static async Task<IResult> RunAsync(
+        HttpContext httpContext,
+        ToolExecutor executor,
+        IImageRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!executor.Provides(request.Capability, request.Model))
+        {
+            return NotProvided(httpContext, request.Capability, request.Model);
+        }
+
+        var job = new ToolJob(
+            Guid.NewGuid(),
+            request.Capability,
+            request.Model,
+            request.ToToolPayload(),
+            request.Attachments.Count == 0 ? null : request.Attachments);
+
         var result = await executor.RunAsync(job, cancellationToken);
 
         httpContext.Response.Headers[LocalApiEndpoints.ServedByHeader] = LocalApiEndpoints.ServedBySolo;
 
         return Render(
             httpContext,
-            ImageRenderer.Generation(result, request, DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
+            ImageRenderer.Render(result, request, DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
     }
 
-    private static ImageLimits Limits(HttpContext httpContext)
-    {
-        var images = httpContext.RequestServices.GetService<IOptions<ImageEdgeOptions>>()?.Value ?? new ImageEdgeOptions();
-
-        var attachments = httpContext.RequestServices.GetService<IOptions<ToolOptions>>()?.Value.MaxAttachmentBytes
-            ?? ToolAttachmentLimits.DefaultMaxBytes;
-
-        return images.Resolve(attachments);
-    }
+    private static ImageLimits Limits(HttpContext httpContext) => LocalImageForm.Limits(httpContext);
 
     /// <summary>
     /// The hub's 503 with the same <c>Retry-After</c>, in the node's own words: "this node" rather
     /// than "no node", because on a standalone box those are the same sentence and only one of them
     /// is true.
     /// </summary>
-    private static IResult NotProvided(HttpContext httpContext, string model)
+    private static IResult NotProvided(HttpContext httpContext, string capability, string model)
     {
         httpContext.Response.Headers.RetryAfter = ToolExecutor.CapabilityRetryAfterSeconds.ToString();
 
         return Error(
             503,
-            $"this node does not provide '{CapabilityKinds.Image}' for model '{model}'",
+            $"this node does not provide '{capability}' for model '{model}'",
             OpenAiErrorTypes.ApiError,
             code: "capability_unavailable");
     }

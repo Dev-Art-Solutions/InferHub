@@ -50,30 +50,80 @@ public static class ImageJobEndpoints
         return app;
     }
 
+    /// <summary>
+    /// Submits a job: JSON for a generation, multipart for an edit or a variation (phase 50).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>One route, two content types — not one route with a flag.</b> Phase-47 D1 refused a
+    /// <c>background: true</c> field precisely because it made one route answer two incompatible
+    /// <em>response</em> shapes; here the response is the same job document either way, and the
+    /// request shape is decided by <c>Content-Type</c>, which is what content types are for. An
+    /// edit is multipart because it carries a file, exactly as OpenAI's own edits route is.
+    /// </para>
+    /// <para>
+    /// <b>A multipart submission must name its <c>operation</c>.</b> Defaulting it would let a
+    /// typo in a field name turn a variation into an edit, and this is InferHub's own contract
+    /// (D1) where ceremony is cheaper than a silent substitution.
+    /// </para>
+    /// </remarks>
     private static async Task<IResult> SubmitAsync(
         HttpContext httpContext,
         ImageJobRegistry jobs,
         INodeRegistry registry,
         CancellationToken cancellationToken)
     {
-        using var reader = new StreamReader(httpContext.Request.Body);
-        var raw = await reader.ReadToEndAsync(cancellationToken);
+        IImageRequest? request;
 
-        if (string.IsNullOrWhiteSpace(raw))
+        if (httpContext.Request.HasFormContentType)
         {
-            return Error(400, "request body is required", OpenAiErrorTypes.InvalidRequest);
+            var operation = (await httpContext.Request.ReadFormAsync(cancellationToken))["operation"].FirstOrDefault();
+
+            if (!ImageOperations.IsEditing(operation?.Trim().ToLowerInvariant()))
+            {
+                return Error(
+                    400,
+                    $"a multipart image job must name its operation: '{ImageOperations.Edit}' or " +
+                    $"'{ImageOperations.Variation}'. Send JSON to generate.",
+                    OpenAiErrorTypes.InvalidRequest,
+                    param: "operation");
+            }
+
+            var (edit, refusal) = await ImageEndpointSupport.ReadEditAsync(
+                httpContext,
+                ImageEndpointSupport.Limits(httpContext),
+                ImageEndpointSupport.AttachmentCap(httpContext),
+                operation!.Trim().ToLowerInvariant(),
+                cancellationToken);
+
+            if (refusal is not null)
+            {
+                return refusal;
+            }
+
+            request = edit!;
         }
-
-        var request = ImageGenerationRequest.TryParse(
-            raw,
-            name => httpContext.Request.Headers.TryGetValue(name, out var values) ? values.ToString() : null,
-            ImageEndpointSupport.Limits(httpContext),
-            out var invalid,
-            out var invalidParam);
-
-        if (request is null)
+        else
         {
-            return Error(400, invalid, OpenAiErrorTypes.InvalidRequest, param: invalidParam);
+            using var reader = new StreamReader(httpContext.Request.Body);
+            var raw = await reader.ReadToEndAsync(cancellationToken);
+
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return Error(400, "request body is required", OpenAiErrorTypes.InvalidRequest);
+            }
+
+            request = ImageGenerationRequest.TryParse(
+                raw,
+                name => httpContext.Request.Headers.TryGetValue(name, out var values) ? values.ToString() : null,
+                ImageEndpointSupport.Limits(httpContext),
+                out var invalid,
+                out var invalidParam);
+
+            if (request is null)
+            {
+                return Error(400, invalid, OpenAiErrorTypes.InvalidRequest, param: invalidParam);
+            }
         }
 
         var client = BearerApiKeyMiddleware.ClientOf(httpContext);
@@ -88,9 +138,10 @@ public static class ImageJobEndpoints
         // Refused before anything is queued: a capability nobody provides is fleet state and gets
         // the saturation shape, a model nobody holds is still the 404 (phase-40 D4). Accepting a
         // job nothing on the fleet can ever run would be a queue position that means nothing.
-        if (ImageEndpointSupport.NoNode(httpContext, registry, request.Model, admission.Lease) is { } refusal)
+        if (ImageEndpointSupport.NoNode(httpContext, registry, request.Model, admission.Lease, request.Capability)
+            is { } unroutable)
         {
-            return refusal;
+            return unroutable;
         }
 
         var record = jobs.TrySubmit(client, request, admission.Lease);

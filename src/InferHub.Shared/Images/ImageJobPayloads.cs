@@ -72,7 +72,7 @@ public static class ImageResults
     /// own numbers always wins: a recipe may clamp a size or a step count, and taking the request's
     /// figures over the worker's would bill for work that was not done.
     /// </param>
-    public static IReadOnlyList<ImageJobImage> Collect(ToolResult result, ImageGenerationRequest? request = null)
+    public static IReadOnlyList<ImageJobImage> Collect(ToolResult result, IImageRequest? request = null)
     {
         var attachments = result.Attachments ?? [];
 

@@ -26,11 +26,12 @@ internal static class ImageEndpointSupport
     {
         var images = httpContext.RequestServices.GetService<IOptions<ImageEdgeOptions>>()?.Value ?? new ImageEdgeOptions();
 
-        var attachments = httpContext.RequestServices.GetService<IOptions<ToolEdgeOptions>>()?.Value.MaxAttachmentBytes
-            ?? ToolAttachmentLimits.DefaultMaxBytes;
-
-        return images.Resolve(attachments);
+        return images.Resolve(AttachmentCap(httpContext));
     }
+
+    public static long AttachmentCap(HttpContext httpContext) =>
+        httpContext.RequestServices.GetService<IOptions<ToolEdgeOptions>>()?.Value.MaxAttachmentBytes
+        ?? ToolAttachmentLimits.DefaultMaxBytes;
 
     /// <summary>
     /// Phase-40 D5, unchanged and reused rather than re-argued: a capability nobody provides is
@@ -42,11 +43,23 @@ internal static class ImageEndpointSupport
     /// the client's concurrency limit for as long as the process lived — which reads to them as a
     /// rate limit that never resets.
     /// </param>
-    public static IResult? NoNode(HttpContext httpContext, INodeRegistry registry, string model, IDisposable? lease)
+    /// <param name="capability">
+    /// <c>image</c> or, since phase 50, <c>image-edit</c>. The 503 for the second one <b>names the
+    /// recipes on this fleet that can edit</b>, which the hub genuinely knows — it is the fleet's
+    /// own capability declarations, not a model catalogue (which the hub still does not have, see
+    /// phase-46 D6). "FLUX cannot inpaint, but sdxl and sd15 can" is the whole difference between a
+    /// refusal somebody can act on and one that sends them to the docs.
+    /// </param>
+    public static IResult? NoNode(
+        HttpContext httpContext,
+        INodeRegistry registry,
+        string model,
+        IDisposable? lease,
+        string capability = CapabilityKinds.Image)
     {
         var router = httpContext.RequestServices.GetRequiredService<Services.IRouter>();
 
-        if (router.Route(model, capability: CapabilityKinds.Image) is not null)
+        if (router.Route(model, capability: capability) is not null)
         {
             return null;
         }
@@ -59,12 +72,32 @@ internal static class ImageEndpointSupport
 
             return Error(
                 503,
-                $"no node currently provides '{CapabilityKinds.Image}' for model '{model}'",
+                $"no node currently provides '{capability}' for model '{model}'{Alternatives(registry, capability)}",
                 OpenAiErrorTypes.ApiError,
                 code: "capability_unavailable");
         }
 
         return Error(404, $"model '{model}' not found", OpenAiErrorTypes.NotFound, param: "model", code: "model_not_found");
+    }
+
+    /// <summary>
+    /// The models the fleet <em>does</em> serve under this capability, if any.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately silent when there are none: a sentence ending "the fleet can edit with: " is
+    /// worse than one that stops, and an empty list is already said by the 503 itself.
+    /// </remarks>
+    private static string Alternatives(INodeRegistry registry, string capability)
+    {
+        var models = registry.Snapshot(DateTimeOffset.UtcNow)
+            .SelectMany(node => node.Capabilities ?? [])
+            .Where(declared => string.Equals(declared.Kind, capability, StringComparison.OrdinalIgnoreCase))
+            .SelectMany(declared => declared.Models)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        return models.Length == 0 ? string.Empty : $". Models on this fleet that do: {string.Join(", ", models)}";
     }
 
     public static IResult Rejected(HttpContext httpContext, AdmissionDecision admission)
@@ -90,6 +123,121 @@ internal static class ImageEndpointSupport
             OpenAiErrorEnvelope.Create(message, type, code, param),
             Json,
             statusCode: status);
+
+    /// <summary>
+    /// Reads a multipart edit or variation and validates it (phase 50).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The ten lines that touch <c>IFormCollection</c> are per host (phase-37 D6) and the sentences
+    /// are not: every refusal below comes from <see cref="ImageEditRequest"/> or
+    /// <see cref="ToolAttachmentLimits"/> in <c>InferHub.Shared</c>, so a client cannot tell a hub
+    /// from a solo node by reading an error.
+    /// </para>
+    /// <para>
+    /// <b>The caller's filename is dropped</b> and the parts travel as <c>image</c> and
+    /// <c>mask</c>. What somebody called a file on their disk is metadata about their day
+    /// (phase-42 D5) and has no business crossing the mesh.
+    /// </para>
+    /// </remarks>
+    public static async Task<(ImageEditRequest? Request, IResult? Refusal)> ReadEditAsync(
+        HttpContext httpContext,
+        ImageLimits limits,
+        long maxAttachmentBytes,
+        string operation,
+        CancellationToken cancellationToken)
+    {
+        if (!httpContext.Request.HasFormContentType)
+        {
+            return (null, Error(
+                400,
+                $"this endpoint takes multipart/form-data with an '{ImageEditRequest.ImagePart}' part",
+                OpenAiErrorTypes.InvalidRequest));
+        }
+
+        IFormCollection form;
+
+        try
+        {
+            form = await httpContext.Request.ReadFormAsync(cancellationToken);
+        }
+        catch (BadHttpRequestException ex)
+        {
+            return (null, Error(400, ex.Message, OpenAiErrorTypes.InvalidRequest));
+        }
+
+        var (image, imageRefusal) = await PartAsync(form, ImageEditRequest.ImagePart, maxAttachmentBytes, cancellationToken);
+
+        if (imageRefusal is not null)
+        {
+            return (null, imageRefusal);
+        }
+
+        var (mask, maskRefusal) = await PartAsync(form, ImageEditRequest.MaskPart, maxAttachmentBytes, cancellationToken);
+
+        if (maskRefusal is not null)
+        {
+            return (null, maskRefusal);
+        }
+
+        var total = (image?.Bytes.LongLength ?? 0) + (mask?.Bytes.LongLength ?? 0);
+
+        if (total > limits.MaxRequestBytes)
+        {
+            return (null, Error(
+                413,
+                ImageEditRequest.TooLargeRequest(total, limits.MaxRequestBytes),
+                OpenAiErrorTypes.InvalidRequest,
+                param: ImageEditRequest.ImagePart));
+        }
+
+        var request = ImageEditRequest.TryParse(
+            operation,
+            name => form[name].FirstOrDefault(),
+            name => httpContext.Request.Headers.TryGetValue(name, out var values) ? values.ToString() : null,
+            image,
+            mask,
+            limits,
+            out var invalid,
+            out var invalidParam);
+
+        return request is null
+            ? (null, Error(400, invalid, OpenAiErrorTypes.InvalidRequest, param: invalidParam))
+            : (request, null);
+    }
+
+    private static async Task<(ToolAttachment? Part, IResult? Refusal)> PartAsync(
+        IFormCollection form,
+        string name,
+        long maxAttachmentBytes,
+        CancellationToken cancellationToken)
+    {
+        var file = form.Files[name];
+
+        if (file is null)
+        {
+            return (null, null);
+        }
+
+        if (file.Length > maxAttachmentBytes)
+        {
+            // Refused before anything is buffered onward, with the limit in the sentence
+            // (phase-40 D4). The *role* is named rather than the caller's filename.
+            return (null, Error(
+                413,
+                ToolAttachmentLimits.TooLarge(name, file.Length, maxAttachmentBytes),
+                OpenAiErrorTypes.InvalidRequest,
+                param: name));
+        }
+
+        using var buffer = new MemoryStream();
+        await file.CopyToAsync(buffer, cancellationToken);
+
+        return (new ToolAttachment(
+            name,
+            string.IsNullOrWhiteSpace(file.ContentType) ? "application/octet-stream" : file.ContentType,
+            buffer.ToArray()), null);
+    }
 }
 
 /// <summary>

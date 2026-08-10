@@ -131,7 +131,7 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
                 !disabled.Any(id => string.Equals(id?.Trim(), model, StringComparison.OrdinalIgnoreCase)));
         }
 
-        if (!string.Equals(kind, CapabilityKinds.Image, StringComparison.OrdinalIgnoreCase)
+        if (!CapabilityKinds.IsImageKind(kind)
             || recipes.Count == 0)
         {
             return models;
@@ -400,7 +400,7 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
         // holding the slot already means nothing else on this pool is on the card, so the common
         // case never refuses — the gate earns its keep when an operator has raised concurrency or
         // when a second recipe would have to be resident beside a running one.
-        if (!string.Equals(capability, CapabilityKinds.Image, StringComparison.OrdinalIgnoreCase)
+        if (!CapabilityKinds.IsImageKind(capability)
             || !recipes.TryGetValue(model, out var recipe))
         {
             return lease;
@@ -541,7 +541,7 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
                 $"'{model}' is switched off on this node by the coordinator's node profile");
         }
 
-        if (!string.Equals(capability, CapabilityKinds.Image, StringComparison.OrdinalIgnoreCase)
+        if (!CapabilityKinds.IsImageKind(capability)
             || !recipes.TryGetValue(model, out var recipe))
         {
             return;

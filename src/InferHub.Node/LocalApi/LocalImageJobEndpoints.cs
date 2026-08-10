@@ -50,38 +50,76 @@ internal static class LocalImageJobEndpoints
         ToolExecutor executor,
         CancellationToken cancellationToken)
     {
-        if (LocalApiEndpoints.CapabilityDisabled(httpContext, CapabilityKinds.Image, out var disabled))
+        IImageRequest? request;
+
+        if (httpContext.Request.HasFormContentType)
         {
-            return Error(503, disabled, OpenAiErrorTypes.ApiError, code: "capability_disabled");
+            // Same contract as the hub's: JSON generates, multipart edits, and a multipart
+            // submission must name its operation rather than have one guessed for it.
+            var operation = (await httpContext.Request.ReadFormAsync(cancellationToken))["operation"].FirstOrDefault();
+
+            if (!ImageOperations.IsEditing(operation?.Trim().ToLowerInvariant()))
+            {
+                return Error(
+                    400,
+                    $"a multipart image job must name its operation: '{ImageOperations.Edit}' or " +
+                    $"'{ImageOperations.Variation}'. Send JSON to generate.",
+                    OpenAiErrorTypes.InvalidRequest,
+                    param: "operation");
+            }
+
+            if (LocalApiEndpoints.CapabilityDisabled(httpContext, CapabilityKinds.ImageEdit, out var editDisabled))
+            {
+                return Error(503, editDisabled, OpenAiErrorTypes.ApiError, code: "capability_disabled");
+            }
+
+            var (edit, refusal) = await LocalImageForm.ReadEditAsync(
+                httpContext,
+                operation!.Trim().ToLowerInvariant(),
+                cancellationToken);
+
+            if (refusal is not null)
+            {
+                return refusal;
+            }
+
+            request = edit!;
+        }
+        else
+        {
+            if (LocalApiEndpoints.CapabilityDisabled(httpContext, CapabilityKinds.Image, out var disabled))
+            {
+                return Error(503, disabled, OpenAiErrorTypes.ApiError, code: "capability_disabled");
+            }
+
+            using var reader = new StreamReader(httpContext.Request.Body);
+            var raw = await reader.ReadToEndAsync(cancellationToken);
+
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return Error(400, "request body is required", OpenAiErrorTypes.InvalidRequest);
+            }
+
+            request = ImageGenerationRequest.TryParse(
+                raw,
+                name => httpContext.Request.Headers.TryGetValue(name, out var values) ? values.ToString() : null,
+                Limits(httpContext),
+                out var invalid,
+                out var invalidParam);
+
+            if (request is null)
+            {
+                return Error(400, invalid, OpenAiErrorTypes.InvalidRequest, param: invalidParam);
+            }
         }
 
-        using var reader = new StreamReader(httpContext.Request.Body);
-        var raw = await reader.ReadToEndAsync(cancellationToken);
-
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return Error(400, "request body is required", OpenAiErrorTypes.InvalidRequest);
-        }
-
-        var request = ImageGenerationRequest.TryParse(
-            raw,
-            name => httpContext.Request.Headers.TryGetValue(name, out var values) ? values.ToString() : null,
-            Limits(httpContext),
-            out var invalid,
-            out var invalidParam);
-
-        if (request is null)
-        {
-            return Error(400, invalid, OpenAiErrorTypes.InvalidRequest, param: invalidParam);
-        }
-
-        if (!executor.Provides(CapabilityKinds.Image, request.Model))
+        if (!executor.Provides(request.Capability, request.Model))
         {
             httpContext.Response.Headers.RetryAfter = ToolExecutor.CapabilityRetryAfterSeconds.ToString();
 
             return Error(
                 503,
-                $"this node does not provide '{CapabilityKinds.Image}' for model '{request.Model}'",
+                $"this node does not provide '{request.Capability}' for model '{request.Model}'",
                 OpenAiErrorTypes.ApiError,
                 code: "capability_unavailable");
         }

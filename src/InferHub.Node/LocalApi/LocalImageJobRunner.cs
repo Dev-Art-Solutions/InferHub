@@ -36,7 +36,7 @@ public sealed class LocalImageJobRunner(
 
     public ImageJobStore Store { get; } = new(options.Value.Jobs);
 
-    public ImageJobRecord? TrySubmit(string clientId, ImageGenerationRequest request)
+    public ImageJobRecord? TrySubmit(string clientId, IImageRequest request)
     {
         var id = Guid.NewGuid();
 
@@ -47,9 +47,14 @@ public sealed class LocalImageJobRunner(
 
         pending[id] = new PendingLocalJob(request, new CancellationTokenSource());
 
-        // The model and the count. Never the prompt: a prompt is what somebody wanted, and on a
-        // solo box there is no hub between them and this log file.
-        logger.LogInformation("Accepted image job {JobId} ({Model}, n={Count})", id, request.Model, request.Count);
+        // The capability, the model and the count. Never the prompt: a prompt is what somebody
+        // wanted, and on a solo box there is no hub between them and this log file.
+        logger.LogInformation(
+            "Accepted {Capability} job {JobId} ({Model}, n={Count})",
+            request.Capability,
+            id,
+            request.Model,
+            request.Count);
 
         Pump();
         return record;
@@ -131,7 +136,12 @@ public sealed class LocalImageJobRunner(
 
     private async Task RunAsync(Guid id, PendingLocalJob job)
     {
-        var toolJob = new ToolJob(id, CapabilityKinds.Image, job.Request.Model, job.Request.ToToolPayload());
+        var toolJob = new ToolJob(
+            id,
+            job.Request.Capability,
+            job.Request.Model,
+            job.Request.ToToolPayload(),
+            job.Request.Attachments.Count == 0 ? null : job.Request.Attachments);
 
         var progress = new Progress<ToolChunk>(chunk =>
         {
@@ -144,10 +154,11 @@ public sealed class LocalImageJobRunner(
         try
         {
             var result = await executor.RunAsync(toolJob, progress, job.Cancellation.Token);
-            var outcome = ImageRenderer.Generation(result, job.Request, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            var outcome = ImageRenderer.Render(result, job.Request, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
 
             logger.LogInformation(
-                "Image job {JobId} ({Model}): {Status}, {Images} image(s), {Units:F1} megapixel-steps",
+                "{Capability} job {JobId} ({Model}): {Status}, {Images} image(s), {Units:F1} megapixel-steps",
+                job.Request.Capability,
                 id,
                 job.Request.Model,
                 outcome.Status,
@@ -214,7 +225,7 @@ public sealed class LocalImageJobRunner(
         }
     }
 
-    private sealed record PendingLocalJob(ImageGenerationRequest Request, CancellationTokenSource Cancellation)
+    private sealed record PendingLocalJob(IImageRequest Request, CancellationTokenSource Cancellation)
         : IDisposable
     {
         public void Dispose() => Cancellation.Dispose();

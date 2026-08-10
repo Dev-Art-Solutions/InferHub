@@ -44,6 +44,12 @@ internal static class ImageFixture
 {
     public const string Model = "sd-test";
 
+    /// <summary>
+    /// A recipe this fixture declares under <c>image</c> and <b>not</b> under <c>image-edit</c>
+    /// (phase 50) — the fixture's FLUX: a model the fleet holds and cannot edit with.
+    /// </summary>
+    public const string GenerateOnlyModel = "generate-only-test";
+
     /// <summary>An aspect bucket the echo worker accepts. Anything else is its <c>invalid_request</c>.</summary>
     public const string Size = "512x512";
 
@@ -59,7 +65,12 @@ internal static class ImageFixture
             id = "diffusion",
             capabilities = new object[]
             {
-                new { kind = "image", models = new[] { Model } },
+                new { kind = "image", models = new[] { Model, GenerateOnlyModel } },
+
+                // Phase 50. The catalogue splits: one of the two models generates and edits, the
+                // other only generates — which is what makes "this recipe cannot edit" a real 503
+                // with a real alternative in it rather than an assertion about a string.
+                new { kind = "image-edit", models = new[] { Model } },
 
                 // A second capability on the same node, so the 503-vs-404 split has something real
                 // to be wrong about: `speak-test` exists on this fleet, but not for `image`.

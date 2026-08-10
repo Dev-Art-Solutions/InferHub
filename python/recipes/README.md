@@ -1,4 +1,4 @@
-# Image recipes (phase 46, catalogued in phase 48, adapters in phase 49)
+# Image recipes (phase 46, catalogued in phase 48, adapters in phase 49, editing in phase 50)
 
 A **recipe** is a model the diffusion worker can run. A **manifest** (`../manifests/diffusion.json`)
 is the *tool* — the argv, the environment, the timeouts, and the thing `Tools:Allowed` names.
@@ -13,15 +13,15 @@ is for.
 
 ## What ships
 
-| Recipe | Params | Steps | VRAM | Licence | Runs out of the box? |
-|---|---|---|---|---|---|
-| `sdxl` | 2.6B UNet | 30 | ~8 GB, fp16 | CreativeML OpenRAIL++-M | yes |
-| `sd15` | 0.9B | 30 | ~4 GB, fp16 | CreativeML OpenRAIL-M | yes — and the only CPU-viable one |
-| `flux-schnell` | 12B | **4** | ~12 GB at nf4 (**~33 GB** at bf16) | Apache-2.0 | **no — HF token**, gated repo |
-| `qwen-image` | 20B + 8.3B text encoder | 30 | ~19 GB at nf4 (**~60 GB** at bf16) | Apache-2.0 | yes |
-| `sd35-medium` | 2.5B MMDiT | 40 | ~16 GB, bf16 | Stability AI Community | **no — licence + HF token** |
-| `sdxl-turbo` | 2.6B | **1** | ~8 GB, fp16 | Stability AI Non-Commercial | **no — accept the licence** |
-| `qwen-360` | 20B + a rank-128 LoRA | 25 | ~19.5 GB at nf4 | Apache-2.0 base, **MIT** adapter | yes — and it produces 360° panoramas |
+| Recipe | Params | Steps | VRAM | Licence | Operations | Runs out of the box? |
+|---|---|---|---|---|---|---|
+| `sdxl` | 2.6B UNet | 30 | ~8 GB, fp16 | CreativeML OpenRAIL++-M | generate, **edit, variation** | yes |
+| `sd15` | 0.9B | 30 | ~4 GB, fp16 | CreativeML OpenRAIL-M | generate, **edit, variation** | yes — and the only CPU-viable one |
+| `flux-schnell` | 12B | **4** | ~12 GB at nf4 (**~33 GB** at bf16) | Apache-2.0 | generate | **no — HF token**, gated repo |
+| `qwen-image` | 20B + 8.3B text encoder | 30 | ~19 GB at nf4 (**~60 GB** at bf16) | Apache-2.0 | generate | yes |
+| `sd35-medium` | 2.5B MMDiT | 40 | ~16 GB, bf16 | Stability AI Community | generate | **no — licence + HF token** |
+| `sdxl-turbo` | 2.6B | **1** | ~8 GB, fp16 | Stability AI Non-Commercial | generate | **no — accept the licence** |
+| `qwen-360` | 20B + a rank-128 LoRA | 25 | ~19.5 GB at nf4 | Apache-2.0 base, **MIT** adapter | generate | yes — and it produces 360° panoramas |
 
 Two of those numbers are the point of this phase. `flux-schnell` and `qwen-image` **do not fit a
 24 GB card at bf16** — 33 GB and 60 GB respectively — and nf4 is what makes them one-card models.
@@ -54,7 +54,9 @@ bare `401` that reads as "the model is gone".
   "dtype": "bfloat16",             // what they are cast to in memory
   "license": { "id": "Apache-2.0", "permissive": true, "url": "https://…" },
   "gated": true,                   // documentation only: the repo also needs HF_TOKEN
-  "defaults": { "steps": 4, "guidance": 0.0, "size": "1024x1024" },
+  "operations": ["generate"],      // phase 50. generate | edit | variation. Absent = ["generate"].
+  "defaults": { "steps": 4, "guidance": 0.0, "size": "1024x1024",
+                "strength": 0.75 },          // phase 50, and only meaningful for edit/variation
   "sizes": ["1024x1024", "1152x896", …],     // the aspect buckets, exactly
   "maxSteps": 8,
   "vramMiB": 12000,                // the QUANTIZED figure — what the node budgets against
@@ -275,6 +277,45 @@ every equirectangular result and reported as `seamDelta`. Over `Tools:Image:Seam
 **never repaired**: a roll-and-inpaint fix is a second generation pass the caller did not ask for,
 did not watch, and would be billed for. Upstream ships one (`run_qwen_image_nf4.py`'s `fix_seam`)
 and it is a good tool to reach for deliberately.
+
+### `operations` splits the catalogue into two capabilities
+
+A recipe declares `["generate"]`, or `["generate", "edit", "variation"]`. The worker then declares
+**two** capability kinds — `image` for the generators and `image-edit` for the ones that also edit —
+because the router filters on `(kind, model)` and nothing else, and it is a real distinction:
+FLUX.1-schnell has no official inpainting pipeline and SDXL does. A client that asks
+`/v1/images/edits` for a generate-only recipe gets a `503` that names the recipes on the fleet that
+*can* edit, which is a fleet-state answer rather than an authorization one.
+
+**An absent `operations` means `["generate"]`**, so every recipe written before v3.18 declares
+exactly what it declared before.
+
+An edit reuses the loaded pipeline through `AutoPipelineForInpainting.from_pipe` (a mask) or
+`AutoPipelineForImage2Image.from_pipe` (no mask), which share the UNet, the VAE and the text
+encoders rather than loading a second copy — so editing costs no extra VRAM and no extra seconds,
+and needs no second entry in the residency budget.
+
+**`defaults.strength` is what an edit uses when the caller sends no
+`X-InferHub-Image-Strength`.** 0 keeps the input, 1 ignores it; 0.75 is the shipped default for both
+editable recipes. It matters for the bill as well as the picture: `diffusers` enters the schedule at
+`int(steps × strength)`, so 30 steps at 0.6 denoises for 18 — and 18 is what the result frame
+reports and what the fleet meters, because metering the asked-for 30 would bill for work nobody did.
+
+### The mask convention is inverted, and it is the one thing here a paragraph cannot fix
+
+OpenAI's edits API treats a **fully transparent** pixel as the area to edit. `diffusers` takes a mask
+where **white** is the area to inpaint. These are opposite, and getting it backwards does not error —
+it edits everything *except* what you selected, which reads as a broken model.
+
+So the worker converts, and the conversion is one line with a lot of reasoning behind it: the
+diffusers mask is the **inverse of the alpha channel**. A mask with no alpha channel is refused
+rather than guessed at, because under OpenAI's convention a fully opaque image means "edit nothing",
+which no caller has ever intended. A caller who already has a white-is-edit mask says so with
+`X-InferHub-Mask-Convention: luminance`; an unknown value is a `400`.
+
+**A mask is never rescaled.** A mask names *which pixels*, and scaling somebody's selection lands
+the edit next to what they chose — which looks like a bad model rather than a bad mask. A mask whose
+size differs from the image's is a `400` naming both sizes.
 
 ## Adding one
 

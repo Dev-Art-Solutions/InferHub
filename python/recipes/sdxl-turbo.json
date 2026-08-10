@@ -8,6 +8,7 @@
     "permissive": false,
     "url": "https://huggingface.co/stabilityai/sdxl-turbo/blob/main/LICENSE.md"
   },
+  "operations": ["generate"],
   "defaults": { "steps": 1, "guidance": 0.0, "size": "512x512" },
   "sizes": ["512x512"],
   "maxSteps": 4,

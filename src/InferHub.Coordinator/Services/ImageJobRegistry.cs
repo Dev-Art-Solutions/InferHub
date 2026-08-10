@@ -77,7 +77,7 @@ public sealed class ImageJobRegistry
     /// </summary>
     public ImageJobRecord? TrySubmit(
         ResolvedClient client,
-        ImageGenerationRequest request,
+        IImageRequest request,
         IDisposable? admissionLease)
     {
         var id = Guid.NewGuid();
@@ -90,10 +90,12 @@ public sealed class ImageJobRegistry
 
         pending[id] = new PendingImageJob(client, request, admissionLease, new CancellationTokenSource());
 
-        // The model, the count and the client — never the prompt. A prompt is content in exactly
-        // the sense rule 7 means: it is what somebody wanted, and the picture is the answer.
+        // The capability, the model, the count and the client — never the prompt, and never
+        // anything about an uploaded picture. A prompt is content in exactly the sense rule 7
+        // means: it is what somebody wanted, and the picture is the answer.
         logger.LogInformation(
-            "Accepted image job {JobId} ({Model}, n={Count}) for client {ClientId}",
+            "Accepted {Capability} job {JobId} ({Model}, n={Count}) for client {ClientId}",
+            request.Capability,
             id,
             request.Model,
             request.Count,
@@ -191,7 +193,7 @@ public sealed class ImageJobRegistry
                     continue;
                 }
 
-                var node = Route(record.Model);
+                var node = Route(record.Model, job.Request.Capability);
 
                 if (node is null)
                 {
@@ -216,11 +218,17 @@ public sealed class ImageJobRegistry
     }
 
     /// <summary>
-    /// A node that declares <c>image</c> for this model and is not already running one. Nothing
-    /// here reaches into the router's own ranking — it asks for a candidate and then applies the
-    /// one extra rule this phase owns.
+    /// A node that declares this capability for this model and is not already running an image job.
+    /// Nothing here reaches into the router's own ranking — it asks for a candidate and then applies
+    /// the one extra rule this phase owns.
     /// </summary>
-    private RoutableNode? Route(string model)
+    /// <param name="capability">
+    /// <c>image</c> or <c>image-edit</c> (phase 50). <b><see cref="busyNodes"/> is deliberately not
+    /// split by it</b>: the resource a node has exactly one of is the card, and letting an edit and
+    /// a generation start together on one box would be two pipelines' worth of VRAM for a fairness
+    /// rule that exists precisely to stop that.
+    /// </param>
+    private RoutableNode? Route(string model, string capability)
     {
         var excluded = new HashSet<string>(StringComparer.Ordinal);
 
@@ -229,7 +237,7 @@ public sealed class ImageJobRegistry
             var node = router.Route(
                 model,
                 excludeConnectionId: excluded.Count == 1 ? excluded.First() : null,
-                capability: CapabilityKinds.Image);
+                capability: capability);
 
             if (node is null)
             {
@@ -252,7 +260,16 @@ public sealed class ImageJobRegistry
 
     private async Task RunAsync(Guid id, RoutableNode node, PendingImageJob job)
     {
-        var toolJob = new ToolJob(id, CapabilityKinds.Image, job.Request.Model, job.Request.ToToolPayload());
+        var toolJob = new ToolJob(
+            id,
+            job.Request.Capability,
+            job.Request.Model,
+            job.Request.ToToolPayload(),
+
+            // An edit's input picture and mask, travelling the phase-40 D4 attachment path in the
+            // direction it had never been used in: hub → node. Empty for a generation, so nothing
+            // about that dispatch changed.
+            job.Request.Attachments.Count == 0 ? null : job.Request.Attachments);
 
         var progress = new Progress<ToolChunk>(chunk =>
         {
@@ -265,10 +282,11 @@ public sealed class ImageJobRegistry
         try
         {
             var result = await tools.DispatchToolAsync(node, toolJob, progress, job.Cancellation.Token);
-            var outcome = ImageRenderer.Generation(result, job.Request, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            var outcome = ImageRenderer.Render(result, job.Request, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
 
             logger.LogInformation(
-                "Image job {JobId} ({Model}) on node {NodeId}: {Status}, {Images} image(s), {Units:F1} megapixel-steps",
+                "{Capability} job {JobId} ({Model}) on node {NodeId}: {Status}, {Images} image(s), {Units:F1} megapixel-steps",
+                job.Request.Capability,
                 id,
                 job.Request.Model,
                 node.NodeId,
@@ -296,8 +314,12 @@ public sealed class ImageJobRegistry
                 // Metered exactly where phase 46 meters it — the one place that already decides a
                 // job succeeded — so the number on a dashboard and the number on a bill cannot come
                 // from two definitions of "done".
-                usage.RecordUnits(job.Client, CapabilityKinds.Image, job.Request.Model, outcome.Units, outcome.UnitKind);
-                metrics.RecordToolUnits(CapabilityKinds.Image, job.Request.Model, outcome.Units, outcome.UnitKind);
+                // Metered under the capability that ran it, so an operator can see what the card
+                // actually spent its minutes on. The *unit* is the same either way — megapixel-steps
+                // is a fact about pixels and steps, and an edit's steps are the ones it really ran
+                // (phase-50 D3), not the ones that were asked for.
+                usage.RecordUnits(job.Client, job.Request.Capability, job.Request.Model, outcome.Units, outcome.UnitKind);
+                metrics.RecordToolUnits(job.Request.Capability, job.Request.Model, outcome.Units, outcome.UnitKind);
             }
 
             Forget(id);
@@ -374,7 +396,7 @@ public sealed class ImageJobRegistry
     /// </remarks>
     private sealed record PendingImageJob(
         ResolvedClient Client,
-        ImageGenerationRequest Request,
+        IImageRequest Request,
         IDisposable? AdmissionLease,
         CancellationTokenSource Cancellation) : IDisposable
     {

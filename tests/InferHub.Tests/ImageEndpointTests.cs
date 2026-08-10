@@ -228,7 +228,13 @@ public class ImageEndpointTests
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, wrongCapability.StatusCode);
         Assert.Equal("30", wrongCapability.Headers.GetValues("Retry-After").Single());
-        Assert.Equal("no node currently provides 'image' for model 'speak-test'", await Message(wrongCapability));
+
+        // Phase 50 added the second half: the refusal names the models the fleet *does* serve under
+        // this capability, which the hub genuinely knows from its own registration data. "No" with
+        // no alternative sends somebody to the docs; "no, but these" is actionable.
+        var message = await Message(wrongCapability);
+        Assert.StartsWith("no node currently provides 'image' for model 'speak-test'", message);
+        Assert.Contains($"Models on this fleet that do: {ImageFixture.GenerateOnlyModel}, {ImageFixture.Model}", message);
 
         var unknown = await mesh.Client.PostAsJsonAsync(
             "/v1/images/generations",
@@ -266,8 +272,12 @@ public class ImageEndpointTests
     /// added under a prefix the guard does not cover ships an unauthenticated inference API, and
     /// this one occupies a GPU for a minute per call.
     /// </summary>
-    [Fact]
-    public async Task TheImageRouteRejectsAMissingKey()
+    [Theory]
+    [InlineData("/v1/images/generations")]
+    [InlineData("/v1/images/edits")]
+    [InlineData("/v1/images/variations")]
+    [InlineData("/api/images/jobs")]
+    public async Task TheImageRoutesRejectAMissingKey(string route)
     {
         var called = false;
         var options = new StaticOptionsMonitor(new ApiKeyOptions { ApiKeys = ["secret"] });
@@ -283,7 +293,7 @@ public class ImageEndpointTests
             NullLogger<BearerApiKeyMiddleware>.Instance);
 
         var context = new DefaultHttpContext();
-        context.Request.Path = "/v1/images/generations";
+        context.Request.Path = route;
         context.Connection.RemoteIpAddress = IPAddress.Parse("8.8.8.8");
 
         await middleware.InvokeAsync(context);

@@ -8,7 +8,8 @@
     "permissive": true,
     "url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/main/LICENSE.md"
   },
-  "defaults": { "steps": 30, "guidance": 5.0, "size": "1024x1024" },
+  "operations": ["generate", "edit", "variation"],
+  "defaults": { "steps": 30, "guidance": 5.0, "size": "1024x1024", "strength": 0.75 },
   "sizes": ["1024x1024", "1152x896", "896x1152", "1216x832", "832x1216", "1344x768", "768x1344"],
   "maxSteps": 75,
   "vramMiB": 8000,

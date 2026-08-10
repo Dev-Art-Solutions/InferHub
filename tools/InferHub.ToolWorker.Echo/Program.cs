@@ -25,6 +25,10 @@ using System.Text.Json;
 //               the width, height, steps and seed reported per image; refuse a size outside the
 //               fixture's aspect buckets with `invalid_request` naming them, which is how a real
 //               diffusion recipe answers and is the path the edge deliberately leaves to the worker
+//   image-edit  (phase 50) the same, after READING the `image` and `mask` files the node wrote into
+//               the scratch directory: the mask's size and its alpha channel are checked here
+//               because the hub never opened either of them, and the steps reported are the ones
+//               `strength` actually runs rather than the ones that were asked for
 //
 // Behaviours are asked for in the request payload's "behaviour" field:
 //   (absent)   echo the payload back
@@ -243,7 +247,7 @@ async Task HandleRequestAsync(JsonElement frame, CancellationToken cancellationT
         return;
     }
 
-    if (behaviour is null && capability is "image")
+    if (behaviour is null && capability is "image" or "image-edit")
     {
         await HandleImageAsync(id, payload, frame, cancellationToken);
         return;
@@ -564,18 +568,45 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, 
         return;
     }
 
+    // Phase 50. An edit or a variation, and what makes it worth exercising here is what a real
+    // worker does that a stub cannot: it READS THE INPUT FILES the node wrote into the scratch
+    // directory, checks the mask against the image, and refuses with the code the edge renders. The
+    // hub never opened either of them — nothing in InferHub's C# decodes a pixel — so this is the
+    // only place the mask convention and the size check are actually enforced.
+    var operation = payload.ValueKind is JsonValueKind.Object && payload.TryGetProperty("op", out var opField)
+        ? opField.GetString() ?? "generate"
+        : "generate";
+
+    Edited? edited = null;
+
+    if (operation is "edit" or "variation")
+    {
+        var (result, error) = await ReadEditInputsAsync(payload, frame);
+
+        if (error is not null)
+        {
+            Send(new { type = "error", id, code = "invalid_request", message = error });
+            return;
+        }
+
+        edited = result;
+    }
+
     // Phase 49. An equirectangular fixture recipe: 2:1 buckets only, a projection on every result,
     // a measured seam, and the trigger phrase appended when the prompt lacks it.
     var equirectangular = arguments.ImageProjection == "equirectangular";
     var projection = equirectangular ? "equirectangular" : "flat";
 
+    // An edit with no `size` takes the input picture's own dimensions, exactly as the real worker
+    // does: a caller who sends a 512×512 photograph and names no size means "this size", and
+    // substituting the recipe's default would silently rescale their picture.
     var width = payload.ValueKind is JsonValueKind.Object && payload.TryGetProperty("width", out var w) && w.ValueKind is JsonValueKind.Number
         ? w.GetInt32()
-        : equirectangular ? 1024 : 512;
+        : edited?.Width ?? (equirectangular ? 1024 : 512);
 
     var height = payload.ValueKind is JsonValueKind.Object && payload.TryGetProperty("height", out var h) && h.ValueKind is JsonValueKind.Number
         ? h.GetInt32()
-        : equirectangular ? 512 : 512;
+        : edited?.Height ?? 512;
 
     if (equirectangular)
     {
@@ -615,6 +646,10 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, 
         ? st.GetInt32()
         : 30;
 
+    // What actually runs, and therefore what is reported and metered (phase-50 D3): an
+    // image-to-image pass enters the schedule at `int(steps × strength)`, so 30 steps at 0.6 is 18.
+    var reportedSteps = edited is null ? steps : Math.Max(1, (int)(steps * edited.Strength));
+
     var count = payload.ValueKind is JsonValueKind.Object && payload.TryGetProperty("n", out var n) && n.ValueKind is JsonValueKind.Number
         ? n.GetInt32()
         : 1;
@@ -637,7 +672,7 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, 
     // acceptance criterion in the phase is reachable from here.
     if (arguments.ImageStepMs > 0)
     {
-        for (var step = 1; step <= steps; step++)
+        for (var step = 1; step <= reportedSteps; step++)
         {
             try
             {
@@ -654,13 +689,13 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, 
                     type = "error",
                     id,
                     code = "cancelled",
-                    message = $"cancelled at step {step} of {steps}"
+                    message = $"cancelled at step {step} of {reportedSteps}"
                 });
 
                 return;
             }
 
-            Send(new { type = "progress", id, step, totalSteps = steps });
+            Send(new { type = "progress", id, step, totalSteps = reportedSteps });
         }
     }
 
@@ -708,7 +743,7 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, 
 
         if (!equirectangular)
         {
-            images.Add(new { width, height, steps, seed = seed + i, projection });
+            images.Add(new { width, height, steps = reportedSteps, seed = seed + i, projection });
             continue;
         }
 
@@ -721,7 +756,7 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, 
             warnings.Add("seam");
         }
 
-        images.Add(new { width, height, steps, seed = seed + i, projection, seamDelta = delta });
+        images.Add(new { width, height, steps = reportedSteps, seed = seed + i, projection, seamDelta = delta });
     }
 
     Send(new
@@ -731,16 +766,122 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, 
         payload = new
         {
             model = frame.TryGetProperty("model", out var m) ? m.GetString() : null,
-            steps,
+            steps = reportedSteps,
             projection,
             promptAugmented,
             trigger = equirectangular ? Trigger : null,
             warnings,
-            images
+            images,
+
+            // Phase 50. Present only for an edit, so a test can assert what the worker actually
+            // received rather than what the edge believed it sent — the mask especially, which the
+            // hub never opened and could not have checked.
+            operation = edited is null ? null : operation,
+            strength = edited?.Strength,
+            masked = edited?.Masked
         },
         files
     });
 }
+
+/// <summary>
+/// Reads the <c>image</c> and <c>mask</c> attachments the node wrote into the scratch directory,
+/// and applies the two checks only a worker can apply (phase 50, D2 and D4).
+/// </summary>
+/// <remarks>
+/// <b>The hub never opened either file</b> — nothing in InferHub's C# decodes a pixel (phase-46 D6)
+/// — so the mask's alpha channel and its dimensions are checked here or nowhere. Both refusals are
+/// coded <c>invalid_request</c>, which the edge renders as a 400 without reading the message.
+/// </remarks>
+async Task<(Edited? Result, string? Error)> ReadEditInputsAsync(JsonElement payload, JsonElement frame)
+{
+    var files = new Dictionary<string, string>(StringComparer.Ordinal);
+
+    if (frame.TryGetProperty("files", out var attached) && attached.ValueKind is JsonValueKind.Array)
+    {
+        foreach (var file in attached.EnumerateArray())
+        {
+            var name = file.TryGetProperty("name", out var n) ? n.GetString() : null;
+            var path = file.TryGetProperty("path", out var p) ? p.GetString() : null;
+
+            if (name is not null && path is not null)
+            {
+                files[name] = path;
+            }
+        }
+    }
+
+    if (!files.TryGetValue("image", out var imagePath))
+    {
+        return (null, "this request carried no image to edit");
+    }
+
+    var image = await File.ReadAllBytesAsync(imagePath);
+
+    if (Png.ReadHeader(image) is not { } header)
+    {
+        return (null, "the 'image' attachment is not a PNG this worker can open");
+    }
+
+    var strength = payload.ValueKind is JsonValueKind.Object
+        && payload.TryGetProperty("strength", out var s)
+        && s.ValueKind is JsonValueKind.Number
+            ? s.GetDouble()
+
+            // The recipe's own default, which is what a real worker falls back to. The edge cannot
+            // know it: a recipe is a file on the node.
+            : 0.75;
+
+    var wantsMask = payload.ValueKind is JsonValueKind.Object
+        && payload.TryGetProperty("has_mask", out var hm)
+        && hm.ValueKind is JsonValueKind.True;
+
+    if (!wantsMask)
+    {
+        return (new Edited(header.Width, header.Height, strength, false), null);
+    }
+
+    if (!files.TryGetValue("mask", out var maskPath))
+    {
+        return (null, "this request declared a mask and carried none");
+    }
+
+    var mask = await File.ReadAllBytesAsync(maskPath);
+
+    if (Png.ReadHeader(mask) is not { } maskHeader)
+    {
+        return (null, "the 'mask' attachment is not a PNG this worker can open");
+    }
+
+    if ((maskHeader.Width, maskHeader.Height) != (header.Width, header.Height))
+    {
+        // NOT resized. A mask names *which pixels*, and scaling one is scaling somebody's
+        // selection — the edit lands next to what they chose, which looks like a bad model.
+        return (null,
+            $"the mask is {maskHeader.Width}x{maskHeader.Height} and the image is " +
+            $"{header.Width}x{header.Height}. A mask names pixels, so it is never " +
+            "rescaled: export it at the image's own size.");
+    }
+
+    var convention = payload.TryGetProperty("mask_convention", out var mc) ? mc.GetString() ?? "openai" : "openai";
+
+    if (convention == "openai" && !maskHeader.HasAlpha)
+    {
+        // OpenAI's convention says the TRANSPARENT pixels are the area to edit, so a mask with no
+        // alpha selects nothing. Reading it as "edit everything" would be a silent substitution of
+        // the most destructive possible interpretation.
+        return (null,
+            "this mask has no alpha channel, and OpenAI's convention says the TRANSPARENT pixels " +
+            "are the area to edit — so there is nothing here to edit. Export the mask with an " +
+            "alpha channel (transparent where the edit goes), or send " +
+            "X-InferHub-Mask-Convention: luminance if your mask is white where the edit goes.");
+    }
+
+    return (new Edited(header.Width, header.Height, strength, true), null);
+}
+
+/// <summary>What an edit's input files turned out to be, once this worker actually read them.</summary>
+internal sealed record Edited(int Width, int Height, double Strength, bool Masked);
 
 /// <summary>
 /// A structurally valid PNG: signature, IHDR, a zlib-stored IDAT of real scanlines, IEND.
@@ -753,7 +894,28 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, 
 /// </remarks>
 internal static class Png
 {
-    public static byte[] Create(int width, int height, int padBytes, bool seamless = false)
+    /// <summary>The three IHDR facts phase 50 needs, read back out of real bytes.</summary>
+    /// <remarks>
+    /// A test fixture may decode a PNG; the <b>hub</b> may not (phase-46 D6). That asymmetry is the
+    /// point of this method existing here rather than anywhere in <c>src/</c>: the mask's alpha
+    /// channel is checked by whoever holds the file, and on a real deployment that is PIL inside the
+    /// diffusion worker.
+    /// </remarks>
+    public static (int Width, int Height, bool HasAlpha)? ReadHeader(byte[] png)
+    {
+        if (png.Length < 26 || png[0] != 0x89 || png[1] != 'P' || png[2] != 'N' || png[3] != 'G')
+        {
+            return null;
+        }
+
+        var width = (png[16] << 24) | (png[17] << 16) | (png[18] << 8) | png[19];
+        var height = (png[20] << 24) | (png[21] << 16) | (png[22] << 8) | png[23];
+
+        // Colour types 4 (greyscale+alpha) and 6 (truecolour+alpha) are the ones that carry one.
+        return (width, height, png[25] is 4 or 6);
+    }
+
+    public static byte[] Create(int width, int height, int padBytes, bool seamless = false, bool alpha = false)
     {
         using var buffer = new MemoryStream();
 
@@ -762,11 +924,11 @@ internal static class Png
         var ihdr = new byte[13];
         WriteBigEndian(ihdr, 0, width);
         WriteBigEndian(ihdr, 4, height);
-        ihdr[8] = 8;   // bit depth
-        ihdr[9] = 2;   // truecolour
+        ihdr[8] = 8;                    // bit depth
+        ihdr[9] = (byte)(alpha ? 6 : 2); // truecolour, with an alpha channel or without
         Chunk(buffer, "IHDR", ihdr);
 
-        Chunk(buffer, "IDAT", ZlibStored(Raster(width, height, seamless)));
+        Chunk(buffer, "IDAT", ZlibStored(alpha ? RasterWithAlpha(width, height) : Raster(width, height, seamless)));
 
         if (padBytes > 0)
         {
@@ -815,6 +977,35 @@ internal static class Png
                     raw[at++] = ramp;
                     raw[at++] = ramp;
                 }
+            }
+        }
+
+        return raw;
+    }
+
+    /// <summary>
+    /// A mask's scanlines: four channels, with a transparent stripe down the left third.
+    /// </summary>
+    /// <remarks>
+    /// Transparent <b>is</b> the selection under OpenAI's convention, so a mask whose alpha is
+    /// uniformly 255 would select nothing — which is exactly the request the worker refuses, and a
+    /// fixture that produced one by accident would make the happy path untestable.
+    /// </remarks>
+    public static byte[] RasterWithAlpha(int width, int height)
+    {
+        var raw = new byte[height * (1 + (width * 4))];
+        var at = 0;
+
+        for (var y = 0; y < height; y++)
+        {
+            raw[at++] = 0;
+
+            for (var x = 0; x < width; x++)
+            {
+                raw[at++] = 0;
+                raw[at++] = 0;
+                raw[at++] = 0;
+                raw[at++] = (byte)(x < width / 3 ? 0 : 255);
             }
         }
 

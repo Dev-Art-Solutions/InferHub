@@ -8,7 +8,8 @@
     "permissive": true,
     "url": "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/blob/main/README.md"
   },
-  "defaults": { "steps": 30, "guidance": 7.5, "size": "512x512" },
+  "operations": ["generate", "edit", "variation"],
+  "defaults": { "steps": 30, "guidance": 7.5, "size": "512x512", "strength": 0.75 },
   "sizes": ["512x512", "512x768", "768x512", "640x640"],
   "maxSteps": 75,
   "vramMiB": 4000,

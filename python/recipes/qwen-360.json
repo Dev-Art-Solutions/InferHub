@@ -26,6 +26,7 @@
   "projection": "equirectangular",
   "trigger": "360 degree panorama with equirectangular projection",
   "autoTrigger": true,
+  "operations": ["generate"],
   "defaults": { "steps": 25, "guidance": 4.0, "size": "2048x1024" },
   "sizes": ["2048x1024", "1536x768", "1024x512"],
   "maxSteps": 50,

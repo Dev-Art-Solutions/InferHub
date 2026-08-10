@@ -61,6 +61,28 @@ rather than omitting it. A 2048x1024 panorama and a 2048x1024 landscape photogra
 bytes in the same shape and are two different pictures; every client guesses from the aspect ratio
 today, and it is wrong for every 2:1 photo.
 
+EDITING IS A SECOND CAPABILITY KIND, NOT A FLAG ON THE FIRST (phase-50 D1). A recipe declares
+``operations`` and this worker declares ``image`` for the ones that generate and ``image-edit`` for
+the ones that edit — because the router keys on ``(kind, model)`` and nothing else, and it is a real
+distinction: FLUX.1-schnell has no official inpainting pipeline and SDXL does. A client asking to
+edit with a recipe that only generates is refused by name.
+
+OPENAI'S MASK CONVENTION IS INVERTED FROM THE LIBRARY'S (phase-50 D2), and this is the one place in
+the whole track where a picture is worth more than a paragraph. OpenAI's edits API treats FULLY
+TRANSPARENT pixels as the area to edit; ``diffusers`` takes a mask where WHITE is the area to
+inpaint. These are opposite. Everybody gets it wrong once, and the failure mode is "it edited
+everything except what I selected", which reads as a broken model. THE CONVERSION HAPPENS HERE
+rather than at the edge, because converting one to the other means reading an alpha channel — and
+nothing in InferHub's C# ever decodes a pixel (phase-46 D6). A mask with no alpha channel under the
+OpenAI convention is refused rather than guessed at: a fully opaque "mask" means "edit nothing",
+which no caller ever intends, and reading it as "edit everything" would be a silent substitution of
+the most destructive possible interpretation.
+
+STRENGTH IS REPORTED AS THE STEPS THAT ACTUALLY RAN (phase-50 D3). ``diffusers`` starts an
+image-to-image run partway down the schedule, so ``strength: 0.6`` at 30 steps denoises for 18 of
+them. Metering the asked-for 30 would bill for work nobody did, which is phase-42 D7's rule about
+the unit the work is in, applied to a knob rather than a modality.
+
 THE SEAM IS MEASURED AND NEVER REPAIRED (phase-49 D5). An equirectangular render whose left edge
 does not continue into its right edge is not a failure anybody can see — it is a panorama that wraps
 wrongly, and the person who finds out is wearing a headset three days later. So the mean absolute
@@ -766,7 +788,43 @@ def projection_of(recipe: dict[str, Any]) -> str:
     return str(recipe.get("projection") or "flat").strip().lower() or "flat"
 
 
-def resolve_size(recipe: dict[str, Any], payload: dict[str, Any]) -> tuple[int, int]:
+GENERATE = "generate"
+EDIT = "edit"
+VARIATION = "variation"
+
+
+def operations_of(recipe: dict[str, Any]) -> list[str]:
+    """
+    What a recipe can be asked to do (phase-50 D1). Absent means ``["generate"]``.
+
+    The default is what every recipe written before v3.18 means, so a catalogue that predates this
+    release keeps declaring exactly what it declared. An unknown operation is dropped rather than
+    fatal: a recipe written for a newer worker should degrade to the operations this one has, in the
+    same way a node running a capability an older hub never heard of simply is not routed for it.
+    """
+    declared = recipe.get("operations")
+
+    if not isinstance(declared, list):
+        return [GENERATE]
+
+    known = [str(entry).strip().lower() for entry in declared if isinstance(entry, str)]
+    return [operation for operation in (GENERATE, EDIT, VARIATION) if operation in known] or [GENERATE]
+
+
+def resolve_size(
+    recipe: dict[str, Any],
+    payload: dict[str, Any],
+    fallback: tuple[int, int] | None = None,
+) -> tuple[int, int]:
+    """
+    The output geometry, against the recipe's aspect buckets.
+
+    ``fallback`` is the input image's own size on an edit: a caller who sends a 1024x1024 photograph
+    and names no ``size`` means "this size", and inventing the recipe's default would silently
+    rescale their picture. It is still checked against the buckets — an edit at a size the model was
+    not trained on produces the same duplicated limbs a generation does, and finding that out from
+    the picture is what this refusal exists to prevent.
+    """
     sizes = recipe.get("sizes") or []
     default = (recipe.get("defaults") or {}).get("size")
 
@@ -774,10 +832,12 @@ def resolve_size(recipe: dict[str, Any], payload: dict[str, Any]) -> tuple[int, 
     height = payload.get("height")
 
     if width is None or height is None:
-        if not default:
+        if fallback is not None:
+            width, height = fallback
+        elif default:
+            width, height = (int(part) for part in str(default).lower().split("x"))
+        else:
             raise ToolError(f"'{recipe['id']}' has no default size and none was given", ERROR_INVALID_REQUEST)
-
-        width, height = (int(part) for part in str(default).lower().split("x"))
 
     asked = f"{width}x{height}"
 
@@ -859,14 +919,17 @@ def resident() -> list[str]:
 
 def handle(request: Request):
     """
-    One entry point, dispatched on ``op``. Absent means ``generate``, which is every request a
-    client can make; ``pull`` and ``delete`` arrive only from the node's model-command path and are
-    an operator action (phase-48 D4).
+    One entry point, dispatched on ``op``. Absent means ``generate``, which is what every request
+    made before v3.18 carries; ``edit`` and ``variation`` arrive from the phase-50 client routes,
+    and ``pull`` and ``delete`` only from the node's model-command path (phase-48 D4).
     """
-    op = str((request.payload or {}).get("op") or "generate").lower()
+    op = str((request.payload or {}).get("op") or GENERATE).lower()
 
-    if op == "generate":
+    if op == GENERATE:
         return generate(request)
+
+    if op in (EDIT, VARIATION):
+        return edit(request, op)
 
     if op == "pull":
         return pull(request)
@@ -874,7 +937,10 @@ def handle(request: Request):
     if op == "delete":
         return delete(request)
 
-    raise ToolError(f"unknown op '{op}'; this tool does generate, pull and delete", ERROR_INVALID_REQUEST)
+    raise ToolError(
+        f"unknown op '{op}'; this tool does generate, edit, variation, pull and delete",
+        ERROR_INVALID_REQUEST,
+    )
 
 
 def recipe_for(request: Request) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
@@ -890,20 +956,28 @@ def recipe_for(request: Request) -> tuple[dict[str, Any], dict[str, dict[str, An
     return recipe, recipes
 
 
-def generate(request: Request):
-    recipe, _ = recipe_for(request)
+def require_operation(recipe: dict[str, Any], operation: str) -> None:
+    """
+    Refuse an operation this recipe does not do, by name (phase-50 D1).
 
-    payload = request.payload or {}
-    prompt = payload.get("prompt") or ""
+    Not reachable through routing — a recipe that only generates is not declared under
+    ``image-edit``, so the hub answers 503 before anything gets here — but a solo caller reaches
+    this worker directly, and "FLUX cannot inpaint" is a much better answer than a stack trace out
+    of ``AutoPipelineForInpainting``.
+    """
+    available = operations_of(recipe)
 
-    if not prompt:
-        raise ToolError("prompt is required", ERROR_INVALID_REQUEST)
+    if operation in available:
+        return
 
-    width, height = resolve_size(recipe, payload)
-    prompt, prompt_augmented, trigger = apply_trigger(recipe, prompt)
-    projection = projection_of(recipe)
+    raise ToolError(
+        f"'{recipe['id']}' does not do '{operation}'. It does: {', '.join(available)}.",
+        ERROR_INVALID_REQUEST,
+    )
+
+
+def clamped_steps(recipe: dict[str, Any], payload: dict[str, Any]) -> int:
     defaults = recipe.get("defaults") or {}
-
     steps = int(payload.get("steps") or defaults.get("steps") or 30)
     max_steps = int(recipe.get("maxSteps") or 150)
 
@@ -911,22 +985,47 @@ def generate(request: Request):
         # Clamped rather than refused: a step count above what a recipe is useful at is a request
         # for more quality, not a malformed one, and the response reports what was actually run so
         # the caller is billed for that and can see it.
-        log(f"clamping steps {steps} -> {max_steps} for {request.model}")
+        log(f"clamping steps {steps} -> {max_steps}")
         steps = max_steps
 
-    guidance = payload.get("guidance")
-    guidance = float(guidance) if guidance is not None else float(defaults.get("guidance", 5.0))
+    return steps
 
-    count = int(payload.get("n") or 1)
-    seed = payload.get("seed")
 
-    pipe, load_ms, evicted = load(recipe, accepted_licenses())
+def run_batch(
+    request: Request,
+    recipe: dict[str, Any],
+    pipe: Any,
+    *,
+    prompt: str,
+    negative: str | None,
+    count: int,
+    seed: Any,
+    steps: int,
+    reported_steps: int,
+    guidance: float,
+    width: int,
+    height: int,
+    geometry: bool = True,
+    extra: dict[str, Any] | None = None,
+) -> tuple[list[Any], list[dict[str, Any]], list[str], float]:
+    """
+    The per-image loop, shared by ``generate``, ``edit`` and ``variation``.
 
+    ``reported_steps`` is what the result frame carries and therefore what the fleet meters, and it
+    is not always ``steps``: an image-to-image run starts partway down the schedule, so
+    ``strength: 0.6`` at 30 steps denoises for 18 of them (phase-50 D3).
+
+    ``geometry`` is False for an edit, because the img2img pipelines take their size from the input
+    image and **do not accept ``width``/``height`` at all** — the caller's size is honoured by
+    resizing the input before it gets here, which is also the only way the mask can be guaranteed to
+    still line up with it.
+    """
     import torch
 
-    files = []
-    images = []
+    files: list[Any] = []
+    images: list[dict[str, Any]] = []
     warnings: list[str] = []
+    projection = projection_of(recipe)
     threshold = seam_warn_threshold()
     started = time.monotonic()
 
@@ -944,15 +1043,13 @@ def generate(request: Request):
         #
         # Deliberately NOT decoding the latents to send a preview: that is a VAE decode per step
         # (10-15% of the run) producing intermediate *content*, which nothing here retains.
-        def on_step(_pipe, step, _timestep, kwargs, _total=steps):
+        def on_step(_pipe, step, _timestep, kwargs, _total=reported_steps):
             request.progress(step + 1, total_steps=_total)
             request.raise_if_cancelled()
             return kwargs
 
         arguments: dict[str, Any] = {
             "prompt": prompt,
-            "width": width,
-            "height": height,
             "num_inference_steps": steps,
 
             # WHICH GUIDANCE (phase 49). Qwen's MMDiT pipelines have two: `guidance_scale` is the
@@ -966,7 +1063,11 @@ def generate(request: Request):
             "callback_on_step_end": on_step,
         }
 
-        negative = payload.get("negative_prompt")
+        if geometry:
+            arguments["width"] = width
+            arguments["height"] = height
+
+        arguments.update(extra or {})
 
         if negative:
             arguments["negative_prompt"] = negative
@@ -991,7 +1092,7 @@ def generate(request: Request):
         described: dict[str, Any] = {
             "width": width,
             "height": height,
-            "steps": steps,
+            "steps": reported_steps,
             "seed": image_seed,
             "projection": projection,
         }
@@ -1007,23 +1108,29 @@ def generate(request: Request):
         files.append(output)
         images.append(described)
 
-    generate_ms = (time.monotonic() - started) * 1000.0
+    return files, images, warnings, (time.monotonic() - started) * 1000.0
 
-    # The model, the geometry and the seeds. Not the prompt — the node logs this line's *shape*, and
-    # a payload that carried the prompt would put it in the one place rule 7 forbids.
-    # The trigger is a recipe constant and may be named; the prompt it was appended to may not.
-    log(
-        f"{request.model}: {count} image(s) at {width}x{height}, {steps} steps on {_device}, "
-        f"{projection}{', trigger appended' if prompt_augmented else ''}"
-        f"{', warnings: ' + ', '.join(warnings) if warnings else ''} "
-        f"(load {load_ms / 1000:.1f}s, generate {generate_ms / 1000:.1f}s)"
-    )
 
+def answer(
+    request: Request,
+    recipe: dict[str, Any],
+    *,
+    images: list[dict[str, Any]],
+    warnings: list[str],
+    steps: int,
+    load_ms: float,
+    generate_ms: float,
+    evicted: list[str],
+    prompt_augmented: bool = False,
+    trigger: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The result payload, written once so an edit and a generation describe themselves alike."""
     return {
         "model": request.model,
         "steps": steps,
         "device": _device,
-        "projection": projection,
+        "projection": projection_of(recipe),
         "promptAugmented": prompt_augmented,
         "trigger": trigger,
         "warnings": warnings,
@@ -1035,7 +1142,293 @@ def generate(request: Request):
         "resident": resident(),
         "evicted": evicted,
         "quantization": recipe.get("quantization") or "none",
-    }, files
+        **(extra or {}),
+    }
+
+
+def generate(request: Request):
+    recipe, _ = recipe_for(request)
+    require_operation(recipe, GENERATE)
+
+    payload = request.payload or {}
+    prompt = payload.get("prompt") or ""
+
+    if not prompt:
+        raise ToolError("prompt is required", ERROR_INVALID_REQUEST)
+
+    width, height = resolve_size(recipe, payload)
+    prompt, prompt_augmented, trigger = apply_trigger(recipe, prompt)
+    defaults = recipe.get("defaults") or {}
+    steps = clamped_steps(recipe, payload)
+
+    guidance = payload.get("guidance")
+    guidance = float(guidance) if guidance is not None else float(defaults.get("guidance", 5.0))
+
+    pipe, load_ms, evicted = load(recipe, accepted_licenses())
+
+    files, images, warnings, generate_ms = run_batch(
+        request,
+        recipe,
+        pipe,
+        prompt=prompt,
+        negative=payload.get("negative_prompt"),
+        count=int(payload.get("n") or 1),
+        seed=payload.get("seed"),
+        steps=steps,
+        reported_steps=steps,
+        guidance=guidance,
+        width=width,
+        height=height,
+    )
+
+    # The model, the geometry and the seeds. Not the prompt — the node logs this line's *shape*, and
+    # a payload that carried the prompt would put it in the one place rule 7 forbids.
+    # The trigger is a recipe constant and may be named; the prompt it was appended to may not.
+    log(
+        f"{request.model}: {len(images)} image(s) at {width}x{height}, {steps} steps on {_device}, "
+        f"{projection_of(recipe)}{', trigger appended' if prompt_augmented else ''}"
+        f"{', warnings: ' + ', '.join(warnings) if warnings else ''} "
+        f"(load {load_ms / 1000:.1f}s, generate {generate_ms / 1000:.1f}s)"
+    )
+
+    return answer(
+        request,
+        recipe,
+        images=images,
+        warnings=warnings,
+        steps=steps,
+        load_ms=load_ms,
+        generate_ms=generate_ms,
+        evicted=evicted,
+        prompt_augmented=prompt_augmented,
+        trigger=trigger,
+    ), files
+
+
+# ---- editing (phase 50) ------------------------------------------------------------------------
+
+
+MASK_CONVENTION_OPENAI = "openai"
+MASK_CONVENTION_LUMINANCE = "luminance"
+
+
+def input_image(request: Request, role: str, index: int):
+    """
+    One of the request's attachments, by the role the edge gave it.
+
+    The edge names the parts ``image`` and ``mask`` rather than passing the filename the caller
+    chose: a filename is metadata about somebody's day (phase-42 D5) and it has no business
+    crossing the mesh, and a role is what this worker actually needs to know.
+    """
+    from PIL import Image
+
+    for candidate in request.files:
+        if candidate.name == role:
+            path = candidate.path
+            break
+    else:
+        if index >= len(request.files):
+            return None
+
+        path = request.files[index].path
+
+    try:
+        with Image.open(path) as opened:
+            return opened.copy()
+    except Exception as error:  # noqa: BLE001
+        raise ToolError(
+            f"the '{role}' attachment is not an image this worker can open ({type(error).__name__})",
+            ERROR_INVALID_REQUEST,
+        ) from error
+
+
+def to_inpaint_mask(mask, convention: str):
+    """
+    Turn the caller's mask into the one ``diffusers`` wants: WHITE is the area to inpaint.
+
+    THE TWO CONVENTIONS ARE OPPOSITE (phase-50 D2). OpenAI's edits API treats a fully TRANSPARENT
+    pixel as the area to edit, so the diffusers mask is the *inverse of the alpha channel*.
+    ``luminance`` is for a caller who already has a white-is-edit mask and says so — an unknown
+    value never reaches here, because the edge refuses it.
+
+    A MASK WITH NO ALPHA IS REFUSED, not guessed at. Under the OpenAI convention a fully opaque
+    image means "edit nothing", which no caller has ever intended; reading it as "edit everything"
+    would be a silent substitution of the most destructive possible interpretation, and reading it
+    as "edit nothing" would return the input image with a 200 on it.
+    """
+    from PIL import Image, ImageChops
+
+    if convention == MASK_CONVENTION_LUMINANCE:
+        return mask.convert("L")
+
+    if mask.mode not in ("RGBA", "LA", "PA") and "transparency" not in mask.info:
+        raise ToolError(
+            "this mask has no alpha channel, and OpenAI's convention says the TRANSPARENT pixels "
+            "are the area to edit — so there is nothing here to edit. Export the mask with an "
+            "alpha channel (transparent where the edit goes), or send "
+            "X-InferHub-Mask-Convention: luminance if your mask is white where the edit goes.",
+            ERROR_INVALID_REQUEST,
+        )
+
+    alpha = mask.convert("RGBA").getchannel("A")
+
+    # Inverted: transparent (alpha 0) becomes white (255), which is what the pipeline inpaints.
+    return ImageChops.invert(Image.merge("L", (alpha,)))
+
+
+def edit(request: Request, operation: str):
+    """
+    ``/v1/images/edits`` and ``/v1/images/variations``, on the same pipeline family (phase 50).
+
+    A mask makes it inpainting and no mask makes it plain image-to-image; a variation is
+    image-to-image with no prompt at all, which is why it is a separate op rather than an edit with
+    an empty string — "more of this picture" and "change this picture" are different requests and
+    only one of them has words in it.
+    """
+    from PIL import Image
+
+    recipe, _ = recipe_for(request)
+    require_operation(recipe, operation)
+
+    payload = request.payload or {}
+    source = input_image(request, "image", 0)
+
+    if source is None:
+        raise ToolError("this request carried no image to edit", ERROR_INVALID_REQUEST)
+
+    source = source.convert("RGB")
+    width, height = resolve_size(recipe, payload, fallback=source.size)
+
+    if source.size != (width, height):
+        source = source.resize((width, height), Image.LANCZOS)
+
+    mask = None
+
+    if payload.get("has_mask"):
+        raw_mask = input_image(request, "mask", 1)
+
+        if raw_mask is None:
+            raise ToolError("this request declared a mask and carried none", ERROR_INVALID_REQUEST)
+
+        if raw_mask.size != (width, height):
+            # NOT resized. A mask is a statement about *which pixels*, and scaling one is scaling
+            # somebody's selection — the edit would land next to what they chose, which looks like
+            # a bad model rather than a bad mask.
+            raise ToolError(
+                f"the mask is {raw_mask.size[0]}x{raw_mask.size[1]} and the image is {width}x{height}. "
+                "A mask names pixels, so it is never rescaled: export it at the image's own size.",
+                ERROR_INVALID_REQUEST,
+            )
+
+        mask = to_inpaint_mask(raw_mask, str(payload.get("mask_convention") or MASK_CONVENTION_OPENAI))
+
+    defaults = recipe.get("defaults") or {}
+    strength = payload.get("strength")
+
+    if strength is None:
+        strength = defaults.get("strength")
+
+    if strength is None:
+        raise ToolError(
+            f"'{recipe['id']}' has no default strength and none was given. Send "
+            "X-InferHub-Image-Strength between 0 and 1 (0.75 is a good first try: high enough to "
+            "follow the prompt, low enough to keep the picture).",
+            ERROR_INVALID_REQUEST,
+        )
+
+    strength = float(strength)
+    steps = clamped_steps(recipe, payload)
+
+    # What actually runs. `diffusers` enters the schedule at `int(steps * strength)`, so this is
+    # both what the progress frames count up to and what the fleet meters (phase-50 D3).
+    effective = max(1, int(steps * strength))
+
+    guidance = payload.get("guidance")
+    guidance = float(guidance) if guidance is not None else float(defaults.get("guidance", 5.0))
+
+    prompt = "" if operation == VARIATION else (payload.get("prompt") or "")
+
+    if operation == EDIT and not prompt:
+        raise ToolError("prompt is required for an edit", ERROR_INVALID_REQUEST)
+
+    prompt, prompt_augmented, trigger = apply_trigger(recipe, prompt) if prompt else (prompt, False, None)
+
+    pipe, load_ms, evicted = load(recipe, accepted_licenses())
+    working = derived_pipeline(pipe, recipe, inpaint=mask is not None)
+
+    extra: dict[str, Any] = {"image": source, "strength": strength}
+
+    if mask is not None:
+        extra["mask_image"] = mask
+
+    files, images, warnings, generate_ms = run_batch(
+        request,
+        recipe,
+        working,
+        prompt=prompt,
+        negative=payload.get("negative_prompt"),
+        count=int(payload.get("n") or 1),
+        seed=payload.get("seed"),
+        steps=steps,
+        reported_steps=effective,
+        guidance=guidance,
+        width=width,
+        height=height,
+        geometry=False,
+        extra=extra,
+    )
+
+    # The operation, the geometry, the strength and the steps that ran. Never the prompt, and never
+    # anything about the picture that came in — an uploaded image is content in exactly the sense
+    # an uploaded recording is (phase-42 D5).
+    log(
+        f"{request.model}: {operation}, {len(images)} image(s) at {width}x{height}, "
+        f"strength {strength:.2f} ({effective} of {steps} steps){', masked' if mask is not None else ''} "
+        f"on {_device} (load {load_ms / 1000:.1f}s, generate {generate_ms / 1000:.1f}s)"
+    )
+
+    return answer(
+        request,
+        recipe,
+        images=images,
+        warnings=warnings,
+        steps=effective,
+        load_ms=load_ms,
+        generate_ms=generate_ms,
+        evicted=evicted,
+        prompt_augmented=prompt_augmented,
+        trigger=trigger,
+        extra={"operation": operation, "strength": strength, "masked": mask is not None},
+    ), files
+
+
+def derived_pipeline(pipe: Any, recipe: dict[str, Any], inpaint: bool):
+    """
+    An inpainting or image-to-image pipeline over the SAME loaded components (phase-50 D1).
+
+    ``from_pipe`` reuses the UNet, the VAE and the text encoders rather than loading a second copy,
+    so an edit costs no extra VRAM and no extra seconds — which is the whole reason the edit
+    capability does not need a second entry in the residency budget. A recipe that declares ``edit``
+    against a pipeline family diffusers cannot re-derive fails HERE, naming the class, rather than
+    somewhere inside a forward pass.
+    """
+    from diffusers import AutoPipelineForImage2Image, AutoPipelineForInpainting
+
+    factory = AutoPipelineForInpainting if inpaint else AutoPipelineForImage2Image
+
+    try:
+        derived = factory.from_pipe(pipe)
+    except Exception as error:  # noqa: BLE001
+        raise ToolError(
+            f"'{recipe['id']}' declares this operation, but diffusers cannot derive "
+            f"{'an inpainting' if inpaint else 'an image-to-image'} pipeline from "
+            f"{type(pipe).__name__} ({type(error).__name__}: {error}). Remove the operation from "
+            "the recipe, or point it at a pipeline family that supports it.",
+            ERROR_INVALID_REQUEST,
+        ) from error
+
+    derived.set_progress_bar_config(disable=True)
+    return derived
 
 
 def pull(request: Request):
@@ -1134,6 +1527,40 @@ def delete(request: Request):
     return {"model": recipe["id"], "status": "deleted", "freedBytes": removed}
 
 
+def capability_frames(recipes: dict[str, dict[str, Any]], ready: list[str]) -> list[dict[str, Any]]:
+    """
+    The two kinds this worker declares, split by what each ready recipe can do (phase-50 D1).
+
+    ``image`` is the generators and ``image-edit`` is the ones that also edit or vary. Two kinds
+    rather than one kind with an operation list, because the router filters on ``(kind, model)`` and
+    nothing else — teaching it to read a nested operation set would mean teaching the affinity, the
+    queue and the saturation logic the same thing.
+
+    **Both frames are always sent, empty ones included.** An empty list is a declaration that this
+    node serves nothing under that kind, which is exactly what a box holding only ``flux-schnell``
+    should say about editing; omitting the frame would leave the node's previous declaration
+    standing, and a node that quietly kept offering an edit it can no longer do is a 502 waiting for
+    somebody.
+    """
+    editable = [i for i in ready if {EDIT, VARIATION} & set(operations_of(recipes[i]))]
+    generating = [i for i in ready if GENERATE in operations_of(recipes[i])]
+
+    return [
+        {"kind": "image", "models": generating},
+        {"kind": "image-edit", "models": editable},
+    ]
+
+
+def describe_offering(recipes: dict[str, dict[str, Any]], ready: list[str]) -> str:
+    frames = capability_frames(recipes, ready)
+    editable = frames[1]["models"]
+
+    return (
+        f"offering recipes: {', '.join(frames[0]['models']) or 'none'}"
+        f" (editing: {', '.join(editable) or 'none'})"
+    )
+
+
 def redeclare() -> None:
     """
     Re-report what is ready, after a pull or a delete moved the answer.
@@ -1147,8 +1574,8 @@ def redeclare() -> None:
 
     recipes = load_recipes()
     ready = [i for i in _offerable if i in recipes and is_ready(recipes[i])]
-    log(f"offering recipes: {', '.join(ready) or 'none'}")
-    _worker.redeclare([{"kind": "image", "models": ready}])
+    log(describe_offering(recipes, ready))
+    _worker.redeclare(capability_frames(recipes, ready))
 
 
 def cache_bytes() -> int:
@@ -1257,8 +1684,8 @@ def prefetch_missing(worker: Worker, recipes: dict[str, dict[str, Any]], offerab
             continue
 
         ready = [i for i in offerable if is_ready(recipes[i])]
-        log(f"'{identifier}' is ready; offering recipes: {', '.join(ready)}")
-        worker.redeclare([{"kind": "image", "models": ready}])
+        log(f"'{identifier}' is ready; {describe_offering(recipes, ready)}")
+        worker.redeclare(capability_frames(recipes, ready))
 
 
 def main() -> None:
@@ -1268,7 +1695,7 @@ def main() -> None:
 
     if not recipes:
         log(f"no recipes found under {recipes_directory()}, so this worker offers nothing")
-        Worker(capabilities=[{"kind": "image", "models": []}]).run(handle)
+        Worker(capabilities=capability_frames({}, [])).run(handle)
         return
 
     _device = select_device()
@@ -1293,12 +1720,12 @@ def main() -> None:
         f"at most {resident_limit()} resident at a time"
     )
     log(
-        f"offering recipes: {', '.join(ready) or 'none yet'}"
+        describe_offering(recipes, ready)
         + (f" (fetching: {', '.join(i for i in offerable if i not in ready)})" if len(ready) < len(offerable) else "")
     )
 
     worker = Worker(
-        capabilities=[{"kind": "image", "models": ready}],
+        capabilities=capability_frames(recipes, ready),
         on_idle=lambda: unload_all("idle"),
         vram_total_mib=_vram_total_mib,
     )

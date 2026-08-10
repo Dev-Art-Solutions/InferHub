@@ -39,6 +39,19 @@ public sealed class ImageEdgeOptions
     public long MaxResponseBytes { get; set; } = ToolAttachmentLimits.DefaultMaxBytes;
 
     /// <summary>
+    /// The upper bound on what one <em>edit</em> may send in — the picture and the mask together
+    /// (phase 50, D4). Default 25 MB, matching <c>Tools:MaxAttachmentBytes</c>.
+    /// </summary>
+    /// <remarks>
+    /// It is a separate key from <see cref="MaxResponseBytes"/> because the two directions are
+    /// separate risks with separate arithmetic: outbound is <c>n</c> renders of a declared size, and
+    /// inbound is one upload somebody chose the size of. Each individual part is <em>also</em>
+    /// capped by <c>Tools:MaxAttachmentBytes</c>, because that is what the node enforces — and a
+    /// request that passed the edge and failed at the node is a worse error than one refused here.
+    /// </remarks>
+    public long MaxRequestBytes { get; set; } = ToolAttachmentLimits.DefaultMaxBytes;
+
+    /// <summary>
     /// How long the synchronous <c>/v1/images/generations</c> waits for its own job before giving up
     /// (phase 47). Past it: a <c>503</c> naming the async route. Default 120s.
     /// </summary>
@@ -71,5 +84,6 @@ public sealed class ImageEdgeOptions
         Math.Max(1, MaxBatch),
         Math.Min(
             MaxResponseBytes > 0 ? MaxResponseBytes : ToolAttachmentLimits.DefaultMaxBytes,
-            maxAttachmentBytes > 0 ? maxAttachmentBytes : ToolAttachmentLimits.DefaultMaxBytes));
+            maxAttachmentBytes > 0 ? maxAttachmentBytes : ToolAttachmentLimits.DefaultMaxBytes),
+        MaxRequestBytes > 0 ? MaxRequestBytes : ToolAttachmentLimits.DefaultMaxBytes);
 }

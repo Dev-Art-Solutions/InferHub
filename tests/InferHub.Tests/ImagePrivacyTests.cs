@@ -130,7 +130,7 @@ public class ImagePrivacyTests
 
         await mesh.Client.PostAsJsonAsync("/v1/images/generations", ImageEndpointTests.Body(n: 2));
 
-        var line = Assert.Single(mesh.Logs.Lines, l => l.Contains("Image job "));
+        var line = Assert.Single(mesh.Logs.Lines, l => l.Contains("image job ") && l.Contains("megapixel-steps"));
 
         Assert.Contains(ImageFixture.Model, line);
         Assert.Contains("2 image(s)", line);

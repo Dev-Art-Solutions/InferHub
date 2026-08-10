@@ -49,6 +49,16 @@ public static class ImageEndpoints
     public static IEndpointRouteBuilder MapImageEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/v1/images/generations", HandleGenerationAsync);
+
+        // Phase 50. Two routes rather than one with an operation field, because that is what
+        // OpenAI's API is and every SDK already calls them separately — and because a variation
+        // genuinely takes different input from an edit: no prompt, no mask.
+        app.MapPost("/v1/images/edits", (HttpContext httpContext, ImageJobRegistry jobs, INodeRegistry registry, Metrics metrics, ILoggerFactory loggerFactory, CancellationToken cancellationToken)
+            => HandleEditAsync(ImageOperations.Edit, httpContext, jobs, registry, metrics, loggerFactory, cancellationToken));
+
+        app.MapPost("/v1/images/variations", (HttpContext httpContext, ImageJobRegistry jobs, INodeRegistry registry, Metrics metrics, ILoggerFactory loggerFactory, CancellationToken cancellationToken)
+            => HandleEditAsync(ImageOperations.Variation, httpContext, jobs, registry, metrics, loggerFactory, cancellationToken));
+
         return app;
     }
 
@@ -83,13 +93,65 @@ public static class ImageEndpoints
             return ImageEndpointSupport.Error(400, invalid, OpenAiErrorTypes.InvalidRequest, param: invalidParam);
         }
 
+        return await SubmitAndWaitAsync(httpContext, jobs, registry, logger, request, cancellationToken);
+    }
+
+    /// <summary>
+    /// <c>POST /v1/images/edits</c> and <c>POST /v1/images/variations</c> (phase 50).
+    /// </summary>
+    /// <remarks>
+    /// <b>An edit is a phase-47 job like any other</b>, which is the whole reason this phase is
+    /// three days rather than three weeks: it queues in the same line, streams the same per-step
+    /// progress, cancels the same cooperative way, expires from the same in-memory store, and is
+    /// metered in the same unit. What is new is what travels <em>in</em> — a picture, and sometimes
+    /// a mask — over the attachment path phase 40 built and phase 42 had only ever used in the
+    /// other direction.
+    /// </remarks>
+    private static async Task<IResult> HandleEditAsync(
+        string operation,
+        HttpContext httpContext,
+        ImageJobRegistry jobs,
+        INodeRegistry registry,
+        Metrics metrics,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        var logger = loggerFactory.CreateLogger("InferHub.Coordinator.OpenAi.Images");
+        metrics.RecordOpenAiRequest();
+
+        var (request, refusal) = await ImageEndpointSupport.ReadEditAsync(
+            httpContext,
+            ImageEndpointSupport.Limits(httpContext),
+            ImageEndpointSupport.AttachmentCap(httpContext),
+            operation,
+            cancellationToken);
+
+        return refusal ?? await SubmitAndWaitAsync(httpContext, jobs, registry, logger, request!, cancellationToken);
+    }
+
+    /// <summary>
+    /// Admission, routing, the queue and the wait — identical for all three routes.
+    /// </summary>
+    /// <remarks>
+    /// One copy on purpose. Three routes with three admission checks is three places for a quota to
+    /// stop being enforced, and the one that gets forgotten is the one somebody finds.
+    /// </remarks>
+    private static async Task<IResult> SubmitAndWaitAsync(
+        HttpContext httpContext,
+        ImageJobRegistry jobs,
+        INodeRegistry registry,
+        ILogger logger,
+        IImageRequest request,
+        CancellationToken cancellationToken)
+    {
         var context = InferenceCore.ClientContext.From(httpContext);
         var admission = context.Admission.TryAdmit(context.Client, request.Model, UsageUnits.MegapixelSteps);
 
         if (!admission.Allowed)
         {
             logger.LogInformation(
-                "Rejected image generation for client {ClientId}: {Status} {Message}",
+                "Rejected {Capability} for client {ClientId}: {Status} {Message}",
+                request.Capability,
                 context.Client.Id,
                 admission.Status,
                 admission.Message);
@@ -97,7 +159,8 @@ public static class ImageEndpoints
             return ImageEndpointSupport.Rejected(httpContext, admission);
         }
 
-        if (ImageEndpointSupport.NoNode(httpContext, registry, request.Model, admission.Lease) is { } refusal)
+        if (ImageEndpointSupport.NoNode(httpContext, registry, request.Model, admission.Lease, request.Capability)
+            is { } refusal)
         {
             return refusal;
         }

@@ -59,6 +59,58 @@ public class ImageParityTests
             "/v1/images/generations",
             new { model = ImageFixture.Model }));
 
+    // ---- phase 50: editing ---------------------------------------------------------------------
+
+    [Fact]
+    public async Task AnEditIsShapedIdenticallyOnBothHosts()
+        => await CompareAsync(client => client.SendAsync(
+            new HttpRequestMessage(HttpMethod.Post, "/v1/images/edits")
+            {
+                Content = ImageEditTests.Form(mask: TestPng.Mask(512, 512))
+            }));
+
+    [Fact]
+    public async Task AVariationIsShapedIdenticallyOnBothHosts()
+        => await CompareAsync(client => client.SendAsync(
+            new HttpRequestMessage(HttpMethod.Post, "/v1/images/variations")
+            {
+                Content = ImageEditTests.Form(prompt: null)
+            }));
+
+    /// <summary>
+    /// The refusal that matters most: a mask the <em>worker</em> rejected has to render to the same
+    /// 400 on both hosts. It is phase-42's late-found bug in the shape phase 50 could reproduce it —
+    /// the hub never opened the mask, so both hosts are rendering a coded error they did not read.
+    /// </summary>
+    [Fact]
+    public async Task AMaskWithNoAlphaIsRefusedIdenticallyOnBothHosts()
+        => await CompareAsync(client => client.SendAsync(
+            new HttpRequestMessage(HttpMethod.Post, "/v1/images/edits")
+            {
+                Content = ImageEditTests.Form(mask: TestPng.Create(512, 512))
+            }));
+
+    [Fact]
+    public async Task AnUnknownMaskConventionIsRefusedIdenticallyOnBothHosts()
+        => await CompareAsync(client =>
+        {
+            var request = new HttpRequestMessage(HttpMethod.Post, "/v1/images/edits")
+            {
+                Content = ImageEditTests.Form(mask: TestPng.Mask(512, 512))
+            };
+
+            request.Headers.TryAddWithoutValidation("X-InferHub-Mask-Convention", "inverted");
+            return client.SendAsync(request);
+        });
+
+    [Fact]
+    public async Task AVariationWithAPromptIsRefusedIdenticallyOnBothHosts()
+        => await CompareAsync(client => client.SendAsync(
+            new HttpRequestMessage(HttpMethod.Post, "/v1/images/variations")
+            {
+                Content = ImageEditTests.Form()
+            }));
+
     /// <summary>
     /// The guard on the guard, and it is not ceremony: without it, a comparison that silently
     /// stopped comparing anything would pass forever. Phase-37 D7 and phase-42 both carry one.

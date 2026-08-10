@@ -1075,8 +1075,127 @@ and the second is 47× the work.
 
 Over it is a `402` with `Retry-After` pointing at UTC midnight, the same shape as every other budget.
 
-**Not in v3.15, and said out loud:** img2img, inpainting, `/v1/images/edits`,
-`/v1/images/variations`, ControlNet, and any model that needs quantization to fit a card.
+## Editing a picture (v3.18+)
+
+**Inpainting, image-to-image and variations — on OpenAI's edits API, multipart and all.**
+
+```bash
+curl http://localhost:5080/v1/images/edits -H "Authorization: Bearer $KEY" \
+  -F model=sdxl -F image=@room.png -F mask=@mask.png \
+  -F prompt="a tall window with morning light" \
+  -H 'X-InferHub-Image-Strength: 0.75' \
+  | jq -r '.data[0].b64_json' | base64 -d > edited.png
+```
+
+Three shapes, and the difference between them is what you send:
+
+| Route | Sends | Is |
+|---|---|---|
+| `POST /v1/images/edits` with a `mask` | image + mask + prompt | **inpainting** — change the masked region only |
+| `POST /v1/images/edits` with no mask | image + prompt | **img2img** — change the whole picture, `strength` far |
+| `POST /v1/images/variations` | image | **more of this picture**, no prompt at all |
+
+### The mask convention everybody gets backwards
+
+**OpenAI's edits API treats a fully *transparent* pixel as the area to edit. `diffusers` takes a mask
+where *white* is the area to inpaint. These are opposite.**
+
+```
+   your mask (OpenAI)              what the pipeline wants
+   ┌──────────────────┐            ┌──────────────────┐
+   │▓▓▓▓▓▓░░░░░▓▓▓▓▓▓▓│            │      █████       │
+   │▓▓▓▓▓▓░░░░░▓▓▓▓▓▓▓│   ──────▶  │      █████       │
+   │▓▓▓▓▓▓░░░░░▓▓▓▓▓▓▓│            │      █████       │
+   └──────────────────┘            └──────────────────┘
+    ▓ opaque = keep                  █ white = inpaint
+    ░ transparent = EDIT THIS        (blank = keep)
+```
+
+Get it backwards and nothing errors — it edits everything *except* what you selected, which reads as
+a broken model rather than a backwards mask. So the conversion is explicit, it happens in the worker
+(the only thing in the path that may open a PNG), and there are two refusals rather than a guess:
+
+- **A mask with no alpha channel is a `400`.** Under OpenAI's convention a fully opaque image selects
+  nothing, which nobody has ever intended; reading it as "edit everything" would be a silent
+  substitution of the most destructive possible interpretation.
+- **A mask whose size differs from the image is a `400` naming both.** A mask names *which pixels*,
+  so it is never rescaled — the edit would land next to what you selected.
+
+Already have a white-is-edit mask? Say so:
+
+```
+X-InferHub-Mask-Convention: luminance      # openai (default) | luminance
+```
+
+An unknown value is a `400` that names both **and says which is which**, because two words whose
+difference is invisible until you look at the picture are not a helpful list.
+
+### Strength is a header, and it is the whole knob
+
+OpenAI's edits API has no `strength`, and image-to-image without one is meaningless.
+
+```
+X-InferHub-Image-Strength: 0.75      # 0 keeps your picture, 1 ignores it
+```
+
+Absent, the recipe's `defaults.strength` applies (0.75 for both editable recipes). Out of range is a
+`400`. It is a header rather than a body field for the same reason `steps` and `guidance` are:
+additive by construction, so it cannot collide with whatever OpenAI adds next.
+
+**What gets metered is the steps that actually ran.** `diffusers` enters the schedule at
+`int(steps × strength)`, so 30 steps at 0.6 denoises for 18 — and 18 is what the ledger gets. Billing
+the asked-for 30 would charge for work nobody did.
+
+### Not every model can edit
+
+Editing is its own capability, `image-edit`, declared per recipe from its `operations` field:
+
+| Recipe | `operations` |
+|---|---|
+| `sdxl`, `sd15` | `generate`, `edit`, `variation` |
+| everything else | `generate` |
+
+FLUX.1-schnell has no official inpainting pipeline; SDXL does. So an edit against a generate-only
+recipe is a `503` that **names the ones that can**:
+
+```json
+{ "error": { "code": "capability_unavailable", "message":
+  "no node currently provides 'image-edit' for model 'flux-schnell'. Models on this fleet that do: sd15, sdxl" } }
+```
+
+That is a fleet-state answer rather than an authorization one, which is the distinction v3.8 wrote
+down. A second capability kind rather than a per-model operation list, because the router filters on
+`(capability, model)` and nothing else — and teaching it to read a nested operation set would mean
+teaching the affinity, the queue and the saturation logic the same thing.
+
+### Editing is a job like any other
+
+Same queue, same per-step progress, same cooperative cancel, same five-minute in-memory retention.
+The async route takes multipart too, and names its operation:
+
+```bash
+curl http://localhost:5080/api/images/jobs -H "Authorization: Bearer $KEY" \
+  -F operation=edit -F model=sdxl -F image=@room.png -F mask=@mask.png \
+  -F prompt="a tall window with morning light"
+```
+
+JSON generates; multipart edits. A multipart submission that names no `operation` is a `400` naming
+both — this is InferHub's own contract, where ceremony is cheaper than a silent substitution.
+
+### What comes in is content too
+
+`Images:MaxRequestBytes` (25 MB) caps the picture and the mask **together**, refused with a `413` at
+the edge before anything is buffered onward; each part is additionally capped by
+`Tools:MaxAttachmentBytes`. Nothing is retained: the bytes are held for the dispatch, written into a
+per-request scratch directory the node deletes in a `finally`, and dropped. **The filename you chose
+never leaves the edge** — the parts travel as `image` and `mask`, because what you called a file on
+your disk is metadata about your day.
+
+**Not in v3.18, and said out loud:** ControlNet, IP-Adapter and reference-image conditioning (each is
+a per-base-model zoo of auxiliary weights with its own preprocessors, and every preprocessor is image
+processing); an outpainting helper (it is inpainting with a canvas you prepare, and preparing it on
+the hub would mean decoding a pixel); multi-image edit chains; and FLUX inpainting, which has no
+official pipeline to wrap.
 
 ## A job that takes two minutes (v3.15+)
 
@@ -1855,6 +1974,7 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Images:Jobs:RetentionSeconds` | `300` | v3.15. How long a finished job's record and image bytes survive, read or not. Nothing persists across a restart and **nothing touches disk**. |
 | `Images:Jobs:MaxRetainedBytes` | `536870912` | v3.15. Global ceiling on retained results, LRU-evicting **completed** ones and never an in-flight one. Enforced **on insert**, not on a timer — a timer means the ceiling is a suggestion for one sweep interval. An evicted job reads as `expired` with a reason, so arriving late is a `410` that says what happened rather than a `404` that looks like a bug. |
 | `Images:Jobs:KeepAfterRead` | `false` | v3.15. Off: a delivered image is dropped immediately. On is the setting that makes this hub briefly an image cache, in those words. |
+| `Images:MaxRequestBytes` | `26214400` | v3.18. What one **edit** may send in — the picture and the mask together — refused with a `413` at the edge before anything is buffered onward. A separate key from `MaxResponseBytes` because the two directions are separate risks: outbound is `n` renders of a size you declared, inbound is one upload somebody else chose the size of. Each part is *also* capped by `Tools:MaxAttachmentBytes`. |
 | `Images:Jobs:MaxQueueDepth` | `32` | v3.15. How many image jobs may wait. FIFO, deliberately: shortest-job-first would let a stream of 4-step requests starve a 50-step one invisibly. Full is `503` + `Retry-After`, the same shape as every other limit here. |
 | `Usage:Persistence` | `none` | `none` (in-memory, reset on restart) or `postgres` (append-only table). |
 | `Usage:Postgres:ConnectionString` | _(empty)_ | Required when `Persistence=postgres`. Env / user-secrets only. Independent of the vector store's. |

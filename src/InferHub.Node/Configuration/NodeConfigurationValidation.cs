@@ -111,7 +111,7 @@ public sealed class NodeOptionsValidator : IValidateOptions<NodeOptions>
             if (!CapabilityKinds.IsWellKnown(disabled?.Trim()))
             {
                 failures.Add(
-                    $"{NodeOptions.SectionName}:Capabilities:Disabled contains '{disabled}', which is not a capability this release knows. Expected one of: {CapabilityKinds.Chat}, {CapabilityKinds.Embed}, {CapabilityKinds.Transcribe}, {CapabilityKinds.Speak}, {CapabilityKinds.Image}.");
+                    $"{NodeOptions.SectionName}:Capabilities:Disabled contains '{disabled}', which is not a capability this release knows. Expected one of: {CapabilityKinds.Chat}, {CapabilityKinds.Embed}, {CapabilityKinds.Transcribe}, {CapabilityKinds.Speak}, {CapabilityKinds.Image}, {CapabilityKinds.ImageEdit}.");
             }
         }
 

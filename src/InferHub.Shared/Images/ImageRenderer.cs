@@ -83,7 +83,14 @@ public static class ImageRenderer
     /// bytes without excusing a timestamp, and so nothing in <c>InferHub.Shared</c> depends on
     /// ambient time.
     /// </param>
-    public static ImageOutcome Generation(ToolResult result, ImageGenerationRequest request, long createdUnixSeconds)
+    /// <remarks>
+    /// <b>It is <c>Render</c> rather than <c>Generation</c> since phase 50</b>, because it renders
+    /// an edit and a variation too and a method named for one of the three would be a lie in a name
+    /// — which is how the next reader learns the wrong thing (the same correction phase 46 made to
+    /// <c>Metrics.RecordAudioUnits</c>). Nothing about the shape changed: an edit's response is the
+    /// same OpenAI Images envelope, because to a client it <em>is</em> the same answer.
+    /// </remarks>
+    public static ImageOutcome Render(ToolResult result, IImageRequest request, long createdUnixSeconds)
     {
         if (Failure(result) is { } failure)
         {

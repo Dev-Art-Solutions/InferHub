@@ -196,7 +196,7 @@ public class ImageContractTests
             """{"steps":20,"images":[{"width":512,"height":512,"steps":20,"seed":5}]}""",
             [new ToolAttachment("image-0.png", "image/png", [1, 2, 3])]);
 
-        var outcome = ImageRenderer.Generation(result, request, 1_700_000_000);
+        var outcome = ImageRenderer.Render(result, request, 1_700_000_000);
 
         Assert.Equal(200, outcome.Status);
         Assert.Equal(UsageUnitKinds.MegapixelSteps, outcome.UnitKind);
@@ -219,7 +219,7 @@ public class ImageContractTests
     [Fact]
     public void AResultWithNoDescriptionStillRendersAndFallsBackToTheRequest()
     {
-        var outcome = ImageRenderer.Generation(
+        var outcome = ImageRenderer.Render(
             ToolResult.Succeeded(Guid.NewGuid(), null, [new ToolAttachment("i.png", "image/png", [1])]),
             Request(size: "512x512", steps: 30),
             1);
@@ -231,7 +231,7 @@ public class ImageContractTests
     [Fact]
     public void AResultWithNoImagesIsA502RatherThanAnEmptySuccess()
     {
-        var outcome = ImageRenderer.Generation(
+        var outcome = ImageRenderer.Render(
             ToolResult.Succeeded(Guid.NewGuid(), """{"images":[]}"""),
             Request(),
             1);
@@ -244,7 +244,7 @@ public class ImageContractTests
     [Fact]
     public void AnEmptyFileIsA502NamingWhichImageItWas()
     {
-        var outcome = ImageRenderer.Generation(
+        var outcome = ImageRenderer.Render(
             ToolResult.Succeeded(
                 Guid.NewGuid(),
                 null,
@@ -267,7 +267,7 @@ public class ImageContractTests
     [InlineData(null, 502)]
     public void AWorkerFailureRendersFromItsCodeAndNeverFromItsMessage(string? code, int expected)
     {
-        var outcome = ImageRenderer.Generation(
+        var outcome = ImageRenderer.Render(
             ToolResult.Refused(Guid.NewGuid(), "something went wrong", code),
             Request(),
             1);
@@ -279,7 +279,7 @@ public class ImageContractTests
     [Fact]
     public void ABusyToolRendersAs503WithTheNodesOwnRetryAfter()
     {
-        var outcome = ImageRenderer.Generation(
+        var outcome = ImageRenderer.Render(
             ToolResult.Retry(Guid.NewGuid(), "every worker is busy", 12),
             Request(),
             1);
@@ -287,6 +287,94 @@ public class ImageContractTests
         Assert.Equal(503, outcome.Status);
         Assert.Equal(12, outcome.RetryAfterSeconds);
         Assert.Equal("tool_busy", outcome.ErrorCode);
+    }
+
+    // ---- phase 50: the edit contract -----------------------------------------------------------
+
+    /// <summary>
+    /// The worker payload an edit becomes. <c>has_mask</c> is <em>stated</em> rather than inferred
+    /// from the attachment count, because "there are two files" and "the second one is a mask" are
+    /// different facts and a worker should not have to guess which.
+    /// </summary>
+    [Fact]
+    public void AnEditPayloadStatesItsOperationItsStrengthAndWhetherThereIsAMask()
+    {
+        var request = Edit(mask: true, headers: (ImageExtensions.Strength, "0.4"));
+
+        using var payload = JsonDocument.Parse(request.ToToolPayload());
+
+        Assert.Equal("edit", payload.RootElement.GetProperty("op").GetString());
+        Assert.Equal(0.4, payload.RootElement.GetProperty("strength").GetDouble(), 5);
+        Assert.True(payload.RootElement.GetProperty("has_mask").GetBoolean());
+        Assert.Equal("openai", payload.RootElement.GetProperty("mask_convention").GetString());
+
+        // Two attachments, in order, named for their role rather than for whatever the caller
+        // called the file on their disk (phase-42 D5).
+        Assert.Equal(["image", "mask"], request.Attachments.Select(a => a.Name));
+        Assert.Equal(CapabilityKinds.ImageEdit, request.Capability);
+    }
+
+    /// <summary>
+    /// Absent, <c>strength</c> is simply not in the payload — the <b>recipe's</b> default applies,
+    /// and the edge does not have one to invent. A number chosen here would be the edge deciding how
+    /// far an edit moves away from somebody's photograph.
+    /// </summary>
+    [Fact]
+    public void AnAbsentStrengthIsAbsentFromThePayloadRatherThanDefaulted()
+    {
+        using var payload = JsonDocument.Parse(Edit().ToToolPayload());
+
+        Assert.False(payload.RootElement.TryGetProperty("strength", out _));
+    }
+
+    [Fact]
+    public void AVariationCarriesNoPromptAtAll()
+    {
+        using var payload = JsonDocument.Parse(Edit(operation: "variation", prompt: null).ToToolPayload());
+
+        Assert.Equal("variation", payload.RootElement.GetProperty("op").GetString());
+        Assert.False(payload.RootElement.TryGetProperty("prompt", out _));
+    }
+
+    [Theory]
+    [InlineData("openai", true)]
+    [InlineData("LUMINANCE", true)]
+    [InlineData(" openai ", true)]
+    [InlineData("inverted", false)]
+    [InlineData("white", false)]
+    public void OnlyTheTwoConventionsAreKnown(string value, bool known)
+        => Assert.Equal(known, MaskConventions.IsKnown(value));
+
+    /// <summary>
+    /// Absent means OpenAI's, because that is the API this endpoint claims to speak. Defaulting to
+    /// the other one would silently invert every mask written against the documented behaviour.
+    /// </summary>
+    [Fact]
+    public void AnAbsentMaskConventionIsOpenAis()
+        => Assert.Equal(MaskConventions.OpenAi, MaskConventions.Normalise(null));
+
+    private static ImageEditRequest Edit(
+        string operation = "edit",
+        string? prompt = "a tall window",
+        bool mask = false,
+        params (string Name, string Value)[] headers)
+    {
+        var fields = new Dictionary<string, string> { ["model"] = "sdxl" };
+
+        if (prompt is not null)
+        {
+            fields["prompt"] = prompt;
+        }
+
+        return ImageEditRequest.TryParse(
+            operation,
+            name => fields.GetValueOrDefault(name),
+            name => headers.FirstOrDefault(h => h.Name == name).Value,
+            new ToolAttachment("image", "image/png", [1, 2, 3]),
+            mask ? new ToolAttachment("mask", "image/png", [4, 5, 6]) : null,
+            ImageLimits.Default,
+            out var error,
+            out _) ?? throw new InvalidOperationException(error);
     }
 
     private static ImageGenerationRequest Request(string? size = null, int? steps = null)

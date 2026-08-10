@@ -126,6 +126,47 @@ public class SoloImageJobTests
     private static Task<(SoloHost Host, IDisposable Cleanup)> Solo() =>
         ImageFixture.SoloAsync("--image-step-ms", StepMs.ToString());
 
+    /// <summary>
+    /// Phase 50: a multipart edit submitted as a job on a box with no coordinator anywhere.
+    /// </summary>
+    /// <remarks>
+    /// The one thing this proves that <c>ImageParityTests</c> does not is that the <em>route</em>
+    /// takes a form at all on this host — a solo node builds its own endpoint map, and a content-type
+    /// branch that existed only on the hub would be a difference no comparison of two synchronous
+    /// responses could see.
+    /// </remarks>
+    [Fact]
+    public async Task ASoloMultipartEditRunsAsAJobAndItsImageIsCollectedOnce()
+    {
+        var (host, cleanup) = await Solo();
+
+        try
+        {
+            var form = ImageEditTests.Form(mask: TestPng.Mask(512, 512));
+            form.Add(new StringContent("edit"), "operation");
+
+            var submitted = await host.Client.PostAsync("/api/images/jobs", form);
+
+            Assert.Equal(HttpStatusCode.Accepted, submitted.StatusCode);
+
+            using var accepted = JsonDocument.Parse(await submitted.Content.ReadAsStringAsync());
+            var id = accepted.RootElement.GetProperty("id").GetString()!;
+
+            var final = await WaitForTerminal(host, id);
+            Assert.Equal(ImageJobStates.Succeeded, final.GetProperty("state").GetString());
+
+            var content = await host.Client.GetAsync($"/api/images/jobs/{id}/content/0");
+
+            Assert.Equal(HttpStatusCode.OK, content.StatusCode);
+            Assert.Equal((512, 512), ImageEndpointTests.PngHeader(await content.Content.ReadAsByteArrayAsync()));
+        }
+        finally
+        {
+            await host.DisposeAsync();
+            cleanup.Dispose();
+        }
+    }
+
     private static async Task<string> Submit(SoloHost host)
     {
         var response = await host.Client.PostAsJsonAsync("/api/images/jobs", ImageEndpointTests.Body());

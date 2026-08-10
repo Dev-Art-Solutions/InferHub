@@ -9,6 +9,7 @@
     "url": "https://huggingface.co/stabilityai/stable-diffusion-3.5-medium/blob/main/LICENSE.md"
   },
   "gated": true,
+  "operations": ["generate"],
   "defaults": { "steps": 40, "guidance": 4.5, "size": "1024x1024" },
   "sizes": ["1024x1024", "1152x896", "896x1152", "1216x832", "832x1216"],
   "maxSteps": 60,

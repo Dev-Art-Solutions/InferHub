@@ -4,6 +4,10 @@
     {
       "kind": "image",
       "models": []
+    },
+    {
+      "kind": "image-edit",
+      "models": []
     }
   ],
   "command": ["/opt/inferhub/venv/bin/python", "-u", "/opt/inferhub/tools/diffusion_worker.py"],

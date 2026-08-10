@@ -105,7 +105,15 @@ public readonly record struct ImageSize(int Width, int Height)
 /// The limits the edge can enforce before a single diffusion step runs, and the one place they are
 /// decided so a hub and a solo node cannot disagree about what fits.
 /// </summary>
-public sealed record ImageLimits(int MaxBatch, long MaxResponseBytes)
+/// <param name="MaxRequestBytes">
+/// What an <em>edit</em> may send in — the picture and the mask together (phase 50, D4). Over it is
+/// a <c>413</c> at the edge, before anything is buffered onward, naming the limit: a caller told
+/// only "too large" finds the ceiling by bisection.
+/// </param>
+public sealed record ImageLimits(
+    int MaxBatch,
+    long MaxResponseBytes,
+    long MaxRequestBytes = Contracts.ToolAttachmentLimits.DefaultMaxBytes)
 {
     public const int DefaultMaxBatch = 4;
 
@@ -127,6 +135,77 @@ public sealed record ImageLimits(int MaxBatch, long MaxResponseBytes)
     /// <summary>The largest <c>n</c> of this size that fits the budget. Zero when even one will not.</summary>
     public int LargestBatchOf(ImageSize size) =>
         (int)Math.Min(MaxBatch, MaxResponseBytes / Math.Max(1, size.Pixels * UpperBoundBytesPerPixel));
+
+    /// <summary>
+    /// The only budget check the edge can do, and it is done <b>before a step runs</b> rather than
+    /// after a minute of GPU. The refusal names the largest <c>n</c> that fits, so the caller is not
+    /// left bisecting.
+    /// </summary>
+    /// <remarks>
+    /// Shared by all three routes since phase 50: a generation and an edit produce the same bytes
+    /// through the same wire, and two copies of this arithmetic would be two answers to "what fits".
+    /// </remarks>
+    public bool Fits(ImageSize size, int count, out string error, out string errorParam)
+    {
+        error = string.Empty;
+        errorParam = string.Empty;
+
+        if (EstimateBytes(size, count) <= MaxResponseBytes)
+        {
+            return true;
+        }
+
+        var largest = LargestBatchOf(size);
+
+        error = largest >= 1
+            ? $"{count} image(s) at {size} may exceed the {MaxResponseBytes}-byte response budget " +
+              $"(Images:MaxResponseBytes). At this size the largest n is {largest}."
+            : $"one image at {size} may exceed the {MaxResponseBytes}-byte response budget " +
+              "(Images:MaxResponseBytes). Ask for a smaller size, or raise the budget and " +
+              "Tools:MaxAttachmentBytes with it.";
+
+        errorParam = largest >= 1 ? "n" : "size";
+        return false;
+    }
+}
+
+/// <summary>
+/// What every image request has in common, whichever of the three routes it arrived on (phase 50).
+/// </summary>
+/// <remarks>
+/// <para>
+/// It exists so the job registry, the job runner and the renderer take <em>an image request</em>
+/// rather than a generation: phase 47's queue, its per-step progress, its cancel, its retention and
+/// its metering are the same for an edit as for a generation, and duplicating them per operation
+/// would be two queues with two ideas of fairness on one GPU — which is exactly what phase 47's own
+/// D1 refused to build for the synchronous route.
+/// </para>
+/// <para>
+/// <see cref="Capability"/> is what makes the split cheap: <c>image</c> or <c>image-edit</c> is
+/// decided by the request that was parsed, and everything downstream routes on it without knowing
+/// which route produced it.
+/// </para>
+/// </remarks>
+public interface IImageRequest
+{
+    /// <summary>The recipe id, which is the routing key's second half.</summary>
+    string Model { get; }
+
+    /// <summary><c>image</c> or <c>image-edit</c> — the routing key's first half.</summary>
+    string Capability { get; }
+
+    int Count { get; }
+
+    /// <summary>Null when the caller named none: the recipe's default, or the input's own size.</summary>
+    ImageSize? Size { get; }
+
+    int? Steps { get; }
+
+    /// <summary>The worker's payload. What it does <em>not</em> contain is anything a hub logs.</summary>
+    string ToToolPayload();
+
+    /// <summary>Bytes travelling <em>in</em>: an image, and a mask when there is one.</summary>
+    IReadOnlyList<Contracts.ToolAttachment> Attachments { get; }
 }
 
 /// <summary>
@@ -161,21 +240,26 @@ public sealed record ImageGenerationRequest(
     ImageSize? Size,
     int? Steps,
     double? Guidance,
-    long? Seed)
+    long? Seed) : IImageRequest
 {
+    public string Capability => Contracts.CapabilityKinds.Image;
+
+    /// <summary>Nothing travels in with a generation. The prompt is the whole input.</summary>
+    public IReadOnlyList<Contracts.ToolAttachment> Attachments => [];
+
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
-    public const string StepsHeader = "X-InferHub-Image-Steps";
+    public const string StepsHeader = ImageExtensions.Steps;
 
-    public const string GuidanceHeader = "X-InferHub-Image-Guidance";
+    public const string GuidanceHeader = ImageExtensions.Guidance;
 
-    public const string SeedHeader = "X-InferHub-Image-Seed";
+    public const string SeedHeader = ImageExtensions.Seed;
 
     /// <summary>The ceiling on a header-supplied step count. A recipe may cap it lower.</summary>
-    public const int MaxSteps = 150;
+    public const int MaxSteps = ImageExtensions.MaxSteps;
 
     /// <summary>
     /// Parses and validates the body and the three extension headers. Returns null and sets
@@ -276,21 +360,9 @@ public sealed record ImageGenerationRequest(
                 return null;
             }
 
-            // The only budget check the edge can do, and it is done before a step runs rather than
-            // after a minute of GPU: a batch whose upper-bound bytes exceed what one message may
-            // carry is refused with the largest n that fits, so the caller is not left bisecting.
-            if (ImageLimits.EstimateBytes(parsed, count) > limits.MaxResponseBytes)
+            if (!limits.Fits(parsed, count, out error, out var budgetParam))
             {
-                var largest = limits.LargestBatchOf(parsed);
-
-                error = largest >= 1
-                    ? $"{count} image(s) at {parsed} may exceed the {limits.MaxResponseBytes}-byte response budget " +
-                      $"(Images:MaxResponseBytes). At this size the largest n is {largest}."
-                    : $"one image at {parsed} may exceed the {limits.MaxResponseBytes}-byte response budget " +
-                      "(Images:MaxResponseBytes). Ask for a smaller size, or raise the budget and " +
-                      "Tools:MaxAttachmentBytes with it.";
-
-                errorParam = largest >= 1 ? "n" : "size";
+                errorParam = budgetParam;
                 return null;
             }
 
@@ -372,6 +444,68 @@ public sealed record ImageGenerationRequest(
         int min,
         int max,
         out int? value,
+        out string error) => ImageExtensions.TryInt(header, name, min, max, out value, out error);
+
+    private static bool TryHeaderDouble(
+        Func<string, string?> header,
+        string name,
+        double min,
+        double max,
+        out double? value,
+        out string error) => ImageExtensions.TryDouble(header, name, min, max, out value, out error);
+
+    private static bool TryHeaderLong(Func<string, string?> header, string name, out long? value, out string error)
+        => ImageExtensions.TryLong(header, name, out value, out error);
+}
+
+/// <summary>
+/// The <c>X-InferHub-Image-*</c> extension headers, and the one place they are parsed.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>The InferHub extensions travel as headers</b> (phase-46 D1, phase-24 D5's shape): a body field
+/// would collide with whatever OpenAI adds to this API next and would make a typed SDK's request
+/// object wrong, while a header is additive by construction. <b>An unknown value is a 400, never a
+/// silent fallback</b>, and the message names what is acceptable.
+/// </para>
+/// <para>
+/// Culture is invariant everywhere, always. A German or Bulgarian client sending <c>0,75</c> gets a
+/// clean refusal rather than a number this host happens to parse and another host does not — the
+/// same reasoning that keeps a decimal comma out of the Prometheus exposition (phase-28) and out of
+/// a WebVTT timestamp (phase-42).
+/// </para>
+/// </remarks>
+public static class ImageExtensions
+{
+    public const string Steps = "X-InferHub-Image-Steps";
+
+    public const string Guidance = "X-InferHub-Image-Guidance";
+
+    public const string Seed = "X-InferHub-Image-Seed";
+
+    /// <summary>
+    /// How far an edit moves away from the picture it was given, 0–1 (phase 50, D3).
+    /// </summary>
+    /// <remarks>
+    /// OpenAI's edits API has no <c>strength</c>, and image-to-image without one is meaningless —
+    /// it is the whole knob. Absent, the recipe's <c>defaults.strength</c> applies; a recipe with
+    /// neither is a <c>400</c> from the worker naming this header, because the edge cannot know
+    /// what a recipe defaults to (phase-46 D6: a recipe is a file on the node).
+    /// </remarks>
+    public const string Strength = "X-InferHub-Image-Strength";
+
+    /// <summary>Which way round the caller's mask reads (phase 50, D2).</summary>
+    public const string MaskConvention = "X-InferHub-Mask-Convention";
+
+    /// <summary>The ceiling on a header-supplied step count. A recipe may cap it lower.</summary>
+    public const int MaxSteps = 150;
+
+    internal static bool TryInt(
+        Func<string, string?> header,
+        string name,
+        int min,
+        int max,
+        out int? value,
         out string error)
     {
         value = null;
@@ -396,7 +530,7 @@ public sealed record ImageGenerationRequest(
         return true;
     }
 
-    private static bool TryHeaderDouble(
+    internal static bool TryDouble(
         Func<string, string?> header,
         string name,
         double min,
@@ -414,8 +548,6 @@ public sealed record ImageGenerationRequest(
             return true;
         }
 
-        // Invariant, always. A German or Bulgarian client sending "7,5" gets a clean refusal rather
-        // than a number this host happens to parse and another host does not.
         if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
             || double.IsNaN(parsed)
             || parsed < min
@@ -429,7 +561,7 @@ public sealed record ImageGenerationRequest(
         return true;
     }
 
-    private static bool TryHeaderLong(Func<string, string?> header, string name, out long? value, out string error)
+    internal static bool TryLong(Func<string, string?> header, string name, out long? value, out string error)
     {
         value = null;
         error = string.Empty;

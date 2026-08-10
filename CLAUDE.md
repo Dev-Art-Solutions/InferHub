@@ -2654,6 +2654,119 @@ rectangle (39 D6's instinct, in a canvas).
 `InferHub.Shared.csproj` is still an empty `<Project Sdk="Microsoft.NET.Sdk">`, and the only thing
 that ever decodes a pixel is the browser.
 
+### Phase 50 (editing: img2img, inpainting, variations) — also load-bearing
+
+**Bytes travel hub → node for the first time.** Phase 40 built the attachment path and phase 42 used
+it in one direction only; an edit is the first thing in this project's history that sends a
+multi-megabyte payload *down* the mesh connection. `ImageEditTests` pushes 3 MB across a real wire
+and asserts **the node is still registered afterwards** — the v3.10.0 assertion, in the direction
+nobody had tested.
+
+**D1 — `image-edit` is its own capability kind, and the catalogue splits by a recipe field.**
+A recipe declares `operations: ["generate"]` or `["generate", "edit", "variation"]`; the worker
+declares `image` for the generators and `image-edit` for the rest. **Both frames are always sent,
+empty ones included** — an empty list is a declaration that this node serves nothing under that kind,
+and omitting the frame would leave a previous declaration standing on a node that can no longer
+honour it. A second kind rather than a per-model operation list, because the router filters on
+`(kind, model)` and nothing else (40 D1): teaching it to read a nested operation set means teaching
+the affinity, the queue and the saturation logic the same thing. It is also a real distinction —
+FLUX.1-schnell has no official inpainting pipeline and SDXL does.
+
+**The 503 names the recipes that *can* edit**, and that is not the model catalogue phase-46 D6
+refused: it is the fleet's own capability declarations, which the hub already holds. "No" with no
+alternative sends somebody to the docs; "no, but these" is actionable.
+
+`CapabilityKinds.IsImageKind` is what everything that reasons about a *recipe* asks — the licence
+gate, the VRAM budget, the residency map. **Editing and generating are separate for routing and not
+for any of those**, because an edit loads exactly the same weights (`from_pipe` reuses the
+components). A node that applied its licence gate to `image` only would happily edit with a model
+whose licence nobody accepted.
+
+**D2 — OpenAI's mask convention is inverted from the library's, and the conversion happens in the
+worker. This is the decision the phase turns on.** OpenAI's edits API treats a **fully transparent**
+pixel as the area to edit; `diffusers` takes a mask where **white** is the area to inpaint. Getting
+it backwards does not error — it edits everything *except* what the caller selected, which reads as
+a broken model.
+
+> **Recorded deviation from the phase brief.** The brief put a `MaskConverter` in `InferHub.Shared`.
+> It cannot live there: converting one convention to the other means reading an alpha channel out of
+> a PNG and writing a greyscale one back, and **nothing in this codebase's C# ever decodes a pixel**
+> (phase-46 D6) — there is no image library on the hub, by design and by invariant, and hand-rolling
+> a PNG decoder to avoid taking one would be the same mistake with more code. So
+> [MaskConventions](src/InferHub.Shared/Images/MaskConvention.cs) decides what the two conventions
+> **are** and what a caller may say; the inversion happens where PIL already is. It is named
+> `MaskConventions` rather than `MaskConverter` because a converter that converts nothing is a lie in
+> a name — the same correction phase 46 made to `Metrics.RecordAudioUnits`.
+
+The consequence is the one phase-46 D6 and phase-49 D3 already accepted twice: **a mask with no alpha
+channel costs one round trip to find out**, because the edge cannot open it. The worker answers
+`invalid_request` and `ImageRenderer` renders the 400 without reading the message (phase-29 D6).
+Under OpenAI's convention a fully opaque "mask" selects **nothing**, which no caller has ever
+intended — reading it as "edit everything" would be a silent substitution of the most destructive
+possible interpretation, and reading it as "edit nothing" would return the input with a 200 on it.
+`X-InferHub-Mask-Convention: openai | luminance` lets a caller who already has a white-is-edit mask
+say so; an unknown value is a `400` that names both **and says which is which**, because two words
+whose difference is invisible until you look at the picture are not a helpful list.
+
+**A mask is never rescaled.** A mask names *which pixels*, so a mask whose size differs from the
+image's is a `400` naming both sizes rather than a resize — scaling somebody's selection lands the
+edit next to what they chose, which looks like a bad model rather than a bad mask.
+
+**D3 — `strength` is a header, and what is metered is the steps it actually ran.** OpenAI's edits API
+has no `strength` and image-to-image without one is meaningless, so `X-InferHub-Image-Strength`
+(0–1), phase-46 D1's shape. Absent, the **recipe's** `defaults.strength` applies — the edge has none
+to invent and deliberately omits the field rather than guessing, because a number chosen at the edge
+would be the edge deciding how far an edit moves away from somebody's photograph.
+
+`diffusers` enters the schedule at `int(steps × strength)`, so 30 steps at 0.6 denoises for 18 — and
+**18 is what the worker reports, what the progress frames count to, and what the ledger gets**.
+Metering the asked-for 30 would bill for work nobody did, which is phase-42 D7's "the unit the work
+is in" applied to a knob rather than to a modality.
+
+**D4 — Input attachments ride the existing path and are capped in both grains.** Each part is bounded
+by `Tools:MaxAttachmentBytes` (what the *node* enforces, so a request that passed the edge and failed
+at the node is impossible) and the picture and mask **together** by `Images:MaxRequestBytes` — a
+separate key because the two directions are separate risks with separate arithmetic: outbound is `n`
+renders of a declared size, inbound is one upload somebody else chose the size of. Both refusals are
+`413`s naming their key, at the edge, before anything is buffered onward.
+
+**The caller's filename is dropped and the parts travel as `image` and `mask`.** What somebody called
+a file on their disk is metadata about their day (phase-42 D5); what the worker needs is the *role*.
+
+**A variation takes no prompt, and a prompt on one is a `400` naming the other route.** OpenAI's
+variations API has no prompt field, and `/v1/images/edits` *without* a mask is already "img2img with
+a prompt" — so accepting one here would be a second dialect for a convenience that exists. Ignoring
+it would be worse: a caller whose prompt vanished silently would conclude the model ignores prompts.
+A mask on a variation is refused for the same reason.
+
+**`POST /api/images/jobs` takes JSON or multipart, and that is not phase-47 D1's refused flag.** D1
+refused `background: true` because it made one route answer two incompatible *response* shapes; here
+the response is the same job document either way and the request shape is decided by `Content-Type`,
+which is what content types are for. **A multipart submission must name its `operation`** — defaulting
+it would let a typo turn a variation into an edit, and this is InferHub's own contract where ceremony
+is cheaper than a silent substitution.
+
+*Recorded deviations, on purpose:*
+- **`ImageRenderer.Generation` became `ImageRenderer.Render`**, and `ImageJobRegistry` /
+  `LocalImageJobRunner` now hold an `IImageRequest` rather than an `ImageGenerationRequest`. Phase
+  47's queue, progress, cancel, retention and metering are identical for an edit, and a second job
+  path would be two ideas of fairness on one GPU — the thing phase-47 D1 built the shared path to
+  prevent. `busyNodes` is deliberately **not** split by capability either: the resource a node has
+  exactly one of is the card.
+- **The edge does not check that a recipe supports the operation**, only that the fleet declares the
+  capability. The worker refuses by name for a solo caller who reaches it directly. Phase-46 D6's
+  deviation, unchanged: a recipe is a file on the node.
+- **The multipart reading is hand-copied per host** (`ImageEndpointSupport.ReadEditAsync` and
+  `LocalImageForm`). Phase-37 D6's line: the ten lines that touch `IFormCollection` are plumbing,
+  and every *sentence* comes from `InferHub.Shared`. `ImageParityTests` grew five arms, including
+  the mask refusals, because that copy is the parity risk.
+- **The echo worker reads the input files for real** and checks the mask's alpha channel and its
+  dimensions out of a genuine IHDR. A test fixture may decode a PNG; the hub may not. A stub that
+  agreed with itself would prove nothing about the one thing this phase adds.
+
+**Rule 5 survived again.** **Zero** new `PackageReference`, no image library anywhere in C#, and
+`InferHub.Shared.csproj` is still an empty `<Project Sdk="Microsoft.NET.Sdk">`.
+
 ## Auth model (three independent token sets)
 
 | Scope | Config key | Guards |

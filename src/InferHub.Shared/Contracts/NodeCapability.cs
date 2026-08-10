@@ -37,20 +37,54 @@ public static class CapabilityKinds
     /// thing phase 40 was built to make possible.
     /// </summary>
     /// <remarks>
-    /// Generating is deliberately not editing. Phase 50 adds a second kind, <c>image-edit</c>,
-    /// rather than a per-model operation list, because the router filters on <c>(kind, model)</c>
-    /// and nothing else — teaching it to read a nested operation set would mean teaching the
-    /// affinity, the queue and the saturation logic the same thing. It is also a real distinction:
-    /// FLUX.1-schnell has no official inpainting pipeline and SDXL does.
+    /// Generating is deliberately not editing. Phase 50 added a second kind,
+    /// <see cref="ImageEdit"/>, rather than a per-model operation list, because the router filters
+    /// on <c>(kind, model)</c> and nothing else — teaching it to read a nested operation set would
+    /// mean teaching the affinity, the queue and the saturation logic the same thing. It is also a
+    /// real distinction: FLUX.1-schnell has no official inpainting pipeline and SDXL does.
     /// </remarks>
     public const string Image = "image";
+
+    /// <summary>
+    /// Image to image: inpainting with a mask, plain img2img without one, and variations
+    /// (phase 50, D1).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A node declares this for exactly the recipes whose <c>operations</c> include <c>edit</c> or
+    /// <c>variation</c>, so a box holding only <c>flux-schnell</c> declares <c>image</c> and an
+    /// <b>empty</b> <c>image-edit</c> — which is a statement rather than a silence, and is what
+    /// turns "FLUX cannot inpaint" into a <c>503</c> at the edge instead of a stack trace out of a
+    /// pipeline forty seconds later.
+    /// </para>
+    /// <para>
+    /// <b>It is a separate kind and not a flag</b> because the routing key has two dimensions and
+    /// only two. Everything downstream — affinity, the queue, saturation, the phase-47 job pump —
+    /// already speaks <c>(kind, model)</c>, and none of it learned anything in phase 50.
+    /// </para>
+    /// </remarks>
+    public const string ImageEdit = "image-edit";
 
     /// <summary>
     /// Only used at the client edge, for error messages. The mesh carries any string — see the
     /// remarks on <see cref="NodeCapability"/>.
     /// </summary>
     public static bool IsWellKnown(string? kind) =>
-        kind is Chat or Embed or Transcribe or Speak or Image;
+        kind is Chat or Embed or Transcribe or Speak or Image or ImageEdit;
+
+    /// <summary>
+    /// Either image kind — the question everything that reasons about a <em>recipe</em> asks.
+    /// </summary>
+    /// <remarks>
+    /// Editing and generating are separate for <b>routing</b>, which is what phase-50 D1 is about.
+    /// They are not separate for the licence gate, the VRAM budget or the residency map, because an
+    /// edit loads exactly the same weights: <c>AutoPipelineForInpainting.from_pipe</c> reuses the
+    /// components rather than loading a second copy. A node that applied its licence gate to
+    /// <c>image</c> only would happily edit with a model whose licence nobody accepted.
+    /// </remarks>
+    public static bool IsImageKind(string? kind) =>
+        string.Equals(kind, Image, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(kind, ImageEdit, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// The capability an Ollama-shaped job kind needs. <c>generate</c> and <c>chat</c> are both
