@@ -38,15 +38,19 @@ It is also the first thing in this project's history that sends megabytes DOWN t
 Zero new dependencies, still. Fifth release of the image track.
 👉 https://github.com/Dev-Art-Solutions/InferHub/releases/tag/v3.18.0
 
-## X / Twitter — single post (269/280; the link counts as 23 under t.co)
+**Counts below are measured, not estimated**, against 280 with the link at t.co's flat 23
+characters. The first draft of this file guessed them and three of the four were over — the single
+post by 4, 2/4 by 12, 3/4 by 10.
+
+## X / Twitter — single post (276/280; the link counts as 23 under t.co)
 
 InferHub 3.18: image editing on your own card.
 
 OpenAI's mask says TRANSPARENT = edit here. diffusers says WHITE = inpaint here. Opposite.
 
-Get it backwards and nothing errors — you get a 200 and everything except your selection repainted.
+Get it backwards and nothing errors: you get a 200, everything except your selection repainted.
 
-So: no alpha = 400.
+No alpha = 400.
 https://github.com/Dev-Art-Solutions/InferHub/releases/tag/v3.18.0
 
 ## X / Twitter — thread (each tweet under 280; link only on 4/4)
@@ -60,19 +64,19 @@ The interesting part isn't the feature. It's the mask.
 OpenAI: TRANSPARENT pixels are the area to edit.
 diffusers: WHITE pixels are the area to inpaint.
 
-**2/4** (272)
+**2/4** (269)
 
 Those are opposite, and getting it backwards DOES NOT ERROR.
 
 You get a valid image, 200, everything except your selection repainted. It reads as a broken model.
 
-So a mask with no alpha channel is a 400. "Edit everything" would be the most destructive possible reading of an empty selection.
+So a mask with no alpha is a 400: "edit everything" is the most destructive reading of an empty selection.
 
-**3/4** (261)
+**3/4** (247)
 
-The conversion lives in the worker, not in the shared library, because inverting a mask means reading an alpha channel — and nothing in our C# ever decodes a pixel. No image library on the hub, by design.
+The conversion lives in the worker, not the shared library, because inverting a mask means reading an alpha channel — and nothing in our C# decodes a pixel. No image library on the hub, by design.
 
-Cost: one round trip to learn your mask is wrong. Third time we've taken that trade.
+Cost: one round trip to learn your mask is wrong.
 
 **4/4** (270 incl. the link)
 
