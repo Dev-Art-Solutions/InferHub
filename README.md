@@ -1644,13 +1644,20 @@ budget, reserve, what is resident, what the worker actually measured.
 
 That last one is the part worth clicking before you need it. A recipe whose licence you have not
 accepted, or one too big for the budget you declared, is **not offered** — which is the right routing
-behaviour and, without this panel, indistinguishable from a model nobody installed:
+behaviour and, without this panel, indistinguishable from a model nobody installed.
+
+Here is that table on a box sharing its card with a chat container, so the reserve is 8192 rather
+than the 2048 the dedicated run above uses:
 
 | Recipe | Offered for | Why not |
 |---|---|---|
-| `sdxl` | generate, edit | |
+| `sdxl` | generate, edit | — |
+| `sd15` | generate, edit | — |
 | `sdxl-turbo` | — | licence `sai-nc-community` is not permissive and is not in `Tools:Image:AcceptedLicenses` |
-| `qwen-image` | — | wants 19000 MiB and does not fit this node's declared budget minus its reserve |
+| `qwen-image` | — | wants 19000 MiB; `BudgetMiB: 24576` minus `ReserveMiB: 8192` leaves 16384 |
+
+On the dedicated box above — 24576 with the default 2048 held back — **every recipe in the catalogue
+fits**, and the only row that would say anything is `sdxl-turbo`'s licence.
 
 **Nothing about it is a gallery.** Thumbnails in that panel live in your browser tab and vanish on
 reload; the hub drops a result on delivery or after five minutes, whichever comes first. There is no

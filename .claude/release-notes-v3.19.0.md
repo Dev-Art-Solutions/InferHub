@@ -43,9 +43,10 @@ So the node now reports every recipe it holds with a reason:
 
 | Recipe | Offered for | Why not |
 |---|---|---|
-| `sdxl` | generate, edit | |
+| `sdxl` | generate, edit | — |
+| `sd15` | generate, edit | — |
 | `sdxl-turbo` | — | licence `sai-nc-community` is not permissive and is not in `Tools:Image:AcceptedLicenses` |
-| `qwen-image` | — | wants 19000 MiB and does not fit this node's declared budget minus its reserve |
+| `qwen-image` | — | wants 19000 MiB; `BudgetMiB: 24576` minus `ReserveMiB: 8192` leaves 16384 |
 
 **The order of those checks is the order of the fixes.** A recipe that is both unlicensed and
 oversized reports `unlicensed`, because telling somebody to buy a bigger card for a model they may
