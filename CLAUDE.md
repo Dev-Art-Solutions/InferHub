@@ -290,6 +290,23 @@ as load-bearing:
    [QdrantClient](src/InferHub.Coordinator/Vector/Qdrant/QdrantClient.cs) is a hand-rolled
    `HttpClient` connector. A third vector backend, still zero new packages — considered the
    dependency and declined it. Do not "upgrade" it to the gRPC client.
+
+   > **PyTorch is not an exception to this rule, and the reason is the whole of phase-41 D1.**
+   > The v3.14–3.19 image track put `torch`, `diffusers`, `transformers` and `bitsandbytes` into a
+   > container — several gigabytes of native code, the heaviest thing this project has ever shipped
+   > — and **zero of it is a `PackageReference`**. It is a `pip install` in one Dockerfile, in the
+   > same category as phase-39's `curl` of an Ollama tarball, and it is reachable only as a **child
+   > process over a line protocol**. Nothing in any `.csproj` compiles against it, nothing in C#
+   > imports it, and a node that never starts the diffusion tool never loads a byte of it.
+   > `BundledNodeTests.NoProjectReferencesPythonAndTheSharedProjectIsStillEmpty` is what keeps that
+   > true. **If a future phase wants an image library in C# — to decode a mask, to check a raster,
+   > to make a thumbnail — that is a new dependency and it needs an argument here**, not a
+   > convenience in an endpoint. Phase 50 wanted exactly that and did not take it (50 D2).
+
+   **Six phases, five new container images' worth of capability, and still two packages.** Phases
+   46–51 added text-to-image, an async job model, a seven-model catalogue with quantization, 360°
+   panoramas, editing and a console for all of it, at **zero** new `PackageReference`s.
+   `InferHub.Shared.csproj` is still an empty `<Project Sdk="Microsoft.NET.Sdk">`.
 6. **The node-facing *inference* job protocol is Ollama-shaped. Client-facing and upstream-facing
    dialects are translations at the boundary.**
    > **The word "inference" was added in phase 40, and it is a bounding, not a weakening.**
@@ -309,6 +326,32 @@ as load-bearing:
    inline retrieval preserves this**: the augmented request body is assembled
    in-flight inside the retrieval pipeline and forwarded to the node — nothing about
    the message or the retrieved context is retained on the coordinator.
+
+   > **The rule has met three more kinds of content since, and each widened what "content" means
+   > rather than what the rule permits.** Recorded here because a rule whose amendments live only
+   > in their own phase sections is a rule the next reader will apply to the case it was written
+   > for and no other.
+   >
+   > - **Audio is content** (phase-42 D5). A transcription request is a recording of somebody's
+   >   voice and the answer is what they said. Nothing containing audio bytes or transcript text is
+   >   logged at any level, and the line that *is* written carries the model, the duration and the
+   >   outcome — **not the filename the caller chose**, which is metadata about somebody's day.
+   > - **A prompt is content** (phase-46). A transcript is content because it is what somebody
+   >   *said*; a prompt is content because it is what somebody *wanted*, and the picture is the
+   >   answer — which makes an image request the most revealing thing a caller sends a fleet.
+   >   Nothing logs one, on either host, at any level. What may be logged is the **recipe's trigger
+   >   phrase** (phase-49 D2), because that is a constant of the model rather than the caller's
+   >   words, and "why does this not look like a panorama" is otherwise undiagnosable.
+   > - **An uploaded picture is content, and so is a mask** (phase-50). Both are held for the
+   >   dispatch and dropped; both travel as `image` and `mask` rather than under the caller's own
+   >   filename, for the phase-42 reason above.
+   >
+   > The mechanism is the same each time and is the thing to preserve: **count, never content**
+   > (phase-25 D3). The usage path has gained four units — tokens, audio seconds, characters,
+   > megapixel-steps — and **no field that could hold a sample**, deliberately, because a field is
+   > an invitation. `ImagePrivacyTests` and `AudioPrivacyTests` both run a real request through a
+   > real mesh with a capturing logger at `Trace` and fail if a known phrase appears anywhere in
+   > the log or the ledger.
 
 ### Phase 21 (OpenAI surface + Docker) — also load-bearing
 
@@ -2766,6 +2809,81 @@ is cheaper than a silent substitution.
 
 **Rule 5 survived again.** **Zero** new `PackageReference`, no image library anywhere in C#, and
 `InferHub.Shared.csproj` is still an empty `<Project Sdk="Microsoft.NET.Sdk">`.
+
+### Phase 51 (the console, the metrics and the docs for the image track) — also load-bearing
+
+**D1 — The console shows the *job*, not just the node, and a recipe's refusal has a reason.**
+Phase-45 D1 is desired-vs-effective for *configuration*; the confusing state this track produces is
+different — "it is running and I cannot tell how far along". So the Images panel is job-centric:
+queue position, step *n* of *m*, elapsed, which node, and a cancel button, with the card's
+arithmetic underneath.
+
+**The gap that needed filling was phase 48's, not the console's.** A recipe whose licence nobody
+accepted, or one too big for the declared budget, is simply **not declared** (48 D2/D5) — correct
+routing, and the worst possible diagnostic: at the hub it is indistinguishable from a recipe that
+does not exist, from one whose weights are still downloading, and from a typo. So the node reports
+`NodeToolState.Images` — every recipe in the catalogue with an `ok | unlicensed | over-budget |
+narrowed | not-ready` reason. **The order of those checks is the order of the fixes**: a recipe that
+is both unlicensed and oversized reports `unlicensed`, because telling somebody to buy a bigger card
+for a model they may not be allowed to run is the wrong advice in the wrong order.
+
+`not-ready` is a deliberate **catch-all** — weights fetching, a fetch that failed, a recipe not
+`cpuViable` on a CPU-only box, a pool that is not running — and it is deliberately **not on the
+refusals strip**: weights that are still downloading are a fleet working correctly, and a strip that
+cried about every cold start is a strip people learn to close.
+
+**D2 — Absence stays absence, and the pair that shows the line is here.** Phase-28 D5 for the sixth
+time, and this phase has both halves side by side: `inferhub_image_queue_depth` /
+`_jobs_active` / `_retained_bytes` are **fleet gauges, present at zero** — a hub with an image queue
+and nothing in it is saying something. `inferhub_image_jobs_total`, `_job_seconds` (a hand-written
+histogram), `inferhub_image_recipe` and every `inferhub_node_vram_*` series emit **nothing at all**
+for a recipe nobody has rendered with or a node with no declared budget, because
+`budget_mib{node}=0` reads as "this box has no VRAM", which is a different and false statement from
+"nobody declared a budget on this box".
+
+The `+Inf` bucket is not decoration: without it the series is not a histogram and
+`histogram_quantile` returns nothing rather than an obviously wrong number. The formatter still
+**measures nothing** (phase-28 D2) — `Metrics.RecordImageJob` is called from `ImageJobRegistry`, the
+one place a job ends, and the duration is from **submission** rather than dispatch, because a job
+that spent four minutes queued behind somebody else's batch was four minutes slow.
+
+**D3 — The console's gallery is the browser's, and that is a refusal rather than a limitation.**
+Images fetched into the panel are object URLs in that tab, revoked as the list rolls over, gone on
+reload. There is **no server-side gallery, no history endpoint and no thumbnail cache**, and the
+panel says so in one line of UI text.
+
+This is 46 D5 and 47 D6 arriving at their conclusion. **A console gallery is exactly the pressure
+that turns a bounded in-memory job store into an image archive** — it is the feature request that
+sounds harmless and ends with a retention policy, a deletion endpoint and a question about whose
+pictures those are. The place to refuse it is here, in writing, before somebody adds a cache "just
+for the console".
+
+**D4 — `GET /api/images/jobs` is the one route this phase adds, and phase 49 deferred it here by
+name.** A panel that shows "what is this fleet rendering right now" cannot be built from five routes
+that all require a job id you already have. It is **client-scoped** like every other route in the
+group (`ImageJobStore.ForClient`), never a fleet-wide listing: holding a job id is how you fetch the
+picture, so an admin console listing every tenant's ids would undo phase-25 D4 with a UI. The
+console therefore holds its own **client** key for this panel, exactly as the documents and viewer
+panels do — the admin key the rest of it uses will not open one.
+
+**It lists work, not results.** A finished job's bytes are gone in five minutes and on first read
+(47 D6), so a delivered job is still in the list, still says so, and has nothing to fetch.
+
+*Recorded deviations, on purpose:*
+- **The brief said "no new API".** It also inherited phase 49's note that the listing "would be
+  phase 51's job done in the wrong phase". The listing is therefore not a gap in an earlier phase —
+  it was deliberately deferred to this one, and it is the only route added.
+- **`ConsoleContractTests` does not require `jobs[].queuePosition`.** It is present only while a job
+  is queued, and a read set that demanded it would either fail on a healthy fleet or force the
+  payload to carry a meaningless zero. It has its own test, against a job genuinely waiting behind
+  another on a worker given real per-step work.
+- **The Images panel polls on its own timer rather than on the status poll**, and only while
+  something is in flight. The status poll runs whether or not anybody has given the console a client
+  key, and a background 401 prompt every few seconds would be unusable.
+
+**Rule 3 survived, and rule 5 survived again.** The panel is plain HTML/CSS/JS reusing the existing
+CSS variables — the progress bar is two divs and a width percentage. **Zero** new dependencies, no
+bundler, no framework, no CDN script, and `InferHub.Shared.csproj` is still empty.
 
 ## Auth model (three independent token sets)
 

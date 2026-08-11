@@ -151,10 +151,16 @@ guess**, hub-driven weight pulls, and a licence consent per model — because tw
 to accept for you. **v3.17 ships the model the track was asked for**:
 [360° panoramas](#360-panoramas-v317) from a rank-128 LoRA over that 20B base, with the projection
 *declared* rather than guessed from an aspect ratio, a seam that is measured and never repaired, and
-a hand-written WebGL viewer.
+a hand-written WebGL viewer. **v3.18 lets you change a picture** rather than only make one:
+[inpainting, img2img and variations](#editing-a-picture-v318) as their own capability kind, with the
+mask convention converted where a pixel may actually be read and a strength knob that bills the steps
+it ran. **v3.19 closes the track** the way v3.13 closed the last one:
+[one page](#one-box-one-card-a-picture-a-panorama-an-edit-v319) that shows what each node can
+generate, what it is generating *right now and at which step*, what it refused and *why*, and a
+cancel button — plus the series to alert on and a walkthrough somebody can follow top to bottom.
 
-Next in this track: **editing** — img2img, inpainting and variations as their own capability kind
-rather than a per-model operation list.
+Six releases, a whole new modality, and still **zero new dependencies**: PyTorch is a child process,
+not a package.
 Still on the table beyond that: teaching the **coordinator** about backend health as a typed signal
 (a status column and an alert, rather than a line in the node's log), **active-active**
 multi-coordinator load sharing, an **OTLP push** exporter behind an explicit opt-in, and a dedicated
@@ -190,7 +196,7 @@ small one and wonders where the audio went. All tags are under
 | `inferhub-node` | ~340 MB | amd64 + arm64 | You already run Ollama, vLLM, LM Studio or a hosted OpenAI-compatible endpoint and want a node in front of it. Also the right one for **solo mode** and for a **vector-store-only** box. |
 | `inferhub-node:ollama` | ~4 GB | amd64 | You want *one* `docker run` on a GPU box with nothing installed on the host. Ollama runs inside the container, supervised. `:gpu` is an alias of the same digest — it works fine with no card. |
 | `inferhub-node:tools` | ~6 GB | amd64 | The above, **plus speech**: Python, `faster-whisper` and `piper`, so `/v1/audio/transcriptions` and `/v1/audio/speech` work out of the box. |
-| `inferhub-node:diffusion` | ~12 GB | amd64 | **Text to image** (v3.14+): PyTorch, `diffusers`, `bitsandbytes` and seven recipes — SDXL, SD 1.5, FLUX.1-schnell, Qwen-Image, SD 3.5 Medium, SDXL-Turbo and [`qwen-360`](#360-panoramas-v317) — so `/v1/images/generations` works out of the box. **You need a card.** |
+| `inferhub-node:diffusion` | ~12 GB | amd64 | **Text to image** (v3.14+) and **editing** (v3.18+): PyTorch, `diffusers`, `bitsandbytes` and seven recipes — SDXL, SD 1.5, FLUX.1-schnell, Qwen-Image, SD 3.5 Medium, SDXL-Turbo and [`qwen-360`](#360-panoramas-v317) — so `/v1/images/generations`, [`/edits` and `/variations`](#editing-a-picture-v318) work out of the box. **You need a card.** |
 
 Three rules of thumb that save the mistake each way:
 
@@ -1569,6 +1575,105 @@ The two audio counters are deliberately separate: a transcription is metered in 
 synthesis in **characters**, and one summed `units` series would add the two into a number nobody can
 tell is wrong. `inferhub_profile_state{state="refused"}` and `{state="conflict"}` are the two worth
 alerting on — both mean a box is not doing what your fleet configuration says it should.
+
+## One box, one card: a picture, a panorama, an edit (v3.19+)
+
+The image track is six releases and the sections above tell it in pieces. Here it is once, top to
+bottom, on **one GPU box beside the fleet you already have** — and the point of putting `:diffusion`
+in its own container is that this box does nothing else.
+
+**1. The node.** A card, a volume, and the same enrollment secret your other nodes use.
+
+```bash
+docker run -d --name inferhub-diffusion --gpus all \
+  -e Coordinator__Url=http://hub:8080 \
+  -e Coordinator__EnrollmentSecret="$ENROLL" \
+  -e Node__Vram__BudgetMiB=24576 \
+  -v inferhub-diffusion:/data \
+  ghcr.io/dev-art-solutions/inferhub-node:diffusion
+```
+
+It comes up in seconds and declares **nothing**. That is correct: weights are fetched on a background
+thread and a recipe is offered only once it is proven loadable, so the fleet never routes at a model
+that is not there. Watch it fill in:
+
+```
+[diffusion] device: cuda (NVIDIA GeForce RTX 3090 Ti), 23285 MiB free of 24563 MiB
+[diffusion] offering recipes: none (editing: none) (fetching: sd15, sdxl)
+[diffusion] 'sd15' is ready; offering recipes: sd15 (editing: sd15)
+[diffusion] 'sdxl' is ready; offering recipes: sd15, sdxl (editing: sd15, sdxl)
+```
+
+**2. A picture**, through the API your app already calls — the hub routes `image` to this box and
+`chat` to whatever else you have:
+
+```bash
+curl http://hub:5080/v1/images/generations -H "Authorization: Bearer $CLIENT_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"sdxl","prompt":"a lighthouse in a storm, oil painting","size":"1024x1024"}' \
+  | jq -r '.data[0].b64_json' | base64 -d > out.png
+```
+
+**3. A slow one, as a job.** A 50-step render is not a request. Submit it, watch the steps, and
+cancel it if you change your mind — the worker stays warm either way:
+
+```bash
+ID=$(curl -sS http://hub:5080/api/images/jobs -H "Authorization: Bearer $CLIENT_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen-360","prompt":"a mountain monastery courtyard at golden hour","size":"2048x1024"}' | jq -r .id)
+
+curl -N http://hub:5080/api/images/jobs/$ID/events -H "Authorization: Bearer $CLIENT_KEY"
+curl -sS http://hub:5080/api/images/jobs/$ID/content/0 -H "Authorization: Bearer $CLIENT_KEY" -o pano.png
+```
+
+**4. Look around it.** `/console.html` → **360° viewer**: paste the job id. It picks its renderer from
+the projection the worker *declared*, not from the aspect ratio.
+
+**5. Change it.** A mask whose transparent pixels are the region to edit:
+
+```bash
+curl http://hub:5080/v1/images/edits -H "Authorization: Bearer $CLIENT_KEY" \
+  -F model=sdxl -F image=@room.png -F mask=@mask.png \
+  -F prompt="a tall window with morning light" \
+  -H 'X-InferHub-Image-Strength: 0.75' | jq -r '.data[0].b64_json' | base64 -d > edited.png
+```
+
+**6. Operate it from one page.** `/console.html` → **Images**: live jobs with a step bar and a cancel
+button, every recipe on the fleet with **why** it is or is not offered, and the card's arithmetic —
+budget, reserve, what is resident, what the worker actually measured.
+
+That last one is the part worth clicking before you need it. A recipe whose licence you have not
+accepted, or one too big for the budget you declared, is **not offered** — which is the right routing
+behaviour and, without this panel, indistinguishable from a model nobody installed:
+
+| Recipe | Offered for | Why not |
+|---|---|---|
+| `sdxl` | generate, edit | |
+| `sdxl-turbo` | — | licence `sai-nc-community` is not permissive and is not in `Tools:Image:AcceptedLicenses` |
+| `qwen-image` | — | wants 19000 MiB and does not fit this node's declared budget minus its reserve |
+
+**Nothing about it is a gallery.** Thumbnails in that panel live in your browser tab and vanish on
+reload; the hub drops a result on delivery or after five minutes, whichever comes first. There is no
+history endpoint and there is not going to be one — that is the same refusal as "no URL in the
+response", one layer up.
+
+### The image series
+
+| Series | Labels | Present when |
+|---|---|---|
+| `inferhub_image_queue_depth`, `inferhub_image_jobs_active`, `inferhub_image_retained_bytes` | — | **always, at zero** — a hub with a queue and nothing in it is saying something |
+| `inferhub_image_jobs_total` | `recipe`, `outcome` | a recipe has finished at least one job |
+| `inferhub_image_job_seconds` (histogram) | `recipe` | ditto — buckets at 1/5/15/60/300s, from **submission**, so queue time counts |
+| `inferhub_image_megapixel_steps_total` | `kind`, `model` | work has been metered |
+| `inferhub_image_recipe` | `node`, `recipe`, `reason` | a node reports image recipes |
+| `inferhub_node_vram_budget_mib`, `_reserve_mib`, `_resident_mib` | `node` | **a budget is declared** |
+| `inferhub_node_vram_measured_mib` | `node` | the worker reported a reading |
+
+`inferhub_image_recipe{reason="unlicensed"}` and `{reason="over-budget"}` are the two to alert on:
+both mean a model you configured is not being served and nothing else in the fleet will tell you.
+
+**A node with no declared VRAM budget emits no VRAM series at all** — not a zero. Undeclared is not
+"this box has no card"; it means nobody set `Node:Vram:BudgetMiB` and there is no gate on that box.
 
 ## OpenAI-compatible API
 

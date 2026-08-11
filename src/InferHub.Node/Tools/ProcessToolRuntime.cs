@@ -187,7 +187,93 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
             .OrderBy(tool => tool.Id, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        return new NodeToolState(nodeId, Enabled: true, tools, DateTimeOffset.UtcNow, VramState(snapshot));
+        return new NodeToolState(
+            nodeId,
+            Enabled: true,
+            tools,
+            DateTimeOffset.UtcNow,
+            VramState(snapshot),
+            ImageRecipeStates(tools));
+    }
+
+    /// <summary>
+    /// Every recipe in the catalogue and why each one is or is not offered (phase 51, D1).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The order of the checks is the order of the fixes</b>, and it is not arbitrary. A recipe
+    /// that is both unlicensed and too big for the card reports <c>unlicensed</c>, because reading a
+    /// licence is the decision that has to happen first and telling somebody to buy a bigger card
+    /// for a model they may not be allowed to run is the wrong advice in the wrong order.
+    /// </para>
+    /// <para>
+    /// <c>not-ready</c> is last and is deliberately a <em>catch-all</em>: weights still fetching, a
+    /// fetch that failed, a recipe not marked <c>cpuViable</c> on a CPU-only box, or a pool that is
+    /// not running. Splitting those apart here would mean the node inferring a worker's reasons,
+    /// and the worker already logs the real one — so this reason's job is to send the operator to
+    /// the log rather than to guess on their behalf.
+    /// </para>
+    /// </remarks>
+    private IReadOnlyList<NodeImageRecipeState>? ImageRecipeStates(IReadOnlyList<NodeToolInfo> tools)
+    {
+        if (recipes.Count == 0)
+        {
+            // Not an empty list: a node with no image recipes has nothing to say here, and an empty
+            // array would put an "Images" heading on the console of every chat-only box.
+            return null;
+        }
+
+        var offeredKinds = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var capability in tools.SelectMany(tool => tool.Capabilities))
+        {
+            if (!CapabilityKinds.IsImageKind(capability.Kind))
+            {
+                continue;
+            }
+
+            foreach (var model in capability.Models)
+            {
+                if (!offeredKinds.TryGetValue(model, out var kinds))
+                {
+                    offeredKinds[model] = kinds = new List<string>();
+                }
+
+                if (!kinds.Contains(capability.Kind, StringComparer.OrdinalIgnoreCase))
+                {
+                    kinds.Add(capability.Kind);
+                }
+            }
+        }
+
+        var disabled = profileDisabledModels;
+
+        return recipes.Values
+            .OrderBy(recipe => recipe.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(recipe =>
+            {
+                var kinds = offeredKinds.TryGetValue(recipe.Id, out var found)
+                    ? found.OrderBy(k => k, StringComparer.Ordinal).ToArray()
+                    : Array.Empty<string>();
+
+                var reason = kinds.Length > 0 ? ImageRecipeReasons.Ok
+                    : !recipe.IsLicensed(options.Image.AcceptedLicenses) ? ImageRecipeReasons.Unlicensed
+                    : !VramBudget.Fits(vram.BudgetMiB, vram.ReserveMiB, recipe.VramMiB) ? ImageRecipeReasons.OverBudget
+                    : disabled.Any(id => string.Equals(id?.Trim(), recipe.Id, StringComparison.OrdinalIgnoreCase))
+                        ? ImageRecipeReasons.Narrowed
+                        : ImageRecipeReasons.NotReady;
+
+                return new NodeImageRecipeState(
+                    recipe.Id,
+                    kinds.Length > 0,
+                    reason,
+                    kinds,
+                    recipe.VramMiB,
+                    recipe.LicenseId,
+                    recipe.LicenseUrl,
+                    recipe.Quantization);
+            })
+            .ToArray();
     }
 
     /// <summary>

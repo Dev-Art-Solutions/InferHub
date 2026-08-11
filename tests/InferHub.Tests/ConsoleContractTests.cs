@@ -99,7 +99,51 @@ public class ConsoleContractTests
         "nodes[].tools.tools[].failures",
         "nodes[].tools.tools[].lastError",
         "nodes[].tools.tools[].capabilities[].kind",
-        "nodes[].tools.tools[].capabilities[].models"
+        "nodes[].tools.tools[].capabilities[].models",
+
+        // Phase 51 — the Images panel's recipe table, the refusals strip's image rows, and the
+        // card. Every one of these is a field a panel renders directly, and the whole point of the
+        // list is that a payload which stops carrying one fails here rather than rendering
+        // `undefined` into somebody's browser.
+        "nodes[].tools.images[].id",
+        "nodes[].tools.images[].offered",
+        "nodes[].tools.images[].reason",
+        "nodes[].tools.images[].kinds",
+        "nodes[].tools.images[].vramMiB",
+        "nodes[].tools.images[].licenseId",
+        "nodes[].tools.images[].licenseUrl",
+        "nodes[].tools.vram.budgetMiB",
+        "nodes[].tools.vram.reserveMiB",
+        "nodes[].tools.vram.measuredMiB",
+        "nodes[].tools.vram.resident[].model",
+        "nodes[].tools.vram.resident[].vramMiB",
+        "nodes[].tools.vram.resident[].inUse"
+    ];
+
+    /// <summary>
+    /// What the Images panel reads from <c>GET /api/images/jobs</c> (phase 51).
+    /// </summary>
+    /// <remarks>
+    /// A separate list because it is a separate payload with a separate guard: the job routes are
+    /// client-scoped and the console holds its own <em>client</em> key for them, exactly as the
+    /// documents panel does.
+    /// </remarks>
+    private static readonly string[] ImageJobPaths =
+    [
+        "queued",
+        "active",
+        "retainedBytes",
+        "retentionSeconds",
+        "jobs[].id",
+        "jobs[].state",
+        "jobs[].model",
+        "jobs[].n",
+        "jobs[].createdAt"
+
+        // `queuePosition` is deliberately NOT here: it is present only while a job is queued, and
+        // a running one omits it — so a list that demanded it would either be wrong or would force
+        // the payload to carry a meaningless zero. It has its own test below, against a job that
+        // really is waiting behind another.
     ];
 
     /// <summary>What the node table and the model-management panel read from <c>/api/admin/nodes</c>.</summary>
@@ -161,6 +205,100 @@ public class ConsoleContractTests
     }
 
     /// <summary>
+    /// The Images panel's own payload (phase 51), against a real mesh with a real job on it.
+    /// </summary>
+    /// <remarks>
+    /// It runs against <c>ImageMesh</c> rather than the console fixture because the listing is
+    /// produced by the real registry over a real dispatch — a hand-built <c>ImageJobStore</c> would
+    /// prove the record's shape and say nothing about what the route serialises, which is the half
+    /// that renders <c>undefined</c>.
+    /// </remarks>
+    [Fact]
+    public async Task EveryFieldTheImagesPanelReadsExistsInTheJobListing()
+    {
+        await using var mesh = await ImageMesh.StartAsync();
+
+        var submitted = await mesh.Client.PostAsync(
+            "/api/images/jobs",
+            new StringContent(
+                JsonSerializer.Serialize(ImageEndpointTests.Body()),
+                System.Text.Encoding.UTF8,
+                "application/json"));
+
+        Assert.Equal(System.Net.HttpStatusCode.Accepted, submitted.StatusCode);
+
+        var listing = JsonDocument.Parse(await (await mesh.Client.GetAsync("/api/images/jobs")).Content.ReadAsStringAsync());
+
+        foreach (var path in ImageJobPaths)
+        {
+            Assert.True(
+                Resolves(listing.RootElement, path),
+                $"GET /api/images/jobs has no '{path}' — the Images panel renders undefined for it");
+        }
+    }
+
+    /// <summary>
+    /// A queued job reports its place in line (phase 51, D1) — which is the one thing the panel can
+    /// say about a job that has not started, and the reason a 202 is a position rather than a wait.
+    /// </summary>
+    /// <remarks>
+    /// Arranged by giving the worker real per-step work so the first job genuinely occupies the
+    /// node while the second waits behind it. A hand-built store would have proved the property of
+    /// a record rather than of a fleet.
+    /// </remarks>
+    [Fact]
+    public async Task AQueuedJobReportsItsPlaceInLine()
+    {
+        await using var mesh = await ImageMesh.StartAsync(workerArguments: ["--image-step-ms", "150"]);
+
+        async Task SubmitAsync() => await mesh.Client.PostAsync(
+            "/api/images/jobs",
+            new StringContent(
+                JsonSerializer.Serialize(ImageEndpointTests.Body()),
+                System.Text.Encoding.UTF8,
+                "application/json"));
+
+        await SubmitAsync();
+        await SubmitAsync();
+
+        var listing = JsonDocument.Parse(
+            await (await mesh.Client.GetAsync("/api/images/jobs")).Content.ReadAsStringAsync());
+
+        var queued = listing.RootElement.GetProperty("jobs").EnumerateArray()
+            .FirstOrDefault(job => job.GetProperty("state").GetString() == "queued");
+
+        Assert.Equal(JsonValueKind.Object, queued.ValueKind);
+        Assert.True(queued.GetProperty("queuePosition").GetInt32() >= 1);
+    }
+
+    /// <summary>
+    /// A job listing is <b>client-scoped</b>, and this is the assertion that keeps it that way
+    /// (phase-25 D4). Holding a job id is how you fetch the picture, so a fleet-wide listing would
+    /// be an authorization mistake wearing a console's clothes.
+    /// </summary>
+    [Fact]
+    public async Task TheJobListingShowsOnlyThisClientsJobs()
+    {
+        await using var mine = await ImageMesh.StartAsync(clientId: "tenant-a");
+
+        await mine.Client.PostAsync(
+            "/api/images/jobs",
+            new StringContent(
+                JsonSerializer.Serialize(ImageEndpointTests.Body()),
+                System.Text.Encoding.UTF8,
+                "application/json"));
+
+        var listed = JsonDocument.Parse(
+            await (await mine.Client.GetAsync("/api/images/jobs")).Content.ReadAsStringAsync());
+
+        Assert.Single(listed.RootElement.GetProperty("jobs").EnumerateArray());
+
+        // The same store, asked as somebody else. Not "a 403" and not "an empty list because the
+        // store is empty" — an empty list because that job is not theirs.
+        Assert.Empty(mine.Jobs.Store.ForClient("tenant-b"));
+    }
+
+    /// <summary>
     /// Guards the guard. A read set that names a field nothing reads is a list somebody will trust
     /// while the panel beside it quietly renders a dash.
     /// </summary>
@@ -169,7 +307,7 @@ public class ConsoleContractTests
     {
         var sources = string.Concat(ConsoleFixture.StaticFiles().Select(File.ReadAllText));
 
-        foreach (var path in StatusPaths.Concat(AdminNodePaths).Concat(ProfilePaths))
+        foreach (var path in StatusPaths.Concat(AdminNodePaths).Concat(ProfilePaths).Concat(ImageJobPaths))
         {
             var leaf = path.Split('.').Last().Replace("[]", string.Empty);
 
@@ -366,7 +504,41 @@ internal sealed class ConsoleFixture : IAsyncDisposable
                         LastError: null,
                         LastErrorAtUtc: null)
                 ],
-                now));
+                now,
+
+                // Phase 51. A declared budget with something on the card, so the Images panel's
+                // VRAM table and the status page's column have a populated example to resolve
+                // against — an undeclared budget is null here and produces no row anywhere, which
+                // is the behaviour, not a gap.
+                new NodeVramState(
+                    BudgetMiB: 24576,
+                    ReserveMiB: 2048,
+                    MeasuredMiB: 24564,
+                    [new NodeResidentModel("sdxl", 8000, InUse: true)]),
+
+                // One offered recipe and one held back, because the panel's whole subject is the
+                // second kind: a recipe the node holds and will not run is absent from every
+                // capability list, which reads exactly like a model nobody installed.
+                [
+                    new NodeImageRecipeState(
+                        "sdxl",
+                        Offered: true,
+                        ImageRecipeReasons.Ok,
+                        ["image", "image-edit"],
+                        VramMiB: 8000,
+                        LicenseId: "CreativeML-OpenRAIL++-M",
+                        LicenseUrl: "https://example.invalid/sdxl-licence",
+                        Quantization: "none"),
+                    new NodeImageRecipeState(
+                        "sdxl-turbo",
+                        Offered: false,
+                        ImageRecipeReasons.Unlicensed,
+                        [],
+                        VramMiB: 8000,
+                        LicenseId: "sai-nc-community",
+                        LicenseUrl: "https://example.invalid/turbo-licence",
+                        Quantization: "none")
+                ]));
         }
 
         builder.Services.AddSingleton<INodeRegistry>(registry);

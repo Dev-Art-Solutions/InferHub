@@ -43,6 +43,7 @@ public static class ImageJobEndpoints
     public static IEndpointRouteBuilder MapImageJobEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/api/images/jobs", SubmitAsync);
+        app.MapGet("/api/images/jobs", List);
         app.MapGet("/api/images/jobs/{id}", Get);
         app.MapGet("/api/images/jobs/{id}/events", WatchAsync);
         app.MapGet("/api/images/jobs/{id}/content/{index:int}", Content);
@@ -165,6 +166,54 @@ public static class ImageJobEndpoints
             ImageJobView.Render(record, jobs.QueuePosition(record.Id)),
             ImageJobView.ContentType,
             statusCode: StatusCodes.Status202Accepted);
+    }
+
+    /// <summary>
+    /// This client's jobs, oldest first (phase 51).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Phase 49 deferred this route here by name</b>, and it is the one thing phase 51 adds to the
+    /// API: a console that shows "what is this fleet rendering right now, and at which step" cannot
+    /// be built out of five routes that all need a job id you already have. Everything else the
+    /// Images panel needs, 46–50 already expose.
+    /// </para>
+    /// <para>
+    /// <b>Client-scoped, like every other route here</b> — <see cref="ImageJobStore.ForClient"/>,
+    /// never a fleet-wide listing. An admin console showing every tenant's job ids would be
+    /// phase-25 D4 undone by a UI, and the ids are the capability: holding one is how you fetch the
+    /// picture. The console therefore holds its own <em>client</em> key, exactly as the documents
+    /// panel does.
+    /// </para>
+    /// <para>
+    /// <b>It is not a gallery.</b> A finished job's bytes are gone in five minutes and on first read
+    /// (47 D6), so this lists <em>work</em>, not results — a job whose images have been delivered is
+    /// still here, and still says so, with nothing to fetch.
+    /// </para>
+    /// </remarks>
+    private static IResult List(HttpContext httpContext, ImageJobRegistry jobs)
+    {
+        var client = BearerApiKeyMiddleware.ClientOf(httpContext);
+
+        var records = jobs.Store.ForClient(client.Id)
+            .Select(record => ImageJobView.Describe(record, jobs.QueuePosition(record.Id)))
+            .ToArray();
+
+        return Results.Text(
+            JsonSerializer.Serialize(
+                new
+                {
+                    jobs = records,
+
+                    // The queue's own depth, so the panel can say "3 waiting" without counting rows
+                    // it may not be allowed to see.
+                    queued = jobs.Store.Queued().Count,
+                    active = jobs.Store.ActiveCount(),
+                    retainedBytes = jobs.Store.RetainedBytes(),
+                    retentionSeconds = jobs.Store.Options.RetentionSeconds
+                },
+                ImageJobView.JsonOptions),
+            ImageJobView.ContentType);
     }
 
     private static IResult Get(HttpContext httpContext, ImageJobRegistry jobs, string id)

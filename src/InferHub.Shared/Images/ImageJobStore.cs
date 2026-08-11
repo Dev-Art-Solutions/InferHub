@@ -658,6 +658,12 @@ public static class ImageJobView
 
     public const string ContentType = "application/json";
 
+    /// <summary>
+    /// The same options the single-job document is written with, so a listing and a fetch of one of
+    /// its rows cannot disagree about which keys are present (phase 51).
+    /// </summary>
+    public static JsonSerializerOptions JsonOptions => Json;
+
     public static string Render(ImageJobRecord record, int? queuePosition) =>
         JsonSerializer.Serialize(Describe(record, queuePosition), Json);
 

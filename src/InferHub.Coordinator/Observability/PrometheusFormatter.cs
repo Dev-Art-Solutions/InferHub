@@ -24,7 +24,20 @@ public sealed record PrometheusScrape(
     IReadOnlyList<CapabilitySummary>? Capabilities = null,
     IReadOnlyList<NodeToolState>? Tools = null,
     IReadOnlyList<ProfileScrapeSample>? Profiles = null,
-    IReadOnlyList<NodeCorpusState>? Corpora = null);
+    IReadOnlyList<NodeCorpusState>? Corpora = null,
+    // Phase 51, appended with a default like every block before it.
+    ImageQueueScrapeSample? ImageQueue = null);
+
+/// <summary>
+/// The image job queue, as a scrape sees it (phase 51, D2).
+/// </summary>
+/// <remarks>
+/// <b>Fleet gauges, so always present at zero</b> — the opposite of the per-recipe series, and
+/// deliberately: "nothing is queued" is a statement about a hub that has an image queue, whereas
+/// "sd35-medium has rendered nothing" is an absence. Phase-28 D5 draws exactly that line and this
+/// is the pair that shows it.
+/// </remarks>
+public sealed record ImageQueueScrapeSample(int Queued, int Active, long RetainedBytes);
 
 /// <summary>
 /// How many nodes are in each state under a profile (phase 45). <c>conflict</c> is the hub's own
@@ -126,7 +139,20 @@ public static class PrometheusFormatter
         PerClient(builder, scrape.Clients);
         PerCapability(builder, scrape.Capabilities);
         PerTool(builder, scrape.Tools);
+        if (scrape.ImageQueue is { } images)
+        {
+            // Fleet gauges: present at zero, because a hub that has an image queue and nothing in
+            // it is saying something, and a dashboard cannot tell "idle" from "not scraped"
+            // otherwise.
+            Gauge(builder, "inferhub_image_queue_depth", "Image jobs waiting for a node.", images.Queued);
+            Gauge(builder, "inferhub_image_jobs_active", "Image jobs queued or running right now.", images.Active);
+            Gauge(builder, "inferhub_image_retained_bytes", "Bytes of finished image results held in memory, waiting to be collected or to expire.", images.RetainedBytes);
+        }
+
         PerAudio(builder, m.PerAudio);
+        PerImageJob(builder, m.PerImageRecipe);
+        PerImageRecipe(builder, scrape.Tools);
+        PerVram(builder, scrape.Tools);
         PerProfile(builder, scrape.Profiles);
         PerNodeCorpus(builder, scrape.Corpora);
 
@@ -235,6 +261,124 @@ public static class PrometheusFormatter
             // while somebody moved the fleet from 4-step thumbnails to 30-step 2-megapixel renders.
             Header(builder, "inferhub_image_megapixel_steps_total", "counter", "Megapixel-steps generated (width x height x steps / 1e6), as the worker reported them.");
             foreach (var a in megapixelSteps) Sample(builder, "inferhub_image_megapixel_steps_total", [("kind", a.Kind), ("model", a.Model)], a.MegapixelSteps);
+        }
+    }
+
+    /// <summary>
+    /// Image jobs per recipe (phase 51, D2): outcomes, and how long callers waited.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A recipe nobody has rendered with emits nothing</b> — phase-28 D5 again, and it matters
+    /// more here than usual: a fleet ships seven recipes and most deployments will ever use two, so
+    /// zero-filling would put five flat lines on every dashboard for models the operator has not
+    /// accepted the licence of.
+    /// </para>
+    /// <para>
+    /// The duration is a hand-written histogram: <c>_bucket</c> series with cumulative counts and a
+    /// <c>le="+Inf"</c> row, plus <c>_sum</c> and <c>_count</c>, which is exactly what the format
+    /// means by one. Buckets rather than an average because a fleet running both a one-step turbo
+    /// render and a twenty-five-step 20B panorama has an average that describes neither.
+    /// </para>
+    /// </remarks>
+    private static void PerImageJob(StringBuilder builder, IReadOnlyList<ImageJobSnapshot>? recipes)
+    {
+        if (recipes is not { Count: > 0 }) return;
+
+        Header(builder, "inferhub_image_jobs_total", "counter", "Image jobs that reached a terminal state, by recipe and outcome.");
+        foreach (var recipe in recipes)
+        {
+            foreach (var outcome in recipe.Outcomes)
+            {
+                Sample(builder, "inferhub_image_jobs_total",
+                    [("recipe", recipe.Recipe), ("outcome", outcome.Outcome)], outcome.Count);
+            }
+        }
+
+        Header(builder, "inferhub_image_job_seconds", "histogram", "How long an image job took from submission to a terminal state.");
+        foreach (var recipe in recipes)
+        {
+            for (var i = 0; i < ImageJobBuckets.Bounds.Count && i < recipe.Buckets.Count; i++)
+            {
+                Sample(builder, "inferhub_image_job_seconds_bucket",
+                    [("recipe", recipe.Recipe), ("le", FormatValue(ImageJobBuckets.Bounds[i]))], recipe.Buckets[i]);
+            }
+
+            // The +Inf bucket is not optional: without it the series is not a histogram and
+            // `histogram_quantile` returns nothing at all rather than an obviously wrong number.
+            Sample(builder, "inferhub_image_job_seconds_bucket",
+                [("recipe", recipe.Recipe), ("le", "+Inf")], recipe.Count);
+
+            Sample(builder, "inferhub_image_job_seconds_sum", [("recipe", recipe.Recipe)], recipe.SecondsTotal);
+            Sample(builder, "inferhub_image_job_seconds_count", [("recipe", recipe.Recipe)], recipe.Count);
+        }
+    }
+
+    /// <summary>
+    /// What a node says about its card (phase 51, D2), and <b>only when it said anything</b>.
+    /// </summary>
+    /// <remarks>
+    /// A node with no declared <c>Node:Vram:BudgetMiB</c> reports no VRAM block at all (48 D1), and
+    /// this emits no series for it. That asymmetry is the whole point: <c>budget_mib{node}=0</c>
+    /// reads as "this box has no VRAM", which is a different and false statement from "nobody
+    /// declared a budget on this box".
+    /// </remarks>
+    private static void PerVram(StringBuilder builder, IReadOnlyList<NodeToolState>? tools)
+    {
+        var rows = (tools ?? Array.Empty<NodeToolState>())
+            .Where(state => state.Vram is not null)
+            .Select(state => (state.NodeId, Vram: state.Vram!))
+            .ToArray();
+
+        if (rows.Length == 0) return;
+
+        Header(builder, "inferhub_node_vram_budget_mib", "gauge", "The VRAM budget an operator declared for a node, in MiB.");
+        foreach (var (node, vram) in rows) Sample(builder, "inferhub_node_vram_budget_mib", [("node", node)], vram.BudgetMiB);
+
+        Header(builder, "inferhub_node_vram_reserve_mib", "gauge", "VRAM held back for the inference backend and the display, in MiB.");
+        foreach (var (node, vram) in rows) Sample(builder, "inferhub_node_vram_reserve_mib", [("node", node)], vram.ReserveMiB);
+
+        Header(builder, "inferhub_node_vram_resident_mib", "gauge", "VRAM a node believes its resident image models are holding, in MiB.");
+        foreach (var (node, vram) in rows)
+        {
+            Sample(builder, "inferhub_node_vram_resident_mib", [("node", node)], vram.Resident.Sum(model => (long)model.VramMiB));
+        }
+
+        // The worker's own reading, and only where it gave one. It is a CROSS-CHECK and never a
+        // source of truth (48 D1) — a dashboard that alerted on the difference is doing exactly
+        // what it is for, and one that budgeted against it would have re-detected VRAM.
+        var measured = rows.Where(row => row.Vram.MeasuredMiB is > 0).ToArray();
+
+        if (measured.Length > 0)
+        {
+            Header(builder, "inferhub_node_vram_measured_mib", "gauge", "Total VRAM the node's own worker measured on the card, in MiB. A cross-check, never a budget.");
+            foreach (var (node, vram) in measured) Sample(builder, "inferhub_node_vram_measured_mib", [("node", node)], vram.MeasuredMiB!.Value);
+        }
+    }
+
+    /// <summary>
+    /// Image recipes a node holds and will not offer, and why (phase 51, D1).
+    /// </summary>
+    /// <remarks>
+    /// The alertable series in the whole phase. <c>reason="unlicensed"</c> and
+    /// <c>reason="over-budget"</c> are configuration mistakes that look exactly like a working
+    /// fleet from every other angle — the recipe is simply absent from the capability list, which
+    /// is indistinguishable from a model nobody installed.
+    /// </remarks>
+    private static void PerImageRecipe(StringBuilder builder, IReadOnlyList<NodeToolState>? tools)
+    {
+        var rows = (tools ?? Array.Empty<NodeToolState>())
+            .SelectMany(state => (state.Images ?? Array.Empty<NodeImageRecipeState>())
+                .Select(recipe => (state.NodeId, Recipe: recipe)))
+            .ToArray();
+
+        if (rows.Length == 0) return;
+
+        Header(builder, "inferhub_image_recipe", "gauge", "1 for the reason a node's image recipe is or is not offered: ok, unlicensed, over-budget, narrowed or not-ready.");
+        foreach (var (node, recipe) in rows)
+        {
+            Sample(builder, "inferhub_image_recipe",
+                [("node", node), ("recipe", recipe.Id), ("reason", recipe.Reason)], 1);
         }
     }
 

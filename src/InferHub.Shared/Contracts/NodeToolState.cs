@@ -36,10 +36,94 @@ public sealed record NodeToolState(
     /// budget has not measured anything and has no gate; reporting <c>budgetMiB: 0</c> would put a
     /// number on a dashboard that reads as "this box has no VRAM" rather than "nobody said".
     /// </remarks>
-    [property: JsonPropertyName("vram")] NodeVramState? Vram = null)
+    [property: JsonPropertyName("vram")] NodeVramState? Vram = null,
+
+    /// <summary>
+    /// Every image recipe on the box and <em>why</em> each one is or is not offered (phase 51).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the gap phase 48 left and phase 51 is where it shows.</b> A recipe whose licence
+    /// nobody accepted, or one too big for the declared budget, is simply <em>not declared</em>
+    /// (48 D2/D5) — which is the right routing behaviour and the worst possible diagnostic: at the
+    /// hub it is indistinguishable from a recipe that does not exist, from one whose weights are
+    /// still downloading, and from a typo. Each of those has a different fix and the operator has no
+    /// way to tell which they have.
+    /// </para>
+    /// <para>
+    /// So the node states it. Same mailbox as everything else here (phase-44 D6): the node reports
+    /// on its own refresh loop and the hub never asks. Empty on a node with no image recipes, which
+    /// is every node that is not running the diffusion tool.
+    /// </para>
+    /// </remarks>
+    [property: JsonPropertyName("images")] IReadOnlyList<NodeImageRecipeState>? Images = null)
 {
     public static NodeToolState Off(string nodeId) =>
         new(nodeId, Enabled: false, Array.Empty<NodeToolInfo>(), DateTimeOffset.UtcNow);
+}
+
+/// <summary>
+/// One image recipe on a node, and the answer to "why can I not use it?" (phase 51, D1).
+/// </summary>
+/// <param name="Offered">
+/// Whether the fleet can route at it right now. Everything below explains a <c>false</c>.
+/// </param>
+/// <param name="Reason">One of <see cref="ImageRecipeReasons"/>. <c>ok</c> when it is offered.</param>
+public sealed record NodeImageRecipeState(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("offered")] bool Offered,
+    [property: JsonPropertyName("reason")] string Reason,
+    /// <summary>
+    /// The capability kinds this recipe is <em>currently offered under</em> — <c>image</c>,
+    /// <c>image-edit</c>, or both.
+    /// </summary>
+    /// <remarks>
+    /// Read from what the pools declare rather than from the recipe's <c>operations</c> field, and
+    /// deliberately so: phase-48's catalogue note says the node parses exactly three things out of a
+    /// recipe file — id, licence and VRAM — and nothing here needs that to change. What the fleet
+    /// can route at is a fact the node already has. Empty for a recipe that is not offered, which is
+    /// the honest answer rather than "it could do these if only".
+    /// </remarks>
+    [property: JsonPropertyName("kinds")] IReadOnlyList<string> Kinds,
+    [property: JsonPropertyName("vramMiB")] int VramMiB,
+    [property: JsonPropertyName("licenseId")] string LicenseId,
+    [property: JsonPropertyName("licenseUrl")] string? LicenseUrl = null,
+    [property: JsonPropertyName("quantization")] string? Quantization = null);
+
+/// <summary>
+/// Why a recipe is not offered. A short list on purpose: each entry exists because the <b>fix is
+/// different</b>, and a reason nobody can act on differently is a reason that should not be here.
+/// </summary>
+public static class ImageRecipeReasons
+{
+    /// <summary>Offered. The fleet can route at it.</summary>
+    public const string Ok = "ok";
+
+    /// <summary>
+    /// Its licence is not permissive and is not in <c>Tools:Image:AcceptedLicenses</c> (48 D5).
+    /// The fix is a human reading a licence, which is why the id and the URL travel with it.
+    /// </summary>
+    public const string Unlicensed = "unlicensed";
+
+    /// <summary>
+    /// It does not fit <c>Node:Vram:BudgetMiB</c> minus the reserve (48 D2). The fix is a bigger
+    /// card, a smaller reserve, or a quantized recipe — and the numbers are here to choose between
+    /// them.
+    /// </summary>
+    public const string OverBudget = "over-budget";
+
+    /// <summary>
+    /// A coordinator profile switched it off (43 D6). The fix is on the hub, not on the box, and
+    /// that distinction is the whole reason this is not merged into <see cref="NotReady"/>.
+    /// </summary>
+    public const string Narrowed = "narrowed";
+
+    /// <summary>
+    /// The node allows it and no worker offers it: weights still fetching, a fetch that failed, a
+    /// recipe not marked <c>cpuViable</c> on a CPU-only box, or a pool that is not running. The
+    /// fix is in the node's log, and this reason is what tells an operator to go and read it.
+    /// </summary>
+    public const string NotReady = "not-ready";
 }
 
 /// <summary>

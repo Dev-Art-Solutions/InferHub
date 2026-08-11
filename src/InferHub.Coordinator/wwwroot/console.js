@@ -610,6 +610,24 @@
       if (node.corpus?.enabled && node.corpus.status === "failed") {
         items.push({ kind: "corpus", where: label, what: node.corpus.provider, why: node.corpus.error ?? "the corpus did not start" });
       }
+
+      // Phase 51. A recipe the node holds and will not offer is invisible everywhere else: it is
+      // simply absent from the capability list, which reads exactly like a model nobody installed.
+      // `not-ready` is deliberately NOT on the strip — weights that are still downloading are a
+      // fleet working correctly, and a strip that cried about every cold start would be a strip
+      // people learn to close.
+      for (const recipe of node.tools?.images ?? []) {
+        if (recipe.offered || recipe.reason === "not-ready") continue;
+
+        items.push({
+          kind: "image", where: label, what: recipe.id,
+          why: recipe.reason === "unlicensed"
+            ? `licence '${recipe.licenseId}' is not permissive and is not in Tools:Image:AcceptedLicenses`
+            : recipe.reason === "over-budget"
+              ? `wants ${recipe.vramMiB} MiB and does not fit this node's declared VRAM budget minus its reserve`
+              : "switched off on this node by a coordinator profile"
+        });
+      }
     }
 
     if (items.length === 0) {
@@ -684,6 +702,8 @@
       renderTools(latestStatus);
       renderCorpora(latestStatus);
       renderProfileNodes(latestStatus);
+      renderImageRecipes(latestStatus);
+      renderImageVram(latestStatus);
       renderRefusals(latestStatus);
     }
     renderNodes(latestNodes ?? []);
@@ -1208,7 +1228,7 @@
 
     // One client key, two panels that need one (phase 49 added the second). Both badges, or the
     // 360° viewer would keep saying "no key" after the documents panel has just been given one.
-    for (const id of ["documents-key-state", "pano-key-state"]) {
+    for (const id of ["documents-key-state", "pano-key-state", "images-key-state"]) {
       const badge = document.getElementById(id);
       if (badge) badge.style.display = clientKey ? "" : "none";
     }
@@ -1841,6 +1861,354 @@
   });
   document.getElementById("profile-apply")?.addEventListener("click", applyProfile);
   document.getElementById("profile-delete")?.addEventListener("click", deleteProfile);
+
+  // ---------------------------------------------------------------- Images (phase 51, D1)
+  //
+  // Job-centric, because "it is running and I cannot tell how far along" is the state this track
+  // produces that nothing else in the console answers. Everything here comes from routes 46–50
+  // already expose plus the one listing phase 49 deferred to this phase; the recipe and card tables
+  // come off /api/status, which the node already reports into.
+  //
+  // D3: the gallery is the browser's. Object URLs in this tab, revoked when the panel re-renders,
+  // gone on reload. Fetching a result CONSUMES it — that is the store's read-once rule, not a
+  // console decision — so a thumbnail here is the only copy that still exists.
+
+  let imageJobs = [];
+  const imageGallery = [];
+
+  const imageNote = (message, kind) => {
+    const note = document.getElementById("image-note");
+    if (!note) return;
+    note.textContent = message;
+    note.className = kind === "err" ? "row-msg" : "row-msg info";
+  };
+
+  const progressCell = (job) => {
+    if (job.state === "queued") {
+      return `<span class="progress-text">${job.queuePosition ? `#${job.queuePosition} in line` : "queued"}</span>`;
+    }
+
+    // A worker that sends no progress frames is a worker written against 3.14, and it is not
+    // broken — so the cell says what it knows rather than showing a bar stuck at zero.
+    if (job.step == null || !job.totalSteps) {
+      return `<span class="progress-text">${escapeHtml(job.state)}</span>`;
+    }
+
+    const percent = Math.max(0, Math.min(100, Math.round((job.step / job.totalSteps) * 100)));
+    return `<div class="progress">
+        <div class="progress-track"><div class="progress-fill" style="width:${percent}%"></div></div>
+        <span class="progress-text">${job.step}/${job.totalSteps}</span>
+      </div>`;
+  };
+
+  const imageElapsed = (job) => {
+    const started = Date.parse(job.createdAt);
+    if (!Number.isFinite(started)) return "—";
+    const ended = job.completedAt ? Date.parse(job.completedAt) : Date.now();
+    return fmtSeconds(Math.max(0, (ended - started) / 1000));
+  };
+
+  const renderImageJobs = () => {
+    const tbody = document.getElementById("image-jobs");
+    if (!tbody) return;
+
+    if (imageJobs.length === 0) {
+      tbody.innerHTML = emptyRow("image-jobs", 9, "No image jobs. Submit one above, or POST /api/images/jobs.");
+      return;
+    }
+
+    tbody.innerHTML = imageJobs.map(job => {
+      const ready = job.state === "succeeded" && (job.images ?? []).length > 0;
+      const warnings = (job.warnings ?? []).length > 0
+        ? ` <span class="pill pill-warn">${escapeHtml(job.warnings.join(", "))}</span>` : "";
+
+      const result = ready
+        ? `${job.images.length} image(s), ${fmtBytes(job.images.reduce((sum, i) => sum + (i.bytes ?? 0), 0))}${warnings}`
+        : job.error
+          ? `<span class="why">${escapeHtml(job.errorCode ? `${job.errorCode}: ${job.error}` : job.error)}</span>`
+          : job.reason === "delivered" ? "collected" : "—";
+
+      const actions = [];
+      if (ready) actions.push(`<button data-image-fetch="${escapeHtml(job.id)}">Fetch</button>`);
+      if (!["succeeded", "failed", "cancelled", "expired"].includes(job.state)) {
+        actions.push(`<button data-image-cancel="${escapeHtml(job.id)}">Cancel</button>`);
+      }
+
+      return `<tr>
+          <td><code title="${escapeHtml(job.id)}">${escapeHtml(job.id.slice(0, 8))}</code></td>
+          <td><code>${escapeHtml(job.model)}</code></td>
+          <td>${imageStatePill(job)}</td>
+          <td>${progressCell(job)}</td>
+          <td>${escapeHtml(job.node ?? "—")}</td>
+          <td>${imageElapsed(job)}</td>
+          <td>${job.megapixelSteps ? job.megapixelSteps.toFixed(1) : "—"}</td>
+          <td>${result}</td>
+          <td>${actions.join(" ") || "—"}</td>
+        </tr>`;
+    }).join("");
+  };
+
+  const imageStatePill = (job) => {
+    const kind = job.state === "succeeded" ? "pill-ok"
+      : job.state === "failed" ? "pill-bad"
+        : job.state === "running" ? "pill-ok"
+          : "pill-warn";
+    return `<span class="pill ${kind}">${escapeHtml(job.state)}</span>`;
+  };
+
+  const renderImageGallery = () => {
+    const host = document.getElementById("image-gallery");
+    if (!host) return;
+
+    host.innerHTML = imageGallery.map(item => `
+      <figure>
+        <img src="${item.url}" alt="${escapeHtml(item.caption)}" data-image-open="${escapeHtml(item.job)}">
+        <figcaption>${escapeHtml(item.caption)}</figcaption>
+      </figure>`).join("");
+  };
+
+  // The three-column answer to "why can I not use that model": what the node holds, what it
+  // offers, and — for everything it does not — the reason, which is the whole of phase 51 D1.
+  const renderImageRecipes = (status) => {
+    const tbody = document.getElementById("image-recipes");
+    if (!tbody) return;
+
+    const rows = (status?.nodes ?? []).flatMap(node =>
+      (node.tools?.images ?? []).map(recipe => ({ node, recipe })));
+
+    if (rows.length === 0) {
+      tbody.innerHTML = emptyRow("image-recipes", 6, "No node reports image recipes. Run the :diffusion image on a box with a card.");
+      return;
+    }
+
+    tbody.innerHTML = rows.map(({ node, recipe }) => {
+      const kinds = (recipe.kinds ?? []).map(k =>
+        `<span class="pill pill-ok">${k === "image-edit" ? "edit" : "generate"}</span>`).join(" ");
+
+      const why = recipe.offered ? "" : imageRecipeWhy(recipe);
+
+      return `<tr${recipe.offered ? "" : ' class="refusal-row"'}>
+          <td>${escapeHtml(node.name)}</td>
+          <td><code>${escapeHtml(recipe.id)}</code></td>
+          <td>${kinds || "—"}</td>
+          <td><span class="why">${why}</span></td>
+          <td>${recipe.vramMiB ? `${recipe.vramMiB} MiB` : "—"}</td>
+          <td><code>${escapeHtml(recipe.licenseId ?? "—")}</code></td>
+        </tr>`;
+    }).join("");
+  };
+
+  // Each reason names the fix, because the four of them have four different ones and a bare
+  // "not offered" sends everybody to the same wrong place first.
+  const imageRecipeWhy = (recipe) => {
+    switch (recipe.reason) {
+      case "unlicensed":
+        return `its licence <code>${escapeHtml(recipe.licenseId ?? "?")}</code> is not permissive and is not in Tools:Image:AcceptedLicenses` +
+          (recipe.licenseUrl ? ` — <a href="${escapeHtml(recipe.licenseUrl)}" target="_blank" rel="noopener">read it</a>` : "");
+      case "over-budget":
+        return `it wants ${recipe.vramMiB} MiB and does not fit this node's declared Node:Vram:BudgetMiB minus its reserve`;
+      case "narrowed":
+        return "a coordinator profile switched it off on this node";
+      case "not-ready":
+        return "no worker offers it: weights still fetching, a fetch that failed, not cpuViable on a CPU-only box, or a pool that is not running — the node's log says which";
+      default:
+        return "";
+    }
+  };
+
+  const renderImageVram = (status) => {
+    const tbody = document.getElementById("image-vram");
+    if (!tbody) return;
+
+    const rows = (status?.nodes ?? []).filter(n => n.tools?.vram);
+
+    if (rows.length === 0) {
+      // Not a zero. A node with no declared budget has not measured anything and has no gate, and
+      // "0 MiB" would read as "this box has no VRAM" (phase-48 D1, phase-28 D5).
+      tbody.innerHTML = emptyRow("image-vram", 6, "No node declares Node:Vram:BudgetMiB. Undeclared is not zero — there is simply no gate on those boxes.");
+      return;
+    }
+
+    tbody.innerHTML = rows.map(node => {
+      const vram = node.tools.vram;
+      const resident = (vram.resident ?? []);
+      const usedMiB = resident.reduce((sum, r) => sum + (r.vramMiB ?? 0), 0);
+      const free = Math.max(0, vram.budgetMiB - vram.reserveMiB - usedMiB);
+
+      const chips = resident.map(r =>
+        `<span class="pill ${r.inUse ? "pill-ok" : ""}">${escapeHtml(r.model)} ${r.vramMiB} MiB${r.inUse ? " · in use" : ""}</span>`).join(" ");
+
+      // The worker's own reading beside the declared one, never instead of it — a disagreement is
+      // the thing worth seeing, and adopting the measurement would be detecting VRAM after all.
+      const measured = vram.measuredMiB
+        ? `${vram.measuredMiB} MiB${Math.abs(vram.measuredMiB - vram.budgetMiB) > vram.budgetMiB * 0.1
+          ? ' <span class="pill pill-warn">differs</span>' : ""}`
+        : "—";
+
+      return `<tr>
+          <td>${escapeHtml(node.name)}</td>
+          <td>${vram.budgetMiB} MiB</td>
+          <td>${vram.reserveMiB} MiB</td>
+          <td>${chips || "—"}</td>
+          <td>${free} MiB</td>
+          <td>${measured}</td>
+        </tr>`;
+    }).join("");
+  };
+
+  const imageFetch = async (path, init, retryOn401 = true) => {
+    const res = await fetch(path, { ...init, headers: clientHeaders(init?.headers) });
+
+    if (res.status === 401 && retryOn401) {
+      if (!promptForClientKey("Client key required: image jobs are guarded by Auth:ApiKeys.")) return null;
+      return imageFetch(path, init, false);
+    }
+
+    return res;
+  };
+
+  const refreshImageJobs = async () => {
+    const res = await imageFetch("/api/images/jobs");
+    if (!res) return;
+
+    if (!res.ok) {
+      imageNote(`Could not list image jobs: HTTP ${res.status}`, "err");
+      return;
+    }
+
+    const body = await res.json();
+    imageJobs = body.jobs ?? [];
+    renderImageJobs();
+
+    // The queue's own numbers rather than a count of the rows above: the rows are this client's,
+    // and "3 waiting" is a fact about the fleet. `retainedBytes` is the one worth having on screen
+    // — it is the memory the hub is holding on your behalf, and the sentence next to it is why it
+    // will not grow forever.
+    imageNote(
+      `${body.active ?? 0} active, ${body.queued ?? 0} waiting · ` +
+      `${fmtBytes(body.retainedBytes ?? 0)} held in memory, dropped on delivery or after ` +
+      `${fmtSeconds(body.retentionSeconds ?? 0)}. Thumbnails below live in this tab and vanish on reload.`,
+      "info");
+
+    scheduleImagePoll();
+  };
+
+  document.getElementById("image-refresh")?.addEventListener("click", refreshImageJobs);
+
+  document.getElementById("image-submit")?.addEventListener("click", async () => {
+    const model = (document.getElementById("image-model")?.value ?? "").trim();
+    const prompt = (document.getElementById("image-prompt")?.value ?? "").trim();
+    const size = (document.getElementById("image-size")?.value ?? "").trim();
+
+    if (!model || !prompt) {
+      imageNote("A model and a prompt, at least. The model is a recipe id — sdxl, not a repo id.", "err");
+      return;
+    }
+
+    const body = { model, prompt };
+    if (size) body.size = size;
+
+    const res = await imageFetch("/api/images/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+
+    if (!res) return;
+
+    const answer = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      // The edge's own sentence, which names what is possible — a size outside the recipe's
+      // buckets, an unknown header value, a capability nobody provides. Showing our own summary
+      // instead would throw away the one message written to be acted on.
+      imageNote(answer?.error?.message ?? `HTTP ${res.status}`, "err");
+      return;
+    }
+
+    imageNote(`Submitted ${answer.id}. It is job-shaped: watch the row, or cancel it.`, "info");
+    await refreshImageJobs();
+  });
+
+  document.getElementById("image-jobs")?.addEventListener("click", async (event) => {
+    const cancelId = event.target?.getAttribute?.("data-image-cancel");
+    const fetchId = event.target?.getAttribute?.("data-image-fetch");
+
+    if (cancelId) {
+      const res = await imageFetch(`/api/images/jobs/${cancelId}`, { method: "DELETE" });
+      if (!res) return;
+
+      // Best-effort, and the UI says so rather than pretending: a job cancelled at step 27 of 28
+      // may still succeed, and if it does you get the image.
+      imageNote(res.ok
+        ? "Cancel asked for. It is cooperative — a job near the end may still finish, and you get the picture."
+        : `Could not cancel: HTTP ${res.status}`, res.ok ? "info" : "err");
+
+      await refreshImageJobs();
+      return;
+    }
+
+    if (fetchId) {
+      const res = await imageFetch(`/api/images/jobs/${fetchId}/content/0`);
+      if (!res) return;
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        imageNote(body?.error?.message ?? `HTTP ${res.status}`, "err");
+        await refreshImageJobs();
+        return;
+      }
+
+      const projection = res.headers.get("X-InferHub-Image-Projection") ?? "flat";
+      const url = URL.createObjectURL(await res.blob());
+
+      imageGallery.unshift({ job: fetchId, url, caption: `${fetchId.slice(0, 8)} · ${projection}` });
+
+      // Bounded, and the bound is the tab's memory rather than a policy: past a handful the object
+      // URLs are revoked so a long console session does not hold every picture it ever fetched.
+      while (imageGallery.length > 8) URL.revokeObjectURL(imageGallery.pop().url);
+
+      renderImageGallery();
+      imageNote(projection === "equirectangular"
+        ? "Fetched. It is equirectangular — put the job id in the 360° viewer below to look around it."
+        : "Fetched. It is in this tab only: the hub dropped its copy on delivery.", "info");
+
+      await refreshImageJobs();
+    }
+  });
+
+  // Clicking a thumbnail sends it to the viewer, which picks its renderer from the projection the
+  // worker declared rather than from the aspect ratio.
+  document.getElementById("image-gallery")?.addEventListener("click", (event) => {
+    const job = event.target?.getAttribute?.("data-image-open");
+    if (!job) return;
+    const input = document.getElementById("pano-job");
+    if (input) input.value = job;
+    document.getElementById("pano-load")?.click();
+  });
+
+  // A job with a step counter changes several times a second on a fast recipe, and once every few
+  // seconds on a slow one — so the panel polls only while something is actually in flight, and
+  // stops when the list goes quiet. It is deliberately NOT wired into the status poll: that runs
+  // whether or not anybody has given the console a client key, and a background 401 prompt every
+  // few seconds would be unusable.
+  let imagePoll = null;
+
+  const scheduleImagePoll = () => {
+    const busy = imageJobs.some(job => !["succeeded", "failed", "cancelled", "expired"].includes(job.state));
+
+    if (!busy) {
+      if (imagePoll) { clearTimeout(imagePoll); imagePoll = null; }
+      return;
+    }
+
+    if (imagePoll) return;
+
+    imagePoll = setTimeout(async () => {
+      imagePoll = null;
+      await refreshImageJobs();
+    }, 1500);
+  };
 
   // ---------------------------------------------------------------- 360° viewer (phase 49)
   //

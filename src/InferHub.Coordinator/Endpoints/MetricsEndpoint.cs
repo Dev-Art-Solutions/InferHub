@@ -30,7 +30,8 @@ public static class MetricsEndpoint
             IClusterMembership membership,
             IProfileRegistry profiles,
             NodeToolRegistry toolStates,
-            NodeCorpusRegistry corpora) =>
+            NodeCorpusRegistry corpora,
+            IServiceProvider services) =>
         {
             var now = DateTimeOffset.UtcNow;
 
@@ -54,7 +55,17 @@ public static class MetricsEndpoint
                 // a gauge, it is a memory — and the fleet counters already say a node is missing.
                 nodes.Select(node => toolStates.Of(node.NodeId)).OfType<NodeToolState>().ToArray(),
                 ProfileSamples(nodes, profiles),
-                nodes.Select(node => corpora.Of(node.NodeId)).OfType<NodeCorpusState>().ToArray());
+                nodes.Select(node => corpora.Of(node.NodeId)).OfType<NodeCorpusState>().ToArray(),
+
+                // Resolved rather than injected, so a host that maps /metrics without the image
+                // surface — every test fixture that predates phase 51 — keeps working and simply
+                // emits no queue gauges.
+                services.GetService(typeof(ImageJobRegistry)) is ImageJobRegistry images
+                    ? new ImageQueueScrapeSample(
+                        images.Store.Queued().Count,
+                        images.Store.ActiveCount(),
+                        images.Store.RetainedBytes())
+                    : null);
 
             return Results.Text(PrometheusFormatter.Format(scrape), PrometheusFormatter.ContentType);
         });

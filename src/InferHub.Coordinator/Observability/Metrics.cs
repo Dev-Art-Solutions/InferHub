@@ -26,6 +26,9 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
     private readonly ConcurrentDictionary<string, VectorCollectionCounter> perCollection = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<(string Kind, string Model), ToolUnitCounter> perAudio = new();
 
+    /// <summary>Image jobs per recipe (phase 51): outcomes, and how long they took.</summary>
+    private readonly ConcurrentDictionary<string, ImageJobCounter> perImageRecipe = new(StringComparer.Ordinal);
+
     public void RecordRequestStart(string nodeId)
     {
         Interlocked.Increment(ref requestsTotal);
@@ -116,6 +119,29 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
                 counter.Add(ref counter.MegapixelSteps, units);
                 break;
         }
+    }
+
+    /// <summary>
+    /// An image job that reached a terminal state (phase 51, D2): which recipe, how it ended, and
+    /// how long it took from submission.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Called from the one place a job finishes — <c>ImageJobRegistry</c> — for the same reason the
+    /// unit counter is called from the one place a job succeeds: the number on a dashboard and the
+    /// number on a bill must not come from two definitions of "done".
+    /// </para>
+    /// <para>
+    /// <b>Every outcome is counted, not just success.</b> A fleet whose <c>failed</c> and
+    /// <c>cancelled</c> counters were absent would look identical whether it was healthy or
+    /// dropping every third render — and "how many of my jobs fail" is the first question anyone
+    /// asks of a queue.
+    /// </para>
+    /// </remarks>
+    public void RecordImageJob(string recipe, string outcome, double seconds)
+    {
+        var counter = perImageRecipe.GetOrAdd(recipe, _ => new ImageJobCounter());
+        counter.Record(outcome, seconds);
     }
 
     public void RecordVectorReplicaHealed() => Interlocked.Increment(ref vectorReplicasHealed);
@@ -213,7 +239,11 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
             Interlocked.Read(ref vectorUnderReplicated),
             perNodeSnapshot,
             perCollectionSnapshot,
-            perAudioSnapshot);
+            perAudioSnapshot,
+            perImageRecipe
+                .Select(pair => pair.Value.Read(pair.Key))
+                .OrderBy(snapshot => snapshot.Recipe, StringComparer.Ordinal)
+                .ToArray());
     }
 
     private static VectorCollectionMetricsSnapshot SnapshotOf(string collection, VectorCollectionCounter counter)
@@ -288,6 +318,64 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
         }
     }
 
+    /// <summary>
+    /// One recipe's image jobs: a count per outcome, and the duration total plus a small set of
+    /// cumulative buckets (phase 51, D2).
+    /// </summary>
+    /// <remarks>
+    /// <b>Buckets rather than an average</b>, because an average render time over a fleet that runs
+    /// both <c>sdxl-turbo</c> at one step and <c>qwen-360</c> at twenty-five is a number describing
+    /// nothing. The bucket bounds are fixed and few — a diffusion job's interesting range is
+    /// seconds-to-minutes and nobody needs a histogram with thirty buckets to see it — and they are
+    /// written out cumulatively because that is what the exposition format's <c>_bucket</c> series
+    /// means.
+    /// </remarks>
+    private sealed class ImageJobCounter
+    {
+        /// <summary>Seconds. A 1-step turbo render lands in the first, a 20B panorama in the last.</summary>
+        public static IReadOnlyList<double> Bounds => ImageJobBuckets.Bounds;
+
+        private readonly object gate = new();
+        private readonly Dictionary<string, long> outcomes = new(StringComparer.Ordinal);
+        private readonly long[] buckets = new long[Bounds.Count];
+
+        private long count;
+        private double secondsTotal;
+
+        public void Record(string outcome, double seconds)
+        {
+            lock (gate)
+            {
+                outcomes[outcome] = outcomes.GetValueOrDefault(outcome) + 1;
+                count++;
+                secondsTotal += Math.Max(0, seconds);
+
+                for (var i = 0; i < Bounds.Count; i++)
+                {
+                    if (seconds <= Bounds[i])
+                    {
+                        buckets[i]++;
+                    }
+                }
+            }
+        }
+
+        public ImageJobSnapshot Read(string recipe)
+        {
+            lock (gate)
+            {
+                return new ImageJobSnapshot(
+                    recipe,
+                    outcomes.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                        .Select(pair => new ImageOutcomeCount(pair.Key, pair.Value))
+                        .ToArray(),
+                    count,
+                    secondsTotal,
+                    buckets.ToArray());
+            }
+        }
+    }
+
     private sealed class VectorCollectionCounter
     {
         public long Queries;
@@ -320,7 +408,33 @@ public sealed record MetricsSnapshot(
     IReadOnlyList<VectorCollectionMetricsSnapshot> PerCollection,
     // Appended in phase 45 with a default, so every existing constructor call and every test that
     // builds a snapshot by hand keeps compiling and keeps meaning what it meant.
-    IReadOnlyList<ToolUnitsSnapshot>? PerAudio = null);
+    IReadOnlyList<ToolUnitsSnapshot>? PerAudio = null,
+    // Appended in phase 51 with a default, for the same reason PerAudio was in 45.
+    IReadOnlyList<ImageJobSnapshot>? PerImageRecipe = null);
+
+/// <summary>
+/// One recipe's image jobs (phase 51): how they ended, and how long they took.
+/// </summary>
+/// <remarks>
+/// A recipe nobody has rendered with produces <b>no entry at all</b> — phase-28 D5 for the sixth
+/// time. A zero here would put "sd35-medium: 0 jobs, 0 seconds" on a dashboard for a model the
+/// operator has never accepted the licence of and may never run.
+/// </remarks>
+public sealed record ImageJobSnapshot(
+    string Recipe,
+    IReadOnlyList<ImageOutcomeCount> Outcomes,
+    long Count,
+    double SecondsTotal,
+    /// <summary>Cumulative counts against <c>ImageJobBuckets.Bounds</c>, in that order.</summary>
+    IReadOnlyList<long> Buckets);
+
+public sealed record ImageOutcomeCount(string Outcome, long Count);
+
+/// <summary>The duration buckets, exposed so the formatter and its test read the same list.</summary>
+public static class ImageJobBuckets
+{
+    public static IReadOnlyList<double> Bounds { get; } = [1, 5, 15, 60, 300];
+}
 
 /// <summary>
 /// Tool work per <c>(kind, model)</c>, in whichever unit that kind is measured in. A pair that has

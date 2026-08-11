@@ -37,6 +37,7 @@ internal static class LocalImageJobEndpoints
     public static IEndpointRouteBuilder MapLocalImageJobEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/api/images/jobs", SubmitAsync);
+        app.MapGet("/api/images/jobs", List);
         app.MapGet("/api/images/jobs/{id}", Get);
         app.MapGet("/api/images/jobs/{id}/events", WatchAsync);
         app.MapGet("/api/images/jobs/{id}/content/{index:int}", Content);
@@ -143,6 +144,34 @@ internal static class LocalImageJobEndpoints
             ImageJobView.Render(record, jobs.Store.QueuePosition(record.Id)),
             ImageJobView.ContentType,
             statusCode: StatusCodes.Status202Accepted);
+    }
+
+    /// <summary>
+    /// Every job on this box, oldest first (phase 51). Same shape as the hub's.
+    /// </summary>
+    /// <remarks>
+    /// Solo has no tenancy, so "this client's jobs" and "every job" are the same set here — the
+    /// <see cref="SoloClient"/> constant is what keeps the two hosts' code the same shape rather
+    /// than one of them growing a scope check the other lacks.
+    /// </remarks>
+    private static IResult List(LocalImageJobRunner jobs)
+    {
+        var records = jobs.Store.ForClient(SoloClient)
+            .Select(record => ImageJobView.Describe(record, jobs.Store.QueuePosition(record.Id)))
+            .ToArray();
+
+        return Results.Text(
+            JsonSerializer.Serialize(
+                new
+                {
+                    jobs = records,
+                    queued = jobs.Store.Queued().Count,
+                    active = jobs.Store.ActiveCount(),
+                    retainedBytes = jobs.Store.RetainedBytes(),
+                    retentionSeconds = jobs.Store.Options.RetentionSeconds
+                },
+                ImageJobView.JsonOptions),
+            ImageJobView.ContentType);
     }
 
     private static IResult Get(LocalImageJobRunner jobs, string id) =>

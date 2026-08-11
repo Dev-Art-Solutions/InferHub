@@ -311,6 +311,8 @@ public sealed class ImageJobRegistry
 
             if (store.TrySucceed(id, outcome.Images, outcome.Units, outcome.Summary))
             {
+                Count(id, ImageJobStates.Succeeded);
+
                 // Metered exactly where phase 46 meters it — the one place that already decides a
                 // job succeeded — so the number on a dashboard and the number on a bill cannot come
                 // from two definitions of "done".
@@ -361,7 +363,37 @@ public sealed class ImageJobRegistry
     private void Finish(Guid id, string state, string reason, string? error, ImageJobFailure? failure = null)
     {
         store.TryTransition(id, state, reason, error, failure: failure);
+        Count(id, state);
         Forget(id);
+    }
+
+    /// <summary>
+    /// Counts a job that has reached a terminal state (phase 51, D2).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Here rather than in the store</b>, and it is the phase-28 D2 line: the store is in
+    /// <c>InferHub.Shared</c> and has no metrics, no logger and no clock beyond a
+    /// <c>TimeProvider</c> — a solo node runs the same class and has no <c>/metrics</c> at all. So
+    /// the hub counts what the hub dispatched, from the two places a job can end.
+    /// </para>
+    /// <para>
+    /// The duration is measured from <b>submission</b>, not from dispatch, because the number an
+    /// operator cares about is how long the caller waited — a job that spent four minutes queued
+    /// behind somebody else's batch was four minutes slow, whatever the GPU was doing.
+    /// </para>
+    /// </remarks>
+    private void Count(Guid id, string state)
+    {
+        if (store.Peek(id) is not { } record || !ImageJobStates.IsTerminal(state))
+        {
+            return;
+        }
+
+        metrics.RecordImageJob(
+            record.Model,
+            state,
+            ((record.CompletedAt ?? DateTimeOffset.UtcNow) - record.CreatedAt).TotalSeconds);
     }
 
     internal static ImageJobFailure Failure(ImageOutcome outcome) => new(

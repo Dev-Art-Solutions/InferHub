@@ -208,11 +208,119 @@ public class PrometheusMetricsTests
             "inferhub_audio_seconds_total",
             "inferhub_audio_characters_total",
             "inferhub_profile_state",
-            "inferhub_node_corpus_records"
+            "inferhub_node_corpus_records",
+
+            // Phase 51, and the two that would be loudest if they were wrong. A recipe nobody has
+            // rendered with emits nothing; a node with no DECLARED VRAM budget emits nothing —
+            // `budget_mib{node}=0` reads as "this box has no VRAM", which is a different and false
+            // statement from "nobody declared a budget on this box" (48 D1).
+            "inferhub_image_jobs_total",
+            "inferhub_image_job_seconds_bucket",
+            "inferhub_image_recipe",
+            "inferhub_node_vram_budget_mib",
+            "inferhub_node_vram_resident_mib",
+            "inferhub_node_vram_measured_mib"
         })
         {
             Assert.DoesNotContain(parsed.Samples, sample => sample.Name == name);
         }
+    }
+
+    /// <summary>
+    /// The image queue's gauges are the <em>opposite</em> of the series above: fleet-level, so
+    /// present at zero (phase-28 D5's other half). A hub with an image queue and nothing in it is
+    /// saying something, and a dashboard cannot tell "idle" from "not scraped" otherwise.
+    /// </summary>
+    [Fact]
+    public void TheImageQueueGaugesArePresentAtZero()
+    {
+        var parsed = Exposition.Parse(PrometheusFormatter.Format(
+            SampleScrape() with { ImageQueue = new ImageQueueScrapeSample(0, 0, 0) }));
+
+        foreach (var name in new[] { "inferhub_image_queue_depth", "inferhub_image_jobs_active", "inferhub_image_retained_bytes" })
+        {
+            Assert.Equal(0, Assert.Single(parsed.Samples, sample => sample.Name == name).Value);
+        }
+    }
+
+    /// <summary>
+    /// The duration histogram is hand-written, so this asserts it is actually one: cumulative
+    /// buckets, a <c>+Inf</c> row that equals <c>_count</c>, and a <c>_sum</c>. Without the
+    /// <c>+Inf</c> bucket <c>histogram_quantile</c> returns nothing at all rather than an obviously
+    /// wrong number, which is the failure mode worth a test.
+    /// </summary>
+    [Fact]
+    public void TheImageJobHistogramIsShapedLikeAHistogram()
+    {
+        var metrics = new Metrics();
+        metrics.RecordImageJob("sdxl", "succeeded", 0.5);
+        metrics.RecordImageJob("sdxl", "succeeded", 8);
+        metrics.RecordImageJob("sdxl", "failed", 400);
+
+        var parsed = Exposition.Parse(PrometheusFormatter.Format(
+            SampleScrape() with { Metrics = metrics.Snapshot(DateTimeOffset.UtcNow) }));
+
+        double Bucket(string le) => Assert.Single(
+            parsed.Samples,
+            s => s.Name == "inferhub_image_job_seconds_bucket" && s.Labels["le"] == le && s.Labels["recipe"] == "sdxl").Value;
+
+        // Cumulative: 0.5s is in every bucket, 8s from le=15 up, 400s only in +Inf.
+        Assert.Equal(1, Bucket("1"));
+        Assert.Equal(1, Bucket("5"));
+        Assert.Equal(2, Bucket("15"));
+        Assert.Equal(2, Bucket("60"));
+        Assert.Equal(2, Bucket("300"));
+        Assert.Equal(3, Bucket("+Inf"));
+
+        var count = Assert.Single(parsed.Samples, s => s.Name == "inferhub_image_job_seconds_count").Value;
+        var sum = Assert.Single(parsed.Samples, s => s.Name == "inferhub_image_job_seconds_sum").Value;
+
+        Assert.Equal(3, count);
+        Assert.Equal(Bucket("+Inf"), count);
+        Assert.Equal(408.5, sum, 3);
+
+        // Every outcome, not only the happy one: a fleet whose `failed` counter was absent would
+        // look identical whether it was healthy or dropping every third render.
+        Assert.Equal(2, Assert.Single(parsed.Samples,
+            s => s.Name == "inferhub_image_jobs_total" && s.Labels["outcome"] == "succeeded").Value);
+        Assert.Equal(1, Assert.Single(parsed.Samples,
+            s => s.Name == "inferhub_image_jobs_total" && s.Labels["outcome"] == "failed").Value);
+    }
+
+    /// <summary>
+    /// A recipe a node holds and will not offer is invisible in every other series — it is simply
+    /// absent from the capability list. This is the one that can be alerted on (phase 51, D1).
+    /// </summary>
+    [Fact]
+    public void ARefusedImageRecipeIsAScrapeableSeriesWithItsReason()
+    {
+        var parsed = Exposition.Parse(PrometheusFormatter.Format(TrackScrape()));
+
+        var refused = Assert.Single(parsed.Samples,
+            s => s.Name == "inferhub_image_recipe" && s.Labels["recipe"] == "sdxl-turbo");
+
+        Assert.Equal("unlicensed", refused.Labels["reason"]);
+        Assert.Equal("gpu-1", refused.Labels["node"]);
+        Assert.Equal(1, refused.Value);
+
+        Assert.Equal("ok", Assert.Single(parsed.Samples,
+            s => s.Name == "inferhub_image_recipe" && s.Labels["recipe"] == "sdxl").Labels["reason"]);
+    }
+
+    /// <summary>
+    /// The declared budget and the worker's own reading, side by side and never merged — a
+    /// disagreement is the thing worth seeing, and a hub that adopted the measurement would have
+    /// re-detected VRAM after phase 48 decided not to (48 D1).
+    /// </summary>
+    [Fact]
+    public void TheCardsDeclaredBudgetAndItsMeasuredSizeAreSeparateSeries()
+    {
+        var parsed = Exposition.Parse(PrometheusFormatter.Format(TrackScrape()));
+
+        Assert.Equal(24576, Assert.Single(parsed.Samples, s => s.Name == "inferhub_node_vram_budget_mib").Value);
+        Assert.Equal(2048, Assert.Single(parsed.Samples, s => s.Name == "inferhub_node_vram_reserve_mib").Value);
+        Assert.Equal(8000, Assert.Single(parsed.Samples, s => s.Name == "inferhub_node_vram_resident_mib").Value);
+        Assert.Equal(24564, Assert.Single(parsed.Samples, s => s.Name == "inferhub_node_vram_measured_mib").Value);
     }
 
     /// <summary>
@@ -355,7 +463,14 @@ public class PrometheusMetricsTests
                     new NodeToolInfo("whisper", false, NodeToolInfo.NotAllowed, [],
                         MaxWorkers: 0, Workers: 0, Busy: 0, Requests: 0, Failures: 0,
                         LastError: null, LastErrorAtUtc: null)
-                ], now)
+                ], now,
+                new NodeVramState(24576, 2048, 24564, [new NodeResidentModel("sdxl", 8000, InUse: true)]),
+                [
+                    new NodeImageRecipeState("sdxl", true, ImageRecipeReasons.Ok, ["image", "image-edit"],
+                        8000, "CreativeML-OpenRAIL++-M", null, "none"),
+                    new NodeImageRecipeState("sdxl-turbo", false, ImageRecipeReasons.Unlicensed, [],
+                        8000, "sai-nc-community", null, "none")
+                ])
             ],
             Profiles = [new ProfileScrapeSample("gpu-boxes", "refused", 1)],
             Corpora =

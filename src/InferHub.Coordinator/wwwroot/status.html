@@ -68,6 +68,8 @@
           <th title="The coordinator's node profile for this box, and whether it took (v3.11+)">Profile</th>
           <th title="Tool manifests this node loaded and what became of each (v3.13+)">Tools</th>
           <th title="A corpus the hub assigned to this node, as the node counts it (v3.12+)">Corpus</th>
+          <th title="Image recipes this node offers, and how many it holds but will not (v3.19+)">Images</th>
+          <th title="The VRAM budget the operator declared for this node, and what is resident on the card (v3.19+)">VRAM</th>
           <th title="Measured throughput — EWMA of tokens/second across this node's models (v2.8+)">tok/s</th>
           <th>Last seen</th>
         </tr>
@@ -173,10 +175,30 @@
       return `${corpus.provider} ${corpus.status}${suffix}`;
     };
 
+    // Offered, and how many are held back — because a recipe this node will not run is invisible
+    // in the capability list, which is exactly where somebody looks for it first (v3.19).
+    const imagesCell = (tools) => {
+      const recipes = tools?.images ?? [];
+      if (recipes.length === 0) return "—";
+      const offered = recipes.filter(r => r.offered);
+      const held = recipes.length - offered.length;
+      const names = offered.map(r => r.id).join(", ") || "none";
+      return held === 0 ? names : `${names} · ${held} not offered`;
+    };
+
+    // Null rather than zero when nobody declared a budget: an undeclared budget is not a card with
+    // no memory, and reporting "0 MiB" would say the second thing (v3.16 D1, phase-28 D5).
+    const vramCell = (tools) => {
+      const vram = tools?.vram;
+      if (!vram) return "—";
+      const used = (vram.resident ?? []).reduce((sum, r) => sum + (r.vramMiB ?? 0), 0);
+      return `${used} / ${Math.max(0, vram.budgetMiB - vram.reserveMiB)} MiB`;
+    };
+
     const renderNodes = (nodes) => {
       const tbody = document.getElementById("nodes");
       if (!nodes || nodes.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="13" class="empty">No nodes connected.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="15" class="empty">No nodes connected.</td></tr>`;
         return;
       }
       tbody.innerHTML = nodes.map(n => `
@@ -192,6 +214,8 @@
           <td>${!n.profile ? "—" : `${n.profile.name || "—"}@${n.profile.revision} (${n.profile.status})`}</td>
           <td>${toolsCell(n.tools)}</td>
           <td>${corpusCell(n.corpus)}</td>
+          <td>${imagesCell(n.tools)}</td>
+          <td>${vramCell(n.tools)}</td>
           <td>${n.tokensPerSecond == null ? "—" : n.tokensPerSecond.toFixed(1)}</td>
           <td>${fmtSeconds(n.ageSeconds)} ago</td>
         </tr>

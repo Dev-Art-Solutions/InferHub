@@ -340,8 +340,9 @@ image also carries the minor (`:3.13`) and, for the two multi-arch ones, `:lates
 | `inferhub-node` | ~340 MB | amd64 + arm64 | You already run Ollama, vLLM, LM Studio or a hosted OpenAI-compatible endpoint. Also the right one for **solo mode** and for a **vector-store-only** box. |
 | `inferhub-node:ollama` | ~4 GB | amd64 | One `docker run` on a GPU box with nothing installed on the host: Ollama runs inside the container, supervised by the node itself. `:gpu` is an alias of the same digest. |
 | `inferhub-node:tools` | ~6 GB | amd64 | The above **plus speech** — Python, `faster-whisper` and `piper`, so `/v1/audio/*` works out of the box. |
+| `inferhub-node:diffusion` | ~12 GB | amd64 | **Images**: PyTorch, `diffusers`, `bitsandbytes` and seven recipes, so `/v1/images/generations`, `/edits` and `/variations` work out of the box. **It does not stack** — no Ollama, no Whisper, no Piper. You need a card. |
 
-### The three node shapes, and which image each wants
+### The four node shapes, and which image each wants
 
 1. **A node in front of an engine you already run** — plain `inferhub-node`, `Backend:Type=ollama`
    pointed at your host's Ollama, or `Backend:Type=openai` pointed at vLLM/LM Studio/anything.
@@ -351,11 +352,55 @@ image also carries the minor (`:3.13`) and, for the two multi-arch ones, `:lates
 3. **A self-contained GPU box that also does speech** — `:tools`. Same as above with the two Python
    workers and `Tools:AllowModelDownload=true`, so the first transcription fetches its weights onto
    the volume.
+4. **A box that makes pictures** — `:diffusion`. **Not** `:tools` plus torch: it is built from the
+   plain node and has no Ollama in it at all.
 
 **Two mistakes the sizes make expensive.** Do not pull `:tools` for chat — it is `:ollama` plus
 ~1.5 GB of Python wheels nothing will load, and every image above does chat identically. Do not pull
 `:ollama` to sit next to an Ollama you already run: the bundled one idles beside it, or fights it for
 the port and the loser is whichever one's logs you are reading.
+
+### Diffusion and chat on one machine: two containers, not one image
+
+`:diffusion` is the one image that deliberately does not stack, and the arithmetic is why. A 24 GB
+card running SDXL at fp16 is holding ~8 GB before anything else; Qwen-Image at nf4 is ~19 GB. An 8B
+chat model at Q4 is another ~5 GB. **The two do not fit together on one card at the top end**, so an
+image that bundled both would ship a combination the docs would then have to tell you not to use.
+
+The mesh is the composition mechanism. Run both on the same host and let capability routing decide:
+
+```yaml
+services:
+  images:
+    image: ghcr.io/dev-art-solutions/inferhub-node:diffusion
+    environment:
+      Coordinator__Url: "http://hub:8080"
+      Coordinator__EnrollmentSecret: "${ENROLL}"
+      # What YOU declare, never what we detect. Leave room for the chat container beside it:
+      # 24576 total, 8192 held back, so a recipe needing more than 16384 MiB is not offered
+      # at all rather than discovered at 2am inside somebody's request.
+      Node__Vram__BudgetMiB: "24576"
+      Node__Vram__ReserveMiB: "8192"
+    volumes: [ "inferhub-diffusion:/data" ]
+    deploy: { resources: { reservations: { devices: [{ capabilities: [gpu] }] } } }
+
+  chat:
+    image: ghcr.io/dev-art-solutions/inferhub-node:ollama
+    environment:
+      Coordinator__Url: "http://hub:8080"
+      Coordinator__EnrollmentSecret: "${ENROLL}"
+    volumes: [ "inferhub-chat:/data" ]
+    deploy: { resources: { reservations: { devices: [{ capabilities: [gpu] }] } } }
+```
+
+The hub routes `image` and `image-edit` to the first and `chat` and `embed` to the second, and a
+node busy with a two-minute render is still a candidate for chat — routing is per `(capability,
+model)`, so the two do not queue behind each other.
+
+**The reserve is the whole trick.** Nothing measures the card; you declare a budget and hold some
+back, and a recipe that does not fit **is never declared**, so the fleet never routes at it. Check
+what that decided on `/console.html` → **Images** → *Recipes on the fleet*, which names the reason
+for every recipe a node holds and will not offer.
 
 Every image runs as a non-root `app` user. The coordinator listens on `8080` inside the container and
 is published on `${INFERHUB_PORT:-5080}` on the host. **Mount a volume at `/data` on any node

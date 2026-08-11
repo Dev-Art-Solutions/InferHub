@@ -137,6 +137,25 @@
     .matrix-cell { text-align: center; font-variant-numeric: tabular-nums; }
     .matrix-yes { color: var(--ok); }
     .matrix-no { color: var(--muted); opacity: 0.5; }
+    /*
+      Phase 51. A step counter is a number nobody reads at a glance; a bar is. It is two divs and a
+      width percentage — no library, no animation frame, and it falls back to the text beside it on
+      a job whose worker never sent a progress frame (a worker written against 3.14 never does).
+    */
+    .progress { display: flex; align-items: center; gap: 8px; min-width: 140px; }
+    .progress-track { flex: 1; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; }
+    .progress-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width .2s linear; }
+    .progress-text { font-size: 11px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+    /* The gallery that lives in this tab and nowhere else (D3). */
+    .image-gallery { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+    .image-gallery figure { margin: 0; }
+    .image-gallery img {
+      max-width: 180px; max-height: 180px; border-radius: 6px; display: block;
+      border: 1px solid var(--panel-border); background: #0b0d11; cursor: pointer;
+    }
+    .image-gallery figcaption { font-size: 11px; color: var(--muted); margin-top: 4px; text-align: center; }
+
     .why { font-size: 12px; color: var(--muted); word-break: break-word; max-width: 420px; }
     .why code { background: rgba(255,255,255,0.06); }
     #refusals-section h2 { color: var(--warn); }
@@ -463,6 +482,98 @@
     <h2>Vector activity</h2>
     <div class="table-wrap">
       <div id="vector-feed" class="vector-feed"></div>
+    </div>
+  </section>
+
+  <!--
+    Phase 51, D1. The confusing state this track produces is not phase-45's "I turned it on and
+    nothing happened" — it is "it is running and I cannot tell how far along". So this panel is
+    JOB-CENTRIC: queue position, step n of m, elapsed, which node, and a cancel button; the
+    per-node recipe residency and the card's arithmetic sit underneath it.
+
+    It holds the same CLIENT key the documents and viewer panels do, and for the same reason: image
+    jobs are guarded by Auth:ApiKeys, and listing them is client-scoped — an admin console showing
+    every tenant's job ids would undo phase-25 D4 with a UI, since holding an id is how you fetch
+    the picture.
+
+    D3: the gallery here is the BROWSER'S. Images fetched into it live in this tab and are gone on
+    reload. There is no server-side gallery, no history endpoint and no thumbnail cache — a console
+    gallery is exactly the pressure that turns a bounded in-memory job store into an image archive,
+    and the panel says so in one line rather than leaving "where did my images go" to be discovered.
+  -->
+  <section>
+    <h2>Images <span id="images-key-state" class="pill pill-ok" style="display:none">client key set</span></h2>
+
+    <div class="docs-bar">
+      <label for="image-model">Model</label>
+      <input type="text" id="image-model" placeholder="sdxl" style="width:140px">
+      <label for="image-prompt">Prompt</label>
+      <input type="text" id="image-prompt" placeholder="a lighthouse in a storm, oil painting" style="flex:1">
+      <label for="image-size">Size</label>
+      <input type="text" id="image-size" placeholder="1024x1024" style="width:110px">
+      <button id="image-submit" class="primary">Generate</button>
+      <button id="image-refresh">Refresh</button>
+    </div>
+
+    <div id="image-note" class="row-msg info">
+      A smoke test, not a studio. Results live in memory for a few minutes and are dropped on
+      delivery — <b>the thumbnails below are in this browser tab and vanish on reload</b>. There is no
+      gallery on the hub and there is not going to be one.
+    </div>
+
+    <div class="table-wrap">
+      <table id="image-jobs-table">
+        <thead>
+          <tr>
+            <th>Job</th>
+            <th>Model</th>
+            <th>State</th>
+            <th>Progress</th>
+            <th>Node</th>
+            <th>Elapsed</th>
+            <th>Units</th>
+            <th>Result</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="image-jobs"></tbody>
+      </table>
+    </div>
+
+    <div id="image-gallery" class="image-gallery"></div>
+
+    <h3>Recipes on the fleet</h3>
+    <div class="table-wrap">
+      <table id="image-recipes-table">
+        <thead>
+          <tr>
+            <th>Node</th>
+            <th>Recipe</th>
+            <th>Offered for</th>
+            <th>Why not</th>
+            <th>VRAM</th>
+            <th>Licence</th>
+          </tr>
+        </thead>
+        <tbody id="image-recipes"></tbody>
+      </table>
+    </div>
+
+    <h3>Cards</h3>
+    <div class="table-wrap">
+      <table id="image-vram-table">
+        <thead>
+          <tr>
+            <th>Node</th>
+            <th>Budget</th>
+            <th>Reserve</th>
+            <th>Resident</th>
+            <th>Free</th>
+            <th>Measured</th>
+          </tr>
+        </thead>
+        <tbody id="image-vram"></tbody>
+      </table>
     </div>
   </section>
 
