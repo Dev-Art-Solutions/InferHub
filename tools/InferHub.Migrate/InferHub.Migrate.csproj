@@ -24,7 +24,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <InternalsVisibleTo Include="InferHub.Tests" />
+    <InternalsVisibleTo Include="InferHub.Tests.Common" />
+    <InternalsVisibleTo Include="InferHub.Tests.Shared" />
+    <InternalsVisibleTo Include="InferHub.Tests.Coordinator" />
+    <InternalsVisibleTo Include="InferHub.Tests.Node" />
+    <InternalsVisibleTo Include="InferHub.Tests.Mesh" />
   </ItemGroup>
 
 </Project>

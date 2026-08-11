@@ -1,0 +1,36 @@
+# Every '### Phase NN' decision block that existed in CLAUDE.md before phase 52 split it up.
+# Generated once, checked in, and asserted by ContextContractTests: each must live in exactly
+# one CLAUDE.md after the split. Losing a decision during a move is the one irreversible
+# failure in that phase, and this file is what makes it impossible to do quietly.
+#
+# phase	the heading it had, verbatim
+21	(OpenAI surface + Docker) — also load-bearing
+22	(OpenAI node backend + cloud burst) — also load-bearing
+23	(document ingestion) — also load-bearing
+24	(hybrid search, reranking, eval harness) — also load-bearing
+25	(clients, quotas & usage) — also load-bearing
+26	(fleet operations: model management & measured routing) — also load-bearing
+28	(Prometheus `/metrics`) — also load-bearing
+29	(vision passthrough) — also load-bearing
+30	(stable-node affinity + optional persistence) — also load-bearing
+31	(client-scoped collections) — also load-bearing
+32	(multi-coordinator: standby hub & warm failover) — also load-bearing
+33	(Qdrant vector connector) — also load-bearing
+34	(Qdrant-native hybrid search) — also load-bearing
+35	(Qdrant in production + cross-provider migration) — also load-bearing
+36	(the node supervises its own Ollama) — also load-bearing
+37	(solo mode — the node serves its own API) — also load-bearing
+38	(RAG in solo mode) — also load-bearing
+39	(the bundled node image) — also load-bearing
+40	(the capability seam) — also load-bearing
+41	(the tool runtime) — also load-bearing
+42	(STT and TTS for real) — also load-bearing
+43	(node profiles) — also load-bearing
+44	(hub-assigned retrieval) — also load-bearing
+45	(the console, the metrics and the docs) — also load-bearing
+46	(text to image — Stable Diffusion on the fleet) — also load-bearing
+47	(jobs, progress, cancel) — also load-bearing
+48	(the catalogue: six models, quantized, budgeted) — also load-bearing
+49	(qwen-360-diffusion: adapters and 360° panoramas) — also load-bearing
+50	(editing: img2img, inpainting, variations) — also load-bearing
+51	(the console, the metrics and the docs for the image track) — also load-bearing

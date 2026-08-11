@@ -149,7 +149,7 @@ public class ReplicationCoordinatorTests : IDisposable
         hub.Sends.Clear();
         await subject.RecomputeAsync("docs");
 
-        // No AssignVectorReplica should be sent — the inventory was recognised as up-to-date.
+        // No AssignVectorReplica should be sent РІР‚вЂќ the inventory was recognised as up-to-date.
         Assert.DoesNotContain(hub.Sends, s => s.Method == "AssignVectorReplica");
         Assert.Contains("conn-restart", subject.Holders("docs"));
     }
@@ -165,7 +165,7 @@ public class ReplicationCoordinatorTests : IDisposable
         await store.UpsertAsync("docs", new VectorUpsert("b", [0f, 1f]));
 
         UpsertNode(registry, "conn-stale", "node-s");
-        // Inventory reports an older lastSeq — must NOT register as a holder.
+        // Inventory reports an older lastSeq РІР‚вЂќ must NOT register as a holder.
         subject.ApplyInventory("conn-stale", new[]
         {
             new NodeReplicaInventoryItem("docs", 1)
@@ -234,43 +234,4 @@ public class ReplicationCoordinatorTests : IDisposable
     }
 }
 
-internal sealed record SentMessage(string ConnectionId, string Method, object?[] Args);
 
-internal sealed class RecordingHubContext : IHubContext<NodeHub>
-{
-    public List<SentMessage> Sends { get; } = new();
-
-    public IHubClients Clients { get; }
-
-    public IGroupManager Groups => throw new NotImplementedException();
-
-    public RecordingHubContext()
-    {
-        Clients = new RecordingHubClients(this);
-    }
-}
-
-internal sealed class RecordingHubClients(RecordingHubContext parent) : IHubClients
-{
-    public IClientProxy All => throw new NotImplementedException();
-    public IClientProxy AllExcept(IReadOnlyList<string> excludedConnectionIds) => throw new NotImplementedException();
-    public IClientProxy Client(string connectionId) => new RecordingClientProxy(parent, connectionId);
-    public IClientProxy Clients(IReadOnlyList<string> connectionIds) => throw new NotImplementedException();
-    public IClientProxy Group(string groupName) => throw new NotImplementedException();
-    public IClientProxy GroupExcept(string groupName, IReadOnlyList<string> excludedConnectionIds) => throw new NotImplementedException();
-    public IClientProxy Groups(IReadOnlyList<string> groupNames) => throw new NotImplementedException();
-    public IClientProxy User(string userId) => throw new NotImplementedException();
-    public IClientProxy Users(IReadOnlyList<string> userIds) => throw new NotImplementedException();
-}
-
-internal sealed class RecordingClientProxy(RecordingHubContext parent, string connectionId) : IClientProxy
-{
-    public Task SendCoreAsync(string method, object?[] args, CancellationToken cancellationToken = default)
-    {
-        lock (parent.Sends)
-        {
-            parent.Sends.Add(new SentMessage(connectionId, method, args));
-        }
-        return Task.CompletedTask;
-    }
-}

@@ -26,8 +26,14 @@ jobs:
 
       # The Postgres vector-store tests are gated on INFERHUB_TEST_POSTGRES, which is not set
       # here — they skip visibly rather than silently, and the rest of the suite runs.
+      #
+      # PHASE 52: this runs the SOLUTION, not a project path. Before the split it said
+      # `dotnet test tests/InferHub.Tests`, and after it that path names nothing — which does not
+      # fail, it passes, having run zero tests. A step that goes green by testing nothing is the
+      # worst outcome available here, and naming the solution is what makes a forgotten project
+      # impossible: adding one to the .sln is enough to get it run.
       - name: Test
-        run: dotnet test tests/InferHub.Tests --configuration Release --no-build --verbosity normal
+        run: dotnet test InferHub.sln --configuration Release --no-build --verbosity normal
 
   docker-build:
     # A broken Dockerfile should fail on the PR, not at the tag — but nothing is pushed here.

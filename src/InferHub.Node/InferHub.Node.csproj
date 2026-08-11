@@ -39,6 +39,10 @@
       manifest loader and the restart budget. The coordinator has had this since phase 9 for the
       same reason.
     -->
-    <InternalsVisibleTo Include="InferHub.Tests" />
+    <InternalsVisibleTo Include="InferHub.Tests.Common" />
+    <InternalsVisibleTo Include="InferHub.Tests.Shared" />
+    <InternalsVisibleTo Include="InferHub.Tests.Coordinator" />
+    <InternalsVisibleTo Include="InferHub.Tests.Node" />
+    <InternalsVisibleTo Include="InferHub.Tests.Mesh" />
   </ItemGroup>
 </Project>

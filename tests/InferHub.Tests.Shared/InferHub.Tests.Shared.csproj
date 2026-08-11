@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <!-- Phase 22 moved the OpenAI DTOs to InferHub.Shared.OpenAi so the node could drive them
+         upstream. Importing the namespace globally kept that refactor honest: not one test file
+         changed. Phase 52 kept it for the same reason, four times over. -->
+    <Using Include="InferHub.Shared.OpenAi" />
+    <Using Include="InferHub.Shared.Ingestion" />
+    <Using Include="InferHub.Shared.Vector" />
+    <Using Include="InferHub.Shared.Vector.Qdrant" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\InferHub.Tests.Common\InferHub.Tests.Common.csproj" />
+    <ProjectReference Include="..\..\src\InferHub.Coordinator\InferHub.Coordinator.csproj" />
+    <ProjectReference Include="..\..\src\InferHub.Node\InferHub.Node.csproj" />
+    <ProjectReference Include="..\..\src\InferHub.Shared\InferHub.Shared.csproj" />
+    <ProjectReference Include="..\..\tools\InferHub.Migrate\InferHub.Migrate.csproj" />
+    <!--
+      The phase-41 fixture. ReferenceOutputAssembly=false: the suite does not call into it, it
+      *spawns* it — a mocked Process proves only that the mock behaves. This reference exists so the
+      worker is built before the tests that run it, and ToolWorkerFixture finds the binary.
+    -->
+    <ProjectReference Include="..\..\tools\InferHub.ToolWorker.Echo\InferHub.ToolWorker.Echo.csproj"
+                      ReferenceOutputAssembly="false"
+                      Private="false" />
+  </ItemGroup>
+
+</Project>
