@@ -319,6 +319,7 @@ internal sealed class ImageMesh : IAsyncDisposable
             new ModelCommandExecutor(backend, NullLogger<ModelCommandExecutor>.Instance),
             new ToolExecutor(runtime, ToolWorkerFixture.Wrap(toolOptions), NullLogger<ToolExecutor>.Instance),
             runtime,
+            ToolWorkerFixture.Wrap(toolOptions),
             TestProfiles.Applier(backend, runtime),
             TestProfiles.IdleRetrieval(),
             replicas,

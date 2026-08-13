@@ -39,7 +39,15 @@ public interface INodeRegistry
     /// (phase 40). <paramref name="capability"/> null means "any" — the pre-v3.8 question, still
     /// asked by saturation and placement, which care about which nodes hold a model at all.
     /// </summary>
-    IReadOnlyCollection<RoutableNode> FindNodesWithModel(string model, string? capability = null);
+    /// <param name="requireStreamedAttachments">
+    /// Phase 53, D5. Narrows to nodes that declared they can pull an attachment as a stream. False
+    /// for every request that existed before v3.21, so buffered traffic keeps routing to the whole
+    /// fleet and only a streamed job can be starved of candidates.
+    /// </param>
+    IReadOnlyCollection<RoutableNode> FindNodesWithModel(
+        string model,
+        string? capability = null,
+        bool requireStreamedAttachments = false);
 
     /// <summary>Fleet-wide capability roll-up (phase 40), for <c>/api/status</c> and <c>/v1/models</c>.</summary>
     IReadOnlyCollection<CapabilitySummary> CapabilitySummary();

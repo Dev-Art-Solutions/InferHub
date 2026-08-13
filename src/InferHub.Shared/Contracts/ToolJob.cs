@@ -23,4 +23,11 @@ public sealed record ToolJob(
     [property: JsonPropertyName("capability")] string Capability,
     [property: JsonPropertyName("model")] string Model,
     [property: JsonPropertyName("payload")] string Payload,
-    [property: JsonPropertyName("attachments")] IReadOnlyList<ToolAttachment>? Attachments = null);
+    [property: JsonPropertyName("attachments")] IReadOnlyList<ToolAttachment>? Attachments = null,
+    /// <summary>
+    /// The bytes are not here — pull them (phase 53, D1). True means the node should invoke
+    /// <c>StreamAttachments(jobId)</c> and write what comes back into its scratch directory before
+    /// building the worker's request frame. Appended last and defaulting to false, so a v3.20 hub
+    /// and a v3.21 node agree about every job that existed before this phase.
+    /// </summary>
+    [property: JsonPropertyName("hasStreamedAttachments")] bool HasStreamedAttachments = false);

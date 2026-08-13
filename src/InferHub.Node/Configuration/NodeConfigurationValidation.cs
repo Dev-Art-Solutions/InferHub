@@ -169,6 +169,22 @@ public sealed class ToolOptionsValidator : IValidateOptions<ToolOptions>
                 $"{ToolOptions.SectionName}:{nameof(ToolOptions.QueueMaxWaitSeconds)} must be zero or more (got {options.QueueMaxWaitSeconds}).");
         }
 
+        // Phase 53. Zero is off. Anything else must be at least the buffered ceiling: a streamed
+        // ceiling *below* it is a configuration whose only possible effect is to confuse — the
+        // request would be too large to stream and small enough to buffer at the same time.
+        if (options.MaxStreamedBytes < 0)
+        {
+            failures.Add(
+                $"{ToolOptions.SectionName}:{nameof(ToolOptions.MaxStreamedBytes)} must be zero (off) or positive (got {options.MaxStreamedBytes}).");
+        }
+        else if (options.MaxStreamedBytes > 0 && options.MaxStreamedBytes < options.MaxAttachmentBytes)
+        {
+            failures.Add(
+                $"{ToolOptions.SectionName}:{nameof(ToolOptions.MaxStreamedBytes)} ({options.MaxStreamedBytes}) is below " +
+                $"{ToolOptions.SectionName}:{nameof(ToolOptions.MaxAttachmentBytes)} ({options.MaxAttachmentBytes}); " +
+                "the streamed ceiling is the higher of the two, and one below it can only ever refuse a request the buffered path would have taken.");
+        }
+
         if (options.MaxStartAttempts < 1)
         {
             failures.Add(

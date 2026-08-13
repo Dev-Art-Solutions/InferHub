@@ -52,8 +52,22 @@ internal static class LocalAudioEndpoints
             return Error(400, "this endpoint takes multipart/form-data with a 'file' part", OpenAiErrorTypes.InvalidRequest);
         }
 
-        var maxBytes = httpContext.RequestServices.GetService<IOptions<ToolOptions>>()?.Value.MaxAttachmentBytes
-            ?? ToolAttachmentLimits.DefaultMaxBytes;
+        var toolOptions = LocalUploadPath.OptionsFrom(httpContext);
+        var maxBytes = toolOptions.MaxAttachmentBytes;
+
+        // Phase-53 D7. Before the body is touched — Kestrel's ceiling is read-only once the read
+        // has started.
+        LocalUploadPath.Prepare(httpContext, toolOptions);
+
+        if (LocalUploadPath.TooLargeUpFront(httpContext, toolOptions) is { } declaredTooLarge)
+        {
+            return Error(413, declaredTooLarge, OpenAiErrorTypes.InvalidRequest, param: "file");
+        }
+
+        if (LocalUploadPath.ShouldStream(httpContext, toolOptions))
+        {
+            return await HandleStreamedTranscriptionAsync(httpContext, executor, toolOptions, cancellationToken);
+        }
 
         IFormCollection form;
 
@@ -110,6 +124,67 @@ internal static class LocalAudioEndpoints
                 buffer.ToArray())]);
 
         var result = await executor.RunAsync(job, cancellationToken);
+
+        httpContext.Response.Headers[LocalApiEndpoints.ServedByHeader] = LocalApiEndpoints.ServedBySolo;
+        return Render(httpContext, AudioRenderer.Transcription(result, request));
+    }
+
+    /// <summary>
+    /// The same transcription with the file streamed straight into the scratch directory (phase 53,
+    /// D7). No mesh hop: the request body is the source, and <see cref="ToolExecutor"/> cannot tell.
+    /// </summary>
+    private static async Task<IResult> HandleStreamedTranscriptionAsync(
+        HttpContext httpContext,
+        ToolExecutor executor,
+        ToolOptions toolOptions,
+        CancellationToken cancellationToken)
+    {
+        LocalUploadStart start;
+
+        try
+        {
+            start = await LocalUploadPath.BeginAsync(httpContext, toolOptions, cancellationToken);
+        }
+        catch (BadHttpRequestException ex)
+        {
+            return Error(400, ex.Message, OpenAiErrorTypes.InvalidRequest);
+        }
+
+        var request = TranscriptionRequest.TryCreate(
+            start.Field("model"),
+            start.Field("response_format"),
+            start.Field("language"),
+            start.Field("prompt"),
+            start.Field("temperature"),
+            start.Upload.HasFile,
+            out var invalid);
+
+        if (request is null)
+        {
+            return Error(400, invalid, OpenAiErrorTypes.InvalidRequest, param: "model");
+        }
+
+        if (!executor.Provides(CapabilityKinds.Transcribe, request.Model))
+        {
+            return NotProvided(httpContext, CapabilityKinds.Transcribe, request.Model);
+        }
+
+        var job = new ToolJob(
+            Guid.NewGuid(),
+            CapabilityKinds.Transcribe,
+            request.Model,
+            request.ToToolPayload(),
+            Attachments: null,
+            HasStreamedAttachments: true);
+
+        var result = await executor.RunAsync(job, progress: null, start.Upload, cancellationToken);
+
+        // The upload's own verdict outranks the executor's: a job that failed because the stream
+        // was cut short must not be reported as a tool problem.
+        if (start.Upload.TooLarge is { } tooLarge)
+        {
+            return Error(413, tooLarge, OpenAiErrorTypes.InvalidRequest, param: "file");
+        }
 
         httpContext.Response.Headers[LocalApiEndpoints.ServedByHeader] = LocalApiEndpoints.ServedBySolo;
         return Render(httpContext, AudioRenderer.Transcription(result, request));

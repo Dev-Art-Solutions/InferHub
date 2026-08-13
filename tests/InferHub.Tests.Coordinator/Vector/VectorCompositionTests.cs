@@ -141,7 +141,7 @@ public class VectorCompositionTests
 
     private sealed class StubRouter : IRouter
     {
-        public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null, string? capability = null) => null;
+        public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null, string? capability = null, bool requireStreamedAttachments = false) => null;
     }
 
     private sealed class StubDispatcher : IDispatcher

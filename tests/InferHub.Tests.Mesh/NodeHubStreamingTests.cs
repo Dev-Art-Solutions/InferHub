@@ -208,7 +208,7 @@ public class NodeHubStreamingTests
 
         public IReadOnlyCollection<NodeModelInventory> ModelInventory() => [];
 
-        public IReadOnlyCollection<RoutableNode> FindNodesWithModel(string model, string? capability = null) => [];
+        public IReadOnlyCollection<RoutableNode> FindNodesWithModel(string model, string? capability = null, bool requireStreamedAttachments = false) => [];
 
         public IReadOnlyCollection<CapabilitySummary> CapabilitySummary() => [];
 

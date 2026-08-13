@@ -428,6 +428,7 @@ public class ProfileConvergenceTests
                 new ModelCommandExecutor(backend, NullLogger<ModelCommandExecutor>.Instance),
                 new ToolExecutor(runtime, ToolWorkerFixture.Wrap(toolOptions), NullLogger<ToolExecutor>.Instance),
                 runtime,
+                ToolWorkerFixture.Wrap(toolOptions),
                 // A fresh applier per node start: this *is* a reboot, and a node that remembered its
                 // last profile across one would prove nothing about convergence.
                 new NodeProfileApplier(

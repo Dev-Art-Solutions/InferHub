@@ -548,3 +548,28 @@ the same (`request.progress`, `request.raise_if_cancelled`, `Cancelled`), and it
 `readline()` rather than `for line in stdin` — **the iterator protocol keeps a read-ahead buffer, and
 the frame two readers would lose between them is the cancel.**
 
+
+### Phase 53 (the streamed-upload contract) — the pointer, and one correction
+
+The contracts live here; both decisions live elsewhere. **The hub's half** — the pull stream, the two
+paths, the ordering rule, the mixed-fleet declaration, the derived ceilings and why the image routes
+are excluded — is in `src/InferHub.Coordinator/CLAUDE.md` (phase 53, D1–D6, D9). **The node's half**
+— writing the scratch file, its own ceiling, and solo — is in `src/InferHub.Node/CLAUDE.md`.
+
+What is *here* is [AttachmentChunk](src/InferHub.Shared/Contracts/ToolAttachment.cs) — `start` /
+`data` / `end` frames — and `ToolJob.HasStreamedAttachments`. **The frames describe the body in the
+order it arrives rather than the job carrying a list of attachment references**, and that is a
+recorded deviation from the brief with a reason: how many parts a multipart body has, and what they
+are called, is not knowable until it has been read, and reading it to find out is the buffering the
+phase removes.
+
+> **One correction to phase-40 D4, measured on .NET 10 rather than reasoned about.** That decision's
+> sentence was *"no temp file, no cache"*, and it was true of the code written here and false
+> underneath it: `HttpRequest.ReadFormAsync` buffers a file section over
+> `FormOptions.MemoryBufferThreshold` (**64 KB**) into an `ASPNETCORE_*.tmp` file in the process's
+> temp directory. A 3 MB upload produced one of 3 145 570 bytes; a 32 KB upload produced none. So
+> from v3.9 to v3.20 **every real audio and image upload did touch the hub's disk**, briefly, through
+> the framework. The streamed path does not, and `ToolUploadTests` asserts no temp file the size of
+> the upload appears. The buffered path still behaves this way — it is ASP.NET's, not ours — and the
+> honest statement of rule 7 for it is "held for the dispatch and dropped", without the temp-file
+> clause.

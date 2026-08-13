@@ -17,10 +17,11 @@ namespace InferHub.Coordinator.Endpoints;
 /// the phase's parity risk and it is pinned by a test that drives the same request at both hosts.
 /// </para>
 /// <para>
-/// <b>The bytes are held in memory for the duration of the dispatch and nowhere else</b> — no temp
-/// file, no cache, and no log line containing them (phase-40 D4, design rule 7). A streaming upload
-/// path that never materialises the whole body would be better and is deferred, named: it needs
-/// chunked client-to-server streaming through the dispatcher.
+/// <b>The bytes are held for the duration of the dispatch and nowhere else</b> — no cache, and no
+/// log line containing them (phase-40 D4, design rule 7). "No temp file" needed a correction in
+/// phase 53: <c>ReadFormAsync</c> spills a section over 64 KB to an <c>ASPNETCORE_*.tmp</c> file
+/// underneath us, which is measured in <see cref="ToolAttachment"/>'s remarks. The streamed path
+/// (<see cref="UploadPath"/>) is the one that genuinely never materialises the body.
 /// </para>
 /// </remarks>
 public sealed record ToolRequestBody(
@@ -168,4 +169,14 @@ public sealed class ToolEdgeOptions
     public const string SectionName = "Tools";
 
     public long MaxAttachmentBytes { get; set; } = ToolAttachmentLimits.DefaultMaxBytes;
+
+    /// <summary>
+    /// The ceiling for an upload that streams *through* the hub (phase 53). <b>Zero is off</b>, and
+    /// off is the default: a deployment that changes no config behaves byte for byte as v3.20 did,
+    /// including the 413 it produces and the key named in it.
+    /// </summary>
+    public long MaxStreamedBytes { get; set; }
+
+    /// <summary>How much of a streamed attachment travels in one frame. See phase-53 D1.</summary>
+    public int StreamChunkBytes { get; set; } = ToolAttachmentLimits.DefaultStreamChunkBytes;
 }

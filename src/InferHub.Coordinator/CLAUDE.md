@@ -943,3 +943,61 @@ panels do — the admin key the rest of it uses will not open one.
 CSS variables — the progress bar is two divs and a width percentage. **Zero** new dependencies, no
 bundler, no framework, no CDN script, and `InferHub.Shared.csproj` is still empty.
 
+
+### Phase 53 (a large upload streams through the hub) — also load-bearing
+
+**D1 — The node *pulls* the bytes; the hub is a pipe with one window.** `NodeHub.StreamAttachments`
+returns an `IAsyncEnumerable<AttachmentChunk>` read straight off the client's live request body by
+[StreamedUpload](src/InferHub.Coordinator/Endpoints/StreamedUpload.cs), 64 KB at a time. Memory here
+is `chunk × SignalR's stream buffer` — a fixed number that does not grow with the upload — and
+backpressure reaches the client's TCP window for free. **The node pulls rather than the hub pushing**
+so phase-26 D1 is untouched (the stream is established by the node's own invocation, exactly as
+`RequestNodeProfile` is), and so the node asks for bytes only once it is ready to write them.
+
+> **This is the first hub method where a `CancellationToken` parameter is correct.** The binder trap
+> written out three times in `NodeHub` applies to *client-to-server* streams — methods returning
+> `Task` that take an `IAsyncEnumerable` argument. A method that **returns** a stream is the shape
+> SignalR supplies the token for synthetically. Do not delete it on the strength of the other three
+> comments.
+
+**D2 — Size chooses the path, and the buffered one is byte-identical to v3.20.** At or under
+`Tools:MaxAttachmentBytes` a request is read exactly as it was. `Tools:MaxStreamedBytes` defaults to
+**0 — off**, so a deployment that changes no config has no second path at all and gets the same 413
+from the same key in the same words. *Rejected: streaming everything*, which would make every
+ordinary 25 MB request pay D3's ordering, D4's lost failover and D5's node requirement to fix a
+problem it does not have.
+
+**D3 — On the streamed path the routing fields must precede the file.** The model name decides where
+the job goes, a body can be read once and only forwards, so a file section reached before `model` is
+a **400 naming the ordering** — not a buffer-until-the-fields-arrive, which is the phase undone. A
+field *after* the file is also refused rather than dropped: a transcription that ignored `language=bg`
+and answered in English is the phase-42 failure with no error in it.
+
+**D4 — A streamed job cannot fail over, and the 502 says so.** The body is consumed, past the hub and
+into a node that just died, and a client's socket cannot be rewound. *Recorded correction to the
+brief: there was nothing to exclude* — tool dispatch never had failover (only `InferenceCore` retries).
+What the phase actually added is the honest 502 with `node_lost`, on the streamed handlers only, so
+the buffered path's behaviour is untouched.
+
+**D5 — Streamed-attachment support is declared, and absence means "no".**
+`NodeRegistration.SupportsStreamedAttachments` / `NodeModels`, null read as false — phase-40 D1's
+mixed-fleet rule for the fifth time, because a v3.20 node has no `StreamAttachments` to call.
+`FindNodesWithModel(..., requireStreamedAttachments: true)` narrows **only** streamed jobs, so
+buffered traffic keeps routing to the whole fleet, and a fleet with no capable node answers **503
+naming the reason** — never a silent fall back to buffering, which would work right up to the 25 MB
+it cannot do.
+
+**D6 — One key moves three ceilings, and two of them are ASP.NET's.** Measured, not assumed: Kestrel's
+`MaxRequestBodySize` is **30 000 000 bytes** (today's 25 MiB cap clears it by ~3.7 MB) and
+`FormOptions.MultipartBodyLengthLimit` is 134 217 728. [UploadLimits](src/InferHub.Coordinator/Endpoints/UploadLimits.cs)
+derives both from the keys, `NodeHubLimits`' argument in its own words. **Applied per route, never
+globally** — a global raise would un-bound `/api/chat` and the vector data plane too.
+
+**D9 — The streamed path serves *blocking dispatch only*, so the image routes stay buffered.** A body
+can stream only while somebody is waiting for it. `POST /api/images/jobs` answers **202 before the job
+runs** (47 D1), so its bytes would have to outlive the response — the archive 46 D5 and 51 D3 refused,
+reached from a new direction; and `/v1/images/edits` looks streamable until `SyncMaxWaitSeconds`
+expires, where 47 D1 is explicit that **the job keeps running** and only the waiting stops. Lifting the
+ceiling for images needs the result direction and a place for bytes to live, which is not this phase.
+
+**Rule 5 survived again.** Zero new `PackageReference`, and `InferHub.Shared.csproj` is still empty.

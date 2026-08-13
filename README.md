@@ -610,6 +610,30 @@ A tool failure is a failed **job**, never a failed node. Attachments are capped 
 (`Tools:MaxAttachmentBytes`, a 413 at the edge), written to a per-request scratch directory that is
 deleted in a `finally` — after success and after failure — and never logged.
 
+### Uploads larger than 25 MB (v3.21)
+
+Set **`Tools:MaxStreamedBytes`** on the coordinator *and* on a node, and an upload past
+`Tools:MaxAttachmentBytes` **streams through the hub** instead of being buffered in it: the node
+pulls the bytes over the connection it already opened, 64 KB at a time, straight into the scratch
+file the worker reads. The hub never holds the body, and raising the key moves Kestrel's own
+30 MB request-body ceiling with it — so the 413 you get always names a key you can raise.
+
+It is **off by default (0)**, and with it off a deployment behaves exactly as v3.20 did. Three
+things are worth knowing before you turn it on:
+
+- **A streamed job is not retried on another node.** The body has been read and a client's socket
+  cannot be rewound, so a node lost mid-upload is a `502` naming `node_lost`, and the caller decides.
+  This is a real step down in reliability on a path you opt into by size.
+- **Send your form fields before the file part.** The request is routed before the bytes arrive, so
+  a `model` that turns up after the file is a `400` that says so. `curl -F model=… -F file=@…` and
+  the OpenAI SDKs already do this. A solo node has nothing to route and accepts any order.
+- **It applies to `POST /api/tools/{capability}` and `/v1/audio/transcriptions`.** The image routes
+  keep the 25 MB cap: an image job is answered *before* it runs, so its bytes would have to outlive
+  the request that carried them — which is the image store this project has refused three times.
+
+A fleet with no node that can take a streamed upload answers `503` naming that as the reason,
+rather than quietly falling back to buffering and failing at 25 MB.
+
 **v3.9 shipped the machinery and no tool.** The test suite drives a real child process that echoes.
 **v3.10 puts Whisper and Piper on it** — see below.
 
@@ -2147,7 +2171,9 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `Tools:Allowed` | `[]` | v3.9. Manifest ids that may actually run — the second consent, and the ceiling a coordinator can never raise. A manifest not named here is loaded, logged and never started. Naming tools while `Tools:Enabled` is false **fails startup**. |
 | `Tools:ManifestDirectory` | `tools` | Where `*.json` manifests are read from. A manifest that fails to load is logged and skipped, never fatal. |
 | `Tools:ScratchDirectory` | `data/tools/scratch` | Per-request working directories, deleted in a `finally` — after success and after failure. `/data/tools/scratch` in the images. |
-| `Tools:MaxAttachmentBytes` | `26214400` | 25 MB, matching the OpenAI audio API. Over it is a `413` at the edge naming the limit. Also read by the **coordinator** for its own edge. |
+| `Tools:MaxAttachmentBytes` | `26214400` | 25 MB, matching the OpenAI audio API. Over it is a `413` at the edge naming the limit. Also read by the **coordinator** for its own edge. This is the *buffered* ceiling — the bytes arrive on the job. |
+| `Tools:MaxStreamedBytes` | `0` (off) | v3.21. The ceiling for an upload that **streams through** the hub instead of being buffered in it. Must be `0` or at least `MaxAttachmentBytes`. Setting it on a node is what makes that node declare `SupportsStreamedAttachments`, which is what the hub filters on before sending it a streamed job. See [Uploads larger than 25 MB](#uploads-larger-than-25-mb-v321) for the trade — no failover, and fields before the file. |
+| `Tools:StreamChunkBytes` | `65536` | v3.21. Coordinator-side. How much of a streamed attachment travels in one frame. |
 | `Tools:QueueMaxWaitSeconds` | `30` | How long a request waits for a free worker before `503` + `Retry-After`. |
 | `Tools:CancelGraceSeconds` | `20` | v3.15. How long a worker gets to honour a `cancel` frame before it is terminated and restarted. Killing it immediately would be simpler and is wrong: a diffusion worker holds weights that took tens of seconds to load, so killing it to abandon **one** job punishes the **next** caller, and it gets worse with every model your catalogue gains. See [A job that takes two minutes](#a-job-that-takes-two-minutes-v315). |
 | `Tools:AllowModelDownload` | `false` | v3.10. May a worker fetch weights it does not have? The **third** consent — `Enabled` is the feature, `Allowed` is these tools, this is reaching the internet from a box you may have air-gapped. `true` in the `:tools` image. With it off, a worker that needs missing weights fails the **job** naming this key and the pre-fetch command. |

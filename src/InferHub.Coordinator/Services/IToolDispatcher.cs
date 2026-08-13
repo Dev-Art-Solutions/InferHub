@@ -50,4 +50,18 @@ public interface IToolDispatcher
     bool CompleteTool(ToolResult result);
 
     bool WriteToolChunk(ToolChunk chunk);
+
+    /// <summary>
+    /// Hands the dispatcher a body that is still arriving, so the node can pull it (phase 53, D1).
+    /// Returns a registration the edge disposes when the dispatch is over — the upload outlives no
+    /// request, and a job id that is not registered is a stream the hub refuses.
+    /// </summary>
+    IDisposable RegisterUpload(Guid jobId, Endpoints.StreamedUpload upload);
+
+    /// <summary>
+    /// The node's side of it: the frames for a job it was told carries a streamed attachment. An
+    /// unknown job id yields nothing rather than throwing — a node reconnecting into a hub that has
+    /// forgotten the job must fail the job, not the connection.
+    /// </summary>
+    IAsyncEnumerable<AttachmentChunk> ReadUploadAsync(Guid jobId, CancellationToken cancellationToken);
 }

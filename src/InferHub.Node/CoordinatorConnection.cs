@@ -24,6 +24,7 @@ public sealed class CoordinatorConnection(
     ModelCommandExecutor modelCommandExecutor,
     ToolExecutor toolExecutor,
     IToolRuntime toolRuntime,
+    IOptions<ToolOptions> toolOptionsAccessor,
     NodeProfileApplier profiles,
     RetrievalHost retrieval,
     ReplicaStore replicaStore,
@@ -32,6 +33,7 @@ public sealed class CoordinatorConnection(
 {
     private readonly CoordinatorOptions coordinator = coordinatorOptions.Value;
     private readonly NodeOptions node = nodeOptions.Value;
+    private readonly ToolOptions toolOptions = toolOptionsAccessor.Value;
 
     private readonly SemaphoreSlim reconnectLock = new(1, 1);
     private readonly CancellationTokenSource lifetime = new();
@@ -401,7 +403,13 @@ public sealed class CoordinatorConnection(
             // lowered its concurrency must not spend one registration advertising the higher number.
             profiles.Effective.MaxConcurrency,
             inventory.Count == 0 ? null : inventory,
-            backend.SupportsModelManagement);
+            backend.SupportsModelManagement,
+            // Capabilities are declared on the model report, not here (phase-40 D1's note).
+            Capabilities: null,
+            // This one *is* declared here, because unlike a capability it does not follow from
+            // asking the backend what it holds — it is one key on this box (phase-53 D5), and a
+            // hub needs the answer before the first job, not after the first model refresh.
+            SupportsStreamedAttachments: toolOptions.SupportsStreamedAttachments);
 
         await connection.InvokeAsync("Register", registration, cancellationToken);
         await RequestProfileAsync(cancellationToken);
@@ -766,7 +774,13 @@ public sealed class CoordinatorConnection(
                         TaskScheduler.Default);
             });
 
-            var result = await toolExecutor.RunAsync(job, progress, jobCts.Token);
+            // Phase 53: when the job says its bytes are still coming, pull them down the same
+            // connection. Null for every other job, so nothing about the pre-v3.21 path changes.
+            var attachments = job.HasStreamedAttachments
+                ? new Tools.HubAttachmentSource(activeConnection)
+                : null;
+
+            var result = await toolExecutor.RunAsync(job, progress, attachments, jobCts.Token);
 
             if (activeConnection.State is HubConnectionState.Connected)
             {
@@ -934,7 +948,14 @@ public sealed class CoordinatorConnection(
             node.Capabilities,
             toolRuntime.Capabilities,
             profiles.Effective.DisabledCapabilities);
-        var report = new NodeModels(nodeId, filtered, DateTimeOffset.UtcNow, capabilities);
+        // Re-declared on every report as well as at registration (phase-53 D5): a hub that learned
+        // it once would keep believing it after an operator turned the key off and restarted.
+        var report = new NodeModels(
+            nodeId,
+            filtered,
+            DateTimeOffset.UtcNow,
+            capabilities,
+            toolOptions.SupportsStreamedAttachments);
         await activeConnection.InvokeAsync("ReportModels", report, cancellationToken);
 
         // The empty report is the point, not an accident: the coordinator replaces this node's

@@ -1014,3 +1014,43 @@ the same category as phase-39's `curl`. It arrived **with its first consumer**, 
 phase 46 refused to carry it: a pinned dependency nothing imports is a pin nobody can tell is wrong
 until the release that needs it.
 
+
+### Phase 53 (the node writes a streamed upload) — also load-bearing
+
+**D1's payoff is that the node side is small, and phase-41 D5 is why.** The worker has always been
+handed a **path** into a per-request scratch directory, so writing that file from a socket instead of
+from a `byte[]` the node was given changes nothing above it: `ToolExecutor.BuildRequest` cannot tell
+which path the bytes came from, and the worker protocol did not change by one field. What did change
+is that the node's memory no longer grows with the upload — frames are 64 KB and the file is appended
+to. See `src/InferHub.Coordinator/CLAUDE.md` for the hub's half (D1–D6, D9).
+
+- [IStreamedAttachmentSource](src/InferHub.Node/Tools/IStreamedAttachmentSource.cs) has two
+  implementations that do not know about each other — phase-41 D8's framing a fourth time:
+  [HubAttachmentSource](src/InferHub.Node/Tools/HubAttachmentSource.cs) pulls from the hub, and solo
+  mode reads the request body directly.
+- **The bytes land before the worker slot is taken.** An upload that is still arriving must not hold
+  a GPU worker idle while it does — phase-41 D4's slot is the scarcest thing on the box.
+- **A stream that ends before one complete attachment fails the job**, rather than running the tool
+  on a file that is not there: a worker handed nothing answers cheerfully about the request it *did*
+  get, which is a 200 that means nothing.
+
+**`Tools:MaxStreamedBytes` is the node's own ceiling and is enforced here as well as at the hub.**
+Phase-41 D2's reason: the box that accepts an upload is not the box that has to write it down, and
+each is entitled to its own answer. It is **0 by default (off)**, and setting it is what makes this
+node declare `SupportsStreamedAttachments` — one key, so a node cannot advertise something it will
+then refuse. The validator rejects a value below `MaxAttachmentBytes`, which could only ever refuse a
+request the buffered path would have taken.
+
+**D7 — Solo streams straight into the scratch file, and the one asymmetry is deliberate.**
+[LocalUploadPath](src/InferHub.Node/LocalApi/LocalUploadPath.cs) is the coordinator's `UploadPath` /
+`StreamedUpload` hand-copied, which is phase-37 D6's line rather than an oversight: the multipart
+plumbing is ASP.NET and rule 2 keeps ASP.NET out of `InferHub.Shared`. `SoloUploadParityTests` drives
+the same upload at both hosts for exactly that reason. **A solo node accepts fields after the file
+where the hub refuses them** — with nothing to route, no decision had to be made before the bytes, so
+there is nothing to refuse. The asymmetry is one-directional: everything the hub accepts, solo accepts.
+
+**The scratch `finally` covers an aborted upload too, and that was tested rather than assumed.** A
+client that walks away cancels the endpoint, which sends `CancelJob`, which cancels this node's job
+token and ends the enumeration — so the half-written file goes with the directory. A second
+abort-the-stream mechanism was built for this and **removed** when the test passed without it; see
+`Dispatcher.UploadRegistration`.

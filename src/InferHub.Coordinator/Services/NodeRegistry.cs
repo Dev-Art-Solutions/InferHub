@@ -35,7 +35,8 @@ public sealed class NodeRegistry : INodeRegistry
                 null,
                 false,
                 normalized.Capabilities,
-                Array.Empty<NodeCapability>())),
+                Array.Empty<NodeCapability>(),
+                StreamedAttachments: normalized.SupportsStreamedAttachments)),
             (_, existing) => Resolved(existing with
             {
                 Registration = normalized,
@@ -43,7 +44,8 @@ public sealed class NodeRegistry : INodeRegistry
                 // A message that does not carry a declaration does not erase one. The node
                 // declares on the model report (see NodeRegistration.Capabilities), and a
                 // reconnect re-registers before it re-reports.
-                DeclaredCapabilities = normalized.Capabilities ?? existing.DeclaredCapabilities
+                DeclaredCapabilities = normalized.Capabilities ?? existing.DeclaredCapabilities,
+                StreamedAttachments = normalized.SupportsStreamedAttachments ?? existing.StreamedAttachments
             }));
 
         localInFlight.GetOrAdd(connectionId, _ => new StrongBox<int>(0));
@@ -83,7 +85,8 @@ public sealed class NodeRegistry : INodeRegistry
             LastSeenUtc = now,
             Models = normalizedModels,
             ModelsRefreshedAt = models.RefreshedAt,
-            DeclaredCapabilities = models.Capabilities ?? existing.DeclaredCapabilities
+            DeclaredCapabilities = models.Capabilities ?? existing.DeclaredCapabilities,
+            StreamedAttachments = models.SupportsStreamedAttachments ?? existing.StreamedAttachments
         });
 
         RaiseChanged();
@@ -248,7 +251,10 @@ public sealed class NodeRegistry : INodeRegistry
             .ToArray();
     }
 
-    public IReadOnlyCollection<RoutableNode> FindNodesWithModel(string model, string? capability = null)
+    public IReadOnlyCollection<RoutableNode> FindNodesWithModel(
+        string model,
+        string? capability = null,
+        bool requireStreamedAttachments = false)
     {
         if (string.IsNullOrWhiteSpace(model))
         {
@@ -257,6 +263,7 @@ public sealed class NodeRegistry : INodeRegistry
 
         return nodes
             .Where(pair => !pair.Value.Cordoned
+                && (!requireStreamedAttachments || pair.Value.StreamedAttachments is true)
                 && (capability is null
                     ? pair.Value.Models.Any(candidate => ModelNamesMatch(candidate.Name, model))
                     : NodeCapabilityResolver.Provides(pair.Value.Capabilities, capability, model)))
@@ -417,5 +424,9 @@ public sealed class NodeRegistry : INodeRegistry
         /// What the router asks. Derived from the two fields above by <see cref="Resolved"/>.
         IReadOnlyList<NodeCapability> Capabilities,
         /// The cap after a profile clamped it (phase 43). Null = the registered value stands.
-        int? EffectiveMaxConcurrency = null);
+        int? EffectiveMaxConcurrency = null,
+        /// Whether the node can pull a streamed attachment (phase 53). Null is what every node
+        /// before v3.21 says, and it is read as "no" — the same null-is-not-a-declaration shape as
+        /// <see cref="DeclaredCapabilities"/>, so a message carrying nothing erases nothing.
+        bool? StreamedAttachments = null);
 }

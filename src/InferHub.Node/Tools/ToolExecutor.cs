@@ -49,9 +49,21 @@ public sealed class ToolExecutor(
     /// is what every caller that does not watch a job passes — progress costs a callback and
     /// nothing else, but a caller that discards it should not pay for the allocation either.
     /// </param>
+    public Task<ToolResult> RunAsync(
+        ToolJob job,
+        IProgress<ToolChunk>? progress,
+        CancellationToken cancellationToken)
+        => RunAsync(job, progress, upload: null, cancellationToken);
+
+    /// <param name="upload">
+    /// Where a streamed attachment's bytes come from (phase 53). Null is every job that carries its
+    /// bytes on itself, which is every job before v3.21 and every one at or under
+    /// <c>Tools:MaxAttachmentBytes</c> since.
+    /// </param>
     public async Task<ToolResult> RunAsync(
         ToolJob job,
         IProgress<ToolChunk>? progress,
+        IStreamedAttachmentSource? upload,
         CancellationToken cancellationToken)
     {
         var scratch = CreateScratch(job.JobId);
@@ -63,7 +75,14 @@ public sealed class ToolExecutor(
 
         try
         {
-            var request = BuildRequest(job, scratch);
+            // The bytes land on disk before the worker is asked for, and before the pool's slot is
+            // taken: an upload that is still arriving must not hold a GPU worker idle while it does
+            // (phase-41 D4's slot is the scarcest thing on this box).
+            var streamed = job.HasStreamedAttachments && upload is not null
+                ? await WriteStreamedAsync(job, scratch, upload, cancellationToken)
+                : Array.Empty<ToolFile>();
+
+            var request = BuildRequest(job, scratch, streamed);
             await using var lease = await runtime.AcquireAsync(job.Capability, job.Model, cancellationToken);
 
             logger.LogInformation(
@@ -246,7 +265,10 @@ public sealed class ToolExecutor(
             // stream's terminal frame, which is what a client can actually act on.
             try
             {
-                request = BuildRequest(job, scratch);
+                // Streaming answers carry no attachment either way (phase-41's StreamAsync refuses
+                // them), so a streamed *upload* never reaches this path — the edge dispatches it
+                // blocking. Empty rather than a parameter, so nobody has to wonder.
+                request = BuildRequest(job, scratch, Array.Empty<ToolFile>());
                 lease = await runtime.AcquireAsync(job.Capability, job.Model, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -543,9 +565,111 @@ public sealed class ToolExecutor(
         }
     }
 
-    private ToolFrame BuildRequest(ToolJob job, string scratch)
+    /// <summary>
+    /// Pulls a streamed attachment onto disk, one frame at a time (phase 53, D1).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the payoff, and it is why the node side of the phase is small: phase-41 D5 already
+    /// hands the worker a <em>path</em>, so writing that file from a socket instead of from a
+    /// <c>byte[]</c> the node was handed changes nothing above it. The node's memory no longer
+    /// grows with the upload at all — the frames are 64 KB and the file is appended to.
+    /// </para>
+    /// <para>
+    /// The file is named from the part name and the index, never from anything the caller chose,
+    /// and it goes into the same scratch directory the <c>finally</c> deletes — including when the
+    /// upload dies half-written, which is D8.
+    /// </para>
+    /// </remarks>
+    private async Task<IReadOnlyList<ToolFile>> WriteStreamedAsync(
+        ToolJob job,
+        string scratch,
+        IStreamedAttachmentSource source,
+        CancellationToken cancellationToken)
     {
         var files = new List<ToolFile>();
+        var ceiling = options.MaxStreamedBytes > 0 ? options.MaxStreamedBytes : options.MaxAttachmentBytes;
+
+        FileStream? current = null;
+        string? currentName = null;
+        string? currentMedia = null;
+        string? currentPath = null;
+        long total = 0;
+
+        try
+        {
+            await foreach (var chunk in source.ReadAsync(job.JobId, cancellationToken))
+            {
+                switch (chunk.Kind)
+                {
+                    case AttachmentChunkKinds.Start:
+                        currentName = chunk.Name ?? $"file{chunk.Index}";
+                        currentMedia = chunk.MediaType ?? "application/octet-stream";
+                        currentPath = Path.Combine(scratch, SafeFileName(currentName, chunk.Index));
+                        current = new FileStream(
+                            currentPath,
+                            FileMode.Create,
+                            FileAccess.Write,
+                            FileShare.None,
+                            bufferSize: ToolAttachmentLimits.DefaultStreamChunkBytes,
+                            useAsync: true);
+                        break;
+
+                    case AttachmentChunkKinds.Data when current is not null && chunk.Bytes is { } bytes:
+                        total += bytes.LongLength;
+
+                        // The node's own ceiling, not the hub's (phase-41 D2): the box that accepts
+                        // an upload is not the box that has to write it down.
+                        if (total > ceiling)
+                        {
+                            throw new InvalidOperationException(ToolAttachmentLimits.TooLarge(
+                                currentName ?? "file",
+                                total,
+                                ceiling,
+                                $"{ToolOptions.SectionName}:{nameof(ToolOptions.MaxStreamedBytes)}"));
+                        }
+
+                        await current.WriteAsync(bytes, cancellationToken);
+                        break;
+
+                    case AttachmentChunkKinds.End when current is not null:
+                        await current.FlushAsync(cancellationToken);
+                        await current.DisposeAsync();
+                        current = null;
+                        files.Add(new ToolFile(currentName!, currentMedia!, currentPath!));
+                        break;
+                }
+            }
+        }
+        finally
+        {
+            if (current is not null)
+            {
+                await current.DisposeAsync();
+            }
+        }
+
+        if (files.Count == 0)
+        {
+            // The enumeration ended without a complete attachment: the client went away, the hub
+            // forgot the job, or the upload was refused mid-flight. Whichever it was, running the
+            // tool on a file that is not there would produce a worker error nobody can read.
+            throw new InvalidOperationException(
+                "the streamed upload for this job ended before any attachment was complete");
+        }
+
+        logger.LogInformation(
+            "Streamed {Count} attachment(s), {Bytes} bytes, into the scratch directory for job {JobId}",
+            files.Count,
+            total,
+            job.JobId);
+
+        return files;
+    }
+
+    private ToolFrame BuildRequest(ToolJob job, string scratch, IReadOnlyList<ToolFile> streamed)
+    {
+        var files = new List<ToolFile>(streamed);
 
         var incoming = job.Attachments ?? (IReadOnlyList<ToolAttachment>)Array.Empty<ToolAttachment>();
 

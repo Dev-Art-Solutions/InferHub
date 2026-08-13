@@ -45,6 +45,22 @@ internal static class LocalToolEndpoints
             return Error(StatusCodes.Status503ServiceUnavailable, refusal);
         }
 
+        // Phase-53 D7, and it is here rather than only on the audio route for parity's sake: the
+        // hub takes a streamed upload on both surfaces, and a solo node that took it on one would
+        // be a difference a client discovers by uploading something.
+        var toolOptions = LocalUploadPath.OptionsFrom(httpContext);
+        LocalUploadPath.Prepare(httpContext, toolOptions);
+
+        if (LocalUploadPath.TooLargeUpFront(httpContext, toolOptions) is { } declaredTooLarge)
+        {
+            return Error(StatusCodes.Status413PayloadTooLarge, declaredTooLarge);
+        }
+
+        if (LocalUploadPath.ShouldStream(httpContext, toolOptions))
+        {
+            return await HandleStreamedAsync(httpContext, capability, executor, toolOptions, cancellationToken);
+        }
+
         LocalToolRequest body;
 
         try
@@ -86,6 +102,77 @@ internal static class LocalToolEndpoints
         }
 
         var result = await executor.RunAsync(job, cancellationToken);
+        return Render(httpContext, result);
+    }
+
+    /// <summary>
+    /// The same call with the body streamed straight into the scratch directory (phase 53, D7).
+    /// </summary>
+    /// <remarks>
+    /// Two things the hub's version has are absent here and both follow from there being nothing to
+    /// route: no capable-node filter, and <b>no field-ordering requirement</b> — with no decision to
+    /// make before the bytes, a field after the file is simply a field. That is a real difference in
+    /// what is accepted, and it is one-directional: everything the hub takes, a solo node takes too.
+    /// </remarks>
+    private static async Task<IResult> HandleStreamedAsync(
+        HttpContext httpContext,
+        string capability,
+        ToolExecutor executor,
+        ToolOptions toolOptions,
+        CancellationToken cancellationToken)
+    {
+        LocalUploadStart start;
+
+        try
+        {
+            start = await LocalUploadPath.BeginAsync(httpContext, toolOptions, cancellationToken);
+        }
+        catch (BadHttpRequestException ex)
+        {
+            return Error(StatusCodes.Status400BadRequest, ex.Message);
+        }
+
+        var model = start.Field("model");
+
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            return Error(StatusCodes.Status400BadRequest, "model is required");
+        }
+
+        if (!start.Upload.HasFile)
+        {
+            return Error(StatusCodes.Status400BadRequest, "a streamed request must carry a file part");
+        }
+
+        if (!executor.Provides(capability, model!))
+        {
+            httpContext.Response.Headers.RetryAfter = ToolExecutor.CapabilityRetryAfterSeconds.ToString();
+
+            return Error(
+                StatusCodes.Status503ServiceUnavailable,
+                $"this node does not provide '{capability}' for model '{model}'");
+        }
+
+        var payload = JsonSerializer.Serialize(
+            start.Fields.ToDictionary(field => field.Key, field => (object?)field.Value),
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        var job = new ToolJob(
+            Guid.NewGuid(),
+            capability,
+            model!,
+            payload,
+            Attachments: null,
+            HasStreamedAttachments: true);
+
+        var result = await executor.RunAsync(job, progress: null, start.Upload, cancellationToken);
+
+        if (start.Upload.TooLarge is { } tooLarge)
+        {
+            return Error(StatusCodes.Status413PayloadTooLarge, tooLarge);
+        }
+
+        httpContext.Response.Headers[LocalApiEndpoints.ServedByHeader] = LocalApiEndpoints.ServedBySolo;
         return Render(httpContext, result);
     }
 

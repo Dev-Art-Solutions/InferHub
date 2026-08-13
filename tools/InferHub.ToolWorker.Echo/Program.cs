@@ -43,6 +43,11 @@ using System.Text.Json;
 //              real process to mean anything.
 //   files      read every input file, write one output file into the scratch directory, and name
 //              it back in the result
+//   digest     (phase 53) read every input file and answer with its size and SHA-256 — and nothing
+//              else. `files` echoes the whole file back, which is unusable for a streamed upload:
+//              the answer would have to come back through the response path, which is still bounded
+//              by Tools:MaxAttachmentBytes. A fixed-size digest is what lets a test assert that
+//              300 MB arrived byte for byte without sending 300 MB back.
 
 var json = new JsonSerializerOptions(JsonSerializerDefaults.Web)
 {
@@ -335,6 +340,35 @@ async Task HandleRequestAsync(JsonElement frame, CancellationToken cancellationT
                 payload = new { escaped = true },
                 files = new[] { new { name = "stolen", mediaType = "text/plain", path } }
             });
+            return;
+        }
+
+        case "digest":
+        {
+            // Phase 53. Streamed in, hashed here, and only the hash comes back — so the assertion
+            // is real fidelity rather than a length, at a size the response path could never carry.
+            var digests = new List<object>();
+
+            if (frame.TryGetProperty("files", out var streamed) && streamed.ValueKind is JsonValueKind.Array)
+            {
+                foreach (var file in streamed.EnumerateArray())
+                {
+                    var path = file.GetProperty("path").GetString()!;
+
+                    await using var stream = File.OpenRead(path);
+                    var hash = await System.Security.Cryptography.SHA256.HashDataAsync(stream, cancellationToken);
+
+                    digests.Add(new
+                    {
+                        name = file.GetProperty("name").GetString(),
+                        mediaType = file.TryGetProperty("mediaType", out var mt) ? mt.GetString() : null,
+                        bytes = new FileInfo(path).Length,
+                        sha256 = Convert.ToHexString(hash).ToLowerInvariant()
+                    });
+                }
+            }
+
+            Send(new { type = "result", id, payload = new { digested = digests } });
             return;
         }
 

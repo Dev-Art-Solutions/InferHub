@@ -318,6 +318,37 @@ public sealed class NodeHub(
         }
     }
 
+    /// <summary>
+    /// The bytes of a job the node was told carries a streamed attachment (phase 53, D1). The node
+    /// invokes this and writes what comes back straight into its scratch directory; the hub reads
+    /// them off the client's live request body one window at a time and never holds the body.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is a server-to-client stream, and it is the first hub method here where a
+    /// <c>CancellationToken</c> parameter is correct.</b> The binder trap written out three times
+    /// above applies to client-to-server streams — methods that return <c>Task</c> and take an
+    /// <c>IAsyncEnumerable</c> argument — where SignalR counts a token as a real argument the caller
+    /// never sends. A method that <em>returns</em> a stream is the shape SignalR supplies the token
+    /// for synthetically, so this one is bound correctly and the token really does fire when the
+    /// node walks away. Do not delete it on the strength of the other three comments.
+    /// </para>
+    /// <para>
+    /// The node pulls rather than the hub pushing, so phase-26 D1 is untouched: the stream is
+    /// established by the node's own invocation on the connection it opened, exactly as
+    /// <c>RequestNodeProfile</c> is, and the hub still never dials a node.
+    /// </para>
+    /// </remarks>
+    public IAsyncEnumerable<AttachmentChunk> StreamAttachments(Guid jobId, CancellationToken cancellationToken)
+    {
+        if (services.GetService(typeof(IToolDispatcher)) is not IToolDispatcher tools)
+        {
+            return AsyncEnumerable.Empty<AttachmentChunk>();
+        }
+
+        return tools.ReadUploadAsync(jobId, cancellationToken);
+    }
+
     // Node → hub upload of model-command progress (phase 26). Like StreamChunks this is a
     // client-to-server stream, so it must NOT declare a CancellationToken parameter — see the
     // StreamChunks comment above for why. Use Context.ConnectionAborted instead.

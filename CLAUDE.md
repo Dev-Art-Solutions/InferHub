@@ -254,6 +254,11 @@ as load-bearing:
    >   dispatch and dropped; both travel as `image` and `mask` rather than under the caller's own
    >   filename, for the phase-42 reason above.
    >
+   > - **"No temp file" was a claim about our code, not about the request** (phase-53, measured).
+   >   `ReadFormAsync` spills a section over 64 KB to an `ASPNETCORE_*.tmp`, so a buffered upload
+   >   does briefly touch the hub's disk. Streaming it through does not. See
+   >   `src/InferHub.Shared/CLAUDE.md`.
+   >
    > The mechanism is the same each time and is the thing to preserve: **count, never content**
    > (phase-25 D3). The usage path has gained four units — tokens, audio seconds, characters,
    > megapixel-steps — and **no field that could hold a sample**, deliberately, because a field is

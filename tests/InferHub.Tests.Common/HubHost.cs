@@ -287,7 +287,12 @@ internal sealed class HubHost : IAsyncDisposable
 
     private sealed class AlwaysRoutes : IRouter
     {
-        public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null, string? capability = null)
+        public RoutableNode? Route(
+            string model,
+            string? conversationKey = null,
+            string? excludeConnectionId = null,
+            string? capability = null,
+            bool requireStreamedAttachments = false)
             => new("conn-1", "node-1", "parity-node");
     }
 

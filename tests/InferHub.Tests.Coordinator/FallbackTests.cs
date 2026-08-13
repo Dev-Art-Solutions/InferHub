@@ -372,7 +372,7 @@ public class FallbackTests
 
     private sealed class StubRouter(RoutableNode? node) : InferHub.Coordinator.Services.IRouter
     {
-        public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null, string? capability = null)
+        public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null, string? capability = null, bool requireStreamedAttachments = false)
             => node;
     }
 

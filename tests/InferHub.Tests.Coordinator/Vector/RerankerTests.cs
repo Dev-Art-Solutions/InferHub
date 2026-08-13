@@ -141,7 +141,7 @@ public class RerankerTests
 
     private sealed class StubRouter(bool routeReturnsNode) : IRouter
     {
-        public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null, string? capability = null)
+        public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null, string? capability = null, bool requireStreamedAttachments = false)
             => routeReturnsNode ? new RoutableNode("conn", "node-1", "node") : null;
     }
 

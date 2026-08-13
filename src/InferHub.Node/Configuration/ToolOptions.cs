@@ -61,6 +61,29 @@ public sealed class ToolOptions
     public long MaxAttachmentBytes { get; set; } = ToolAttachmentLimits.DefaultMaxBytes;
 
     /// <summary>
+    /// The ceiling for an attachment that arrives as a pulled stream instead of as bytes on the job
+    /// (phase 53). <b>Zero is off, and off is the default</b> — a node that changes no config
+    /// declares nothing new, is routed exactly as v3.20 was, and refuses exactly what it did.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Setting it is what makes this node declare <c>SupportsStreamedAttachments</c>, which is what
+    /// a hub filters on before sending it a streamed job (phase-53 D5). One key, so an operator
+    /// cannot end up with a node that advertises a capability it will then refuse to exercise.
+    /// </para>
+    /// <para>
+    /// It is enforced <em>here</em> as well as at the hub's edge, for phase-41 D2's reason: the box
+    /// that accepts an upload is not the box that has to write it to disk, and each is entitled to
+    /// its own answer about what fits. Over it, the job fails naming this key — the node does not
+    /// half-write a file and hope.
+    /// </para>
+    /// </remarks>
+    public long MaxStreamedBytes { get; set; }
+
+    /// <summary>Whether this node can take a streamed attachment at all — one key, one answer.</summary>
+    public bool SupportsStreamedAttachments => MaxStreamedBytes > 0;
+
+    /// <summary>
     /// Whether a worker may fetch model weights it does not have (phase 42, D4). Default
     /// <c>false</c>; the <c>:tools</c> image sets it <c>true</c>.
     /// </summary>

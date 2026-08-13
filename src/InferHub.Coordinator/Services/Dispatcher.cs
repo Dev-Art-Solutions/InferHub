@@ -30,6 +30,48 @@ public sealed class Dispatcher(
     // streaming tool response cannot carry an attachment at all.
     private readonly ConcurrentDictionary<Guid, IProgress<ToolChunk>> toolProgress = new();
 
+    // Phase 53. A body that is still arriving, addressed by the job it belongs to. Registered by
+    // the edge before the job goes out and dropped the moment the dispatch ends, so an upload can
+    // never outlive the request that owns it.
+    private readonly ConcurrentDictionary<Guid, Endpoints.StreamedUpload> uploads = new();
+
+    public IDisposable RegisterUpload(Guid jobId, Endpoints.StreamedUpload upload)
+    {
+        uploads[jobId] = upload;
+        return new UploadRegistration(this, jobId);
+    }
+
+    public IAsyncEnumerable<AttachmentChunk> ReadUploadAsync(Guid jobId, CancellationToken cancellationToken)
+    {
+        if (!uploads.TryGetValue(jobId, out var upload))
+        {
+            logger.LogWarning("A node asked for the attachments of unknown job {JobId}", jobId);
+            return AsyncEnumerable.Empty<AttachmentChunk>();
+        }
+
+        return upload.ReadAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The registration is a <em>lifetime scope</em> and nothing more: it drops the upload so a late
+    /// pull is a clean "unknown job" rather than a stream nobody owns.
+    /// </summary>
+    /// <remarks>
+    /// <b>It deliberately does not also abort the enumeration, and that was measured rather than
+    /// assumed.</b> A cancel-on-dispose was built for the case of a node left waiting inside
+    /// <c>await foreach</c> for bytes that will never come, and then removed: the abort test passes
+    /// without it, because the path that already covers it is <c>DispatchToolAsync</c>'s own
+    /// cancellation registration — a client that walks away cancels the endpoint, which sends
+    /// <c>CancelJob</c>, which cancels the node's job token and ends its enumeration there. A second
+    /// mechanism for a case the first already handles is one more thing to maintain and one more
+    /// thing to be wrong (phase-47 D4's refusal, applied to our own machinery). If a future change
+    /// ever ends a job <em>without</em> cancelling the node, this is where the other half goes.
+    /// </remarks>
+    private sealed class UploadRegistration(Dispatcher dispatcher, Guid jobId) : IDisposable
+    {
+        public void Dispose() => dispatcher.uploads.TryRemove(jobId, out _);
+    }
+
     public async Task<InferenceResult> DispatchAsync(
         RoutableNode node,
         InferenceJob job,

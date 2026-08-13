@@ -64,8 +64,23 @@ public static class AudioEndpoints
             return Error(400, "this endpoint takes multipart/form-data with a 'file' part", OpenAiErrorTypes.InvalidRequest);
         }
 
-        var maxBytes = httpContext.RequestServices.GetService<IOptions<ToolEdgeOptions>>()?.Value.MaxAttachmentBytes
-            ?? ToolAttachmentLimits.DefaultMaxBytes;
+        var edge = UploadPath.OptionsFrom(httpContext);
+        var maxBytes = edge.MaxAttachmentBytes;
+
+        // Every ceiling this request will meet, moved together (phase-53 D6). Before the body is
+        // touched, because Kestrel's is read-only once the read has started.
+        UploadLimits.Prepare(httpContext, edge.MaxAttachmentBytes, edge.MaxStreamedBytes);
+
+        if (UploadPath.TooLargeUpFront(httpContext, edge) is { } declaredTooLarge)
+        {
+            return Error(413, declaredTooLarge, OpenAiErrorTypes.InvalidRequest, param: "file");
+        }
+
+        if (UploadPath.ShouldStream(httpContext, edge))
+        {
+            return await HandleStreamedTranscriptionAsync(
+                httpContext, router, registry, tools, metrics, logger, edge, cancellationToken);
+        }
 
         IFormCollection form;
 
@@ -157,6 +172,171 @@ public static class AudioEndpoints
         Meter(context, metrics, outcome, CapabilityKinds.Transcribe, request.Model);
 
         return Render(httpContext, outcome);
+    }
+
+    /// <summary>
+    /// The same transcription, with the file streamed through the hub instead of buffered in it
+    /// (phase 53). Everything before the bytes — validation, admission, routing — happens on the
+    /// leading form fields, which is what D3's ordering requirement exists to make possible.
+    /// </summary>
+    private static async Task<IResult> HandleStreamedTranscriptionAsync(
+        HttpContext httpContext,
+        Services.IRouter router,
+        INodeRegistry registry,
+        IToolDispatcher tools,
+        Metrics metrics,
+        ILogger logger,
+        ToolEdgeOptions edge,
+        CancellationToken cancellationToken)
+    {
+        StreamedUploadStart start;
+
+        try
+        {
+            start = await UploadPath.BeginAsync(httpContext, edge, cancellationToken);
+        }
+        catch (BadHttpRequestException ex)
+        {
+            return Error(400, ex.Message, OpenAiErrorTypes.InvalidRequest);
+        }
+
+        var request = TranscriptionRequest.TryCreate(
+            start.Field("model"),
+            start.Field("response_format"),
+            start.Field("language"),
+            start.Field("prompt"),
+            start.Field("temperature"),
+            start.Upload.HasFile,
+            out var invalid);
+
+        if (request is null)
+        {
+            return Error(400, invalid, OpenAiErrorTypes.InvalidRequest, param: "model");
+        }
+
+        var context = InferenceCore.ClientContext.From(httpContext);
+        var admission = context.Admission.TryAdmit(context.Client, request.Model, UsageUnits.AudioSeconds);
+
+        if (!admission.Allowed)
+        {
+            logger.LogInformation(
+                "Rejected transcription for client {ClientId}: {Status} {Message}",
+                context.Client.Id,
+                admission.Status,
+                admission.Message);
+
+            return Rejected(httpContext, admission);
+        }
+
+        using var lease = admission.Lease;
+
+        // D5. A fleet with capable nodes but none that can pull a stream is fleet state, so it gets
+        // the phase-40 D4 shape — never a silent fall back to the buffered path, which would work
+        // right up to the 25 MB it cannot do.
+        var node = router.Route(
+            request.Model,
+            capability: CapabilityKinds.Transcribe,
+            requireStreamedAttachments: true);
+
+        if (node is null)
+        {
+            return NoStreamingNode(httpContext, registry, CapabilityKinds.Transcribe, request.Model);
+        }
+
+        var job = new ToolJob(
+            Guid.NewGuid(),
+            CapabilityKinds.Transcribe,
+            request.Model,
+            request.ToToolPayload(),
+            Attachments: null,
+            HasStreamedAttachments: true);
+
+        using var upload = tools.RegisterUpload(job.JobId, start.Upload);
+
+        ToolResult result;
+
+        try
+        {
+            result = await tools.DispatchToolAsync(node, job, cancellationToken);
+        }
+        catch (NodeDisconnectedException)
+        {
+            // D4. There is no failover here and there cannot be: the body is consumed, past the hub
+            // and into a node that just died, and the client's socket cannot be rewound. Phase-47
+            // D7's shape — say what happened and let the caller decide, rather than silently asking
+            // for the upload again without telling them that is what this is.
+            logger.LogWarning(
+                "Streamed transcription {JobId} lost node {NodeId} mid-job after {Bytes} bytes",
+                job.JobId,
+                node.NodeId,
+                start.Upload.BytesStreamed);
+
+            return Error(
+                502,
+                "the node handling this request disconnected while the upload was in flight; " +
+                "a streamed upload is not retried on another node, because the body has already been read",
+                OpenAiErrorTypes.ApiError,
+                code: "node_lost");
+        }
+
+        // The upload's own verdict outranks the node's: a worker told "the stream ended" reports a
+        // failed job, and answering with that instead of the 413 would send the caller looking at
+        // the model.
+        if (start.Upload.Failure is { } failure)
+        {
+            return UploadRefused(failure);
+        }
+
+        var outcome = AudioRenderer.Transcription(result, request);
+
+        // Model, seconds, bytes, outcome. Not the filename, and never the text.
+        logger.LogInformation(
+            "Streamed transcription {JobId} ({Model}) on node {NodeId}: {Status}, {Seconds:F1}s of audio, {Bytes} bytes streamed",
+            job.JobId,
+            request.Model,
+            node.NodeId,
+            outcome.Status,
+            outcome.Units,
+            start.Upload.BytesStreamed);
+
+        httpContext.Response.Headers[InferenceCore.ServedByHeader] = "node";
+        Meter(context, metrics, outcome, CapabilityKinds.Transcribe, request.Model);
+
+        return Render(httpContext, outcome);
+    }
+
+    /// <summary>Each upload failure kind renders as itself — "it failed" is not a status.</summary>
+    private static IResult UploadRefused(UploadFailure failure) => failure.Kind switch
+    {
+        UploadFailureKind.TooLarge => Error(413, failure.Message, OpenAiErrorTypes.InvalidRequest, param: "file"),
+        UploadFailureKind.FieldAfterFile => Error(400, failure.Message, OpenAiErrorTypes.InvalidRequest),
+        _ => Error(400, failure.Message, OpenAiErrorTypes.InvalidRequest)
+    };
+
+    /// <summary>
+    /// <see cref="NoNode"/>'s sibling for a streamed job (phase-53 D5). It names the reason
+    /// separately, because "no node provides transcribe" is wrong and misleading on a fleet that
+    /// provides it perfectly well and simply cannot take a 300 MB upload.
+    /// </summary>
+    private static IResult NoStreamingNode(
+        HttpContext httpContext,
+        INodeRegistry registry,
+        string capability,
+        string model)
+    {
+        if (registry.FindNodesWithModel(model, capability).Count > 0)
+        {
+            httpContext.Response.Headers.RetryAfter = ToolEndpoints.CapabilityRetryAfterSeconds.ToString();
+
+            return Error(
+                503,
+                $"no node currently serving '{capability}' for model '{model}' accepts a streamed upload; " +
+                "an upload this large needs a node running v3.21 or later with Tools:MaxStreamedBytes set",
+                OpenAiErrorTypes.ApiError,
+                code: "capability_unavailable");
+        }
+
+        return NoNode(httpContext, registry, capability, model);
     }
 
     private static async Task<IResult> HandleSpeechAsync(

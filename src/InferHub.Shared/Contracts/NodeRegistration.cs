@@ -25,7 +25,13 @@ public sealed record NodeRegistration(
     /// backend what it holds at registration time, and asking first would mean a node with a dead
     /// backend never registers at all — phase-36 D7). The field exists because registration is
     /// where a node with a fixed, backend-independent capability set would declare it.
-    IReadOnlyList<NodeCapability>? Capabilities = null);
+    IReadOnlyList<NodeCapability>? Capabilities = null,
+    /// Whether this node can take an attachment as a pulled stream rather than as bytes on the job
+    /// (phase 53, D5). **Null means "no"**, which is what every node before v3.21 is: it has no
+    /// `StreamAttachments` to call, so a hub that sent it a streamed job would fail every request
+    /// with something unreadable. The router filters on this for streamed jobs only, so buffered
+    /// traffic keeps routing to the whole fleet — phase-40 D1's mixed-fleet rule, again.
+    bool? SupportsStreamedAttachments = null);
 
 /// <summary>
 /// One row of a node's on-disk vector replica inventory, reported at registration so the

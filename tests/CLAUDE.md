@@ -76,3 +76,12 @@ Some tests need something that is not on every machine and skip cleanly when it 
 `PythonWorkerFactAttribute`, `OllamaSupervisorFactAttribute`, and the Postgres/Qdrant integration
 suites. **Skipped is not passed** — the counts in a release note say how many were skipped, and
 that number is part of the claim.
+
+## The `heavy-mesh` collection (phase 53)
+
+`ImageJobTests`, `ToolUploadTests` and `SoloUploadParityTests` share a collection with
+parallelisation **off**, because the first asserts on queue position and a bounded wait while the
+other two push tens of megabytes through a real mesh. Run together they made the queue test see a
+genuinely full queue. **Loosening its timing was the alternative and would have been wrong** — it was
+asserting the thing it exists to assert; what had gone missing was the machine. Put a suite here when
+its cost is measured in megabytes, not when it is merely slow.

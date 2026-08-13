@@ -19,6 +19,7 @@ namespace InferHub.Tests;
 /// still warm after a cancel</em>, are precisely what a fake cannot produce.
 /// </para>
 /// </remarks>
+[Collection("heavy-mesh")]
 public class ImageJobTests
 {
     /// <summary>Slow enough to cancel mid-run, quick enough that the suite is not a coffee break.</summary>

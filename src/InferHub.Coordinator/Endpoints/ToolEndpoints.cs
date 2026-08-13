@@ -47,6 +47,23 @@ public static class ToolEndpoints
             return Error(StatusCodes.Status400BadRequest, "a capability is required, e.g. /api/tools/transcribe");
         }
 
+        var edge = UploadPath.OptionsFrom(httpContext);
+
+        // Every ceiling this request will meet, moved together (phase-53 D6), before the body is
+        // touched — Kestrel's is read-only once the read has started.
+        UploadLimits.Prepare(httpContext, edge.MaxAttachmentBytes, edge.MaxStreamedBytes);
+
+        if (UploadPath.TooLargeUpFront(httpContext, edge) is { } declaredTooLarge)
+        {
+            return Error(StatusCodes.Status413PayloadTooLarge, declaredTooLarge);
+        }
+
+        if (UploadPath.ShouldStream(httpContext, edge))
+        {
+            return await HandleStreamedAsync(
+                httpContext, capability, registry, router, tools, logger, edge, cancellationToken);
+        }
+
         ToolRequestBody body;
 
         try
@@ -110,6 +127,136 @@ public static class ToolEndpoints
             body.Model,
             node.NodeId,
             result.Success);
+
+        return Render(httpContext, result);
+    }
+
+    /// <summary>
+    /// The same call, with the bytes streamed through the hub (phase 53). Blocking only: a body can
+    /// stream while somebody waits for it, and <c>stream=true</c> here means a streaming *answer*,
+    /// which is a different question with no attachment on it (phase-41's <c>StreamAsync</c>
+    /// refuses them).
+    /// </summary>
+    private static async Task<IResult> HandleStreamedAsync(
+        HttpContext httpContext,
+        string capability,
+        INodeRegistry registry,
+        Services.IRouter router,
+        IToolDispatcher tools,
+        ILogger logger,
+        ToolEdgeOptions edge,
+        CancellationToken cancellationToken)
+    {
+        StreamedUploadStart start;
+
+        try
+        {
+            start = await UploadPath.BeginAsync(httpContext, edge, cancellationToken);
+        }
+        catch (BadHttpRequestException ex)
+        {
+            return Error(StatusCodes.Status400BadRequest, ex.Message);
+        }
+
+        var model = start.Field("model");
+
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            return Error(
+                StatusCodes.Status400BadRequest,
+                "model is required, and on the streamed path it must be sent before the file part " +
+                "(phase-53 D3): the request is routed before the bytes are read");
+        }
+
+        if (!start.Upload.HasFile)
+        {
+            return Error(StatusCodes.Status400BadRequest, "a streamed request must carry a file part");
+        }
+
+        var node = router.Route(model, capability: capability, requireStreamedAttachments: true);
+
+        if (node is null)
+        {
+            if (registry.FindNodesWithModel(model, capability).Count > 0)
+            {
+                httpContext.Response.Headers.RetryAfter = CapabilityRetryAfterSeconds.ToString();
+
+                return Error(
+                    StatusCodes.Status503ServiceUnavailable,
+                    $"no node currently serving '{capability}' for model '{model}' accepts a streamed upload; " +
+                    "an upload this large needs a node running v3.21 or later with Tools:MaxStreamedBytes set");
+            }
+
+            if (KnownToTheFleet(registry, model))
+            {
+                httpContext.Response.Headers.RetryAfter = CapabilityRetryAfterSeconds.ToString();
+
+                return Error(
+                    StatusCodes.Status503ServiceUnavailable,
+                    $"no node currently provides '{capability}' for model '{model}'");
+            }
+
+            return Error(StatusCodes.Status404NotFound, $"model '{model}' not found");
+        }
+
+        // Every field that arrived before the file becomes the payload, exactly as it does on the
+        // buffered path — the convenience is the same, it just cannot extend to fields that turn up
+        // after the bytes (D3).
+        var payload = JsonSerializer.Serialize(
+            start.Fields.ToDictionary(field => field.Key, field => (object?)field.Value),
+            JsonOptions);
+
+        var job = new ToolJob(
+            Guid.NewGuid(),
+            capability,
+            model!,
+            payload,
+            Attachments: null,
+            HasStreamedAttachments: true);
+
+        httpContext.Response.Headers["X-InferHub-Served-By"] = "node";
+
+        using var upload = tools.RegisterUpload(job.JobId, start.Upload);
+
+        ToolResult result;
+
+        try
+        {
+            result = await tools.DispatchToolAsync(node, job, cancellationToken);
+        }
+        catch (NodeDisconnectedException)
+        {
+            // D4. No failover, and the reason is mechanical rather than a policy: the body is
+            // consumed and a client's socket cannot be rewound.
+            logger.LogWarning(
+                "Streamed tool job {JobId} lost node {NodeId} mid-job after {Bytes} bytes",
+                job.JobId,
+                node.NodeId,
+                start.Upload.BytesStreamed);
+
+            return Error(
+                StatusCodes.Status502BadGateway,
+                "the node handling this request disconnected while the upload was in flight; " +
+                "a streamed upload is not retried on another node, because the body has already been read");
+        }
+
+        if (start.Upload.Failure is { } failure)
+        {
+            return failure.Kind switch
+            {
+                UploadFailureKind.TooLarge => Error(StatusCodes.Status413PayloadTooLarge, failure.Message),
+                _ => Error(StatusCodes.Status400BadRequest, failure.Message)
+            };
+        }
+
+        logger.LogInformation(
+            "Streamed tool job {JobId} ({Capability}/{Model}) on node {NodeId}: success={Success}, {Bytes} bytes streamed",
+            job.JobId,
+            capability,
+            model,
+            node.NodeId,
+            result.Success,
+            start.Upload.BytesStreamed);
 
         return Render(httpContext, result);
     }

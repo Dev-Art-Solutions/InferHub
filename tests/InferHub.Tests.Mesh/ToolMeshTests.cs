@@ -254,7 +254,9 @@ public class ToolMeshTests
 
     // ---- the mesh ------------------------------------------------------------------------------
 
-    private sealed class ToolMesh : IAsyncDisposable
+    // internal since phase 53, so ToolUploadTests drives the same real hub + real node + real child
+    // process rather than standing up a second, subtly different one.
+    internal sealed class ToolMesh : IAsyncDisposable
     {
         private WebApplication app = null!;
         private CoordinatorConnection node = null!;
@@ -268,7 +270,77 @@ public class ToolMeshTests
 
         public NodeRegistry Registry { get; } = new();
 
-        public static async Task<ToolMesh> StartAsync(long? maxAttachmentBytes = null)
+        /// <summary>Every tool job that actually crossed the wire (phase 53), in order.</summary>
+        public IReadOnlyList<ToolJob> DispatchedJobs => dispatched;
+
+        private readonly List<ToolJob> dispatched = [];
+
+        /// <summary>The node's scratch root — where a streamed attachment is written, and deleted.</summary>
+        public string ScratchPath => scratch.Path;
+
+        public bool NodeIsRegistered() =>
+            Registry.Snapshot(DateTimeOffset.UtcNow).Any(n => n.NodeId == "tool-node");
+
+        /// <summary>Waits until the node has actually started writing an upload to disk.</summary>
+        public async Task WaitForScratchContentAsync()
+        {
+            for (var i = 0; i < 400; i++)
+            {
+                if (JobScratchDirectories().SelectMany(d => Directory.EnumerateFiles(d)).Any(
+                        file => new FileInfo(file).Length > 0))
+                {
+                    return;
+                }
+
+                await Task.Delay(25);
+            }
+
+            throw new InvalidOperationException("the node never began writing the upload to its scratch directory");
+        }
+
+        /// <summary>
+        /// The per-job scratch directories only — <c>ToolExecutor</c> names them after the job id,
+        /// and the fixture's own <c>replicas/</c> lives under the same root.
+        /// </summary>
+        public IReadOnlyList<string> JobScratchDirectories() =>
+            Directory.GetDirectories(scratch.Path)
+                .Where(directory => Guid.TryParseExact(Path.GetFileName(directory), "N", out _))
+                .ToArray();
+
+        /// <summary>Waits for the phase-41 D5 <c>finally</c> to have run, and says whether it did.</summary>
+        public async Task<bool> WaitForJobScratchCleanupAsync(TimeSpan within)
+        {
+            var deadline = DateTimeOffset.UtcNow + within;
+
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                if (JobScratchDirectories().Count == 0)
+                {
+                    return true;
+                }
+
+                await Task.Delay(25);
+            }
+
+            return JobScratchDirectories().Count == 0;
+        }
+
+        /// <param name="maxStreamedBytes">
+        /// Phase 53. Null leaves the streamed path off on both hosts, which is the default and what
+        /// every test written before v3.21 expects.
+        /// </param>
+        /// <param name="nodeTakesStreamedUploads">
+        /// Phase-53 D5's mixed fleet: a hub with the path on and a node that never declares it.
+        /// </param>
+        /// <param name="nodeMaxStreamedBytes">
+        /// The node's own ceiling, when it differs from the hub's — phase-41 D2's point that the box
+        /// accepting an upload is not the box that has to write it down.
+        /// </param>
+        public static async Task<ToolMesh> StartAsync(
+            long? maxAttachmentBytes = null,
+            long? maxStreamedBytes = null,
+            bool nodeTakesStreamedUploads = true,
+            long? nodeMaxStreamedBytes = null)
         {
             var mesh = new ToolMesh
             {
@@ -285,13 +357,14 @@ public class ToolMeshTests
                 startTimeoutSeconds = 30
             });
 
-            await mesh.StartCoordinatorAsync(maxAttachmentBytes);
-            await mesh.StartNodeAsync();
+            await mesh.StartCoordinatorAsync(maxAttachmentBytes, maxStreamedBytes);
+            await mesh.StartNodeAsync(
+                nodeTakesStreamedUploads ? nodeMaxStreamedBytes ?? maxStreamedBytes : null);
 
             return mesh;
         }
 
-        private async Task StartCoordinatorAsync(long? maxAttachmentBytes)
+        private async Task StartCoordinatorAsync(long? maxAttachmentBytes, long? maxStreamedBytes)
         {
             var builder = WebApplication.CreateBuilder();
             builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -318,10 +391,19 @@ public class ToolMeshTests
                 {
                     options.MaxAttachmentBytes = cap;
                 }
+
+                if (maxStreamedBytes is { } streamed)
+                {
+                    options.MaxStreamedBytes = streamed;
+                }
             });
             builder.Services.AddSingleton<Dispatcher>();
             builder.Services.AddSingleton<IDispatcher>(sp => sp.GetRequiredService<Dispatcher>());
-            builder.Services.AddSingleton<IToolDispatcher>(sp => sp.GetRequiredService<Dispatcher>());
+
+            // The real Dispatcher, with one line of recording around it: what a test needs to know
+            // is what crossed the wire, and a stub would only ever report what its author expected.
+            builder.Services.AddSingleton<IToolDispatcher>(sp =>
+                new RecordingToolDispatcher(sp.GetRequiredService<Dispatcher>(), dispatched));
             builder.Services.AddSingleton<InferHub.Coordinator.Cluster.IClusterMembership,
                 InferHub.Coordinator.Cluster.SingleCoordinatorMembership>();
 
@@ -333,10 +415,15 @@ public class ToolMeshTests
             Client = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
         }
 
-        private async Task StartNodeAsync()
+        private async Task StartNodeAsync(long? maxStreamedBytes)
         {
             var toolOptions = ToolWorkerFixture.Options(scratch.Path, "echo");
             toolOptions.ManifestDirectory = manifests.Path;
+
+            if (maxStreamedBytes is { } streamed)
+            {
+                toolOptions.MaxStreamedBytes = streamed;
+            }
 
             runtime = new ProcessToolRuntime(
                 ToolWorkerFixture.Wrap(toolOptions),
@@ -369,6 +456,7 @@ public class ToolMeshTests
                 new ModelCommandExecutor(backend, NullLogger<ModelCommandExecutor>.Instance),
                 new ToolExecutor(runtime, ToolWorkerFixture.Wrap(toolOptions), NullLogger<ToolExecutor>.Instance),
                 runtime,
+                ToolWorkerFixture.Wrap(toolOptions),
                 TestProfiles.Applier(backend, runtime),
                 TestProfiles.IdleRetrieval(),
                 replicas,
@@ -402,6 +490,53 @@ public class ToolMeshTests
             await app.DisposeAsync();
             manifests.Dispose();
             scratch.Dispose();
+        }
+
+        /// <summary>
+        /// The shipped dispatcher, noting which jobs went out (phase 53). It delegates everything —
+        /// including <c>RegisterUpload</c>, which is what makes the streamed path work at all.
+        /// </summary>
+        private sealed class RecordingToolDispatcher(Dispatcher inner, List<ToolJob> recorded) : IToolDispatcher
+        {
+            public Task<ToolResult> DispatchToolAsync(RoutableNode node, ToolJob job, CancellationToken cancellationToken)
+                => DispatchToolAsync(node, job, progress: null, cancellationToken);
+
+            public Task<ToolResult> DispatchToolAsync(
+                RoutableNode node,
+                ToolJob job,
+                IProgress<ToolChunk>? progress,
+                CancellationToken cancellationToken)
+            {
+                lock (recorded)
+                {
+                    recorded.Add(job);
+                }
+
+                return inner.DispatchToolAsync(node, job, progress, cancellationToken);
+            }
+
+            public Task<System.Threading.Channels.ChannelReader<ToolChunk>> DispatchToolStreamAsync(
+                RoutableNode node,
+                ToolJob job,
+                CancellationToken cancellationToken)
+            {
+                lock (recorded)
+                {
+                    recorded.Add(job);
+                }
+
+                return inner.DispatchToolStreamAsync(node, job, cancellationToken);
+            }
+
+            public bool CompleteTool(ToolResult result) => inner.CompleteTool(result);
+
+            public bool WriteToolChunk(ToolChunk chunk) => inner.WriteToolChunk(chunk);
+
+            public IDisposable RegisterUpload(Guid jobId, InferHub.Coordinator.Endpoints.StreamedUpload upload)
+                => inner.RegisterUpload(jobId, upload);
+
+            public IAsyncEnumerable<AttachmentChunk> ReadUploadAsync(Guid jobId, CancellationToken cancellationToken)
+                => inner.ReadUploadAsync(jobId, cancellationToken);
         }
 
         /// <summary>
