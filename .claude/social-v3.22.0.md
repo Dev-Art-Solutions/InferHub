@@ -59,6 +59,6 @@ InferHub 3.22: plans are now written the day the work starts, capped at 250 line
 
 The detail worth stealing: the budget marker lives in the document, not in a list inside the test.
 
-A list is a second place to update, and forgetting it fails silently — the file is just never checked.
+A list is a second place to update, and forgetting it fails silently — the file is never checked.
 
 Forgetting a marker fails on a screen. Prefer the failure mode that shouts.
