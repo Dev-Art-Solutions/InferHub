@@ -90,6 +90,7 @@ longer pays for the Qdrant connector's UUID mapping and the cluster lease's spli
 | `python/` | `python/CLAUDE.md` | the worker protocol, recipes, the diffusion worker · phases 49, 50 |
 | `tests/` | `tests/CLAUDE.md` | the four test projects and the testing discipline |
 | `deploy/`, any Dockerfile | `deploy/CLAUDE.md` | the five images and the permissions trap |
+| `plan/`, writing any plan | `plan/CLAUDE.md` | the brief format, the release checklist, the budget · phase 54 |
 
 **A decision lives in exactly one of those files** and is pointed at from the others (52 D2).
 `ContextContractTests` fails if one is lost, duplicated, or pointed at and missing.
@@ -320,71 +321,14 @@ pattern for any new key-checking middleware. The loopback exemption is shared (o
 
 ## Phase plans & release cadence
 
-`plan/00-overview.md` indexes the per-phase briefs (`phase-09…12`). Each phase is one
-mini-release with a strict shape:
+Each phase is one mini-release: implement, keep the phase's **test slice** green, bump `<Version>`,
+tag, release notes in `.claude/`, then the rest of the checklist in `plan/CLAUDE.md` — README, the
+static site, the blog post, FB and X, every phase without exception.
 
-1. Implement scope; keep tests green (`dotnet test`).
-2. Bump `<Version>` in `Directory.Build.props` to match the phase's version.
-3. Tag `vX.Y.Z` and write release notes (`.claude/release-notes-vX.Y.Z.md` is the local
-   convention).
-4. Flip the `Status:` line at the top of the phase file from `TODO` to
-   `DONE ✓ (vX.Y.Z, YYYY-MM-DD)` and mirror the change in the overview table.
-
-When asked to start a phase, read its plan file first — the scope, file list, and
-acceptance criteria are already written.
-
-## Writing a plan (the shape every file in `plan/` has)
-
-**When asked for a new plan, write it in this shape without being told.** One phase →
-`plan/phase-NN-short-slug.md`. A multi-phase track → one roadmap file,
-`plan/roadmap-vX.Y-to-vX.Z-slug.md`, with a `Status:` line *per phase* inside it. Either way index it
-in `plan/00-overview.md`. Plans are written for whoever implements them next with no memory of this
-conversation, so a decision without its rejected alternative is a decision that gets undone.
-
-**Header block** — title `# Phase NN — <the claim, in a sentence> (vX.Y.Z)`, then `Status: TODO`,
-target version, **Size** (S/M/L + days), repo link, the file's own path, and a `>` callout naming the
-prior `CLAUDE.md` decisions to read first (by number: "phase-36 D1/D3", not "the supervisor phase").
-
-**§1 Goal** — what is true today and why it is not enough, in the repo's own words, with the file
-paths. Then the shape of the change, with real commands or payloads a reader can run. Then
-**Non-goals**, each written as *a decision with its reason*, never a bare list.
-
-**§2 Design decisions** — `### D1 — <a full sentence that states the claim>`, numbered, each with:
-the reasoning, the **alternative that was considered and rejected** and why, and — where it applies —
-which rule (1–7) it brushes and what keeps the rule true. Mark the load-bearing one out loud ("this
-is the decision the phase turns on"). The heading is the claim, so a reader skimming only headings
-gets the design.
-
-**§3 Tasks** — `- [ ]` checkboxes in dependency order, each naming a **real path** and what goes in
-it. Order them so a failure is attributable: the thing that can break in isolation lands first.
-Always include the CLAUDE.md block, the `appsettings.json` commented keys, README, and the
-`plan/00-overview.md` row as tasks.
-
-**§4 Acceptance criteria** — checkboxes, and they must include: *a deployment that changes no config
-behaves identically to the previous version*, **zero new `PackageReference` / `InferHub.Shared.csproj`
-still empty**, and `dotnet test` green. Anything that cannot be established from source says so and
-points at §5.
-
-**§5 Release ritual** — bump `<Version>` → `.claude/release-notes-vX.Y.Z.md` → tag → GitHub release
-→ **pull the published image and run it** (an enumerated list of what to check on the target box —
-this is not optional, see the D7 note in "Phase 21") → flip `Status:` + the overview row → static
-site `inferhub.devart.solutions` (`#idocs_*` anchors, changelog row, "What's next") → blog post
-(**slug, EN title, excerpt angle, draft-first**, `list_posts` before creating — the connector is
-insert-only and the slug locks) → FB + X.
-
-**§6** — appended *after* the release run: the verification results, with the observed numbers, the
-exact host, and anything that did not run said out loud rather than omitted.
-
-**A roadmap file adds**, before the phases: *Where we are* (shipped phases, current `<Version>`, the
-seam being extended), *Overview* table (phase | version | theme | size | status), *What this
-delivers*, *Why this order* (a paragraph per adjacency, arguing the dependency), *Invariants that
-survive all phases*; and after them: *Sequencing notes* and *Deferred (tracked, not in this track)*.
-Each phase inside it keeps §1–§5 as `###` subsections and is a **separate release** — separate tag,
-notes, site edit, post. Do not batch them.
-
-**House voice**: state the failure the decision prevents, concretely ("a client reads `error.message`
-and gets a wall of backslashes"). Prefer a rejected alternative to an adjective. Never write a caveat
-that a later phase makes false without deleting it everywhere — see the phase-35 note.
+`plan/00-overview.md` indexes every phase; a brief is `plan/phase-NN-*.md` and is written **the day
+its phase starts** (54 D1). **When asked to start a phase, read its brief first.** When asked to
+write one, read `plan/CLAUDE.md` — the format, the release checklist and the 250-line budget live
+there, next to what they constrain. Only that file is in the repository; the briefs are local (54 D3).
 
 ## Code style
 

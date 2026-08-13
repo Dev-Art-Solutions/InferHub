@@ -70,12 +70,20 @@ v3.10.0.
 **A zero you constructed to fill a field is not a measurement** (v3.13.1). Absence-stays-absence
 has its own test per phase, and it is easiest to break in exactly the code that argues for it.
 
+**The plans are held to the context files' standard too** (phase 54). `ContextContractTests` budgets
+any brief declaring `Format: lean` at 250 lines, requires every `plan/phase-NN` above 53 to declare
+it, and fails when a brief's `Status:` disagrees with its row in `plan/00-overview.md` — the drift
+that happens when a release flips one and forgets the other. **The marker lives in the brief rather
+than in an array here**: a list is a second place to update, and forgetting it fails silently by
+never checking the file at all.
+
 ## Gated suites
 
 Some tests need something that is not on every machine and skip cleanly when it is absent:
-`PythonWorkerFactAttribute`, `OllamaSupervisorFactAttribute`, and the Postgres/Qdrant integration
-suites. **Skipped is not passed** — the counts in a release note say how many were skipped, and
-that number is part of the claim.
+`PythonWorkerFactAttribute`, `OllamaSupervisorFactAttribute`, `PlanFolderFactAttribute` (the briefs
+are gitignored, so the plan checks run on a maintainer's clone only), and the Postgres/Qdrant
+integration suites. **Skipped is not passed** — the counts in a release note say how many were
+skipped, and that number is part of the claim.
 
 ## The `heavy-mesh` collection (phase 53)
 

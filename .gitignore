@@ -1,8 +1,16 @@
 # ---------------------------------------------------------------------------
 # InferHub internal build plan — task briefs for Claude Code, not part of the
 # public repository. Keep these local.
+#
+# One exception (phase 54): plan/CLAUDE.md is the *format* the briefs are written
+# in, not a brief. It is a scoped context file like the other six, the root file
+# names it, and ContextContractTests resolves that pointer — so it has to exist in
+# a fresh clone. The directory itself is excluded per-entry rather than wholesale,
+# because git does not descend into an excluded directory and a `!` under one has
+# no effect.
 # ---------------------------------------------------------------------------
-/plan/
+/plan/*
+!/plan/CLAUDE.md
 
 # ---------------------------------------------------------------------------
 # .NET / Visual Studio

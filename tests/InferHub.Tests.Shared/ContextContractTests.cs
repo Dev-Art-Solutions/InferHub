@@ -43,6 +43,17 @@ public class ContextContractTests
     /// </remarks>
     private const int ScopedBudget = 1100;
 
+    /// <summary>
+    /// Phase 54. What a build brief may grow to, once its verification results live in the release
+    /// notes and the rules it brushes are pointed at rather than re-argued.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately below where a comfortable author would land: phase 53's brief was 570 lines,
+    /// phase 55's is 185. <b>A budget fitted to the present is a budget that never binds</b> — the
+    /// same reasoning as <see cref="ScopedBudget"/>, one document down.
+    /// </remarks>
+    private const int LeanPlanBudget = 250;
+
     private static readonly (string Path, int MaxLines)[] Budgets =
     [
         ("CLAUDE.md", 400),
@@ -51,8 +62,15 @@ public class ContextContractTests
         ("src/InferHub.Node/CLAUDE.md", ScopedBudget),
         ("python/CLAUDE.md", ScopedBudget),
         ("tests/CLAUDE.md", ScopedBudget),
-        ("deploy/CLAUDE.md", ScopedBudget)
+        ("deploy/CLAUDE.md", ScopedBudget),
+        ("plan/CLAUDE.md", ScopedBudget)
     ];
+
+    /// <summary>
+    /// The first phase written in the lean format. Everything numbered above it is held to it;
+    /// everything below is the record of what was decided and is left alone (54 D4).
+    /// </summary>
+    private const int FirstLeanPhase = 54;
 
     /// <summary>
     /// <b>The irreversible failure, made impossible to do quietly.</b> Every decision block that
@@ -191,7 +209,143 @@ public class ContextContractTests
             + "an agent never learns that context exists.");
     }
 
+    /// <summary>
+    /// Phase 54. No lean brief has grown back past its budget.
+    /// </summary>
+    /// <remarks>
+    /// The failure this prevents is the one that produced a 162 KB roadmap: nobody ever added more
+    /// than a section. It is the same sentence as <see cref="EveryContextFileIsWithinItsBudget"/>
+    /// because it is the same failure, and the fix is the same too — the verification results belong
+    /// in the release notes and the rules belong in the file that owns them.
+    /// </remarks>
+    [PlanFolderFact]
+    public void EveryLeanPlanFitsItsBudget()
+    {
+        var over = LeanPlans()
+            .Where(plan => File.ReadAllLines(plan.Path).Length > LeanPlanBudget)
+            .Select(plan => $"{plan.Relative} is {File.ReadAllLines(plan.Path).Length} lines, over "
+                            + $"the {LeanPlanBudget}-line budget. Move the verification results to the "
+                            + "release notes and the argument to the area's CLAUDE.md (54 D2).")
+            .ToArray();
+
+        Assert.True(over.Length == 0, string.Join("\n", over));
+    }
+
+    /// <summary>
+    /// Phase 54. Every brief from 54 onward declares <c>Format: lean</c>.
+    /// </summary>
+    /// <remarks>
+    /// <b>The marker travels with the document rather than living in a list here</b> (54 D3's
+    /// mechanism, applied to the budget): an array in this file is a second place to update on the
+    /// day a brief is written, and forgetting it fails <em>silently</em> — the brief is simply never
+    /// checked. Forgetting the marker fails here instead, which is a sentence on a screen.
+    /// </remarks>
+    [PlanFolderFact]
+    public void EveryPhaseBriefDeclaresItsFormat()
+    {
+        var undeclared = PhaseBriefs()
+            .Where(brief => brief.Phase >= FirstLeanPhase && !IsLean(brief.Path))
+            .Select(brief => $"{brief.Relative} is phase {brief.Phase} and does not declare "
+                             + "`Format: lean` in its header block, so nothing holds it to a budget.")
+            .ToArray();
+
+        Assert.True(undeclared.Length == 0, string.Join("\n", undeclared));
+    }
+
+    /// <summary>
+    /// Phase 54. A brief's <c>Status:</c> and its row in <c>plan/00-overview.md</c> say the same
+    /// thing.
+    /// </summary>
+    /// <remarks>
+    /// Two places recording one fact, which is the shape 52 D2 spent a phase removing from the
+    /// context files — but here the duplication is load-bearing (the index has to be readable on its
+    /// own), so it is tested instead. It drifts in exactly one direction: the brief is flipped at the
+    /// end of a release and the table is the step somebody skips.
+    /// </remarks>
+    [PlanFolderFact]
+    public void EveryPhaseStatusMatchesTheOverview()
+    {
+        var overview = File.ReadAllLines(Path.Combine(RepositoryRoot(), "plan", "00-overview.md"));
+        var drifted = new List<string>();
+
+        foreach (var brief in PhaseBriefs().Where(brief => brief.Phase >= FirstLeanPhase))
+        {
+            if (Status(File.ReadAllText(brief.Path)) is not { } declared)
+            {
+                drifted.Add($"{brief.Relative} has no `Status:` line in its header block.");
+                continue;
+            }
+
+            var row = overview.FirstOrDefault(line => Regex.IsMatch(line, $@"^\|\s*{brief.Phase}\s*\|"));
+
+            if (row is null)
+            {
+                drifted.Add($"{brief.Relative} is not indexed in plan/00-overview.md — "
+                            + "an agent never learns the phase exists.");
+                continue;
+            }
+
+            var cells = row.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var indexed = cells[^1];
+
+            // Compared on the leading token and, for a shipped phase, the version — not character
+            // for character. What is being caught is a brief that says DONE beside a table that
+            // still says TODO, and holding the two to an identical string would fail on a date
+            // written two ways instead.
+            if (!indexed.StartsWith(declared.Token, StringComparison.Ordinal)
+                || (declared.Version is { } version && !indexed.Contains(version, StringComparison.Ordinal)))
+            {
+                drifted.Add($"{brief.Relative} says `Status: {declared.Token}"
+                            + (declared.Version is null ? "" : $" ({declared.Version})")
+                            + $"` and plan/00-overview.md says `{indexed}`.");
+            }
+        }
+
+        Assert.True(drifted.Count == 0, string.Join("\n", drifted));
+    }
+
     // ---- helpers ---------------------------------------------------------------------------------
+
+    /// <summary>Every markdown file under <c>plan/</c> declaring the lean marker.</summary>
+    private static IReadOnlyList<(string Path, string Relative)> LeanPlans() =>
+        PlanFiles().Where(plan => IsLean(plan.Path)).ToArray();
+
+    /// <summary>Every <c>plan/phase-NN-*.md</c>, with the number parsed from the file name.</summary>
+    private static IReadOnlyList<(string Path, string Relative, int Phase)> PhaseBriefs() =>
+        PlanFiles()
+            .Select(plan => (plan.Path, plan.Relative, Match: Regex.Match(plan.Relative, @"/phase-(\d+)-")))
+            .Where(plan => plan.Match.Success)
+            .Select(plan => (plan.Path, plan.Relative, int.Parse(plan.Match.Groups[1].Value)))
+            .ToArray();
+
+    private static IReadOnlyList<(string Path, string Relative)> PlanFiles()
+    {
+        var directory = Path.Combine(RepositoryRoot(), "plan");
+
+        return Directory.Exists(directory)
+            ? Directory.EnumerateFiles(directory, "*.md")
+                .Select(path => (path, Path.GetRelativePath(RepositoryRoot(), path).Replace('\\', '/')))
+                .OrderBy(plan => plan.Item2, StringComparer.Ordinal)
+                .ToArray()
+            : [];
+    }
+
+    /// <summary>
+    /// The marker is looked for in the header block only — the first dozen lines — so that a brief
+    /// merely <em>discussing</em> the format (this phase's own does) is not mistaken for one written
+    /// in it.
+    /// </summary>
+    private static bool IsLean(string path) =>
+        File.ReadLines(path).Take(12).Any(line => line.Contains("`Format: lean`", StringComparison.Ordinal));
+
+    private static (string Token, string? Version)? Status(string brief)
+    {
+        var match = Regex.Match(brief, @"Status:\s*(TODO|DONE)\b[^`\n]*?(v\d+\.\d+\.\d+)?");
+
+        return match.Success
+            ? (match.Groups[1].Value, match.Groups[2].Success ? match.Groups[2].Value : null)
+            : null;
+    }
 
     private static IReadOnlyList<(int Phase, string Heading)> Inventory()
     {
