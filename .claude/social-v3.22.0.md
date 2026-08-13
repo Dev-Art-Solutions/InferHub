@@ -45,20 +45,16 @@ Blog: https://devart.solutions/blog/inferhub-3-22-we-stopped-writing-plans-in-ad
 
 ## X / Twitter
 
-We used to plan a whole track up front. Six phases, written before the first shipped.
+**One post, not a thread** (measured: 240 chars of text + a link, which X counts as 23 whatever its
+length — 265 of 280). The thread version was written first and cut: the hook stands alone, and the
+two follow-ups were the blog post's job.
 
-It reads as thoroughness. It is mostly prediction.
+The quote is a paraphrase, not quotation marks, deliberately. The real section title is *"Six things
+the brief got wrong or did not know"* and it would not fit; **trimming text inside quote marks to
+make it fit is a misquote**, so the marks come off instead.
 
-Our previous release's plan was written two days early. It carries a section titled "six things the brief got wrong or did not know."
+We planned whole tracks up front — six phases written before the first shipped. Reads as thoroughness; mostly prediction.
 
----
+Our last release's plan was written two days early. It ends with a list of six things it got wrong or did not know.
 
-InferHub 3.22: plans are now written the day the work starts, capped at 250 lines, and tested — because a document with no compiler grows until somebody measures it. 519 lines for one phase, before.
-
----
-
-The detail worth stealing: the budget marker lives in the document, not in a list inside the test.
-
-A list is a second place to update, and forgetting it fails silently — the file is never checked.
-
-Forgetting a marker fails on a screen. Prefer the failure mode that shouts.
+https://devart.solutions/blog/inferhub-3-22-we-stopped-writing-plans-in-advance
