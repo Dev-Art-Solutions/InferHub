@@ -106,15 +106,21 @@ and nothing else — and run against 2048×1024 rasters:
 
 | Raster | before | after | columns touched |
 |---|---:|---:|---:|
-| A 0→255 horizontal ramp (the worst case a seam can be) | 1.000000 | **0.000000** | 78 of 2048 |
-| Fine noise with a hard tonal step at the join | 0.351284 | **0.000000** | 78 of 2048 |
+| A 0→255 horizontal ramp (the worst case a seam can be) | 1.000000 | **0.000000** | 80 of 2048 |
+| Fine noise with a hard tonal step at the join | 0.351284 | **0.000000** | 80 of 2048 |
 | A sinusoid whose period is the width (already wrapping) | 0.000000 | 0.000000 | **0** — discarded by D4 |
 
-Two things worth having from that. **The correction reaches 78 columns of 2048 — 3.8% of the width,
+Two things worth having from that. **The correction reaches 80 columns of 2048 — 3.9% of the width,
 both sides of the join together — and the rest of the picture is bit-identical**, which is the claim
 "it does not touch the middle" made as a measurement rather than an intention. And **D4's discard
 fires on its own**: the already-wrapping raster came back as the original with two equal numbers and
 the mechanism named, which is the outcome the rule exists to make visible.
+
+*Measured against the code at the `v3.23.0` tag rather than against `main`, because the artifact is
+what the numbers have to describe.* A one-line refinement landed on `main` afterwards — the ramp now
+reaches exactly zero at the far edge of the band instead of stopping about 3 grey levels short of it,
+which removes a faint step there. It changes **two columns of 2048 and no reported number**, and it
+is in v3.24.0, not in this image.
 
 This is still not a panorama. It says the arithmetic does what the docs say on real arrays; it says
 nothing about what a repaired doorway looks like.
