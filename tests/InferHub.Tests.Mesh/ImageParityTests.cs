@@ -111,6 +111,46 @@ public class ImageParityTests
                 Content = ImageEditTests.Form()
             }));
 
+    // ---- phase 55: seam repair -------------------------------------------------------------------
+
+    /// <summary>
+    /// A repaired panorama, compared field for field. This is the v3.17 lesson in the place it would
+    /// recur: <c>revised_prompt</c> drifted between the two hosts for three releases with a parity
+    /// suite running, because the suite was not comparing the field. Both new fields are in
+    /// <see cref="Comparable"/> now, and the fixture's raster is deterministic, so the <em>numbers</em>
+    /// are compared rather than their presence.
+    /// </summary>
+    [Fact]
+    public async Task ARepairedPanoramaIsShapedIdenticallyOnBothHosts()
+        => await CompareAsync(
+            client => Panorama(client, repair: "blend"),
+            seamRepair: "any",
+            workerArguments: ["--image-projection", "equirectangular", "--image-seam", "break"]);
+
+    /// <summary>
+    /// And the refusal, which is the arm that actually differs between hosts if anybody gets it
+    /// wrong: the ceiling lives on the node either way, and in solo mode that node <em>is</em> the
+    /// edge. A 400 here and a 502 there is exactly the phase-42 bug.
+    /// </summary>
+    [Fact]
+    public async Task AMechanismTheOperatorDidNotPermitIsRefusedIdenticallyOnBothHosts()
+        => await CompareAsync(
+            client => Panorama(client, repair: "diffuse"),
+            seamRepair: "blend",
+            workerArguments: ["--image-projection", "equirectangular", "--image-seam", "break"]);
+
+    private static Task<HttpResponseMessage> Panorama(HttpClient client, string repair)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/images/generations")
+        {
+            Content = JsonContent.Create(
+                new { model = ImageFixture.Model, prompt = "a monastery courtyard", size = "1024x512" })
+        };
+
+        request.Headers.TryAddWithoutValidation("X-InferHub-Image-Seam-Repair", repair);
+        return client.SendAsync(request);
+    }
+
     /// <summary>
     /// The guard on the guard, and it is not ceremony: without it, a comparison that silently
     /// stopped comparing anything would pass forever. Phase-37 D7 and phase-42 both carry one.
@@ -138,10 +178,13 @@ public class ImageParityTests
         }
     }
 
-    private static async Task CompareAsync(Func<HttpClient, Task<HttpResponseMessage>> call)
+    private static async Task CompareAsync(
+        Func<HttpClient, Task<HttpResponseMessage>> call,
+        string? seamRepair = null,
+        params string[] workerArguments)
     {
-        await using var mesh = await ImageMesh.StartAsync();
-        var (solo, cleanup) = await ImageFixture.SoloAsync();
+        await using var mesh = await ImageMesh.StartAsync(seamRepair: seamRepair, workerArguments: workerArguments);
+        var (solo, cleanup) = await ImageFixture.SoloAsync(seamRepair, workerArguments);
 
         try
         {
@@ -210,7 +253,15 @@ public class ImageParityTests
             {
                 bytes = item.GetProperty("b64_json").GetString()!.Length,
                 size = item.TryGetProperty("size", out var size) ? size.GetString() : null,
-                hasSeed = item.TryGetProperty("seed", out var seed) && seed.ValueKind is JsonValueKind.Number
+                hasSeed = item.TryGetProperty("seed", out var seed) && seed.ValueKind is JsonValueKind.Number,
+
+                // Phase 49 and 55. The fixture's rasters are deterministic, so these are real values
+                // rather than presence checks — and a field the suite does not read is a field that
+                // drifts for three releases with the suite green (the v3.17 `revised_prompt` bug).
+                projection = item.TryGetProperty("projection", out var p) ? p.GetString() : null,
+                seamDelta = item.TryGetProperty("seam_delta", out var d) ? d.GetDouble() : (double?)null,
+                seamDeltaBefore = item.TryGetProperty("seam_delta_before", out var b) ? b.GetDouble() : (double?)null,
+                seamRepair = item.TryGetProperty("seam_repair", out var r) ? r.GetString() : null
             })
             .ToArray();
 

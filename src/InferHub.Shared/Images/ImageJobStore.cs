@@ -53,9 +53,18 @@ public sealed class ImageJobOptions
 /// job because the content route hands back <em>one</em> image and has nowhere else to say it.
 /// </param>
 /// <param name="SeamDelta">
-/// For an equirectangular render, how far its left and right columns are apart, 0–1. Measured by the
-/// worker and never repaired (D5) — and never <em>computed</em> here, because nothing in this
-/// codebase's C# decodes a pixel (phase-46 D6).
+/// For an equirectangular render, how far its left and right columns are apart, 0–1, <b>as the bytes
+/// beside it stand</b>. Measured by the worker — never <em>computed</em> here, because nothing in
+/// this codebase's C# decodes a pixel (phase-46 D6).
+/// </param>
+/// <param name="SeamDeltaBefore">
+/// What that measurement said before a repair ran (phase 55, D4). Present only alongside
+/// <paramref name="SeamRepair"/>, and equal to <paramref name="SeamDelta"/> when the repair was
+/// discarded for not improving it.
+/// </param>
+/// <param name="SeamRepair">
+/// The mechanism the caller asked for and the worker ran — <c>blend</c> or <c>diffuse</c>. Absent
+/// when nobody asked, which is the default and is byte-for-byte v3.22.
 /// </param>
 public sealed record ImageJobImage(
     byte[] Bytes,
@@ -64,7 +73,9 @@ public sealed record ImageJobImage(
     long? Seed,
     string? Projection = null,
     double? SeamDelta = null,
-    int? Steps = null);
+    int? Steps = null,
+    double? SeamDeltaBefore = null,
+    string? SeamRepair = null);
 
 /// <summary>
 /// What is true of a finished request as a whole, as opposed to of one of its images.
@@ -696,7 +707,13 @@ public static class ImageJobView
                     // Phase 49. A viewer picks a renderer from this rather than from the aspect
                     // ratio, which is what everyone does today and is wrong for every 2:1 photo.
                     projection = record.Images[index].Projection,
-                    seamDelta = record.Images[index].SeamDelta
+                    seamDelta = record.Images[index].SeamDelta,
+
+                    // Phase 55, and absent unless a repair was asked for — the job document is the
+                    // one place a client watching an async render can see that the number it is
+                    // reading is a repaired one.
+                    seamDeltaBefore = record.Images[index].SeamDeltaBefore,
+                    seamRepair = record.Images[index].SeamRepair
                 })
                 .ToArray()
             : null,

@@ -104,14 +104,179 @@ public class SeamMetricTests
         Assert.False(item.TryGetProperty("seam_delta", out _));
     }
 
-    private static async Task<JsonDocument> Generate(ImageMesh mesh)
+    // ---- phase 55: the repair somebody asked for -------------------------------------------------
+
+    /// <summary>
+    /// <b>The claim the release makes, asserted rather than assumed.</b> With no
+    /// <c>X-InferHub-Image-Seam-Repair</c> header, a discontinuous panorama comes back exactly as
+    /// v3.22 returned it — the same delta, the same warning, and neither of the two new fields.
+    /// </summary>
+    [Fact]
+    public async Task WithNoHeaderNothingAboutTheResponseChanged()
     {
-        var response = await mesh.Client.PostAsJsonAsync(
-            "/v1/images/generations",
-            new { model = ImageFixture.Model, prompt = "a monastery courtyard", size = PanoramaSize });
+        await using var mesh = await ImageMesh.StartAsync(
+            seamRepair: "any",
+            workerArguments: ["--image-projection", "equirectangular", "--image-seam", "break"]);
+
+        using var document = await Generate(mesh);
+        var item = Assert.Single(document.RootElement.GetProperty("data").EnumerateArray());
+
+        Assert.True(item.GetProperty("seam_delta").GetDouble() > 0.5);
+        Assert.False(item.TryGetProperty("seam_repair", out _));
+        Assert.False(item.TryGetProperty("seam_delta_before", out _));
+        Assert.Contains("seam", Warnings(document));
+    }
+
+    /// <summary>
+    /// <c>blend</c> closes the join: the delta falls, both numbers ride on the response, and the
+    /// warning the original earned is gone because the warning follows the <em>final</em> number.
+    /// </summary>
+    [Fact]
+    public async Task BlendLowersTheSeamAndReportsBothNumbers()
+    {
+        await using var mesh = await ImageMesh.StartAsync(
+            seamRepair: "blend",
+            workerArguments: ["--image-projection", "equirectangular", "--image-seam", "break"]);
+
+        using var document = await Generate(mesh, repair: "blend");
+        var item = Assert.Single(document.RootElement.GetProperty("data").EnumerateArray());
+
+        var before = item.GetProperty("seam_delta_before").GetDouble();
+        var after = item.GetProperty("seam_delta").GetDouble();
+
+        Assert.Equal("blend", item.GetProperty("seam_repair").GetString());
+        Assert.True(before > 0.5, $"the fixture's broken raster should score high, and scored {before}");
+        Assert.True(after < before, $"blend should lower {before}, and produced {after}");
+        Assert.DoesNotContain("seam", Warnings(document));
+    }
+
+    /// <summary>
+    /// D4: a repair that did not lower the number is <b>discarded</b>, and the outcome is reported
+    /// rather than hidden — the mechanism, two equal numbers, and the warning the image still earns.
+    /// A pass that quietly made a seam worse is the one outcome nobody would ever look for.
+    /// </summary>
+    [Fact]
+    public async Task ARepairThatDoesNotImproveTheNumberIsDiscardedAndSaidSo()
+    {
+        await using var mesh = await ImageMesh.StartAsync(
+            seamRepair: "blend",
+            workerArguments:
+            [
+                "--image-projection", "equirectangular",
+                "--image-seam", "wrap",
+                "--image-repair-worse"
+            ]);
+
+        using var document = await Generate(mesh, repair: "blend");
+        var item = Assert.Single(document.RootElement.GetProperty("data").EnumerateArray());
+
+        Assert.Equal("blend", item.GetProperty("seam_repair").GetString());
+        Assert.Equal(
+            item.GetProperty("seam_delta_before").GetDouble(),
+            item.GetProperty("seam_delta").GetDouble());
+    }
+
+    /// <summary>
+    /// The operator's ceiling, and the reason it is a ceiling: the node refuses a mechanism it does
+    /// not permit and the refusal <b>names the key</b> — phase-43 D1's shape, where a refusal that
+    /// does not say which of your own settings stopped you reads as a bug.
+    /// </summary>
+    [Fact]
+    public async Task AMechanismTheOperatorDidNotPermitIsRefusedNamingTheKey()
+    {
+        await using var mesh = await ImageMesh.StartAsync(
+            seamRepair: "blend",
+            workerArguments: ["--image-projection", "equirectangular", "--image-seam", "break"]);
+
+        var response = await Post(mesh, repair: "diffuse");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("Tools:Image:SeamRepair", await response.Content.ReadAsStringAsync());
+    }
+
+    /// <summary>
+    /// And the default is that ceiling at its tightest: a node whose operator changed nothing cannot
+    /// be made to spend anything by a header alone.
+    /// </summary>
+    [Fact]
+    public async Task TheDefaultCeilingPermitsNothing()
+    {
+        await using var mesh = await ImageMesh.StartAsync(
+            workerArguments: ["--image-projection", "equirectangular", "--image-seam", "break"]);
+
+        var response = await Post(mesh, repair: "blend");
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("Tools:Image:SeamRepair", body);
+
+        // The quotes around it arrive JSON-escaped, so the assertion is on the word.
+        Assert.Contains("off", body);
+    }
+
+    /// <summary>A flat recipe has no wrap, so there is nothing to repair and the refusal says that.</summary>
+    [Fact]
+    public async Task AskingAFlatRecipeToRepairItsSeamIsRefusedRatherThanIgnored()
+    {
+        await using var mesh = await ImageMesh.StartAsync(seamRepair: "any");
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/images/generations")
+        {
+            Content = JsonContent.Create(ImageEndpointTests.Body())
+        };
+
+        request.Headers.TryAddWithoutValidation("X-InferHub-Image-Seam-Repair", "blend");
+
+        var response = await mesh.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("no seam to repair", await response.Content.ReadAsStringAsync());
+    }
+
+    /// <summary>An unknown mechanism never reaches a node: it is a 400 at the edge, naming both.</summary>
+    [Fact]
+    public async Task AnUnknownMechanismIsRefusedAtTheEdge()
+    {
+        await using var mesh = await ImageMesh.StartAsync(
+            seamRepair: "any",
+            workerArguments: ["--image-projection", "equirectangular"]);
+
+        var response = await Post(mesh, repair: "inpaint");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("blend", body);
+        Assert.Contains("diffuse", body);
+    }
+
+    private static string[] Warnings(JsonDocument document) =>
+        document.RootElement.TryGetProperty("warnings", out var warnings) && warnings.ValueKind is JsonValueKind.Array
+            ? warnings.EnumerateArray().Select(entry => entry.GetString()!).ToArray()
+            : [];
+
+    private static async Task<JsonDocument> Generate(ImageMesh mesh, string? repair = null)
+    {
+        var response = await Post(mesh, repair);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         return JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+    }
+
+    private static Task<HttpResponseMessage> Post(ImageMesh mesh, string? repair = null)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/images/generations")
+        {
+            Content = JsonContent.Create(
+                new { model = ImageFixture.Model, prompt = "a monastery courtyard", size = PanoramaSize })
+        };
+
+        if (repair is not null)
+        {
+            request.Headers.TryAddWithoutValidation("X-InferHub-Image-Seam-Repair", repair);
+        }
+
+        return mesh.Client.SendAsync(request);
     }
 }

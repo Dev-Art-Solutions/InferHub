@@ -309,6 +309,56 @@ public class ToolSecurityTests
         Assert.False(new ToolOptions().Enabled);
     }
 
+    /// <summary>
+    /// Phase 55. A misspelt ceiling fails startup naming the four words, rather than being read as
+    /// <c>off</c> — the two mistakes that hides are opposite: <c>blends</c> is a typo for a
+    /// permission somebody meant to grant, and a value nobody recognises silently granting nothing
+    /// is how an operator concludes the feature is broken.
+    /// </summary>
+    [Theory]
+    [InlineData("blends")]
+    [InlineData("true")]
+    [InlineData("all")]
+    public void AnUnknownSeamRepairCeilingIsAStartupFailureRatherThanReadAsOff(string value)
+    {
+        var result = new ToolOptionsValidator().Validate(null, new ToolOptions
+        {
+            Image = { SeamRepair = value }
+        });
+
+        Assert.True(result.Failed);
+        Assert.Contains("Tools:Image:SeamRepair", result.FailureMessage);
+        Assert.Contains("'blend'", result.FailureMessage);
+    }
+
+    [Theory]
+    [InlineData("off")]
+    [InlineData("blend")]
+    [InlineData("DIFFUSE")]
+    [InlineData(" any ")]
+    public void TheFourSeamRepairCeilingsAreAcceptedInAnyCase(string value)
+        => Assert.True(new ToolOptionsValidator().Validate(null, new ToolOptions
+        {
+            Image = { SeamRepair = value }
+        }).Succeeded);
+
+    /// <summary>
+    /// And it reaches the worker, which is the only place it is enforced: the node <b>states</b> it
+    /// into an environment it clears first (41 D3), so a consent that did not travel would not be
+    /// enforced anywhere at all.
+    /// </summary>
+    [Fact]
+    public void TheSeamRepairCeilingIsStatedIntoTheWorkersEnvironment()
+    {
+        var options = new ToolOptions { Image = { SeamRepair = "Any" } };
+
+        Assert.Equal("any", options.WorkerEnvironment()["INFERHUB_IMAGE_SEAM_REPAIR"]);
+
+        // And the default is the tight one, stated rather than absent — a worker reading nothing
+        // and a worker reading "off" must not be two different states.
+        Assert.Equal("off", new ToolOptions().WorkerEnvironment()["INFERHUB_IMAGE_SEAM_REPAIR"]);
+    }
+
     private static async Task<JsonElement> Ask(ToolExecutor executor, string variable)
     {
         var payload = JsonSerializer.Serialize(new { model = "echo", behaviour = "env", name = variable });

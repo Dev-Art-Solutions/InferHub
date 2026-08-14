@@ -354,6 +354,13 @@ public static class ImageJobEndpoints
             // that carried it is a different request, and one they may never have made.
             httpContext.Response.Headers[ImageProjections.Header] = ImageProjections.Normalise(image.Projection);
 
+            // Phase 55, and absent unless a repair was asked for — so a request that sends no
+            // seam-repair header is answered exactly as v3.22 answered it, headers included.
+            foreach (var (name, value) in SeamRepairModes.HeadersFor(image))
+            {
+                httpContext.Response.Headers[name] = value;
+            }
+
             return Results.Bytes(image.Bytes, image.MediaType);
         }
 

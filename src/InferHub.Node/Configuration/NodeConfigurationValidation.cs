@@ -197,6 +197,17 @@ public sealed class ToolOptionsValidator : IValidateOptions<ToolOptions>
                 $"{ToolOptions.SectionName}:Image:{nameof(ImageToolOptions.ResidentRecipes)} must be >= 1 (got {options.Image.ResidentRecipes}); a worker that may hold no model can serve nothing.");
         }
 
+        if (!InferHub.Shared.Images.SeamRepairModes.IsCeiling(options.Image.SeamRepair))
+        {
+            // Refused rather than read as `off`, because the two mistakes it catches are opposite:
+            // "blends" is a typo for a permission somebody meant to grant, and a value nobody
+            // recognises silently granting nothing is how an operator concludes the feature is
+            // broken. The valid set is four words; naming them costs a line.
+            failures.Add(
+                $"{ToolOptions.SectionName}:Image:{nameof(ImageToolOptions.SeamRepair)} is " +
+                $"'{options.Image.SeamRepair}'; it must be 'off' (the default), 'blend', 'diffuse' or 'any'.");
+        }
+
         foreach (var (key, value) in new[]
                  {
                      (nameof(ToolOptions.RestartWindow), options.RestartWindow),

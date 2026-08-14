@@ -353,6 +353,204 @@ public class ImageContractTests
     public void AnAbsentMaskConventionIsOpenAis()
         => Assert.Equal(MaskConventions.OpenAi, MaskConventions.Normalise(null));
 
+    // ---- phase 55: seam repair -------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("blend", "blend")]
+    [InlineData("DIFFUSE", "diffuse")]
+    [InlineData(" blend ", "blend")]
+    public void ASeamRepairHeaderReachesTheWorkerPayloadNormalised(string header, string expected)
+    {
+        var request = Request(seamRepair: header);
+
+        Assert.Equal(expected, request.SeamRepair);
+
+        using var payload = JsonDocument.Parse(request.ToToolPayload());
+        Assert.Equal(expected, payload.RootElement.GetProperty("seam_repair").GetString());
+    }
+
+    /// <summary>
+    /// <b>Absence stays absence</b>, in the place it matters most: no header means the worker
+    /// receives the payload v3.22 sent it, field for field. A <c>seam_repair: "off"</c> travelling on
+    /// every request would be a third thing for a worker to mean nothing by.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("off")]
+    [InlineData("  ")]
+    public void NoRepairAskedForLeavesThePayloadExactlyAsItWas(string? header)
+    {
+        var request = Request(seamRepair: header);
+
+        Assert.Null(request.SeamRepair);
+
+        using var payload = JsonDocument.Parse(request.ToToolPayload());
+        Assert.False(payload.RootElement.TryGetProperty("seam_repair", out _));
+    }
+
+    /// <summary>
+    /// An unknown value is a <c>400</c> naming both mechanisms and what each costs — never a silent
+    /// fallback, and this is the header where that matters most: a caller whose repair quietly did
+    /// not happen sees a line in their picture and concludes the feature does not work.
+    /// </summary>
+    [Fact]
+    public void AnUnknownSeamRepairMechanismIsRefusedByName()
+    {
+        var request = ImageGenerationRequest.TryParse(
+            """{"model":"qwen-360","prompt":"a lighthouse"}""",
+            name => name == ImageExtensions.SeamRepair ? "inpaint" : null,
+            ImageLimits.Default,
+            out var error,
+            out var param);
+
+        Assert.Null(request);
+        Assert.Contains("'inpaint' is not a seam-repair mechanism", error);
+        Assert.Contains("blend", error);
+        Assert.Contains("diffuse", error);
+        Assert.Equal(ImageExtensions.SeamRepair, param);
+    }
+
+    [Fact]
+    public void AnEditParsesTheSameHeaderThroughTheSameParser()
+    {
+        using var payload = JsonDocument.Parse(
+            Edit(headers: (ImageExtensions.SeamRepair, "blend")).ToToolPayload());
+
+        Assert.Equal("blend", payload.RootElement.GetProperty("seam_repair").GetString());
+    }
+
+    /// <summary>
+    /// The ceiling matches exactly, and <c>diffuse</c> is deliberately <b>not</b> a superset of
+    /// <c>blend</c>: these name mechanisms rather than tiers, so an operator who considers a
+    /// feathered band worse than an honest seam can permit only the real repair. <c>any</c> is how
+    /// "both" is said, which is why it is not a synonym for the most permissive one.
+    /// </summary>
+    [Theory]
+    [InlineData("off", "blend", false)]
+    [InlineData("off", "diffuse", false)]
+    [InlineData("blend", "blend", true)]
+    [InlineData("blend", "diffuse", false)]
+    [InlineData("diffuse", "diffuse", true)]
+    [InlineData("diffuse", "blend", false)]
+    [InlineData("any", "blend", true)]
+    [InlineData("any", "diffuse", true)]
+    [InlineData(null, "blend", false)]
+    public void TheOperatorCeilingPermitsExactlyWhatItNames(string? ceiling, string asked, bool permitted)
+        => Assert.Equal(permitted, SeamRepairModes.Permits(ceiling, asked));
+
+    /// <summary>Asking for nothing is permitted by every ceiling, including the default one.</summary>
+    [Fact]
+    public void AskingForNoRepairIsAlwaysPermitted()
+        => Assert.True(SeamRepairModes.Permits(SeamRepairModes.Off, SeamRepairModes.Off));
+
+    [Fact]
+    public void TheEnvelopeCarriesBothNumbersAndTheMechanismWhenARepairRan()
+    {
+        var outcome = ImageRenderer.Render(
+            ToolResult.Succeeded(
+                Guid.NewGuid(),
+                """
+                {"steps":25,"projection":"equirectangular","images":[{"width":1024,"height":512,
+                "steps":25,"seed":5,"seamDelta":0.011,"seamDeltaBefore":0.134,"seamRepair":"blend"}]}
+                """,
+                [new ToolAttachment("image-0.png", "image/png", [1, 2, 3])]),
+            Request(size: "1024x512"),
+            1);
+
+        using var body = JsonDocument.Parse(outcome.Json!);
+        var item = Assert.Single(body.RootElement.GetProperty("data").EnumerateArray());
+
+        // `seam_delta` is the CURRENT image's, so a client that never heard of this phase reads the
+        // field it already knew and gets a true answer about the bytes it was handed.
+        Assert.Equal(0.011, item.GetProperty("seam_delta").GetDouble(), 5);
+        Assert.Equal(0.134, item.GetProperty("seam_delta_before").GetDouble(), 5);
+        Assert.Equal("blend", item.GetProperty("seam_repair").GetString());
+    }
+
+    /// <summary>
+    /// Phase-28 D5 for this phase's two fields: a panorama nobody asked to repair reports the
+    /// measurement and <b>nothing else</b>, because a permanent null pair on every result is two
+    /// fields that mean nothing.
+    /// </summary>
+    [Fact]
+    public void APanoramaWithNoRepairReportsTheMeasurementAndNeitherNewField()
+    {
+        var outcome = ImageRenderer.Render(
+            ToolResult.Succeeded(
+                Guid.NewGuid(),
+                """{"steps":25,"projection":"equirectangular","images":[{"width":1024,"height":512,"seamDelta":0.134}]}""",
+                [new ToolAttachment("image-0.png", "image/png", [1, 2, 3])]),
+            Request(size: "1024x512"),
+            1);
+
+        using var body = JsonDocument.Parse(outcome.Json!);
+        var item = Assert.Single(body.RootElement.GetProperty("data").EnumerateArray());
+
+        Assert.Equal(0.134, item.GetProperty("seam_delta").GetDouble(), 5);
+        Assert.False(item.TryGetProperty("seam_delta_before", out _));
+        Assert.False(item.TryGetProperty("seam_repair", out _));
+    }
+
+    /// <summary>
+    /// A discarded repair (D4) reports the mechanism with two <em>equal</em> numbers. That is the
+    /// honest shape: the pass ran, it did not lower the delta, and the image is the original — an
+    /// outcome nobody reports is one nobody ever goes looking for.
+    /// </summary>
+    [Fact]
+    public void ADiscardedRepairIsReportedRatherThanHidden()
+    {
+        var outcome = ImageRenderer.Render(
+            ToolResult.Succeeded(
+                Guid.NewGuid(),
+                """
+                {"steps":25,"projection":"equirectangular","images":[{"width":1024,"height":512,
+                "seamDelta":0.134,"seamDeltaBefore":0.134,"seamRepair":"diffuse"}]}
+                """,
+                [new ToolAttachment("image-0.png", "image/png", [1, 2, 3])]),
+            Request(size: "1024x512"),
+            1);
+
+        using var body = JsonDocument.Parse(outcome.Json!);
+        var item = Assert.Single(body.RootElement.GetProperty("data").EnumerateArray());
+
+        Assert.Equal("diffuse", item.GetProperty("seam_repair").GetString());
+        Assert.Equal(
+            item.GetProperty("seam_delta_before").GetDouble(),
+            item.GetProperty("seam_delta").GetDouble());
+    }
+
+    /// <summary>
+    /// The content route's headers, from the one place both hosts write them — and <b>only</b> for a
+    /// repaired image, so a request that asked for nothing is answered exactly as v3.22 answered it,
+    /// down to the header list.
+    /// </summary>
+    [Fact]
+    public void TheContentHeadersExistOnlyForARepairedImageAndAreInvariant()
+    {
+        var original = CultureInfo.CurrentCulture;
+
+        try
+        {
+            CultureInfo.CurrentCulture = new CultureInfo("bg-BG");
+
+            var plain = new ImageJobImage([1], "image/png", null, null, "equirectangular", 0.134);
+            Assert.Empty(SeamRepairModes.HeadersFor(plain));
+
+            var repaired = new ImageJobImage(
+                [1], "image/png", null, null, "equirectangular", 0.011, 25, 0.134, "blend");
+
+            var headers = SeamRepairModes.HeadersFor(repaired).ToDictionary(h => h.Key, h => h.Value);
+
+            Assert.Equal("blend", headers[SeamRepairModes.Header]);
+            Assert.Equal("0.011", headers[SeamRepairModes.DeltaHeader]);
+            Assert.Equal("0.134", headers[SeamRepairModes.DeltaBeforeHeader]);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = original;
+        }
+    }
+
     private static ImageEditRequest Edit(
         string operation = "edit",
         string? prompt = "a tall window",
@@ -377,10 +575,15 @@ public class ImageContractTests
             out _) ?? throw new InvalidOperationException(error);
     }
 
-    private static ImageGenerationRequest Request(string? size = null, int? steps = null)
+    private static ImageGenerationRequest Request(string? size = null, int? steps = null, string? seamRepair = null)
         => ImageGenerationRequest.TryParse(
             $$"""{"model":"sdxl","prompt":"a cat"{{(size is null ? "" : $",\"size\":\"{size}\"")}}}""",
-            name => name == ImageGenerationRequest.StepsHeader ? steps?.ToString() : null,
+            name => name switch
+            {
+                ImageGenerationRequest.StepsHeader => steps?.ToString(),
+                ImageExtensions.SeamRepair => seamRepair,
+                _ => null
+            },
             ImageLimits.Default,
             out _,
             out _)!;

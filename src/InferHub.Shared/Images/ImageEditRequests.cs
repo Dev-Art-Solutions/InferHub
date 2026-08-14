@@ -65,7 +65,8 @@ public sealed record ImageEditRequest(
     double? Strength,
     string MaskConvention,
     ToolAttachment Image,
-    ToolAttachment? Mask) : IImageRequest
+    ToolAttachment? Mask,
+    string? SeamRepair = null) : IImageRequest
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
@@ -265,6 +266,17 @@ public sealed record ImageEditRequest(
             return null;
         }
 
+        // Parsed on this route too, and for the reason the parse lives in one place at all: an edit
+        // of a panorama produces a join exactly as a generation does, `run_batch` in the worker is
+        // literally the same loop, and a header honoured on one route and dropped on the other is a
+        // difference nobody could explain. Today's catalogue has no equirectangular editor, so what
+        // this actually buys is that the day one lands, nothing has to be remembered.
+        if (!ImageExtensions.TrySeamRepair(header, out var seamRepair, out error))
+        {
+            errorParam = ImageExtensions.SeamRepair;
+            return null;
+        }
+
         return new ImageEditRequest(
             operation,
             model!.Trim(),
@@ -278,7 +290,8 @@ public sealed record ImageEditRequest(
             strength,
             convention,
             image,
-            mask);
+            mask,
+            seamRepair);
     }
 
     /// <summary>
@@ -305,7 +318,8 @@ public sealed record ImageEditRequest(
             n = Count,
             strength = Strength,
             has_mask = Mask is not null,
-            mask_convention = MaskConvention
+            mask_convention = MaskConvention,
+            seam_repair = SeamRepair
         },
         Json);
 

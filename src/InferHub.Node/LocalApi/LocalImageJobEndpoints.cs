@@ -265,6 +265,12 @@ internal static class LocalImageJobEndpoints
             // of the two answered it.
             httpContext.Response.Headers[ImageProjections.Header] = ImageProjections.Normalise(image.Projection);
 
+            // And the same seam headers (phase 55), from the same one place, for the same reason.
+            foreach (var (name, value) in SeamRepairModes.HeadersFor(image))
+            {
+                httpContext.Response.Headers[name] = value;
+            }
+
             return Results.Bytes(image.Bytes, image.MediaType);
         }
 

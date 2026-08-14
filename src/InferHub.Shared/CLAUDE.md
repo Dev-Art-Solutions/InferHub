@@ -563,6 +563,20 @@ recorded deviation from the brief with a reason: how many parts a multipart body
 are called, is not knowable until it has been read, and reading it to find out is the buffering the
 phase removes.
 
+### Phase 55 (seam repair) — the pointer, and what is decided here
+
+The decisions are in `python/CLAUDE.md` (phase 55, D1–D6), because the mechanisms are the worker's
+and nothing here has ever decoded a pixel (46 D6). What lives *here* is the vocabulary and the wire:
+[SeamRepairModes](src/InferHub.Shared/Images/SeamRepair.cs) — the four words, which of them a
+**caller** may say versus which an **operator** may set, `Permits` (exact match, plus `any`), the
+refusal sentence, and the content route's three headers written in one place so the hub and a solo
+node cannot disagree about what a fetched panorama says about itself.
+`ImageExtensions.SeamRepair` is parsed beside the other four extension headers, which is why solo
+mode got it the same day (41 D8's pattern), and `ImageJobImage` / `GeneratedImage` carry
+`SeamDeltaBefore` + `SeamRepair` **only when a repair ran** — absence stays absence (28 D5), and
+`seam_delta` stays the *current* image's so a client that never heard of phase 55 reads the field it
+already knew and gets a true answer.
+
 > **One correction to phase-40 D4, measured on .NET 10 rather than reasoned about.** That decision's
 > sentence was *"no temp file, no cache"*, and it was true of the code written here and false
 > underneath it: `HttpRequest.ReadFormAsync` buffers a file section over

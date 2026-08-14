@@ -193,6 +193,17 @@ public static class ImageRenderer
                 item["seam_delta"] = seam;
             }
 
+            // Phase 55, and only for a request that asked for a repair. `seam_delta` above stays the
+            // CURRENT image's, so a client that never heard of this phase reads the field it already
+            // knew and gets a true answer about the bytes it was handed; `seam_delta_before` is what
+            // the same measurement said before the repair ran. **Equal numbers are a real outcome**
+            // and not a bug: the repair ran, it did not lower the delta, and D4 discarded it.
+            if (image.SeamRepair is { } mechanism)
+            {
+                item["seam_repair"] = mechanism;
+                item["seam_delta_before"] = image.SeamDeltaBefore;
+            }
+
             // OpenAI's own field, always present and always null: nothing here revises a prompt, and
             // phase 49's augmentation is reported as `trigger` — a recipe constant — rather than by
             // echoing the caller's own words back at them.
@@ -343,7 +354,9 @@ public sealed record ImageWorkerReport(
                         // says it once for a batch is saying the true thing once rather than four
                         // times, and every recipe produces one projection per request.
                         ImageProjections.Normalise(Text(element, "projection") ?? projection),
-                        Number(element, "seamDelta")));
+                        Number(element, "seamDelta"),
+                        Number(element, "seamDeltaBefore"),
+                        Text(element, "seamRepair")));
                 }
             }
 
@@ -401,9 +414,18 @@ public sealed record ImageWorkerReport(
 /// One image as the worker described it: geometry, seed, projection, and — for an equirectangular
 /// recipe — how far apart its left and right edges are (phase 49, D5).
 /// </summary>
+/// <param name="SeamDeltaBefore">
+/// What <see cref="SeamDelta"/> was before a repair ran, and present only when one did (phase 55).
+/// </param>
+/// <param name="SeamRepair">
+/// The mechanism a repair used, reported <b>whether or not it was kept</b> — a pass that made the
+/// number worse was discarded, and that outcome has to be legible or nobody would ever look for it.
+/// </param>
 public sealed record GeneratedImage(
     ImageSize? Size,
     int? Steps,
     long? Seed,
     string? Projection = null,
-    double? SeamDelta = null);
+    double? SeamDelta = null,
+    double? SeamDeltaBefore = null,
+    string? SeamRepair = null);

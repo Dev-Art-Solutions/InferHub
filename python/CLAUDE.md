@@ -86,16 +86,18 @@ here the field is a declaration, and an omitted one is indistinguishable from a 
 an opinion. A client that has to tell those apart has learnt nothing. Nothing infers a projection
 from an aspect ratio — a 2048×1024 photograph and a 2048×1024 panorama are the same pixels.
 
-**D5 — The seam is measured and reported, never repaired.** Mean absolute difference between the
-first and last columns — adjacent once wrapped — over 255. Two numpy operations on an array the VAE
-already produced, which is why it is unconditional: a metric behind a flag is a metric nobody has.
-Over `Tools:Image:SeamWarnThreshold` (0.08) the result carries a `seam` warning, and it is a
-**warning on a 200**: phase-35 D4 against phase-37 D4 again, because a visible seam is the operator's
-own aesthetic judgement and failing a two-minute job over a threshold would be the tool overriding
-the person. **And it is not repaired** — upstream's `fix_seam` is a second generation pass with its
-own cost and its own artifacts, and running it unasked would bill somebody for a decision they never
-made. `seam_delta` returns `None` rather than raising on anything unexpected: a measurement that
-could fail a two-minute job is worse than no measurement.
+**D5 — The seam is measured and reported always, and repaired only on request** *(amended in phase
+55 — the original clause read "never repaired", and the amendment is one word wide)*. Mean absolute
+difference between the first and last columns — adjacent once wrapped — over 255. Two numpy
+operations on an array the VAE already produced, which is why it is unconditional: a metric behind a
+flag is a metric nobody has. Over `Tools:Image:SeamWarnThreshold` (0.08) the result carries a `seam`
+warning, and it is a **warning on a 200**: phase-35 D4 against phase-37 D4 again, because a visible
+seam is the operator's own aesthetic judgement and failing a two-minute job over a threshold would be
+the tool overriding the person. **Nothing repairs unasked** — a repair run without being asked bills
+somebody for a decision they never made, and **no threshold triggers one**, which is the half of this
+decision phase 55 leaves exactly as it was. What phase 55 added is the asking; see its block below.
+`seam_delta` returns `None` rather than raising on anything unexpected: a measurement that could fail
+a two-minute job is worse than no measurement.
 
 **The viewer is hand-written WebGL, and rule 3 is why.** `wwwroot/pano.js` — a sphere, a texture and
 two matrices, no npm, no bundler. three.js from a CDN would also put a third-party script on an admin
@@ -241,4 +243,93 @@ is cheaper than a silent substitution.
 
 **Rule 5 survived again.** **Zero** new `PackageReference`, no image library anywhere in C#, and
 `InferHub.Shared.csproj` is still an empty `<Project Sdk="Microsoft.NET.Sdk">`.
+
+### Phase 55 (the seam can be repaired, because somebody asked) — also load-bearing
+
+**D1 — Repair is asked for per request, and the default answer is still no.** `Tools:Image:SeamRepair`
+(`off` default, then `blend`, `diffuse`, `any`) is what an *operator* permits;
+`X-InferHub-Image-Seam-Repair` chooses within it. Two gates in phase-41 D2's shape, and the ceiling
+is the node's — in solo mode that node is also the edge, and the answer is the same one.
+**Considered and rejected: a recipe field that repairs every panorama from that recipe.** It reads as
+a property of the model and is in fact a property of somebody's budget: the same recipe serving a
+preview grid and a hero shot wants different answers, and a recipe cannot tell them apart. **A
+threshold that triggers a repair was rejected in the same breath** — that is 49 D5 with the consent
+removed and a helpful expression on.
+
+**`diffuse` does not imply `blend`.** The four values name mechanisms rather than tiers, so an
+operator who thinks a feathered band is worse than an honest seam can permit only the real repair;
+`any` is how "both" is said. `SeamRepairModes.Permits` is the one place that decides it.
+
+**D2 — The default mechanism is not a generation pass at all.** `blend` halves the jump between the
+two columns the metric compares and ramps each half back to zero over ~2% of the width, so the
+extreme columns meet exactly in the middle: numpy, milliseconds, no VRAM, **no steps and nothing
+added to the ledger**. `diffuse` is upstream's roll-and-inpaint and is the expensive, better one.
+**Considered and rejected: shipping only `diffuse`** — it makes the answer to "my panorama has a line
+in it" cost a second render every time, which is the bill 49 D5 refused to hand anybody.
+
+**The trade `blend` makes is stated rather than hidden, and the honest statement is narrower than
+the brief's.** It closes a **tonal** discontinuity, not a **structural** one: because the feather is
+exact at the join, the number essentially always falls, and a seam cutting through a doorway comes
+back with no visible step in brightness and the doorway still not lining up. Saying "it softens the
+seam" would be describing a cross-fade — which was the other implementation, and it ghosts.
+
+**D3 — `diffuse` was established against the pinned library before it shipped, and it is a refusal
+that names the reason if it ever cannot run.** `diffusers==0.36.0`'s
+`AUTO_INPAINT_PIPELINES_MAPPING` maps `qwenimage` → `QwenImageInpaintPipeline`, whose constructor
+takes the *same five components* `QwenImagePipeline` does — so `AutoPipelineForInpainting.from_pipe`
+re-derives it over the resident weights at no VRAM cost, LoRA included, exactly as phase-50 D1's
+`derived_pipeline` already does for an edit. That path is reused rather than rebuilt, and its
+existing failure is exactly D3's requirement: a pipeline family diffusers cannot re-derive fails
+**naming the class**, and `diffuse` is never quietly served as `blend`.
+
+> **What was *not* established: any of this on a GPU.** The mapping and the constructors were read
+> out of the pinned wheel; no panorama has been rendered, no repair has been looked at, and no
+> before/after pair has been measured on real weights. The brief asked for a GPU box and there was
+> none. See the release notes, which say the same thing where somebody looking for a number will
+> find it.
+
+**D4 — A repair that does not improve the number is reported and discarded.** Measure, repair,
+measure again, keep the original if the delta did not fall — and report `seam_repair`, both numbers,
+and the `seam` warning the image still earns. **`seam_delta` is always the current image's**, so a
+client that never heard of this phase reads the field it already knew and gets a true answer about
+the bytes it holds; `seam_delta_before` is what the same measurement said first. **Two equal numbers
+are a real outcome**, not a bug: the pass ran and did not help. A repair that quietly made a seam
+worse is the one outcome nobody would ever go looking for.
+
+**D5 — `blend` adds nothing to the ledger and `diffuse` adds its real steps, in the existing unit.**
+`megapixel_steps` already means what a pass costs, so a `diffuse` repair is `int(steps × 0.4)` more
+of them rather than a unit of its own — one number an operator has to understand. **A discarded
+repair is still metered**: the GPU did the work, and a bill that depends on whether the outcome was
+good is a bill nobody can predict. `blend` runs no steps and is metered as none, because inventing a
+charge for two numpy calls would make the cheapest path look like a decision.
+
+**D6 — The repair's steps are in the progress total from the first frame.** `total_steps` includes
+them before step one goes out. **Considered and rejected: emitting the repair as a second progress
+run** — a bar that reaches 100% and then starts again is a bar that has lied once.
+
+*Recorded deviations, on purpose:*
+- **The operator's ceiling is enforced in the worker, not in a node-side clamp**, which is where the
+  brief's task list put it. Nothing on the node parses an image payload — `ImageRecipeCatalogue`
+  reads three fields out of *recipe files* and the runtime has never seen a request body — so a
+  clamp there would mean teaching the node to read diffusion requests to enforce a key the process
+  that spends the steps can enforce itself. This is 48 D5's shape with the redundant half removed:
+  the node **states** the ceiling into the child's environment (41 D3 clears it first), and the
+  worker refuses **naming the key**. `ToolOptions` holds the key and its validator; `SeamRepairModes`
+  holds what the words mean.
+- **The header is parsed for edits as well as generations.** `run_batch` is literally the same loop
+  for both, so honouring it on one route and dropping it on the other would be a difference nobody
+  could explain. Today's catalogue has no equirectangular editor, so what it buys is that the day one
+  lands, nothing has to be remembered.
+- **The content route's three seam headers are emitted only when a repair was asked for.** Gating
+  them is what lets "a request with no header is answered exactly as v3.22 answered it" cover the
+  header list too, which is the only version of that claim worth making.
+- **The echo worker implements the same `blend`, and a deliberately bad repair behind
+  `--image-repair-worse`.** D4's discard has no natural failing case for `blend` — the feather
+  matches the extreme columns by construction — and the mechanism that genuinely can fail needs a
+  card. Rather than leave the rule untested, the fixture provides a mechanism that fails and the
+  assertion is on the *rule*.
+
+**Rule 5 survived again.** **Zero** new `PackageReference` — `numpy` was already in
+`requirements-diffusion.txt` — and `InferHub.Shared.csproj` is still an empty
+`<Project Sdk="Microsoft.NET.Sdk">`.
 

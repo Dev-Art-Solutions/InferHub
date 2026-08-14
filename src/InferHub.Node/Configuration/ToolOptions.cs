@@ -1,5 +1,6 @@
 using System.Globalization;
 using InferHub.Shared.Contracts;
+using InferHub.Shared.Images;
 
 namespace InferHub.Node.Configuration;
 
@@ -155,7 +156,12 @@ public sealed class ToolOptions
         // parses to something else or not at all, and the failure would only appear on a Bulgarian
         // or German host — the same locale bug PrometheusFormatter and the guidance header already
         // guard against.
-        ["INFERHUB_IMAGE_SEAM_WARN_THRESHOLD"] = Image.SeamWarnThreshold.ToString(CultureInfo.InvariantCulture)
+        ["INFERHUB_IMAGE_SEAM_WARN_THRESHOLD"] = Image.SeamWarnThreshold.ToString(CultureInfo.InvariantCulture),
+
+        // Phase 55. The ceiling the request chooses within, stated into the environment for the same
+        // reason the licence grant is: this is the process that would actually spend the steps, and
+        // a consent that never reaches it is not enforced anywhere that counts.
+        ["INFERHUB_IMAGE_SEAM_REPAIR"] = SeamRepairModes.Normalise(Image.SeamRepair)
     };
 
     /// <summary>
@@ -327,6 +333,32 @@ public sealed class ImageToolOptions
     /// </para>
     /// </remarks>
     public double SeamWarnThreshold { get; set; } = 0.08;
+
+    /// <summary>
+    /// Which seam repairs this node permits a caller to ask for (phase 55, D1). Default
+    /// <c>off</c>: <c>off</c> | <c>blend</c> | <c>diffuse</c> | <c>any</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Two gates, and this is the ceiling.</b> The caller names a mechanism on
+    /// <c>X-InferHub-Image-Seam-Repair</c> and this decides whether they may have it — phase-41 D2's
+    /// shape one level down, where <c>Tools:Allowed</c> is a ceiling the hub can never raise. It is
+    /// <c>off</c> by default, so a deployment that changes no configuration cannot be made to spend a
+    /// single step by a header alone, and the refusal names this key.
+    /// </para>
+    /// <para>
+    /// <b><c>diffuse</c> does not imply <c>blend</c></b>, and that is not an oversight — see
+    /// <see cref="SeamRepairModes"/>. The values name mechanisms rather than tiers, because an
+    /// operator who considers a feathered band worse than an honest seam needs to be able to permit
+    /// only the real repair. <c>any</c> is how "both" is said.
+    /// </para>
+    /// <para>
+    /// It is <b>not</b> a threshold and no threshold reaches it. <see cref="SeamWarnThreshold"/>
+    /// decides whether a result is <em>warned</em> about; nothing anywhere decides on somebody's
+    /// behalf that a picture is worth a second pass (phase-49 D5, the half of it that survives).
+    /// </para>
+    /// </remarks>
+    public string SeamRepair { get; set; } = SeamRepairModes.Off;
 
     /// <summary>Whether a licence id has been accepted. A blank entry never counts.</summary>
     public bool AcceptsLicense(string licenseId) =>

@@ -95,7 +95,9 @@ public static class ImageResults
                 described?.Seed,
                 ImageProjections.Normalise(described?.Projection ?? report?.Projection),
                 described?.SeamDelta,
-                described?.Steps ?? report?.Steps ?? request?.Steps));
+                described?.Steps ?? report?.Steps ?? request?.Steps,
+                described?.SeamDeltaBefore,
+                described?.SeamRepair));
         }
 
         return images;

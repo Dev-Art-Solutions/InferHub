@@ -85,7 +85,16 @@ internal static class ImageFixture
     }
 
     /// <summary>A solo node with the image worker loaded, on a real Kestrel port.</summary>
-    public static async Task<(SoloHost Host, IDisposable Cleanup)> SoloAsync(params string[] workerArguments)
+    public static Task<(SoloHost Host, IDisposable Cleanup)> SoloAsync(params string[] workerArguments)
+        => SoloAsync(null, workerArguments);
+
+    /// <param name="seamRepair">
+    /// <c>Tools:Image:SeamRepair</c> (phase 55). Solo mode is the shape that shows this key is a
+    /// <em>node's</em> answer rather than a hub's: there is no hub, and the ceiling still holds.
+    /// </param>
+    public static async Task<(SoloHost Host, IDisposable Cleanup)> SoloAsync(
+        string? seamRepair,
+        string[] workerArguments)
     {
         var manifests = Manifests(workerArguments);
         var scratch = new ToolWorkerFixture.TempDirectory("inferhub-image-scratch");
@@ -97,7 +106,8 @@ internal static class ImageFixture
                 "--Tools:Allowed:0=diffusion",
                 $"--Tools:ManifestDirectory={manifests.Path}",
                 $"--Tools:ScratchDirectory={scratch.Path}",
-                "--Tools:QueueMaxWaitSeconds=5"
+                "--Tools:QueueMaxWaitSeconds=5",
+                .. seamRepair is null ? Array.Empty<string>() : new[] { $"--Tools:Image:SeamRepair={seamRepair}" }
             ]);
 
         return (host, new Cleanups(manifests, scratch));
@@ -142,6 +152,13 @@ internal sealed class ImageMesh : IAsyncDisposable
     /// </summary>
     private double? seamWarnThreshold;
 
+    /// <summary>
+    /// <c>Tools:Image:SeamRepair</c> (phase 55), stated into the worker's environment by the same
+    /// mechanism — so a test that sets it here is also proving the ceiling travels rather than
+    /// assuming it. Unset means the default, <c>off</c>.
+    /// </summary>
+    private string? seamRepair;
+
     public HttpClient Client { get; private set; } = null!;
 
     public NodeRegistry Registry { get; } = new();
@@ -172,10 +189,12 @@ internal sealed class ImageMesh : IAsyncDisposable
         Action<InferHub.Shared.Images.ImageEdgeOptions>? configureImages = null,
         string clientId = "image-client",
         double? seamWarnThreshold = null,
+        string? seamRepair = null,
         params string[] workerArguments)
     {
         var mesh = new ImageMesh
         {
+            seamRepair = seamRepair,
             manifests = ImageFixture.Manifests(workerArguments),
             nodeData = new ToolWorkerFixture.TempDirectory("inferhub-image-node"),
             Scratch = new ToolWorkerFixture.TempDirectory("inferhub-image-scratch"),
@@ -284,6 +303,11 @@ internal sealed class ImageMesh : IAsyncDisposable
         if (seamWarnThreshold is { } threshold)
         {
             toolOptions.Image.SeamWarnThreshold = threshold;
+        }
+
+        if (seamRepair is { } ceiling)
+        {
+            toolOptions.Image.SeamRepair = ceiling;
         }
 
         if (maxAttachmentBytes is { } cap)

@@ -273,10 +273,31 @@ way. The trigger **is** a recipe constant, so unlike the prompt it may be logged
 
 The **seam** — the mean absolute difference between the first and last columns, 0–1 — is measured on
 every equirectangular result and reported as `seamDelta`. Over `Tools:Image:SeamWarnThreshold`
-(default 0.08) the result carries a `seam` warning. It is a warning and never a failure, and it is
-**never repaired**: a roll-and-inpaint fix is a second generation pass the caller did not ask for,
-did not watch, and would be billed for. Upstream ships one (`run_qwen_image_nf4.py`'s `fix_seam`)
-and it is a good tool to reach for deliberately.
+(default 0.08) the result carries a `seam` warning. It is a warning and never a failure.
+
+**Since v3.23 it can also be repaired — but only because somebody asked** (phase 55). Two gates:
+`Tools:Image:SeamRepair` on the node says what an operator permits (`off` by default, then `blend`,
+`diffuse`, `any`), and `X-InferHub-Image-Seam-Repair` on the request chooses within that. No
+threshold ever triggers a repair, and nothing repairs by default — a repair the caller did not ask
+for is a second pass they did not watch and would be billed for, which is the whole of the original
+refusal and it still stands.
+
+- **`blend`** halves the jump between the two columns the metric compares and ramps each half back to
+  zero over ~2% of the width, so the extreme columns meet exactly in the middle. numpy on the array
+  the VAE already produced: milliseconds, no VRAM, **no steps and nothing on the bill**. What it does
+  is close a *tonal* discontinuity; what it cannot do is make *structure* continue — a seam through a
+  doorway comes back with no visible step in brightness and the doorway still not lining up.
+- **`diffuse`** is upstream's roll-and-inpaint (`run_qwen_image_nf4.py`'s `fix_seam`): the join is
+  rolled to the middle of the picture and a band of it is repainted through
+  `AutoPipelineForInpainting.from_pipe` over the same resident weights. It costs
+  `int(steps × 0.4)` more steps, counted in `megapixel_steps` and included in `total_steps` from the
+  first progress frame.
+
+The worker measures, repairs, measures again, and **keeps the original if the number did not fall**,
+reporting the mechanism and both numbers either way (`seamDelta` is always the image you were handed;
+`seamDeltaBefore` is what it was first). Two equal numbers mean the pass ran and did not help — which
+also happens to be the only way you would ever find out. A repair asked of a `flat` recipe is a 400:
+there is no wrap, so there is no seam.
 
 ### `operations` splits the catalogue into two capabilities
 

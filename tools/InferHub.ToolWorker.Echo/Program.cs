@@ -10,7 +10,7 @@ using System.Text.Json;
 //                        [--audio-fail <code>] [--audio-no-segments]
 //                        [--image-fail <code>] [--image-pad-bytes <n>]
 //                        [--image-projection equirectangular] [--image-seam wrap|break]
-//                        [--image-no-auto-trigger]
+//                        [--image-no-auto-trigger] [--image-repair-worse]
 //                        [--redeclare-on-ping <kind>:<model>,<model>] [--wedge-on-ping]
 //
 // Phase 42 added two behaviours that are chosen by the request's *capability* rather than by a
@@ -680,9 +680,74 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, 
         ? st.GetInt32()
         : 30;
 
+    // Phase 55. What the caller asked for, against what the operator permits — and every refusal
+    // before a single step, because a refusal after two minutes of GPU is the worst place to learn
+    // about a header the node was never going to honour.
+    var askedRepair = payload.ValueKind is JsonValueKind.Object && payload.TryGetProperty("seam_repair", out var sr)
+        ? (sr.GetString() ?? string.Empty).Trim().ToLowerInvariant()
+        : string.Empty;
+
+    var permittedRepair =
+        (Environment.GetEnvironmentVariable("INFERHUB_IMAGE_SEAM_REPAIR") ?? "off").Trim().ToLowerInvariant();
+
+    if (askedRepair is not ("" or "off"))
+    {
+        if (askedRepair is not ("blend" or "diffuse"))
+        {
+            Send(new
+            {
+                type = "error",
+                id,
+                code = "invalid_request",
+                message = $"seam repair '{askedRepair}' is not a mechanism. Use 'blend' (a wrapped feather " +
+                          "across the join: milliseconds, no steps) or 'diffuse' (an inpainting pass over the " +
+                          "join: slower, billed as steps)."
+            });
+
+            return;
+        }
+
+        if (!equirectangular)
+        {
+            Send(new
+            {
+                type = "error",
+                id,
+                code = "invalid_request",
+                message = "this recipe renders flat images, which do not wrap and therefore have no seam to repair."
+            });
+
+            return;
+        }
+
+        if (permittedRepair != "any" && permittedRepair != askedRepair)
+        {
+            Send(new
+            {
+                type = "error",
+                id,
+                code = "invalid_request",
+                message = $"seam repair '{askedRepair}' is not permitted on this node: Tools:Image:SeamRepair " +
+                          $"is '{permittedRepair}'. Set it to '{askedRepair}' or to 'any' on the node that serves this recipe."
+            });
+
+            return;
+        }
+    }
+    else
+    {
+        askedRepair = string.Empty;
+    }
+
     // What actually runs, and therefore what is reported and metered (phase-50 D3): an
     // image-to-image pass enters the schedule at `int(steps × strength)`, so 30 steps at 0.6 is 18.
     var reportedSteps = edited is null ? steps : Math.Max(1, (int)(steps * edited.Strength));
+
+    // A `diffuse` repair is a second pass, and its steps are in the total from the FIRST progress
+    // frame (phase-55 D6) — a bar that reaches 100% and then starts again has lied once. `blend`
+    // runs no steps and adds none, which is the whole reason it can be asked for casually (D5).
+    var repairSteps = askedRepair == "diffuse" ? Math.Max(1, (int)(steps * 0.4)) : 0;
+    reportedSteps += repairSteps;
 
     var count = payload.ValueKind is JsonValueKind.Object && payload.TryGetProperty("n", out var n) && n.ValueKind is JsonValueKind.Number
         ? n.GetInt32()
@@ -767,30 +832,75 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, 
     {
         var name = $"image-{i}.png";
         var path = Path.Combine(scratch, name);
-
-        // `--image-bytes N` pads the file, so ImageWireSizeTests can push megabytes across a real
-        // SignalR connection. The 32 KB default cap tore the connection down rather than failing the
-        // message, and phase 41 "proved" attachments with a 16-byte file.
-        await File.WriteAllBytesAsync(path, Png.Create(width, height, arguments.ImagePadBytes, seamless));
-
-        files.Add(new { name, mediaType = "image/png", path });
+        var raster = Png.Raster(width, height, seamless);
 
         if (!equirectangular)
         {
+            // `--image-bytes N` pads the file, so ImageWireSizeTests can push megabytes across a real
+            // SignalR connection. The 32 KB default cap tore the connection down rather than failing
+            // the message, and phase 41 "proved" attachments with a 16-byte file.
+            await File.WriteAllBytesAsync(path, Png.Create(width, height, arguments.ImagePadBytes, raster));
+            files.Add(new { name, mediaType = "image/png", path });
             images.Add(new { width, height, steps = reportedSteps, seed = seed + i, projection });
             continue;
         }
 
-        // Measured off the raster this worker just wrote, exactly as the real one measures it off
-        // the array the VAE produced. Reported, and never repaired.
-        var delta = Math.Round(Png.SeamDelta(width, height, seamless), 5);
+        // Measured off the raster this worker just produced, exactly as the real one measures it off
+        // the array the VAE produced — and then repaired only if somebody asked (phase 55).
+        var before = Png.SeamDelta(raster, width, height);
+        double delta;
+        double? deltaBefore = null;
 
+        if (askedRepair.Length == 0)
+        {
+            delta = before;
+        }
+        else
+        {
+            var repaired = arguments.ImageRepairWorse
+                ? Png.Worsen(raster, width, height)
+                : Png.Blend(raster, width, height);
+
+            var after = Png.SeamDelta(repaired, width, height);
+
+            // D4: a repair that did not lower the number is DISCARDED, and both numbers are still
+            // reported — the mechanism ran, and an outcome nobody reports is one nobody looks for.
+            if (after < before)
+            {
+                raster = repaired;
+                delta = after;
+            }
+            else
+            {
+                delta = before;
+            }
+
+            deltaBefore = Math.Round(before, 5);
+        }
+
+        await File.WriteAllBytesAsync(path, Png.Create(width, height, arguments.ImagePadBytes, raster));
+        files.Add(new { name, mediaType = "image/png", path });
+
+        delta = Math.Round(delta, 5);
+
+        // The warning follows the FINAL number: warning about a seam that was closed would describe
+        // an image nobody has.
         if (seamThreshold > 0 && delta > seamThreshold && !warnings.Contains("seam"))
         {
             warnings.Add("seam");
         }
 
-        images.Add(new { width, height, steps = reportedSteps, seed = seed + i, projection, seamDelta = delta });
+        images.Add(new
+        {
+            width,
+            height,
+            steps = reportedSteps,
+            seed = seed + i,
+            projection,
+            seamDelta = delta,
+            seamDeltaBefore = deltaBefore,
+            seamRepair = askedRepair.Length == 0 ? null : askedRepair
+        });
     }
 
     Send(new
@@ -949,7 +1059,10 @@ internal static class Png
         return (width, height, png[25] is 4 or 6);
     }
 
-    public static byte[] Create(int width, int height, int padBytes, bool seamless = false, bool alpha = false)
+    public static byte[] Create(int width, int height, int padBytes, bool seamless = false, bool alpha = false) =>
+        Create(width, height, padBytes, alpha ? RasterWithAlpha(width, height) : Raster(width, height, seamless), alpha);
+
+    public static byte[] Create(int width, int height, int padBytes, byte[] raster, bool alpha = false)
     {
         using var buffer = new MemoryStream();
 
@@ -962,7 +1075,7 @@ internal static class Png
         ihdr[9] = (byte)(alpha ? 6 : 2); // truecolour, with an alpha channel or without
         Chunk(buffer, "IHDR", ihdr);
 
-        Chunk(buffer, "IDAT", ZlibStored(alpha ? RasterWithAlpha(width, height) : Raster(width, height, seamless)));
+        Chunk(buffer, "IDAT", ZlibStored(raster));
 
         if (padBytes > 0)
         {
@@ -1047,12 +1160,92 @@ internal static class Png
     }
 
     /// <summary>
+    /// Phase 55's <c>blend</c>, on a raster instead of on a numpy array: the jump across the join is
+    /// halved and each half ramped back to zero over a narrow band, so the two extreme columns meet
+    /// in the middle and the wrap is continuous.
+    /// </summary>
+    /// <remarks>
+    /// The <b>same mechanism</b> as the real worker's, deliberately, and it is still a fixture: what
+    /// it proves is that the request reaches the process, the numbers come back, and the contract
+    /// holds. It does not prove anything about a photograph, and the release notes say which of
+    /// those two claims was verified where.
+    /// </remarks>
+    public static byte[] Blend(byte[] raster, int width, int height)
+    {
+        var stride = 1 + (width * 3);
+        var band = Math.Max(0, Math.Min((int)(width * 0.02), width / 4));
+        var repaired = (byte[])raster.Clone();
+
+        if (band < 1)
+        {
+            return repaired;
+        }
+
+        for (var y = 0; y < height; y++)
+        {
+            var row = (y * stride) + 1;
+
+            for (var channel = 0; channel < 3; channel++)
+            {
+                var half = (raster[row + ((width - 1) * 3) + channel] - raster[row + channel]) / 2.0;
+
+                for (var x = 0; x < band; x++)
+                {
+                    var ramp = 1.0 - ((double)x / band);
+
+                    repaired[row + (x * 3) + channel] = Clamp(raster[row + (x * 3) + channel] + (half * ramp));
+
+                    var mirrored = width - 1 - x;
+                    repaired[row + (mirrored * 3) + channel] =
+                        Clamp(raster[row + (mirrored * 3) + channel] - (half * ramp));
+                }
+            }
+        }
+
+        return repaired;
+    }
+
+    /// <summary>
+    /// A repair pass that makes the seam <em>worse</em> — the fixture's <c>--image-repair-worse</c>.
+    /// </summary>
+    /// <remarks>
+    /// It exists because phase-55 D4's discard is the one rule with no natural failing case here:
+    /// <see cref="Blend"/> matches the extreme columns by construction, so it essentially cannot
+    /// raise the number, and the mechanism that genuinely can — an inpainting pass that repaints the
+    /// band and has no idea the image wraps — needs a GPU. Rather than leave the rule untested, the
+    /// fixture offers a mechanism that fails, and the assertion is on <em>the rule</em>: the original
+    /// is kept, both numbers are reported, and the warning it still earns is still there.
+    /// </remarks>
+    public static byte[] Worsen(byte[] raster, int width, int height)
+    {
+        var stride = 1 + (width * 3);
+        var damaged = (byte[])raster.Clone();
+
+        for (var y = 0; y < height; y++)
+        {
+            var row = (y * stride) + 1;
+
+            for (var channel = 0; channel < 3; channel++)
+            {
+                damaged[row + channel] = 0;
+                damaged[row + ((width - 1) * 3) + channel] = 255;
+            }
+        }
+
+        return damaged;
+    }
+
+    private static byte Clamp(double value) => (byte)Math.Clamp(Math.Round(value), 0, 255);
+
+    /// <summary>
     /// The mean absolute difference between the first and last columns, 0–1 — what a real worker
     /// computes with two numpy operations on the array the VAE handed it.
     /// </summary>
-    public static double SeamDelta(int width, int height, bool seamless)
+    public static double SeamDelta(int width, int height, bool seamless) =>
+        SeamDelta(Raster(width, height, seamless), width, height);
+
+    public static double SeamDelta(byte[] raw, int width, int height)
     {
-        var raw = Raster(width, height, seamless);
         var stride = 1 + (width * 3);
         var total = 0d;
 
@@ -1229,7 +1422,8 @@ internal sealed record Args(
     bool IgnoreCancel = false,
     string? ImageProjection = null,
     string? ImageSeam = null,
-    bool ImageNoAutoTrigger = false)
+    bool ImageNoAutoTrigger = false,
+    bool ImageRepairWorse = false)
 {
     public static Args Parse(string[] args)
     {
@@ -1248,6 +1442,7 @@ internal sealed record Args(
         string? imageProjection = null;
         string? imageSeam = null;
         var imageNoAutoTrigger = false;
+        var imageRepairWorse = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -1298,6 +1493,9 @@ internal sealed record Args(
                 case "--image-no-auto-trigger":
                     imageNoAutoTrigger = true;
                     break;
+                case "--image-repair-worse":
+                    imageRepairWorse = true;
+                    break;
             }
         }
 
@@ -1316,7 +1514,8 @@ internal sealed record Args(
             ignoreCancel,
             imageProjection,
             imageSeam,
-            imageNoAutoTrigger);
+            imageNoAutoTrigger,
+            imageRepairWorse);
     }
 
     /// <summary>"transcribe:a,b;speak:c" → the capability list a ready frame carries.</summary>

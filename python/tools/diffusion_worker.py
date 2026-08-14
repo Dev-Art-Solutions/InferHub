@@ -83,12 +83,17 @@ image-to-image run partway down the schedule, so ``strength: 0.6`` at 30 steps d
 them. Metering the asked-for 30 would bill for work nobody did, which is phase-42 D7's rule about
 the unit the work is in, applied to a knob rather than a modality.
 
-THE SEAM IS MEASURED AND NEVER REPAIRED (phase-49 D5). An equirectangular render whose left edge
-does not continue into its right edge is not a failure anybody can see — it is a panorama that wraps
-wrongly, and the person who finds out is wearing a headset three days later. So the mean absolute
-difference between the first and last columns is reported, and over the node's threshold it is a
-WARNING rather than a failed job: a visible seam is the operator's own aesthetic judgement, and a
-repair would be a second generation pass they did not ask for and would be billed for.
+THE SEAM IS MEASURED AND REPORTED ALWAYS, AND REPAIRED ONLY BECAUSE SOMEBODY ASKED (phase-49 D5,
+amended in phase 55). An equirectangular render whose left edge does not continue into its right
+edge is not a failure anybody can see — it is a panorama that wraps wrongly, and the person who
+finds out is wearing a headset three days later. So the mean absolute difference between the first
+and last columns is reported on every panorama, and over the node's threshold it is a WARNING rather
+than a failed job: a visible seam is the operator's own aesthetic judgement, and failing the job
+would be the tool overriding the person. What phase 55 added is the ASKING: a request that carries
+``seam_repair`` gets one, up to the ceiling ``INFERHUB_IMAGE_SEAM_REPAIR`` sets. Nothing repairs by
+default and no threshold ever triggers a repair — a number that decides to spend somebody's GPU is
+the same overriding, wearing a helpful expression. A repair that did not lower the number is
+DISCARDED and both numbers are reported.
 
 NOTHING IS RETAINED. Images are written into the node's per-request scratch directory and named
 back; the node deletes the whole directory in a ``finally``. The prompt is never logged, at any
@@ -171,6 +176,31 @@ def seam_warn_threshold() -> float:
     except ValueError:
         log("INFERHUB_IMAGE_SEAM_WARN_THRESHOLD is not a number; using 0.08")
         return 0.08
+
+
+SEAM_REPAIR_OFF = "off"
+SEAM_REPAIR_BLEND = "blend"
+SEAM_REPAIR_DIFFUSE = "diffuse"
+SEAM_REPAIR_ANY = "any"
+
+SEAM_REPAIR_MECHANISMS = (SEAM_REPAIR_BLEND, SEAM_REPAIR_DIFFUSE)
+
+
+def seam_repair_ceiling() -> str:
+    """
+    ``Tools:Image:SeamRepair`` — what an OPERATOR permits, which the request then chooses within.
+
+    Two gates, in phase-41 D2's shape: the node's key is a ceiling the caller can never raise, the
+    same way ``Tools:Allowed`` is one the hub can never raise. An unreadable value is read as
+    ``off``: the safe direction for a key whose other values spend a GPU.
+    """
+    value = (os.environ.get("INFERHUB_IMAGE_SEAM_REPAIR") or SEAM_REPAIR_OFF).strip().lower()
+
+    if value in (SEAM_REPAIR_OFF, SEAM_REPAIR_BLEND, SEAM_REPAIR_DIFFUSE, SEAM_REPAIR_ANY):
+        return value
+
+    log(f"INFERHUB_IMAGE_SEAM_REPAIR is '{value}', which is not a mode; repair is off")
+    return SEAM_REPAIR_OFF
 
 
 def accepted_licenses() -> set[str]:
@@ -912,6 +942,217 @@ def seam_delta(image) -> float | None:
         return None
 
 
+# How wide the join is worked over, as a fraction of the image's width, and why it is a constant
+# rather than a knob. The band has to be wide enough that a correction spread across it is below the
+# eye's threshold for a gradient (a few percent of the width is several tens of pixels at any size
+# this catalogue renders) and narrow enough that the correction never reaches the middle of the
+# picture, where nothing is wrong. A caller who could set it would be tuning a number whose right
+# value depends on content they can see and this worker cannot.
+SEAM_BLEND_BAND = 0.02
+
+# The inpainting band is wider, because a diffusion pass needs context on both sides of what it is
+# repainting: a two-pixel ribbon of mask produces two pixels of new content and a hard edge where it
+# meets the old.
+SEAM_DIFFUSE_BAND = 0.06
+
+# How far the repair pass moves away from the picture it is repairing. Low on purpose: this is a
+# join being closed, not a region being reimagined, and a high strength repaints the band into
+# something that no longer matches either side.
+SEAM_DIFFUSE_STRENGTH = 0.4
+
+
+def seam_band(width: int, fraction: float) -> int:
+    """Half the worked-over region, in columns. Zero when the image is too narrow to have one."""
+    return max(0, min(int(width * fraction), width // 4))
+
+
+def seam_blend(image):
+    """
+    Close the join by feathering the discontinuity across a narrow band. numpy, milliseconds, no VRAM.
+
+    The two columns the metric compares are ADJACENT once the image is wrapped onto a sphere, so the
+    jump between them is halved and each half is ramped back to zero over ``SEAM_BLEND_BAND``: the
+    left edge rises to meet the right, the right falls to meet the left, and both reach exactly the
+    midpoint at the join. The extreme columns therefore match by construction, which is why this
+    mechanism essentially cannot make the number worse — D4's discard is a guard here and is
+    load-bearing for ``diffuse``.
+
+    WHAT IT DOES NOT DO, and the docs say so in these words: it closes a TONAL discontinuity, not a
+    STRUCTURAL one. A seam that cuts through a doorway comes back with no visible step in brightness
+    and the doorway still not lining up. That is what ``diffuse`` is for.
+    """
+    try:
+        import numpy
+        from PIL import Image
+
+        pixels = numpy.asarray(image.convert("RGB"), dtype=numpy.float32)
+
+        if pixels.ndim != 3 or pixels.shape[1] < 2:
+            return None
+
+        band = seam_band(pixels.shape[1], SEAM_BLEND_BAND)
+
+        if band < 1:
+            return None
+
+        half = (pixels[:, -1, :] - pixels[:, 0, :]) / 2.0
+        ramp = numpy.linspace(1.0, 0.0, band, endpoint=False, dtype=numpy.float32)
+        correction = half[:, None, :] * ramp[None, :, None]
+
+        pixels[:, :band, :] += correction
+        pixels[:, -band:, :] -= correction[:, ::-1, :]
+
+        return Image.fromarray(numpy.clip(pixels, 0.0, 255.0).astype(numpy.uint8), mode="RGB")
+    except Exception as error:  # noqa: BLE001
+        log(f"seam blend failed ({type(error).__name__}); keeping the original")
+        return None
+
+
+def seam_diffuse_steps(steps: int) -> int:
+    """
+    What the repair pass will actually run, known BEFORE the first progress frame (phase-55 D6).
+
+    ``diffusers`` enters an inpainting schedule at ``int(steps * strength)``, so this is the same
+    arithmetic phase-50 D3 already meters an edit by — and it has to be computable in advance,
+    because a bar that reaches 100% and then starts again is a bar that has lied once.
+    """
+    return max(1, int(steps * SEAM_DIFFUSE_STRENGTH))
+
+
+def seam_diffuse(request, recipe, pipe, image, *, prompt, negative, guidance, generator, steps, on_step):
+    """
+    Upstream's roll-and-inpaint: put the join in the middle of the picture and repaint a band of it.
+
+    A real second pass over the same resident components — ``from_pipe`` reuses the transformer, the
+    VAE and the text encoders (phase-50 D1), so it costs steps and no extra VRAM. The roll is what
+    makes it possible at all: an inpainting pipeline has no idea the image wraps, and the only way to
+    give it both sides of the join at once is to move the join to where it can see it.
+
+    A pipeline family diffusers cannot re-derive fails HERE, naming the class — ``diffuse`` is never
+    quietly served as ``blend`` (phase-55 D3).
+    """
+    import numpy
+    from PIL import Image
+
+    inpaint = derived_pipeline(pipe, recipe, inpaint=True)
+
+    width, height = image.size
+    shift = width // 2
+    band = seam_band(width, SEAM_DIFFUSE_BAND)
+
+    if band < 1:
+        return None
+
+    rolled = Image.fromarray(numpy.roll(numpy.asarray(image.convert("RGB")), shift, axis=1))
+
+    mask = numpy.zeros((height, width), dtype=numpy.uint8)
+    mask[:, shift - band:shift + band] = 255
+
+    arguments: dict[str, Any] = {
+        "prompt": prompt,
+        "image": rolled,
+        "mask_image": Image.fromarray(mask, mode="L"),
+        "strength": SEAM_DIFFUSE_STRENGTH,
+        "num_inference_steps": steps,
+        str(recipe.get("guidanceParameter") or "guidance_scale"): guidance,
+        "generator": generator,
+        "callback_on_step_end": on_step,
+    }
+
+    if negative:
+        arguments["negative_prompt"] = negative
+
+    try:
+        result = inpaint(**arguments)
+    except TypeError as error:
+        # The same retry run_batch makes: the picture is what was asked for and the progress bar is
+        # not. Anything else is a real failure and is raised.
+        if "callback_on_step_end" not in str(error) and "negative_prompt" not in str(error):
+            raise
+
+        arguments.pop("callback_on_step_end", None)
+        arguments.pop("negative_prompt", None)
+        result = inpaint(**arguments)
+
+    return Image.fromarray(numpy.roll(numpy.asarray(result.images[0].convert("RGB")), -shift, axis=1))
+
+
+def resolve_seam_repair(recipe: dict[str, Any], payload: dict[str, Any]) -> str | None:
+    """
+    What this request asked for, checked against what the operator permits (phase-55 D1).
+
+    Three refusals, all of them ``invalid_request`` and all of them naming what to change. Nothing
+    here silently degrades to a cheaper mechanism or to nothing at all: a repair that is not the one
+    you asked for is the "documented feature that does not work" phase 40 refuses by name.
+    """
+    asked = str(payload.get("seam_repair") or "").strip().lower()
+
+    if not asked or asked == SEAM_REPAIR_OFF:
+        return None
+
+    if asked not in SEAM_REPAIR_MECHANISMS:
+        raise ToolError(
+            f"seam repair '{asked}' is not a mechanism. Use "
+            f"'{SEAM_REPAIR_BLEND}' (a wrapped feather across the join: milliseconds, no steps) or "
+            f"'{SEAM_REPAIR_DIFFUSE}' (an inpainting pass over the join: slower, billed as steps).",
+            ERROR_INVALID_REQUEST,
+        )
+
+    if projection_of(recipe) != EQUIRECTANGULAR:
+        raise ToolError(
+            f"'{recipe['id']}' renders {projection_of(recipe)} images, which do not wrap and "
+            "therefore have no seam to repair.",
+            ERROR_INVALID_REQUEST,
+        )
+
+    permitted = seam_repair_ceiling()
+
+    if permitted == SEAM_REPAIR_ANY or permitted == asked:
+        return asked
+
+    raise ToolError(
+        f"seam repair '{asked}' is not permitted on this node: Tools:Image:SeamRepair is "
+        f"'{permitted}'. Set it to '{asked}' or to '{SEAM_REPAIR_ANY}' on the node that serves "
+        f"'{recipe['id']}'.",
+        ERROR_INVALID_REQUEST,
+    )
+
+
+def repair_seam(image, mechanism: str | None, run) -> tuple[Any, dict[str, Any]]:
+    """
+    Measure, repair, measure again — and keep the original if the number did not fall (phase-55 D4).
+
+    A repair pass that quietly made the seam worse is the one outcome nobody would ever go looking
+    for, so the mechanism is reported either way and both numbers ride on the result. ``seamDelta``
+    is always the CURRENT image's, so a client that has never heard of this phase reads the field it
+    already knew and gets a true answer about the bytes it was handed.
+    """
+    before = seam_delta(image)
+
+    if before is None:
+        return image, {}
+
+    if mechanism is None:
+        return image, {"seamDelta": round(before, 5)}
+
+    repaired = run()
+    after = seam_delta(repaired) if repaired is not None else None
+
+    if repaired is None or after is None or after >= before:
+        log(f"seam repair '{mechanism}' did not lower {before:.5f}; keeping the original")
+        return image, {
+            "seamDelta": round(before, 5),
+            "seamDeltaBefore": round(before, 5),
+            "seamRepair": mechanism,
+        }
+
+    return repaired, {
+        "seamDelta": round(after, 5),
+        "seamDeltaBefore": round(before, 5),
+        "seamRepair": mechanism,
+    }
+
+
 def resident() -> list[str]:
     with _loaded_lock:
         return list(_loaded)
@@ -1007,13 +1248,18 @@ def run_batch(
     height: int,
     geometry: bool = True,
     extra: dict[str, Any] | None = None,
+    repair: str | None = None,
+    repair_steps: int = 0,
 ) -> tuple[list[Any], list[dict[str, Any]], list[str], float]:
     """
     The per-image loop, shared by ``generate``, ``edit`` and ``variation``.
 
     ``reported_steps`` is what the result frame carries and therefore what the fleet meters, and it
     is not always ``steps``: an image-to-image run starts partway down the schedule, so
-    ``strength: 0.6`` at 30 steps denoises for 18 of them (phase-50 D3).
+    ``strength: 0.6`` at 30 steps denoises for 18 of them (phase-50 D3), and a ``diffuse`` seam
+    repair adds its own pass on top (phase-55 D5). ``repair_steps`` is how many of ``reported_steps``
+    belong to that second pass, which is also what lets the FIRST progress frame carry a total that
+    is already right (phase-55 D6).
 
     ``geometry`` is False for an edit, because the img2img pipelines take their size from the input
     image and **do not accept ``width``/``height`` at all** — the caller's size is honoured by
@@ -1043,8 +1289,8 @@ def run_batch(
         #
         # Deliberately NOT decoding the latents to send a preview: that is a VAE decode per step
         # (10-15% of the run) producing intermediate *content*, which nothing here retains.
-        def on_step(_pipe, step, _timestep, kwargs, _total=reported_steps):
-            request.progress(step + 1, total_steps=_total)
+        def on_step(_pipe, step, _timestep, kwargs, _total=reported_steps, _offset=0):
+            request.progress(_offset + step + 1, total_steps=_total)
             request.raise_if_cancelled()
             return kwargs
 
@@ -1086,8 +1332,7 @@ def run_batch(
             arguments.pop("negative_prompt", None)
             result = pipe(**arguments)
 
-        output = request.output(f"image-{index}.png", "image/png")
-        result.images[0].save(output.path, format="PNG")
+        picture = result.images[0]
 
         described: dict[str, Any] = {
             "width": width,
@@ -1097,13 +1342,41 @@ def run_batch(
             "projection": projection,
         }
 
-        # Measured, reported, and NEVER repaired (phase-49 D5). A roll-and-inpaint fix would be a
-        # second generation pass with its own cost and its own artifacts, run without being asked.
-        if projection == EQUIRECTANGULAR and (delta := seam_delta(result.images[0])) is not None:
-            described["seamDelta"] = round(delta, 5)
+        # Measured on every panorama and repaired only for a request that asked (phase-49 D5 as
+        # phase 55 amended it). The warning is decided from the FINAL number, because a warning
+        # about a seam that was closed would be describing an image nobody has.
+        if projection == EQUIRECTANGULAR:
+            def repair_run(_picture=picture, _seed_generator=generator):
+                if repair == SEAM_REPAIR_BLEND:
+                    return seam_blend(_picture)
 
-            if threshold > 0 and delta > threshold and "seam" not in warnings:
+                return seam_diffuse(
+                    request,
+                    recipe,
+                    pipe,
+                    _picture,
+                    prompt=prompt,
+                    negative=negative,
+                    guidance=guidance,
+                    generator=_seed_generator,
+
+                    # The same nominal count the base pass ran, from which diffusers takes
+                    # `int(steps * strength)` — which is exactly `repair_steps`, computed by the
+                    # caller before the first progress frame went out.
+                    steps=steps,
+                    on_step=lambda p, step, t, kwargs: on_step(
+                        p, step, t, kwargs, reported_steps, reported_steps - repair_steps),
+                )
+
+            picture, measured = repair_seam(picture, repair, repair_run)
+            described.update(measured)
+
+            if (delta := measured.get("seamDelta")) is not None \
+                    and threshold > 0 and delta > threshold and "seam" not in warnings:
                 warnings.append("seam")
+
+        output = request.output(f"image-{index}.png", "image/png")
+        picture.save(output.path, format="PNG")
 
         files.append(output)
         images.append(described)
@@ -1164,6 +1437,11 @@ def generate(request: Request):
     guidance = payload.get("guidance")
     guidance = float(guidance) if guidance is not None else float(defaults.get("guidance", 5.0))
 
+    # Asked for, and permitted, before a single step runs — a refusal after two minutes of GPU is
+    # the worst possible place to discover a header the operator never allowed.
+    repair = resolve_seam_repair(recipe, payload)
+    repair_steps = seam_diffuse_steps(steps) if repair == SEAM_REPAIR_DIFFUSE else 0
+
     pipe, load_ms, evicted = load(recipe, accepted_licenses())
 
     files, images, warnings, generate_ms = run_batch(
@@ -1175,18 +1453,22 @@ def generate(request: Request):
         count=int(payload.get("n") or 1),
         seed=payload.get("seed"),
         steps=steps,
-        reported_steps=steps,
+        reported_steps=steps + repair_steps,
         guidance=guidance,
         width=width,
         height=height,
+        repair=repair,
+        repair_steps=repair_steps,
     )
 
     # The model, the geometry and the seeds. Not the prompt — the node logs this line's *shape*, and
     # a payload that carried the prompt would put it in the one place rule 7 forbids.
     # The trigger is a recipe constant and may be named; the prompt it was appended to may not.
     log(
-        f"{request.model}: {len(images)} image(s) at {width}x{height}, {steps} steps on {_device}, "
+        f"{request.model}: {len(images)} image(s) at {width}x{height}, "
+        f"{steps + repair_steps} steps on {_device}, "
         f"{projection_of(recipe)}{', trigger appended' if prompt_augmented else ''}"
+        f"{', seam repair: ' + repair if repair else ''}"
         f"{', warnings: ' + ', '.join(warnings) if warnings else ''} "
         f"(load {load_ms / 1000:.1f}s, generate {generate_ms / 1000:.1f}s)"
     )
@@ -1196,7 +1478,7 @@ def generate(request: Request):
         recipe,
         images=images,
         warnings=warnings,
-        steps=steps,
+        steps=steps + repair_steps,
         load_ms=load_ms,
         generate_ms=generate_ms,
         evicted=evicted,
@@ -1343,6 +1625,9 @@ def edit(request: Request, operation: str):
     # both what the progress frames count up to and what the fleet meters (phase-50 D3).
     effective = max(1, int(steps * strength))
 
+    repair = resolve_seam_repair(recipe, payload)
+    repair_steps = seam_diffuse_steps(steps) if repair == SEAM_REPAIR_DIFFUSE else 0
+
     guidance = payload.get("guidance")
     guidance = float(guidance) if guidance is not None else float(defaults.get("guidance", 5.0))
 
@@ -1370,12 +1655,14 @@ def edit(request: Request, operation: str):
         count=int(payload.get("n") or 1),
         seed=payload.get("seed"),
         steps=steps,
-        reported_steps=effective,
+        reported_steps=effective + repair_steps,
         guidance=guidance,
         width=width,
         height=height,
         geometry=False,
         extra=extra,
+        repair=repair,
+        repair_steps=repair_steps,
     )
 
     # The operation, the geometry, the strength and the steps that ran. Never the prompt, and never
@@ -1383,7 +1670,8 @@ def edit(request: Request, operation: str):
     # an uploaded recording is (phase-42 D5).
     log(
         f"{request.model}: {operation}, {len(images)} image(s) at {width}x{height}, "
-        f"strength {strength:.2f} ({effective} of {steps} steps){', masked' if mask is not None else ''} "
+        f"strength {strength:.2f} ({effective} of {steps} steps){', masked' if mask is not None else ''}"
+        f"{', seam repair: ' + repair if repair else ''} "
         f"on {_device} (load {load_ms / 1000:.1f}s, generate {generate_ms / 1000:.1f}s)"
     )
 
@@ -1392,7 +1680,7 @@ def edit(request: Request, operation: str):
         recipe,
         images=images,
         warnings=warnings,
-        steps=effective,
+        steps=effective + repair_steps,
         load_ms=load_ms,
         generate_ms=generate_ms,
         evicted=evicted,

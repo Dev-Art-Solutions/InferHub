@@ -1054,3 +1054,20 @@ client that walks away cancels the endpoint, which sends `CancelJob`, which canc
 token and ends the enumeration — so the half-written file goes with the directory. A second
 abort-the-stream mechanism was built for this and **removed** when the test passed without it; see
 `Dispatcher.UploadRegistration`.
+
+### Phase 55 (seam repair) — the pointer, and the one node-side fact
+
+The decisions are in `python/CLAUDE.md` (phase 55). What is *this* project's is one key:
+**`Tools:Image:SeamRepair`** (`off` default | `blend` | `diffuse` | `any`), validated at startup
+against those four words and **stated into the worker's environment** as
+`INFERHUB_IMAGE_SEAM_REPAIR` — the only way it could reach the child, since 41 D3 clears that
+environment first. It is a ceiling in exactly `Tools:Allowed`'s sense (41 D2), one level down: the
+caller names a mechanism on a header, and this decides whether they may have it.
+
+**Nothing on the node parses a request payload to enforce it, and that is deliberate** — see the
+deviation recorded with those decisions. `ImageRecipeCatalogue` reads three fields out of *recipe
+files*; the runtime has never seen a request body, and teaching it to read diffusion requests to
+enforce a key the process that spends the steps can enforce itself would be the node learning about
+diffusion (41 D1). It is 48 D5's shape with the redundant half removed: the node states the grant,
+the worker refuses **naming the key**, and a solo caller reaching the worker directly meets the same
+refusal in the same words.

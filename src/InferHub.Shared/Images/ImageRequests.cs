@@ -240,7 +240,8 @@ public sealed record ImageGenerationRequest(
     ImageSize? Size,
     int? Steps,
     double? Guidance,
-    long? Seed) : IImageRequest
+    long? Seed,
+    string? SeamRepair = null) : IImageRequest
 {
     public string Capability => Contracts.CapabilityKinds.Image;
 
@@ -392,6 +393,12 @@ public sealed record ImageGenerationRequest(
             }
         }
 
+        if (!ImageExtensions.TrySeamRepair(header, out var seamRepair, out error))
+        {
+            errorParam = ImageExtensions.SeamRepair;
+            return null;
+        }
+
         return new ImageGenerationRequest(
             model!.Trim(),
             prompt!,
@@ -400,7 +407,8 @@ public sealed record ImageGenerationRequest(
             size,
             steps,
             guidance,
-            seed);
+            seed,
+            seamRepair);
     }
 
     /// <summary>
@@ -420,7 +428,12 @@ public sealed record ImageGenerationRequest(
             steps = Steps,
             guidance = Guidance,
             seed = Seed,
-            n = Count
+            n = Count,
+
+            // Absent unless somebody asked, so a worker that never heard of phase 55 receives the
+            // payload it received in v3.22 — and one that has heard of it can tell "no repair" from
+            // "this hub does not know about repair" the only way that matters: neither spends a step.
+            seam_repair = SeamRepair
         },
         Json);
 
@@ -496,6 +509,52 @@ public static class ImageExtensions
 
     /// <summary>Which way round the caller's mask reads (phase 50, D2).</summary>
     public const string MaskConvention = "X-InferHub-Mask-Convention";
+
+    /// <summary>
+    /// Close this panorama's join, and by which mechanism (phase 55, D1).
+    /// </summary>
+    /// <remarks>
+    /// Absent means today's behaviour byte for byte, including the warning. The values are
+    /// <see cref="SeamRepairModes"/>' two mechanisms, and an unknown one is a <c>400</c> — the same
+    /// "never a silent fallback" every other header here obeys, and it matters more than usual: a
+    /// caller whose repair silently did not happen sees a picture with a line in it and concludes
+    /// the feature does not work.
+    /// </remarks>
+    public const string SeamRepair = "X-InferHub-Image-Seam-Repair";
+
+    /// <summary>
+    /// Parses <see cref="SeamRepair"/>. Null when absent or explicitly <c>off</c> — the two are the
+    /// same request, and a payload field that said "off" would give the worker a third thing to
+    /// mean nothing.
+    /// </summary>
+    internal static bool TrySeamRepair(Func<string, string?> header, out string? value, out string error)
+    {
+        value = null;
+        error = string.Empty;
+
+        var raw = header(SeamRepair);
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return true;
+        }
+
+        var normalised = SeamRepairModes.Normalise(raw);
+
+        if (normalised == SeamRepairModes.Off)
+        {
+            return true;
+        }
+
+        if (!SeamRepairModes.IsMechanism(normalised))
+        {
+            error = SeamRepairModes.Refusal(raw);
+            return false;
+        }
+
+        value = normalised;
+        return true;
+    }
 
     /// <summary>The ceiling on a header-supplied step count. A recipe may cap it lower.</summary>
     public const int MaxSteps = 150;

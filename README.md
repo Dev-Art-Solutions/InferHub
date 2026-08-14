@@ -150,8 +150,8 @@ and its 8.3B text encoder on one consumer card, a **VRAM budget you declare rath
 guess**, hub-driven weight pulls, and a licence consent per model — because two of them are not ours
 to accept for you. **v3.17 ships the model the track was asked for**:
 [360° panoramas](#360-panoramas-v317) from a rank-128 LoRA over that 20B base, with the projection
-*declared* rather than guessed from an aspect ratio, a seam that is measured and never repaired, and
-a hand-written WebGL viewer. **v3.18 lets you change a picture** rather than only make one:
+*declared* rather than guessed from an aspect ratio, a measured seam, and a hand-written WebGL
+viewer. **v3.18 lets you change a picture** rather than only make one:
 [inpainting, img2img and variations](#editing-a-picture-v318) as their own capability kind, with the
 mask convention converted where a pixel may actually be read and a strength knob that bills the steps
 it ran. **v3.19 closes the track** the way v3.13 closed the last one:
@@ -161,6 +161,11 @@ cancel button — plus the series to alert on and a walkthrough somebody can fol
 
 Six releases, a whole new modality, and still **zero new dependencies**: PyTorch is a child process,
 not a package.
+
+**v3.23 lets you close that seam** — [and only if you ask](#360-panoramas-v317). We measured the flaw
+for six releases and refused to fix it, because a repair nobody asked for is a second pass they did
+not watch and would be billed for. What changed is the asking: an operator permits a mechanism, a
+request chooses one, and the cheap one costs no steps at all.
 Still on the table beyond that: teaching the **coordinator** about backend health as a typed signal
 (a status column and an alert, rather than a line in the node's log), **active-active**
 multi-coordinator load sharing, an **OTLP push** exporter behind an explicit opt-in, and a dedicated
@@ -1025,13 +1030,44 @@ Turn it off with `"autoTrigger": false` in the recipe; the flag is reported eith
 a **recipe constant**, so unlike your prompt it may appear in a log — which matters, because "why does
 this not look like a panorama" is almost always "the trigger did not apply".
 
-**The seam is measured and never repaired.** `seam_delta` is the mean absolute difference between the
-first and last columns — the pair that becomes adjacent once the image is wrapped — normalised to 0–1.
-Over `Tools:Image:SeamWarnThreshold` (default `0.08`) the result carries a `"warnings": ["seam"]`
-entry. It is a warning and never a failure: a slightly visible seam is your own problem and your own
-aesthetic judgement. And it is not repaired, because a roll-and-inpaint fix is a second generation
-pass you did not ask for, did not watch, and would be billed for. Upstream ships one and it is a good
-tool to reach for on purpose.
+**The seam is measured on every panorama, and repaired only if you ask.** `seam_delta` is the mean
+absolute difference between the first and last columns — the pair that becomes adjacent once the
+image is wrapped — normalised to 0–1. Over `Tools:Image:SeamWarnThreshold` (default `0.08`) the
+result carries a `"warnings": ["seam"]` entry. It is a warning and never a failure: a slightly
+visible seam is your own problem and your own aesthetic judgement.
+
+Since **v3.23** you can close it, through two gates. The operator sets `Tools:Image:SeamRepair` on
+the node — `off` by default, then `blend`, `diffuse` or `any` — and the request picks within that:
+
+```bash
+curl http://localhost:5080/v1/images/generations \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -H 'X-InferHub-Image-Seam-Repair: blend' \
+  -d '{"model":"qwen-360","prompt":"a lighthouse at dusk","size":"2048x1024"}'
+
+# → 200  "seam_delta": 0.011, "seam_delta_before": 0.134, "seam_repair": "blend"
+```
+
+**Nothing repairs by default, and no threshold ever triggers one.** The threshold decides whether to
+*warn*; a number that decides to spend your GPU is the tool overriding you with a helpful expression
+on. Send no header and the response is what v3.22 sent, byte for byte.
+
+- **`blend`** is a wrapped feather across the join: numpy on the array the VAE already produced —
+  milliseconds, no VRAM, **no steps and nothing on your bill**. It closes a *tonal* discontinuity and
+  not a *structural* one: a seam through a doorway comes back with no visible step in brightness and
+  the doorway still not lining up. That is what the other one is for.
+- **`diffuse`** rolls the join into the middle of the picture and inpaints a band of it — upstream's
+  `fix_seam`, over the same resident weights. It costs `int(steps × 0.4)` more steps, metered in
+  `megapixel_steps` and included in `total_steps` from the first progress frame, so the bar never
+  restarts.
+
+`diffuse` does **not** imply `blend`: these name mechanisms rather than tiers, so an operator who
+thinks a feathered band is worse than an honest seam can permit only the real repair. `any` is how
+you say both. **A repair that does not lower the number is discarded and says so** — you get the
+original image, the mechanism, and two equal numbers, because a pass that quietly made your panorama
+worse is the one outcome nobody would ever go looking for. `seam_delta` is always the image you were
+handed; `seam_delta_before` is what it measured first. On the content route the same three facts
+arrive as `X-InferHub-Image-Seam-Repair`, `-Seam-Delta` and `-Seam-Delta-Before`.
 
 **Where the projection turns up:** in the response body per image, on the job document
 (`GET /api/images/jobs/{id}`), and as `X-InferHub-Image-Projection` on the content route — which is
@@ -2186,7 +2222,8 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `Tools:Image:AllowSlowCpu` | `false` | v3.14. Offer the CPU-hostile recipes on a CPU-only box anyway. Your hardware, your call — loud when on. |
 | `Tools:Image:RecipeDirectory` | _(worker default)_ | v3.14. Where `python/recipes/*.json` live; `/opt/inferhub/recipes` in the `:diffusion` image. Since v3.16 the **node** reads it too, for three fields only — id, licence, VRAM — because the profile clamp must refuse an oversized or unlicensed recipe with no worker running. |
 | `Tools:Image:AcceptedLicenses` | `[]` | v3.16. Licence ids you have read and accepted. A recipe whose `license.permissive` is not `true` is loaded, logged by name and **not started** until its id is here — `sd35-medium` needs `stabilityai-ai-community`, `sdxl-turbo` needs `sai-nc-community`. The **fourth** consent, and a list rather than a boolean so accepting one licence never enables another. A blank entry is ignored, which is how you clear one that came from an image. Not legal advice — a refusal to make that call for you, silently. |
-| `Tools:Image:SeamWarnThreshold` | `0.08` | v3.17. Above this, an equirectangular result carries a `seam` warning — the mean absolute difference between its first and last columns, 0–1. A warning and never a failure, and the seam is never repaired: a roll-and-inpaint fix is a second generation pass you did not ask for. `0` silences the warning, not the measurement. |
+| `Tools:Image:SeamWarnThreshold` | `0.08` | v3.17. Above this, an equirectangular result carries a `seam` warning — the mean absolute difference between its first and last columns, 0–1. A warning and never a failure. `0` silences the warning, not the measurement. It decides whether to *warn* and nothing else: it never triggers a repair. |
+| `Tools:Image:SeamRepair` | `off` | v3.23. Which seam repairs a caller may **ask** for here: `off`, `blend`, `diffuse`, `any`. The ceiling `X-InferHub-Image-Seam-Repair` chooses within — nothing repairs by default. `blend` is numpy and costs no steps; `diffuse` is an inpainting pass and costs `int(steps × 0.4)` of them. `diffuse` does not imply `blend`; `any` is both. |
 | `Tools:Image:ResidentRecipes` | `1` | v3.16. How many models may be on the card at once. Switching recipes swaps weights inside the **warm** process; more than one resident stops a box that alternates from thrashing. The default is 1 because the expensive default is the one nobody realises they chose. |
 
 ### Keeping the local Ollama alive (v3.4+)
