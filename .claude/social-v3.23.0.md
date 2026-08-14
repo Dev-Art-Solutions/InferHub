@@ -44,8 +44,8 @@ Blog: https://devart.solutions/blog/inferhub-3-23-we-measured-a-flaw-for-six-rel
 
 ## X / Twitter
 
-**One post, not a thread.** Counted: 246 characters of text plus a link (X counts any link as 23),
-so 269 of 280.
+**One post, not a thread.** Counted: 222 characters of text plus a link (X counts any link as 23
+whatever its length), so **245 of 280**.
 
 For six releases we measured a flaw in every 360° render we produced, reported it, and refused to
 fix it — because a repair nobody asked for is a bill nobody agreed to.
