@@ -1191,7 +1191,9 @@ internal static class Png
 
                 for (var x = 0; x < band; x++)
                 {
-                    var ramp = 1.0 - ((double)x / band);
+                    // 1 at the join, exactly 0 at the far side — the same ramp the real worker's
+                    // linspace produces, so the fixture and the worker are the same mechanism.
+                    var ramp = 1.0 - ((double)x / Math.Max(1, band - 1));
 
                     repaired[row + (x * 3) + channel] = Clamp(raster[row + (x * 3) + channel] + (half * ramp));
 

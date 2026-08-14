@@ -996,7 +996,9 @@ def seam_blend(image):
             return None
 
         half = (pixels[:, -1, :] - pixels[:, 0, :]) / 2.0
-        ramp = numpy.linspace(1.0, 0.0, band, endpoint=False, dtype=numpy.float32)
+        # 1 at the join, exactly 0 at the far side of the band — so the correction stops rather
+        # than being truncated, which would leave a second (much smaller) step where it ended.
+        ramp = numpy.linspace(1.0, 0.0, band, dtype=numpy.float32)
         correction = half[:, None, :] * ramp[None, :, None]
 
         pixels[:, :band, :] += correction

@@ -100,6 +100,25 @@ diffusers cannot re-derive fails **naming the class**. `diffuse` is never quietl
 `:diffusion` is 12.1 GB and needs a card. What *was* checked on the shipped artifact is the part that
 does not: the edge refusal for an unknown mechanism, and the default ceiling refusing a valid one.
 
+**What could be measured without a card was, on the worker's own code.** `seam_blend`, `seam_delta`
+and `repair_seam` are imported straight out of `diffusion_worker.py` — they need `numpy` and `PIL`
+and nothing else — and run against 2048×1024 rasters:
+
+| Raster | before | after | columns touched |
+|---|---:|---:|---:|
+| A 0→255 horizontal ramp (the worst case a seam can be) | 1.000000 | **0.000000** | 78 of 2048 |
+| Fine noise with a hard tonal step at the join | 0.351284 | **0.000000** | 78 of 2048 |
+| A sinusoid whose period is the width (already wrapping) | 0.000000 | 0.000000 | **0** — discarded by D4 |
+
+Two things worth having from that. **The correction reaches 78 columns of 2048 — 3.8% of the width,
+both sides of the join together — and the rest of the picture is bit-identical**, which is the claim
+"it does not touch the middle" made as a measurement rather than an intention. And **D4's discard
+fires on its own**: the already-wrapping raster came back as the original with two equal numbers and
+the mechanism named, which is the outcome the rule exists to make visible.
+
+This is still not a panorama. It says the arithmetic does what the docs say on real arrays; it says
+nothing about what a repaired doorway looks like.
+
 ## Tests
 
 `dotnet test InferHub.sln` — **1 255 passed, 48 skipped**, and the skips are the usual gated ones
