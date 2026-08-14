@@ -112,6 +112,11 @@ usual) and carry revision `f1d8947`, which is the tag. On them, in a container:
 **What was not run on the artifact is the repair itself**: `:diffusion` is 12.1 GB and needs a card,
 so no request has reached a real `qwen-360` through a published image.
 
+All five tags were resolved anonymously against the registry rather than read off the workflow file,
+which is the v3.16.1 lesson: `inferhub-node:latest` resolves to the **plain node's** digest
+(`983a4b6f…`), identical to `3.23.0`, and not to the 12 GB `-diffusion` one. That fix is still
+holding three releases later.
+
 **What could be measured without a card was, on the worker's own code.** `seam_blend`, `seam_delta`
 and `repair_seam` are imported straight out of `diffusion_worker.py` — they need `numpy` and `PIL`
 and nothing else — and run against 2048×1024 rasters:
