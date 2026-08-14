@@ -96,9 +96,21 @@ diffusers cannot re-derive fails **naming the class**. `diffuse` is never quietl
 > seam is not evidence — it is the unit test.** Phase 60 is the verification day, and this is on its
 > list.
 
-**The published image was not pulled and run against a real recipe either**, for the same reason:
-`:diffusion` is 12.1 GB and needs a card. What *was* checked on the shipped artifact is the part that
-does not: the edge refusal for an unknown mechanism, and the default ceiling refusing a valid one.
+**The published images were pulled and run — for everything that does not need a card.** Both
+`inferhub-node:3.23.0` and `inferhub-coordinator:3.23.0` pulled anonymously (no visibility flip, as
+usual) and carry revision `f1d8947`, which is the tag. On them, in a container:
+
+| Check | Result |
+|---|---|
+| Solo node, `X-InferHub-Image-Seam-Repair: inpaint` | **400** with the whole sentence — both mechanisms and what each costs |
+| Hub, the same header spelled `INPAINT` | **400**, identical sentence — the parse is one place and case-insensitive |
+| Solo node, `blend`, no image capability on the box | **503** `capability_unavailable` + `Retry-After: 30` — a header alone routes nothing and spends nothing |
+| Solo node, `off` spelled explicitly | the same **503**: "off" and "absent" are one request |
+| `Tools__Image__SeamRepair=blends` | **refuses to boot**: *"Tools:Image:SeamRepair is 'blends'; it must be 'off' (the default), 'blend', 'diffuse' or 'any'."* |
+| `Tools__Image__SeamRepair=any` | boots, `/health` 200 |
+
+**What was not run on the artifact is the repair itself**: `:diffusion` is 12.1 GB and needs a card,
+so no request has reached a real `qwen-360` through a published image.
 
 **What could be measured without a card was, on the worker's own code.** `seam_blend`, `seam_delta`
 and `repair_seam` are imported straight out of `diffusion_worker.py` — they need `numpy` and `PIL`
