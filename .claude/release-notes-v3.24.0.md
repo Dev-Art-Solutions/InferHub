@@ -139,6 +139,38 @@ image longer than a hub does" stays a question that cannot have two answers.
 - The existing image suites are unchanged and green, which is the claim that matters most here: with
   `Persistence=none` this release is v3.23.
 
+## Verified on the published image, and it found one real hole
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.24.0`, pulled anonymously (Gotcha 1 confirmed
+again — no manual visibility flip, for the eleventh time). No GPU involved: the archive is seeded by
+hand and the hub is restarted, which is exactly the failure this release is about.
+
+| Check | Result |
+|---|---|
+| Default config | **No `/data/images` at all** — not created, not opened. |
+| `Images__Jobs__Persistence=file` | Directory created at boot, **owned by `app`** — the container permissions trap did not fire a seventh time. |
+| A finished job, after `docker restart` | `200`, `state: succeeded`, record intact; `content/0` returned the **byte-exact** payload with `X-InferHub-Image-Projection: flat`. |
+| The second `GET` | `410 job_expired` carrying the **new conditional sentence**: *"the copy under Images:Jobs:DataDirectory was unlinked in the same operation."* And the `.bin` was gone from the volume while the record stayed. |
+| A job that was `running` when the hub died | `200`, `state: failed`, `reason: hub_restarted`, with the "it was not resumed, because nothing durable holds a prompt" sentence. |
+| A job two weeks past its window | `404`, and **both its record and its bytes were deleted on load** — D2, on the artifact rather than in a unit test. |
+| `GET /api/images/jobs` | `persistence: "file"`. |
+| `Images__Jobs__Persistence=postgres` | Host refuses to start: *"Images:Jobs:Persistence 'postgres' is not recognised; use 'none' or 'file'. There is deliberately no 'postgres': image bytes are not row data."* |
+
+**The hole it found: an incomplete write is a picture that lives forever.** `WriteAtomic` is
+temp-file-then-move, and a `.tmp` left behind — by a crash between the two steps, or by the disk
+filling *during* the write, which is the ordinary failure mode of writing pictures to a disk — is
+invisible to every route and reached by no sweep. It would outlive the retention window
+permanently, which is the one thing this format may not do. A seeded `.tmp` was still on the volume
+after a restart.
+
+Fixed in **v3.24.1**: the temp file is deleted in the `catch` (this process survived) and every
+stray `.tmp` is deleted at load (it did not). `ImageJobDurabilityTests` gained the case.
+
+*The seeded-archive method is worth keeping.* Every claim above except the byte payload is about a
+process that is **not running any more**, and a unit test can only assert that the code would have
+done the right thing. Writing three JSON records onto the volume and restarting the container asks
+the artifact.
+
 ## What was not established
 
 - **Whether a video-sized result makes the per-job file write a latency problem.** Nothing here

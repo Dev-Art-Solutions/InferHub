@@ -54,6 +54,23 @@ public sealed class FileImageJobArchive : IImageJobArchive
     {
         lock (gate)
         {
+            // A `.tmp` here is a write that did not finish — the process died between the write and
+            // the move, or the disk filled mid-write. It is invisible to every route and would
+            // therefore outlive the retention window forever, which is the one thing this format
+            // may not do. Load is the only moment at which "left over from a previous process" is
+            // knowable, so it is where they go.
+            foreach (var stale in SafeEnumerate("*.tmp"))
+            {
+                try
+                {
+                    File.Delete(stale);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    Report($"could not delete the incomplete archive file '{stale}'", ex);
+                }
+            }
+
             var jobs = new List<ArchivedImageJob>();
 
             foreach (var path in SafeEnumerate("*.json"))
@@ -189,12 +206,39 @@ public sealed class FileImageJobArchive : IImageJobArchive
         }
     }
 
+    /// <summary>
+    /// Temp file, then an atomic move — <c>FileProfileStore</c>'s and <c>RawCollection</c>'s
+    /// discipline, because a record torn by a crash mid-write is a job whose state nobody can read.
+    /// </summary>
+    /// <remarks>
+    /// <b>The <c>catch</c> is the load-bearing half.</b> A failed write leaves a partial file that no
+    /// route can see and no sweep would ever reach, so a full disk — the ordinary failure mode of
+    /// writing pictures to one — would leave somebody's image on it permanently. Deleting it here
+    /// covers the case where this process survives; <see cref="Load"/> covers the case where it does
+    /// not.
+    /// </remarks>
     private static void WriteAtomic(string path, byte[] bytes)
     {
         var temp = path + ".tmp";
 
-        File.WriteAllBytes(temp, bytes);
-        File.Move(temp, path, overwrite: true);
+        try
+        {
+            File.WriteAllBytes(temp, bytes);
+            File.Move(temp, path, overwrite: true);
+        }
+        catch
+        {
+            try
+            {
+                File.Delete(temp);
+            }
+            catch (Exception cleanup) when (cleanup is IOException or UnauthorizedAccessException)
+            {
+                // Nothing more to do here, and it must not mask the original failure.
+            }
+
+            throw;
+        }
     }
 
     private void Report(string message, Exception ex) => onError?.Invoke(message, ex);

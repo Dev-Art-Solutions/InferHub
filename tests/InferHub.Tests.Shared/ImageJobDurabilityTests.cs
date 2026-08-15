@@ -279,6 +279,30 @@ public class ImageJobDurabilityTests : IDisposable
         Assert.Null(restarted.TryTakeContent(record.Id, "client", 0));
     }
 
+    /// <summary>
+    /// An incomplete write is invisible to every route, so nothing would ever expire it — which
+    /// makes a full disk, the ordinary failure mode of writing pictures to one, a way to leave
+    /// somebody's image on it permanently. Load is where "left over from a previous process"
+    /// becomes knowable.
+    /// </summary>
+    [Fact]
+    public void AnIncompleteWriteLeftByAPreviousProcessIsNotAPictureThatLivesForever()
+    {
+        var record = Succeed(NewStore(), "client");
+
+        // Exactly the shape a crash or a full disk leaves behind between the write and the move.
+        var orphan = Path.Combine(directory, $"{Guid.NewGuid()}.0.bin.tmp");
+        File.WriteAllBytes(orphan, Png);
+
+        var restarted = NewStore();
+
+        Assert.False(File.Exists(orphan));
+        Assert.Empty(Directory.GetFiles(directory, "*.tmp"));
+
+        // …and the real job is untouched by the sweep, which is the half that would be easy to break.
+        Assert.NotNull(restarted.TryTakeContent(record.Id, "client", 0));
+    }
+
     [Fact]
     public void AnUnknownPersistenceValueIsARefusalThatNamesTheKey()
     {
