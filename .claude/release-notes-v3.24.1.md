@@ -29,6 +29,12 @@ full disk must cost the archive rather than the render. It was catching it and l
 seeds exactly the shape a crash leaves and asserts both halves: the orphan is gone, and the real
 job beside it is untouched — which is the part that would be easy to break while fixing this.
 
+## Verified on the published image
+
+`coordinator:3.24.1`, pulled anonymously: a `{id}.0.bin.tmp` seeded onto the volume beside a real
+archived job is **gone after a restart**, and the real job beside it still answers `200`. On
+`coordinator:3.24.0` the same file survives — which is what made this a patch rather than a note.
+
 ## Everything else is v3.24.0
 
 No API change, no config change, no behaviour change with `Persistence=none` (the default), and the
