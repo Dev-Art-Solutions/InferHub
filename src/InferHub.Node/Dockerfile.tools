@@ -175,6 +175,11 @@ ENV Tools__Allowed__1=piper
 ENV Tools__ManifestDirectory=/opt/inferhub/tools/manifests
 ENV Tools__ScratchDirectory=/data/tools/scratch
 
+# Durable image jobs (phase 56): the same trap a seventh time, and the first one that holds user
+# content. Inert unless Images__Jobs__Persistence=file; with it on, a finished picture lives here
+# for Images__Jobs__RetentionSeconds and is unlinked the moment it is delivered or expires.
+ENV Images__Jobs__DataDirectory=/data/images
+
 # D4. True HERE and nowhere else: choosing this image *is* the consent to fetch a model, exactly as
 # choosing :ollama is the consent to run an Ollama. The worker logs what it is fetching and from
 # where before it starts, and the cache is on the volume so it happens once.

@@ -516,7 +516,7 @@
     </div>
 
     <div id="image-note" class="row-msg info">
-      A smoke test, not a studio. Results live in memory for a few minutes and are dropped on
+      A smoke test, not a studio. Results live for a few minutes and are dropped on
       delivery — <b>the thumbnails below are in this browser tab and vanish on reload</b>. There is no
       gallery on the hub and there is not going to be one.
     </div>
@@ -602,9 +602,11 @@
         <canvas id="pano-canvas" style="width:100%;height:100%;display:block"></canvas>
       </div>
       <div id="pano-note" class="row-msg info" style="margin-top:10px">
-        Fetching an image <b>consumes it</b>: results live in memory for a few minutes and are dropped on
-        delivery unless <code>Images:Jobs:KeepAfterRead</code> is on. Nothing is written to disk, here or
-        on the node.
+        Fetching an image <b>consumes it</b>: results live for a few minutes and are dropped on
+        delivery unless <code>Images:Jobs:KeepAfterRead</code> is on. Whether they are held in memory
+        alone or also under <code>Images:Jobs:DataDirectory</code> is
+        <code>Images:Jobs:Persistence</code> — either way the copy goes when the image does, and
+        neither the hub nor the node keeps a gallery.
       </div>
     </div>
   </section>

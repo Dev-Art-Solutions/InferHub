@@ -1001,3 +1001,18 @@ expires, where 47 D1 is explicit that **the job keeps running** and only the wai
 ceiling for images needs the result direction and a place for bytes to live, which is not this phase.
 
 **Rule 5 survived again.** Zero new `PackageReference`, and `InferHub.Shared.csproj` is still empty.
+
+### Phase 56 (durable image jobs) — the pointer, and the two host-side facts
+
+The decisions are in `src/InferHub.Shared/CLAUDE.md` (phase 56, D1–D5) and the exception itself is
+argued in **rule 4** in the root file, because the store is shared with solo mode and a second copy
+of "when do the bytes go away" is one answer too many (38 D2).
+
+What is *this* host's: `Program.cs` builds the archive from `Images:Jobs:Persistence` through
+`ImageJobArchives.Create` — the same factory the node uses — and
+[ImageEdgeOptionsValidator](src/InferHub.Coordinator/Services/ImageEdgeOptionsValidator.cs) fails
+startup on an unrecognised value rather than falling back to `none`, which would silently drop every
+job on the next restart. And `GET /api/images/jobs` now reports `persistence` beside
+`retainedBytes`/`retentionSeconds`, because it changes what those numbers mean: the console's
+"held in memory, dropped on delivery" line is chosen from it, and a panel that kept saying that over
+a hub configured to keep them would be a caveat that had quietly become false.

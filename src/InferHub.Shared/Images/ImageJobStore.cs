@@ -9,13 +9,39 @@ namespace InferHub.Shared.Images;
 /// (phase 47, D6).
 /// </summary>
 /// <remarks>
-/// <b>Design rule 4 is intact and this is not a fourth exception to it.</b> Nothing here survives a
-/// restart, nothing here touches disk, and the retention is bounded by a number an operator sets
-/// which defaults to five minutes. A future phase that wants <em>durable</em> jobs is a fourth
-/// recorded exception and has to be argued in the rule, not added here.
+/// <b>Phase 56 made this rule 4's fourth recorded exception, and it is argued in the rule.</b> Under
+/// the default — <see cref="Persistence"/> <c>none</c> — nothing here survives a restart and nothing
+/// touches disk, which is v3.23 exactly. Under <c>file</c> a job's record and its bytes survive, for
+/// <see cref="RetentionSeconds"/> and not one second longer: durability is survival of the same
+/// window, never a longer one.
 /// </remarks>
 public sealed class ImageJobOptions
 {
+    public const string PersistenceNone = "none";
+
+    public const string PersistenceFile = "file";
+
+    public const string DefaultDataDirectory = "./data/images";
+
+    /// <summary>
+    /// <c>none</c> (default, byte-identical to v3.23) or <c>file</c> (phase 56). An unknown value
+    /// fails startup naming the key rather than falling back silently.
+    /// </summary>
+    /// <remarks>
+    /// There is deliberately no <c>postgres</c>, unlike the other two persistence keys in this
+    /// project: half a gigabyte of PNGs in a <c>bytea</c> column is WAL amplification per render and
+    /// a <c>pg_dump</c> of the usage ledger's database that now contains pictures (D5). Symmetry
+    /// with 43 D3 and 25 D2 is not a reason to put the wrong thing in a database.
+    /// </remarks>
+    public string Persistence { get; set; } = PersistenceNone;
+
+    /// <summary>
+    /// Where <c>file</c> writes. Relative by default so bare metal and Windows work; both images set
+    /// the absolute path under their <c>chown app:app /data</c> — the container permissions trap for
+    /// the seventh time (21 D7, 30 D3, 38 D4, 41 D5, 43 D3).
+    /// </summary>
+    public string DataDirectory { get; set; } = DefaultDataDirectory;
+
     /// <summary>
     /// How long a completed job's record and bytes survive, whether or not anybody read them.
     /// Default 300s.
@@ -45,6 +71,51 @@ public sealed class ImageJobOptions
 
     /// <summary>How many jobs may wait at once. Past it, a <c>503</c> + <c>Retry-After</c>.</summary>
     public int MaxQueueDepth { get; set; } = 32;
+
+    /// <summary><see cref="Persistence"/>, trimmed and lowercased; blank reads as <c>none</c>.</summary>
+    public string NormalizedPersistence()
+    {
+        var value = (Persistence ?? string.Empty).Trim();
+
+        return value.Length == 0 ? PersistenceNone : value.ToLowerInvariant();
+    }
+
+    /// <summary>Whether anything is written to disk at all.</summary>
+    public bool Persists() =>
+        string.Equals(NormalizedPersistence(), PersistenceFile, StringComparison.Ordinal);
+
+    /// <summary>
+    /// The <em>pure</em> half of validating this section, so the coordinator's validator and the
+    /// node's cannot drift on what a legal value is (38 D3's line — the check is shared, the
+    /// <c>IValidateOptions&lt;T&gt;</c> plumbing stays per host).
+    /// </summary>
+    /// <remarks>
+    /// An unrecognised value is a startup failure rather than a fall back to <c>none</c>, for
+    /// `Fleet:Profiles:Persistence`'s reason: falling back on a typo silently drops every job on the
+    /// next restart, which is the failure the key exists to prevent.
+    /// </remarks>
+    public bool TryValidate(out string error)
+    {
+        var value = NormalizedPersistence();
+
+        if (!string.Equals(value, PersistenceNone, StringComparison.Ordinal)
+            && !string.Equals(value, PersistenceFile, StringComparison.Ordinal))
+        {
+            error = $"Images:Jobs:Persistence '{Persistence}' is not recognised; use 'none' or 'file'. "
+                    + "There is deliberately no 'postgres': image bytes are not row data.";
+
+            return false;
+        }
+
+        if (Persists() && string.IsNullOrWhiteSpace(DataDirectory))
+        {
+            error = "Images:Jobs:DataDirectory must be set when Images:Jobs:Persistence=file.";
+            return false;
+        }
+
+        error = string.Empty;
+        return true;
+    }
 }
 
 /// <summary>One produced image, held in memory and nowhere else.</summary>
@@ -180,8 +251,8 @@ public sealed class ImageJobRecord
 }
 
 /// <summary>
-/// The job store: in memory, bounded, expiring, read-once, and <b>nothing touches disk, ever</b>
-/// (phase 47, D6).
+/// The job store: in memory, bounded, expiring, read-once — and, since phase 56, <b>optionally
+/// durable</b> (phase 47, D6; phase 56, D1).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -196,17 +267,35 @@ public sealed class ImageJobRecord
 /// suggestion for one sweep interval, and one sweep interval of a 4096² batch is how a hub gets
 /// OOM-killed.
 /// </para>
+/// <para>
+/// <b>The archive is written under this lock, on purpose.</b> Every reason a job's bytes stop
+/// existing — delivery, eviction, the retention sweep, a failure that clears them — decides it in
+/// here, and a write scheduled for after the lock could be overtaken by the next one and leave the
+/// disk describing a state the store has already left. The cost is a file write inside a critical
+/// section that is otherwise microseconds; the thing being protected took a card ninety seconds.
+/// Under the default archive every one of those calls is an empty method on a sealed type.
+/// </para>
 /// </remarks>
-public sealed class ImageJobStore(ImageJobOptions options, TimeProvider? time = null)
+public sealed class ImageJobStore
 {
-    private readonly TimeProvider time = time ?? TimeProvider.System;
+    private readonly TimeProvider time;
     private readonly object gate = new();
     private readonly Dictionary<Guid, ImageJobRecord> jobs = new();
+    private readonly IImageJobArchive archive;
 
     /// <summary>Insertion order, which is the queue order. FIFO, deliberately (D5).</summary>
     private readonly List<Guid> order = new();
 
-    public ImageJobOptions Options { get; } = options;
+    public ImageJobStore(ImageJobOptions options, TimeProvider? time = null, IImageJobArchive? archive = null)
+    {
+        Options = options;
+        this.time = time ?? TimeProvider.System;
+        this.archive = archive ?? NoImageJobArchive.Instance;
+
+        Restore();
+    }
+
+    public ImageJobOptions Options { get; }
 
     /// <summary>Raised after any observable change, so an SSE writer can wake. Never on the lock.</summary>
     public event Action<ImageJobRecord>? Changed;
@@ -241,6 +330,7 @@ public sealed class ImageJobStore(ImageJobOptions options, TimeProvider? time = 
             record = new ImageJobRecord(id, clientId, model, count, now) { LastTouched = now };
             jobs[id] = record;
             order.Add(id);
+            Persist(record);
         }
 
         Raise(record);
@@ -375,6 +465,7 @@ public sealed class ImageJobStore(ImageJobOptions options, TimeProvider? time = 
                 record.Images.Clear();
             }
 
+            Persist(record);
             changed = record;
         }
 
@@ -382,7 +473,14 @@ public sealed class ImageJobStore(ImageJobOptions options, TimeProvider? time = 
         return true;
     }
 
-    /// <summary>Per-step progress. Monotonic by construction: a lower step than the last is dropped.</summary>
+    /// <summary>
+    /// Per-step progress. Monotonic by construction: a lower step than the last is dropped.
+    /// </summary>
+    /// <remarks>
+    /// <b>Deliberately not archived</b> (phase 56): a running job cannot be resumed anyway (D3), so
+    /// persisting its step would be one file write per diffusion step to record a number nothing
+    /// will ever read back.
+    /// </remarks>
     public bool ReportProgress(Guid id, int step, int? totalSteps)
     {
         ImageJobRecord? changed = null;
@@ -458,6 +556,7 @@ public sealed class ImageJobStore(ImageJobOptions options, TimeProvider? time = 
                 candidate.Reason = ImageJobReasons.Evicted;
                 candidate.CompletedAt ??= now;
                 candidate.Revision++;
+                Persist(candidate);
                 evicted.Add(candidate);
             }
 
@@ -469,6 +568,7 @@ public sealed class ImageJobStore(ImageJobOptions options, TimeProvider? time = 
             record.Revision++;
             record.Images.Clear();
             record.Images.AddRange(images);
+            Persist(record);
             changed = record;
         }
 
@@ -514,6 +614,11 @@ public sealed class ImageJobStore(ImageJobOptions options, TimeProvider? time = 
                 record.State = ImageJobStates.Expired;
                 record.Reason = ImageJobReasons.Delivered;
                 record.Revision++;
+
+                // Read once means read once *from the disk too* (phase 56, D4). The archive unlinks
+                // the surplus files in this same call, because a delivered picture that survives as
+                // a file is the rule quietly switched off.
+                Persist(record);
                 changed = record;
             }
         }
@@ -547,6 +652,11 @@ public sealed class ImageJobStore(ImageJobOptions options, TimeProvider? time = 
                 record.State = ImageJobStates.Expired;
                 record.Reason = ImageJobReasons.Delivered;
                 record.Revision++;
+
+                // Read once means read once *from the disk too* (phase 56, D4). The archive unlinks
+                // the surplus files in this same call, because a delivered picture that survives as
+                // a file is the rule quietly switched off.
+                Persist(record);
                 changed = record;
             }
         }
@@ -588,6 +698,7 @@ public sealed class ImageJobStore(ImageJobOptions options, TimeProvider? time = 
                     record.State = ImageJobStates.Expired;
                     record.Reason ??= ImageJobReasons.RetentionLapsed;
                     record.Revision++;
+                    Persist(record);
                     expired.Add(record);
                     continue;
                 }
@@ -602,6 +713,7 @@ public sealed class ImageJobStore(ImageJobOptions options, TimeProvider? time = 
             {
                 jobs.Remove(id);
                 order.Remove(id);
+                Forget(id);
             }
         }
 
@@ -627,6 +739,200 @@ public sealed class ImageJobStore(ImageJobOptions options, TimeProvider? time = 
         lock (gate)
         {
             return jobs.Values.Count(record => !record.IsTerminal);
+        }
+    }
+
+    // ---- the archive (phase 56) ------------------------------------------------------------------
+
+    /// <summary>
+    /// Reads the archive back, <b>applying the retention window before a single byte is read</b>
+    /// (D2), and resolving anything that was in flight to <c>failed</c> / <c>hub_restarted</c> (D3).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Restarting a hub must never be a way to keep a picture longer than the window allows.</b>
+    /// A job past its retention is deleted here rather than left for the five-second sweeper, because
+    /// a window in which a week-old image is fetchable is a retention policy that is wrong for five
+    /// seconds — and it would put the only enforcement of this phase's central promise on a timer
+    /// that starts after the endpoints do. Resurrection is also the bug nobody would find: it happens
+    /// in the crash-recovery path, on a box nobody is watching, and it looks like the feature working.
+    /// </para>
+    /// <para>
+    /// A job that was <c>queued</c>, <c>running</c> or <c>cancelling</c> comes back <b>failed</b>,
+    /// not re-dispatched: nothing durable holds the request (see <see cref="ArchivedImageJob"/>),
+    /// because a prompt is content. That is 47 D7's sentence one level up — a silent re-dispatch
+    /// would spend the GPU minutes and the ledger units twice for one request — and here it would
+    /// additionally require writing down the thing rule 7 forbids.
+    /// </para>
+    /// </remarks>
+    private void Restore()
+    {
+        if (!archive.Enabled)
+        {
+            return;
+        }
+
+        var now = time.GetUtcNow();
+        var retention = TimeSpan.FromSeconds(Math.Max(1, Options.RetentionSeconds));
+        var restored = new List<ImageJobRecord>();
+
+        foreach (var archived in archive.Load().OrderBy(job => job.CreatedAt))
+        {
+            if (archived.CompletedAt is { } completedAt && now - completedAt >= retention)
+            {
+                archive.Delete(archived.Id);
+                continue;
+            }
+
+            var record = new ImageJobRecord(
+                archived.Id,
+                archived.ClientId ?? string.Empty,
+                archived.Model ?? string.Empty,
+                archived.Count,
+                archived.CreatedAt)
+            {
+                StartedAt = archived.StartedAt,
+                CompletedAt = archived.CompletedAt,
+                State = archived.State,
+                Reason = archived.Reason,
+                Error = archived.Error,
+                Failure = archived.Failure,
+                NodeId = archived.NodeId,
+                Units = archived.Units,
+                Summary = new ImageJobSummary(
+                    archived.PromptAugmented,
+                    archived.Trigger,
+                    archived.Warnings ?? []),
+                LastTouched = now
+            };
+
+            if (!ImageJobStates.IsTerminal(record.State))
+            {
+                record.State = ImageJobStates.Failed;
+                record.Reason = ImageJobReasons.HubRestarted;
+                record.Error = HubRestartedMessage;
+                record.CompletedAt = now;
+                record.Failure = null;
+            }
+            else if (record.State == ImageJobStates.Succeeded && archived.Images.Count > 0)
+            {
+                var bytes = archive.ReadImages(record.Id, archived.Images.Count);
+
+                for (var index = 0; index < bytes.Count; index++)
+                {
+                    var image = archived.Images[index];
+
+                    record.Images.Add(new ImageJobImage(
+                        bytes[index],
+                        image.MediaType ?? "image/png",
+                        ImageSize.TryParse(image.Size, out var size, out _) ? size : (ImageSize?)null,
+                        image.Seed,
+                        image.Projection,
+                        image.SeamDelta,
+                        image.Steps,
+                        image.SeamDeltaBefore,
+                        image.SeamRepair));
+                }
+
+                // Bytes we could not read back are bytes that did not survive. Saying so is what
+                // keeps a 410 meaning "you were too late" rather than handing somebody a truncated
+                // PNG that fails in a viewer three steps later.
+                if (record.Images.Count < archived.Images.Count)
+                {
+                    record.Images.Clear();
+                    record.State = ImageJobStates.Expired;
+                    record.Reason = ImageJobReasons.RetentionLapsed;
+                }
+            }
+
+            jobs[record.Id] = record;
+            order.Add(record.Id);
+            restored.Add(record);
+        }
+
+        // The ceiling is a property of *now*, not of the run that wrote these — an operator who
+        // lowered it while the hub was down gets the lower one honoured on the first boot, not on
+        // the first render.
+        var ceiling = Math.Max(1, Options.MaxRetainedBytes);
+
+        foreach (var candidate in CompletedOldestFirst().ToArray())
+        {
+            if (RetainedLocked() <= ceiling)
+            {
+                break;
+            }
+
+            candidate.Images.Clear();
+            candidate.State = ImageJobStates.Expired;
+            candidate.Reason = ImageJobReasons.Evicted;
+            candidate.Revision++;
+        }
+
+        foreach (var record in restored)
+        {
+            Persist(record);
+        }
+    }
+
+    /// <summary>
+    /// The sentence a client gets instead of a <c>404</c> that reads like a bug. It names the cause
+    /// and the fact that nothing was retried, because those are the two things a caller has to know
+    /// before deciding whether to submit it again.
+    /// </summary>
+    internal const string HubRestartedMessage =
+        "the hub restarted while this job was in flight; it was not resumed, because nothing durable " +
+        "holds a prompt (a prompt is content). Submit it again.";
+
+    /// <summary>
+    /// Writes a record through to the archive. <b>Caller holds the lock</b>, and the guard is on
+    /// <see cref="IImageJobArchive.Enabled"/> rather than inside the archive so that the default
+    /// path does not even build the document.
+    /// </summary>
+    private void Persist(ImageJobRecord record)
+    {
+        if (!archive.Enabled)
+        {
+            return;
+        }
+
+        archive.Save(
+            new ArchivedImageJob(
+                record.Id,
+                record.ClientId,
+                record.Model,
+                record.Count,
+                record.CreatedAt,
+                record.StartedAt,
+                record.CompletedAt,
+                record.State,
+                record.Reason,
+                record.Error,
+                record.NodeId,
+                record.Units,
+                record.Failure,
+                record.Summary.PromptAugmented,
+                record.Summary.Trigger,
+                record.Summary.Warnings,
+                record.Images
+                    .Select(image => new ArchivedImageJobImage(
+                        image.MediaType,
+                        image.Size?.ToString(),
+                        image.Seed,
+                        image.Projection,
+                        image.SeamDelta,
+                        image.Steps,
+                        image.SeamDeltaBefore,
+                        image.SeamRepair))
+                    .ToArray()),
+            record.Images.Select(image => image.Bytes).ToArray());
+    }
+
+    /// <summary>Caller holds the lock.</summary>
+    private void Forget(Guid id)
+    {
+        if (archive.Enabled)
+        {
+            archive.Delete(id);
         }
     }
 

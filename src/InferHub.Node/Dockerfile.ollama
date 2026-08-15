@@ -124,6 +124,11 @@ ENV LocalApi__Retrieval__DataDirectory=/data/retrieval
 # directory is not the sixth rediscovery of the /app-is-not-writable trap.
 ENV Tools__ScratchDirectory=/data/tools/scratch
 
+# Durable image jobs (phase 56): the same trap a seventh time, and the first one that holds user
+# content. Inert unless Images__Jobs__Persistence=file; with it on, a finished picture lives here
+# for Images__Jobs__RetentionSeconds and is unlinked the moment it is delivered or expires.
+ENV Images__Jobs__DataDirectory=/data/images
+
 # The path in that family that costs the most when it is wrong: without this, a pulled model lands
 # in the container's own layer and every `docker run` re-downloads gigabytes.
 ENV OLLAMA_MODELS=/data/ollama

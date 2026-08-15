@@ -165,6 +165,11 @@ ENV Tools__Enabled=true
 ENV Tools__Allowed__0=diffusion
 ENV Tools__ManifestDirectory=/opt/inferhub/tools/manifests
 ENV Tools__ScratchDirectory=/data/tools/scratch
+
+# Durable image jobs (phase 56): the same trap a seventh time, and the first one that holds user
+# content. Inert unless Images__Jobs__Persistence=file; with it on, a finished picture lives here
+# for Images__Jobs__RetentionSeconds and is unlinked the moment it is delivered or expires.
+ENV Images__Jobs__DataDirectory=/data/images
 ENV Tools__Image__RecipeDirectory=/opt/inferhub/recipes
 
 # The third opt-in (phase-42 D4). True HERE and nowhere else: choosing this image *is* the consent to

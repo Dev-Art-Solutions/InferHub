@@ -270,6 +270,13 @@ internal sealed class ImageMesh : IAsyncDisposable
         builder.Services.AddSingleton<Dispatcher>();
         builder.Services.AddSingleton<IDispatcher>(sp => sp.GetRequiredService<Dispatcher>());
         builder.Services.AddSingleton<IToolDispatcher>(sp => sp.GetRequiredService<Dispatcher>());
+
+        // Phase 56, and built from the same factory the real composition root uses so a test that
+        // turns persistence on through ConfigureImages gets the archive the product would give it —
+        // not a second one written for the suite.
+        builder.Services.AddSingleton<InferHub.Shared.Images.IImageJobArchive>(sp =>
+            InferHub.Shared.Images.ImageJobArchives.Create(
+                sp.GetRequiredService<IOptions<InferHub.Shared.Images.ImageEdgeOptions>>().Value.Jobs));
         builder.Services.AddSingleton<ImageJobRegistry>();
         builder.Services.AddSingleton<InferHub.Coordinator.Cluster.IClusterMembership,
             InferHub.Coordinator.Cluster.SingleCoordinatorMembership>();

@@ -69,8 +69,23 @@ public static class NodeHostBuilderExtensions
         // Phase 46. The same section name and the same class the coordinator binds
         // (InferHub.Shared.Images.ImageEdgeOptions), so a request refused on a hub is refused
         // identically here — the parity is by construction rather than by a suite catching it later.
-        builder.Services.Configure<InferHub.Shared.Images.ImageEdgeOptions>(
-            builder.Configuration.GetSection(InferHub.Shared.Images.ImageEdgeOptions.SectionName));
+        builder.Services
+            .AddOptions<InferHub.Shared.Images.ImageEdgeOptions>()
+            .Bind(builder.Configuration.GetSection(InferHub.Shared.Images.ImageEdgeOptions.SectionName))
+            .ValidateOnStart();
+        builder.Services.AddSingleton<
+            IValidateOptions<InferHub.Shared.Images.ImageEdgeOptions>,
+            Configuration.ImageEdgeOptionsValidator>();
+
+        // Phase 56. Durability is the same key, the same class and the same window on both hosts —
+        // 41 D8's pattern for the fifth time, and what keeps "does a solo node keep an image longer
+        // than a hub does" a question that cannot have two answers.
+        builder.Services.AddSingleton<InferHub.Shared.Images.IImageJobArchive>(sp =>
+            InferHub.Shared.Images.ImageJobArchives.Create(
+                sp.GetRequiredService<IOptions<InferHub.Shared.Images.ImageEdgeOptions>>().Value.Jobs,
+                (message, ex) => sp.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger("InferHub.Images.Archive")
+                    .LogWarning(ex, "{Message}", message)));
 
         builder.Services.Configure<BackendOptions>(builder.Configuration.GetSection(BackendOptions.SectionName));
 

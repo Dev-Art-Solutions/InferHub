@@ -28,13 +28,20 @@ namespace InferHub.Node.LocalApi;
 public sealed class LocalImageJobRunner(
     IOptions<ImageEdgeOptions> options,
     ToolExecutor executor,
+    IImageJobArchive archive,
     ILogger<LocalImageJobRunner> logger)
 {
     private readonly ConcurrentDictionary<Guid, PendingLocalJob> pending = new();
     private readonly SemaphoreSlim pump = new(1, 1);
     private int running;
 
-    public ImageJobStore Store { get; } = new(options.Value.Jobs);
+    /// <summary>
+    /// The same store, the same window and — since phase 56 — the same durability key as a hub's.
+    /// A solo node with <c>Images:Jobs:Persistence=file</c> restores exactly as a coordinator does,
+    /// including the part that matters most on a box nobody is watching: a job that was rendering
+    /// when the process died comes back <c>failed</c> / <c>hub_restarted</c>, never resumed.
+    /// </summary>
+    public ImageJobStore Store { get; } = new(options.Value.Jobs, archive: archive);
 
     public ImageJobRecord? TrySubmit(string clientId, IImageRequest request)
     {

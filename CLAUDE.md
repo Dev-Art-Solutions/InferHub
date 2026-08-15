@@ -161,16 +161,26 @@ as load-bearing:
    design has drifted — stop. (Admission windows are fed in-memory by `UsageMeter`, never from
    the ledger.) Default is `none`: in-memory, reset on restart, like every other counter.
 
-   > **Phase 47's image job registry is deliberately *not* a fourth exception, and the reason is
-   > worth keeping.** It holds a job's record and its image bytes in memory, bounded by
-   > `Images:Jobs:MaxRetainedBytes` and expiring after `Images:Jobs:RetentionSeconds` (five minutes),
-   > and **nothing about it touches disk — no temp file, no spill under memory pressure, no cache
-   > directory**. A restart forgets in-flight *and* completed jobs, like every other counter here,
-   > and the docs say so unhedged. That is the whole test: the rule is about state that survives a
-   > process, and this does not. If a future phase wants *durable* jobs it is a fourth exception and
-   > must be argued **in this rule**, not added in the endpoint — because the moment a result
-   > survives a restart, "where are my pictures kept" stops having the answer "nowhere, for five
-   > minutes" and becomes a data-retention question somebody has to own.
+   **Fourth recorded exception (phase 56): image jobs**, when `Images:Jobs:Persistence=file`.
+   Phase 47 held them in memory and set the condition for becoming an exception; phase 56 met it, and
+   the paragraph that refused it is kept here because its argument is what bounds the feature:
+
+   > *"The moment a result survives a restart, 'where are my pictures kept' stops having the answer
+   > 'nowhere, for five minutes' and becomes a data-retention question somebody has to own."*
+
+   So the answer is written down rather than avoided, and the exception is the narrowest one in this
+   list. **`none` is the default** and is byte-identical to v3.23 — nothing is created, opened or
+   listed. Under `file`: a finished job's record and bytes live under `Images:Jobs:DataDirectory` for
+   `RetentionSeconds` **and not one second longer** — the window is applied *on load*, so restarting
+   a hub is never a way to keep a picture longer than it allows. Read-once unlinks the file in the
+   same operation it drops the bytes, so the API's promise and the disk's contents cannot disagree.
+   And **nothing durable holds the request** — no prompt, no negative prompt, no uploaded picture, no
+   mask (rule 7) — which is *why* an interrupted job comes back `failed` / `hub_restarted` and is
+   never resumed rather than being re-dispatched. There is deliberately no `postgres`: image bytes
+   are not row data. See phase 56 in `src/InferHub.Shared/CLAUDE.md`.
+
+   This is still the rule's own test rather than a hole in it: what is stored is bounded, expiring,
+   deletable by the caller reading it once, and off unless somebody turned it on.
 
    **Third recorded exception (phase 43): node profiles**, when `Fleet:Profiles:Persistence` is
    `file` or `postgres`. A profile that evaporates on hub restart is useless for the thing it was

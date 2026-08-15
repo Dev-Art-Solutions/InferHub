@@ -22,7 +22,7 @@ combination the docs would then have to tell people not to use. **The mesh is th
 mechanism**: run `:diffusion` on the card and `:ollama` beside it, and capability routing sends
 `image` to one and `chat` to the other.
 
-## The permissions trap, five times
+## The permissions trap, five times found and seven paths headed off
 
 **In a container, `/app` is not writable, and a fresh named volume inherits its mount point's
 ownership from the image.** Every image runs `USER app`; a volume mounted at a path the image does
@@ -37,6 +37,14 @@ It has been found five times, always by pulling the published image and running 
 | phase 30 | the file affinity store → `/app/data/affinity` |
 | phase 38 | node retrieval → `/app/data/retrieval` |
 | phase 41 | tool scratch → `/app/data/tools/scratch` |
+| phase 43 | node profiles → `/app/data/profiles` |
+| phase 56 | durable image jobs → `/app/data/images` |
+
+The last two were **headed off rather than found**: the default stays relative so bare metal and
+Windows work, and every image sets the absolute path. Phase 56's is the first of them that holds
+**user content** — a finished picture, for `Images:Jobs:RetentionSeconds` — so a deployment that
+turns it on wants the volume at `/data` for the retention window to mean anything across a
+`docker run`.
 
 The fix is always the same two lines, and **neither may be "simplified" away**:
 

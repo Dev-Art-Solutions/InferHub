@@ -1320,7 +1320,7 @@ definition not cooperating, and *that* one is terminated and restarted.
 and if it does you get your image. Discarding a finished result to honour a state name would be worse
 than telling you what actually happened.
 
-### Results live in memory for five minutes and nowhere else
+### Results live for five minutes, in memory by default
 
 - `Images:Jobs:RetentionSeconds` (300) — a finished job's record and bytes are dropped this long
   after completion, read or not.
@@ -1330,12 +1330,36 @@ than telling you what actually happened.
   that looks like a bug.
 - **Read-once by default** — a delivered image is dropped immediately. `Images:Jobs:KeepAfterRead`
   exists for a console's benefit and is the setting that makes the hub briefly an image cache.
-- **Nothing touches disk. Ever.** No temp file, no spill under memory pressure, no cache directory.
-  Under pressure the answer is eviction and a `503` on submit, not a file.
+- **Nothing touches disk by default.** No temp file, no spill under memory pressure, no cache
+  directory. Under pressure the answer is eviction and a `503` on submit, not a file. A restart
+  forgets in-flight and completed jobs, exactly like every other counter on the hub.
 
-A restart forgets in-flight and completed jobs, exactly like every other counter on the hub. That is
-not a limitation waiting to be fixed — it is what keeps "no persisted state" true, and durable jobs
-would have to be argued as a fourth exception to that rule rather than added quietly.
+### A job can survive a restart, if you say so (v3.24)
+
+`Images:Jobs:Persistence=file` writes a finished job's record and its bytes under
+`Images:Jobs:DataDirectory`, so a deploy no longer turns a job id from thirty seconds ago into a
+`404`. It is **off by default**, and turning it on is answering a data-retention question rather than
+flipping a performance switch — which is why it was argued as the *fourth* exception to this
+project's "no persisted state" rule rather than added quietly. What that argument bought you:
+
+- **Durability does not extend retention.** The window is applied *on load*: a hub that was down for
+  an hour comes back and deletes everything past `RetentionSeconds` before it serves the first
+  request. Restarting is never a way to keep a picture longer than you allowed.
+- **Read-once means read-once from the disk too.** Delivery, eviction and expiry each unlink the file
+  in the same operation that drops the bytes, so the API's answer and the directory's contents cannot
+  disagree.
+- **An interrupted job is never resumed.** It comes back `failed` with reason `hub_restarted` and a
+  sentence saying so, because **nothing durable holds your prompt** — there is no field for one, and
+  a re-dispatch would have needed it. Submitting again is your call, exactly as it is when a node
+  disappears mid-job.
+- **There is no `postgres` here, deliberately.** Image bytes are not row data, and half a gigabyte of
+  PNGs in a `bytea` column is WAL amplification per render plus a database dump that now contains
+  pictures.
+- **Under `Cluster:Enabled` this is per instance.** A promoted standby does not hold the old
+  primary's pictures. The hubs share a Postgres, not a directory.
+
+The container images set `Images__Jobs__DataDirectory=/data/images`, so mounting a volume at `/data`
+is what makes it survive a `docker run` as well as a restart.
 
 ### The queue is FIFO and it is not clever
 
@@ -2143,7 +2167,9 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Images:MaxBatch` | `4` | v3.14. The absolute ceiling on `n`, whatever the size. A batch runs on **one** node. Bound by both hosts from the same section, so a request refused on a hub is refused identically on a solo node. |
 | `Images:MaxResponseBytes` | `26214400` | v3.14. An upper-bound estimate (`w × h × 4 × n`) checked *before a step runs*, with the refusal naming the largest `n` that fits. **Clamped by `Tools:MaxAttachmentBytes`** at use, because that cap sizes the mesh's SignalR message limit and exceeding a SignalR limit tears a node's connection down rather than failing a message. Raising one without the other gets you no change, deliberately. |
 | `Images:SyncMaxWaitSeconds` | `120` | v3.15. How long `/v1/images/generations` waits for its own job before a `503` naming the async route. **The job keeps running** and the message carries its id — discarding a minute of GPU because an HTTP client got bored is your call, not the hub's. See [A job that takes two minutes](#a-job-that-takes-two-minutes-v315). |
-| `Images:Jobs:RetentionSeconds` | `300` | v3.15. How long a finished job's record and image bytes survive, read or not. Nothing persists across a restart and **nothing touches disk**. |
+| `Images:Jobs:RetentionSeconds` | `300` | v3.15. How long a finished job's record and image bytes survive, read or not. With `Images:Jobs:Persistence=none` (the default) nothing persists across a restart and **nothing touches disk**. |
+| `Images:Jobs:Persistence` | `none` | v3.24. `none` (byte-identical to v3.23) or `file`. Design rule 4's **fourth** recorded exception, and the one that stores user content — so it is off until you turn it on. With `file`, a finished job survives a restart for the rest of its retention window and not one second longer (the window is applied *on load*); a job that was in flight comes back `failed` with reason `hub_restarted` and is **never resumed**, because nothing durable holds a prompt. No `postgres`: image bytes are not row data. An unrecognised value fails startup rather than falling back to `none`, which would silently drop every job on the next restart. |
+| `Images:Jobs:DataDirectory` | `./data/images` | v3.24. Where `file` writes: one `{id}.json` record and one `{id}.{n}.bin` per image, unlinked the moment the API says the picture is gone. The images set `/data/images` under their existing `/data` volume. Per instance under `Cluster:Enabled` — a promoted standby does not hold the old primary's pictures. |
 | `Images:Jobs:MaxRetainedBytes` | `536870912` | v3.15. Global ceiling on retained results, LRU-evicting **completed** ones and never an in-flight one. Enforced **on insert**, not on a timer — a timer means the ceiling is a suggestion for one sweep interval. An evicted job reads as `expired` with a reason, so arriving late is a `410` that says what happened rather than a `404` that looks like a bug. |
 | `Images:Jobs:KeepAfterRead` | `false` | v3.15. Off: a delivered image is dropped immediately. On is the setting that makes this hub briefly an image cache, in those words. |
 | `Images:MaxRequestBytes` | `26214400` | v3.18. What one **edit** may send in — the picture and the mask together — refused with a `413` at the edge before anything is buffered onward. A separate key from `MaxResponseBytes` because the two directions are separate risks: outbound is `n` renders of a size you declared, inbound is one upload somebody else chose the size of. Each part is *also* capped by `Tools:MaxAttachmentBytes`. |

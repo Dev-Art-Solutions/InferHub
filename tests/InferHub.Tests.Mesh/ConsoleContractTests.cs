@@ -134,6 +134,11 @@ public class ConsoleContractTests
         "active",
         "retainedBytes",
         "retentionSeconds",
+
+        // Phase 56. The panel's sentence about where the bytes are held is now conditional on this,
+        // and a payload that stopped carrying it would leave the console asserting "in memory, gone
+        // on restart" over a hub configured to keep them.
+        "persistence",
         "jobs[].id",
         "jobs[].state",
         "jobs[].model",

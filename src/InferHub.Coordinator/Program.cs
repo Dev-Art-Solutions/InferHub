@@ -58,8 +58,12 @@ builder.Services.AddSingleton<IConversationAffinity>(sp => new ConversationAffin
 builder.Services.AddSingleton<InferHub.Coordinator.Services.IRouter, Router>();
 builder.Services.Configure<InferHub.Coordinator.Endpoints.ToolEdgeOptions>(
     builder.Configuration.GetSection(InferHub.Coordinator.Endpoints.ToolEdgeOptions.SectionName));
-builder.Services.Configure<InferHub.Shared.Images.ImageEdgeOptions>(
-    builder.Configuration.GetSection(InferHub.Shared.Images.ImageEdgeOptions.SectionName));
+builder.Services.AddOptions<InferHub.Shared.Images.ImageEdgeOptions>()
+    .Bind(builder.Configuration.GetSection(InferHub.Shared.Images.ImageEdgeOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<
+    IValidateOptions<InferHub.Shared.Images.ImageEdgeOptions>,
+    InferHub.Coordinator.Services.ImageEdgeOptionsValidator>();
 builder.Services.AddSingleton<Dispatcher>();
 builder.Services.AddSingleton<IDispatcher>(sp => sp.GetRequiredService<Dispatcher>());
 // Phase 41: the same instance, a second capability. One job registry, one failover path.
@@ -112,8 +116,19 @@ builder.Services.AddSingleton<NodeToolRegistry>();
 
 // Phase 47. The async image-job surface. Registered unconditionally and inert on a fleet with no
 // image capability: the store holds nothing, the pump reads an empty queue, and the sweeper ticks
-// every five seconds over zero jobs. Nothing here persists — a restart forgets in-flight and
-// completed jobs, exactly like every other counter on the hub, and the docs say so (D6).
+// every five seconds over zero jobs.
+//
+// Phase 56 made durability an option and rule 4's fourth recorded exception: with
+// Images:Jobs:Persistence=none (the default) nothing is created, opened or listed and a restart
+// forgets in-flight AND completed jobs exactly as v3.23 did; with `file` a finished job survives for
+// its retention window and not one second longer, and one that was in flight comes back `failed`
+// with `hub_restarted` rather than as a 404 that reads like a bug.
+builder.Services.AddSingleton<InferHub.Shared.Images.IImageJobArchive>(sp =>
+    InferHub.Shared.Images.ImageJobArchives.Create(
+        sp.GetRequiredService<IOptions<InferHub.Shared.Images.ImageEdgeOptions>>().Value.Jobs,
+        (message, ex) => sp.GetRequiredService<ILoggerFactory>()
+            .CreateLogger("InferHub.Images.Archive")
+            .LogWarning(ex, "{Message}", message)));
 builder.Services.AddSingleton<ImageJobRegistry>();
 builder.Services.AddHostedService<ImageJobSweeper>();
 builder.Services.AddSingleton<ThroughputTracker>();

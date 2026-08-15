@@ -701,3 +701,21 @@ public sealed class OllamaSupervisorOptionsValidator : IValidateOptions<OllamaSu
         }
     }
 }
+
+/// <summary>
+/// Validates <c>Images:*</c> on a node (phase 56), through the same pure check the coordinator's
+/// validator runs.
+/// </summary>
+/// <remarks>
+/// Two validators over one shared check, rather than one shared validator: a plain options class in
+/// <c>InferHub.Shared</c> cannot see <c>IValidateOptions&lt;T&gt;</c> without a package (rule 2,
+/// 38 D3), and what must not diverge is <em>which values are legal</em> — which is the part that
+/// lives in <see cref="InferHub.Shared.Images.ImageJobOptions.TryValidate"/>.
+/// </remarks>
+public sealed class ImageEdgeOptionsValidator : IValidateOptions<InferHub.Shared.Images.ImageEdgeOptions>
+{
+    public ValidateOptionsResult Validate(string? name, InferHub.Shared.Images.ImageEdgeOptions options) =>
+        options.Jobs.TryValidate(out var error)
+            ? ValidateOptionsResult.Success
+            : ValidateOptionsResult.Fail(error);
+}

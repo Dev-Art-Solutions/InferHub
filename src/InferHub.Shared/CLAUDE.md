@@ -587,3 +587,62 @@ already knew and gets a true answer.
 > the upload appears. The buffered path still behaves this way — it is ASP.NET's, not ours — and the
 > honest statement of rule 7 for it is "held for the dispatch and dropped", without the temp-file
 > clause.
+
+### Phase 56 (durable image jobs) — also load-bearing
+
+**D1 — `Images:Jobs:Persistence=file` is rule 4's fourth recorded exception, and the argument lives
+in the rule.** See the root `CLAUDE.md`. What is here is the mechanism:
+[IImageJobArchive](src/InferHub.Shared/Images/ImageJobArchive.cs) with `NoImageJobArchive` as the
+default and [FileImageJobArchive](src/InferHub.Shared/Images/FileImageJobArchive.cs) behind it —
+`IProfileStore`'s and `IAffinityStore`'s shape, third use. `ImageJobStore` takes the archive and is
+otherwise the phase-47 class; the guard is on `IImageJobArchive.Enabled` *before* a record is built,
+so the default path allocates nothing. **Considered and rejected: on by default with a short
+window** — every other exception defaults to `none` because an operator who has not chosen to store
+user content has not consented to storing it.
+
+**D2 — Durability does not extend retention, and the window is applied on load.** A hub down for an
+hour comes back and expires everything past `RetentionSeconds` *before it serves the first request*,
+deleting the files as it goes. **Considered and rejected: letting the five-second sweeper catch up**
+— that is a window in which a week-old picture is fetchable, and it puts the only enforcement of the
+phase's central promise on a timer that starts after the endpoints do. Resurrection is also the bug
+nobody would find: it happens in the crash-recovery path, on a box nobody is watching, and it looks
+like the feature working. The **byte ceiling** is re-applied on load for the same reason — an
+operator who lowered it while the hub was down gets the lower one honoured on the first boot rather
+than on the first render.
+
+**D3 — What is persisted is the record and the bytes, *never* the request — so nothing in flight can
+resume.** `ArchivedImageJob` has no field that could hold a prompt, a negative prompt, an uploaded
+picture or a mask, and there is deliberately no flag to add one: **a field is an invitation** (25 D3,
+and rule 7's first meeting with a disk). The direct consequence is the one a caller sees: a job that
+was `queued`, `running` or `cancelling` comes back **`failed` with `hub_restarted`**, carrying a
+sentence that says it was not resumed and why. That is 47 D7 one level up — a silent re-dispatch
+would spend the GPU minutes and the ledger units twice for one request — and here it would
+additionally require writing down the thing rule 7 forbids. The worker's **error** is kept, and is
+not a hole in that: it is the model's sentence about a size, a licence or a busy card, never the
+caller's words (`ImageRenderer` leaves `revised_prompt` null by policy) — 49 D2's line, that a
+constant of the model may be recorded where the prompt may not.
+
+**D4 — Read-once means read-once from the disk too.** Delivery, LRU eviction, the retention sweep
+and a failure that clears images each unlink the file in the same operation that drops the bytes,
+under the store's own lock. **This is why the format is a file per job rather than
+`FileProfileStore`'s append-log-and-snapshot**: an ops log would have to be compacted to reclaim a
+delivered picture, so "read once" would leave the pixels on disk until a compaction ran.
+
+**D5 — `file` only; the HA consequence is stated rather than mitigated.** No `postgres`: half a
+gigabyte of PNGs in a `bytea` column is WAL amplification per render and a `pg_dump` of the usage
+ledger's database that now contains pictures. Under `Cluster:Enabled` image jobs are **per
+instance** — 32 D1's "the same Postgres, so no new source of truth" does not stretch to a local
+directory, and a promoted standby will answer 404 for the old primary's jobs. A shared filesystem is
+a deployment choice this project neither requires nor tests.
+
+**Three sentences that had become false were changed rather than left standing**, which is the
+house rule about caveats: the 410 body's "nothing was written to disk" is now conditional on the key
+(and is still the whole truth under the default), the console's memory-only line is chosen from the
+`persistence` field the listing now carries, and `Images:Jobs` in both `appsettings.json` says what
+`file` costs.
+
+**Rule 5 survived again.** **Zero** new `PackageReference` — `System.Text.Json` and `System.IO` ship
+in the shared framework — and `InferHub.Shared.csproj` is still an empty
+`<Project Sdk="Microsoft.NET.Sdk">`. Rule 2 holds too: the archive reports its failures through an
+`Action<string, Exception>` the host passes, so nothing here needs `ILogger`, and a full disk costs
+the archive rather than the render.

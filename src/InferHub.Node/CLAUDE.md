@@ -1071,3 +1071,12 @@ enforce a key the process that spends the steps can enforce itself would be the 
 diffusion (41 D1). It is 48 D5's shape with the redundant half removed: the node states the grant,
 the worker refuses **naming the key**, and a solo caller reaching the worker directly meets the same
 refusal in the same words.
+
+### Phase 56 (durable image jobs) — the pointer
+
+The decisions are in `src/InferHub.Shared/CLAUDE.md` and the exception is argued in **rule 4** in the
+root file. What is this project's is one line of composition: the node builds the archive from the
+same key through the same `ImageJobArchives.Create`, so a solo node's jobs survive a restart exactly
+as a hub's do — 41 D8's pattern for the fifth time, and what keeps "does a solo node keep an image
+longer than a hub does" a question that cannot have two answers. `Images__Jobs__DataDirectory=/data/images`
+is set in all four node images: the container permissions trap, seventh instance.

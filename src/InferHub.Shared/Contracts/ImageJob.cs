@@ -88,4 +88,12 @@ public static class ImageJobReasons
 
     /// <summary>The worker or the node said no. The message carries their sentence.</summary>
     public const string WorkerError = "worker_error";
+
+    /// <summary>
+    /// The hub restarted while this job was in flight (phase 56, D3). <b>Never resumed</b> — nothing
+    /// durable holds the request, because a prompt is content (rule 7), so there is nothing to
+    /// re-dispatch. Only reachable with <c>Images:Jobs:Persistence=file</c>; without it the job is
+    /// forgotten entirely, as everything else on a restarted hub is.
+    /// </summary>
+    public const string HubRestarted = "hub_restarted";
 }

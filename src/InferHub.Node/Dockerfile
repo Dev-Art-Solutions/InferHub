@@ -93,6 +93,11 @@ ENV LocalApi__Retrieval__DataDirectory=/data/retrieval
 # only if a worker keeps model weights under /data.
 ENV Tools__ScratchDirectory=/data/tools/scratch
 
+# Durable image jobs (phase 56): the same trap a seventh time, and the first one that holds user
+# content. Inert unless Images__Jobs__Persistence=file; with it on, a finished picture lives here
+# for Images__Jobs__RetentionSeconds and is unlinked the moment it is delivered or expires.
+ENV Images__Jobs__DataDirectory=/data/images
+
 USER app
 
 ENTRYPOINT ["dotnet", "InferHub.Node.dll"]

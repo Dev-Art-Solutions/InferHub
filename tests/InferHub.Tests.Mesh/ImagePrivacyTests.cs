@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Text.Json;
 using InferHub.Coordinator.Services;
 
 namespace InferHub.Tests;
@@ -83,6 +84,71 @@ public class ImagePrivacyTests
         await mesh.Client.PostAsJsonAsync("/v1/images/generations", ImageEndpointTests.Body());
 
         Assert.Equal(0, mesh.ScratchEntryCount());
+    }
+
+    /// <summary>
+    /// Phase 56 gave this hub a directory it may write pictures into, which is the first time rule 7
+    /// has had a disk to be true of. So the question is asked of the disk in the same words:
+    /// <b>does the phrase appear anywhere under it?</b>
+    /// </summary>
+    /// <remarks>
+    /// The archived record has no field that could hold a prompt — <c>ImageJobDurabilityTests</c>
+    /// asserts that structurally — and this is the harder half: a real request with a real prompt
+    /// through a real hub, then every byte of every file it wrote searched for it. The
+    /// <c>.bin</c> files are pixels and are read as text on purpose, because a leak would not
+    /// announce which file it was in.
+    /// </remarks>
+    [Fact]
+    public async Task NoPromptSurvivesOnDiskWhenJobsArePersisted()
+    {
+        using var archive = new ToolWorkerFixture.TempDirectory("inferhub-image-archive");
+
+        await using var mesh = await ImageMesh.StartAsync(configureImages: options =>
+        {
+            options.Jobs.Persistence = InferHub.Shared.Images.ImageJobOptions.PersistenceFile;
+            options.Jobs.DataDirectory = archive.Path;
+        });
+
+        var response = await mesh.Client.PostAsJsonAsync(
+            "/api/images/jobs",
+            new
+            {
+                model = ImageFixture.Model,
+                prompt = ImageFixture.KnownPrompt,
+                negative_prompt = "blurry, watermark, a secret nobody should log",
+                size = ImageFixture.Size
+            });
+
+        Assert.Equal(System.Net.HttpStatusCode.Accepted, response.StatusCode);
+
+        var id = (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetString()!;
+
+        // The job document, not a sleep: the files are written as the job advances, and the state is
+        // what says the writing has happened.
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+
+        while (DateTime.UtcNow < deadline
+            && mesh.Jobs.Store.Peek(Guid.Parse(id)) is { IsTerminal: false })
+        {
+            await Task.Delay(50);
+        }
+
+        Assert.Equal(
+            InferHub.Shared.Contracts.ImageJobStates.Succeeded,
+            mesh.Jobs.Store.Peek(Guid.Parse(id))?.State);
+
+        var files = Directory.GetFiles(archive.Path);
+        Assert.NotEmpty(files);
+
+        foreach (var file in files)
+        {
+            var text = File.ReadAllText(file);
+
+            Assert.DoesNotContain(ImageFixture.KnownPrompt, text, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("lighthouse", text, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("oil painting", text, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("a secret nobody should log", text, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     /// <summary>

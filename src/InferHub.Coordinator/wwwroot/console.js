@@ -2084,10 +2084,17 @@
     // and "3 waiting" is a fact about the fleet. `retainedBytes` is the one worth having on screen
     // — it is the memory the hub is holding on your behalf, and the sentence next to it is why it
     // will not grow forever.
+    // Phase 56: where the bytes are held is now a configured answer, so the sentence says which one
+    // it is. A panel that kept saying "in memory, gone on restart" while a directory was configured
+    // would be a caveat that had quietly become false — the one thing the house voice forbids.
+    const durable = (body.persistence ?? "none") !== "none";
+
     imageNote(
       `${body.active ?? 0} active, ${body.queued ?? 0} waiting · ` +
-      `${fmtBytes(body.retainedBytes ?? 0)} held in memory, dropped on delivery or after ` +
-      `${fmtSeconds(body.retentionSeconds ?? 0)}. Thumbnails below live in this tab and vanish on reload.`,
+      `${fmtBytes(body.retainedBytes ?? 0)} held ${durable ? "in memory and on disk" : "in memory"}, ` +
+      `dropped on delivery or after ${fmtSeconds(body.retentionSeconds ?? 0)}` +
+      `${durable ? " — a restart no longer forgets them" : ""}. ` +
+      "Thumbnails below live in this tab and vanish on reload.",
       "info");
 
     scheduleImagePoll();

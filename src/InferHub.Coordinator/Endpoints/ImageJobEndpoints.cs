@@ -210,7 +210,13 @@ public static class ImageJobEndpoints
                     queued = jobs.Store.Queued().Count,
                     active = jobs.Store.ActiveCount(),
                     retainedBytes = jobs.Store.RetainedBytes(),
-                    retentionSeconds = jobs.Store.Options.RetentionSeconds
+                    retentionSeconds = jobs.Store.Options.RetentionSeconds,
+
+                    // Phase 56. Reported because it changes what is true of every other number
+                    // here: "held in memory, gone on restart" and "held for the window, restart or
+                    // not" are different promises, and a panel that says the first while the second
+                    // is configured is a caveat that has quietly become false.
+                    persistence = jobs.Store.Options.NormalizedPersistence()
                 },
                 ImageJobView.JsonOptions),
             ImageJobView.ContentType);
@@ -366,11 +372,16 @@ public static class ImageJobEndpoints
 
         if (record.State == ImageJobStates.Expired)
         {
+            // Phase 56 made the last clause conditional rather than deleting it: with persistence
+            // off it is still the whole truth and is the sentence people quote, and with it on a
+            // claim that nothing was written to disk would be a caveat that had become false.
             return Error(
                 410,
-                $"image job '{id}' no longer holds its images ({record.Reason}). Results live in memory for " +
+                $"image job '{id}' no longer holds its images ({record.Reason}). Results live for " +
                 $"{jobs.Store.Options.RetentionSeconds}s and are dropped on delivery unless Images:Jobs:KeepAfterRead is on; " +
-                "nothing was written to disk.",
+                (jobs.Store.Options.Persists()
+                    ? "the copy under Images:Jobs:DataDirectory was unlinked in the same operation."
+                    : "nothing was written to disk."),
                 OpenAiErrorTypes.InvalidRequest,
                 code: "job_expired");
         }

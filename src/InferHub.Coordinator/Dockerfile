@@ -65,6 +65,12 @@ ENV Affinity__DataDirectory=/data/affinity
 # unless persistence is on.
 ENV Fleet__Profiles__DataDirectory=/data/profiles
 
+# Durable image jobs (phase 56) write under /data when Images:Jobs:Persistence=file — the SEVENTH
+# instance of the same trap. Inert unless persistence is on, and unlike its six predecessors this
+# one holds user content: a finished picture lives here for Images:Jobs:RetentionSeconds and is
+# unlinked the moment it is delivered, evicted or expires.
+ENV Images__Jobs__DataDirectory=/data/images
+
 EXPOSE 8080
 
 # Non-root. The runtime image ships this user for exactly this purpose.

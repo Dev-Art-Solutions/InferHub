@@ -168,7 +168,11 @@ internal static class LocalImageJobEndpoints
                     queued = jobs.Store.Queued().Count,
                     active = jobs.Store.ActiveCount(),
                     retainedBytes = jobs.Store.RetainedBytes(),
-                    retentionSeconds = jobs.Store.Options.RetentionSeconds
+                    retentionSeconds = jobs.Store.Options.RetentionSeconds,
+
+                    // Phase 56, and on this host for the same reason as on the hub's listing: it
+                    // changes what every other number here means.
+                    persistence = jobs.Store.Options.NormalizedPersistence()
                 },
                 ImageJobView.JsonOptions),
             ImageJobView.ContentType);
@@ -278,9 +282,13 @@ internal static class LocalImageJobEndpoints
         {
             return Error(
                 410,
-                $"image job '{id}' no longer holds its images ({record.Reason}). Results live in memory for " +
+                // Phase 56: the same sentence as the hub's, conditional on the same key, so a solo
+                // caller and a meshed one are told the same thing about where their picture went.
+                $"image job '{id}' no longer holds its images ({record.Reason}). Results live for " +
                 $"{jobs.Store.Options.RetentionSeconds}s and are dropped on delivery unless Images:Jobs:KeepAfterRead is on; " +
-                "nothing was written to disk.",
+                (jobs.Store.Options.Persists()
+                    ? "the copy under Images:Jobs:DataDirectory was unlinked in the same operation."
+                    : "nothing was written to disk."),
                 OpenAiErrorTypes.InvalidRequest,
                 code: "job_expired");
         }

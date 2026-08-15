@@ -58,9 +58,13 @@ public sealed class ImageJobRegistry
         IToolDispatcher tools,
         UsageMeter usage,
         Metrics metrics,
+        IImageJobArchive archive,
         ILogger<ImageJobRegistry> logger)
     {
-        store = new ImageJobStore(options.Value.Jobs);
+        // Phase 56. The archive is `NoImageJobArchive` unless Images:Jobs:Persistence=file, in which
+        // case constructing the store is also what reads the last run's jobs back — see
+        // ImageJobStore.Restore for why the window is applied there rather than by the sweeper.
+        store = new ImageJobStore(options.Value.Jobs, archive: archive);
         this.router = router;
         this.nodes = nodes;
         this.tools = tools;
