@@ -68,7 +68,8 @@ on the fleet behind OpenAI's Images API; the thing it did not have was any way t
 `POST /api/images/jobs` returns an id and a place in line, `GET …/events` streams
 `queued → running(step 7/28) → succeeded` over SSE, `GET …/content/0` collects the bytes **once**,
 and `DELETE` changes your mind — cooperatively, so the worker keeps its weights and the next caller
-does not pay for your cancel. Results live in memory for five minutes and **nothing touches disk**:
+does not pay for your cancel. Results live for five minutes and, unless you turn on
+[v3.24's durability](#a-job-can-survive-a-restart-if-you-say-so-v324), **nothing touches disk**:
 no temp file, no cache directory, no URL. `/v1/images/generations` is unchanged for anyone who never
 reads this paragraph — internally it became "submit a job and wait for it", so both surfaces queue in
 the same line and are metered by the same code. **Zero new dependencies, no new model, and a
@@ -144,7 +145,7 @@ who did not write them. **v3.14 opened the image track** — [text to image](#te
 OpenAI's Images API, a fifth `:diffusion` image, and the capability seam carrying a whole new
 modality with no protocol change at all — and **v3.15 gave it a clock**: [async
 jobs](#a-job-that-takes-two-minutes-v315) with per-step progress, cooperative cancellation and
-results that live in memory for five minutes and nowhere else. **v3.16 makes it a
+results that live for five minutes and are read once. **v3.16 makes it a
 [catalogue](#the-catalogue-v316)**: six models at the time, quantization that fits a 20B transformer
 and its 8.3B text encoder on one consumer card, a **VRAM budget you declare rather than one we
 guess**, hub-driven weight pulls, and a licence consent per model — because two of them are not ours
@@ -166,6 +167,12 @@ not a package.
 for six releases and refused to fix it, because a repair nobody asked for is a second pass they did
 not watch and would be billed for. What changed is the asking: an operator permits a mechanism, a
 request chooses one, and the cheap one costs no steps at all.
+
+**v3.24 lets a job survive the hub that made it** — [if you say so](#a-job-can-survive-a-restart-if-you-say-so-v324).
+A restart used to turn a job id from thirty seconds ago into a `404` byte-identical to one that never
+existed. Writing the job down is a file write; the release is the list of things durability may *not*
+do — extend retention, survive a read, resume your job (nothing durable holds a prompt), or go in the
+database.
 Still on the table beyond that: teaching the **coordinator** about backend health as a typed signal
 (a status column and an alert, rather than a line in the node's log), **active-active**
 multi-coordinator load sharing, an **OTLP push** exporter behind an explicit opt-in, and a dedicated
