@@ -86,7 +86,7 @@ public sealed class ImageJobRegistry
     {
         var id = Guid.NewGuid();
 
-        if (!store.TryCreate(id, client.Id, request.Model, request.Count, out var record))
+        if (!store.TryCreate(id, client.Id, request, out var record))
         {
             admissionLease?.Dispose();
             return null;
@@ -286,7 +286,14 @@ public sealed class ImageJobRegistry
         try
         {
             var result = await tools.DispatchToolAsync(node, toolJob, progress, job.Cancellation.Token);
-            var outcome = ImageRenderer.Render(result, job.Request, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+            // One dispatch path, two renderings (phase-57 D10). The queue, the progress, the cancel,
+            // the retention and the archive are the same for a clip as for a picture; what differs is
+            // the envelope a client reads and the second unit a video meters, and both of those live
+            // in a renderer rather than in a second registry.
+            var outcome = job.Request is VideoGenerationRequest video
+                ? VideoRenderer.Render(result, video)
+                : ImageRenderer.Render(result, job.Request, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
 
             logger.LogInformation(
                 "{Capability} job {JobId} ({Model}) on node {NodeId}: {Status}, {Images} image(s), {Units:F1} megapixel-steps",
@@ -326,6 +333,18 @@ public sealed class ImageJobRegistry
                 // (phase-50 D3), not the ones that were asked for.
                 usage.RecordUnits(job.Client, job.Request.Capability, job.Request.Model, outcome.Units, outcome.UnitKind);
                 metrics.RecordToolUnits(job.Request.Capability, job.Request.Model, outcome.Units, outcome.UnitKind);
+
+                // Phase 57's second unit, on the same work rather than instead of it — phase 42's
+                // audio precedent, where a transcription meters seconds and a synthesis characters.
+                // The quota was spent above in megapixel-steps because that is what the card did;
+                // this is the number a human asks for and it cannot be derived from the other one.
+                if (outcome is { SecondaryUnits: > 0, SecondaryUnitKind: { } secondKind })
+                {
+                    usage.RecordUnits(
+                        job.Client, job.Request.Capability, job.Request.Model, outcome.SecondaryUnits.Value, secondKind);
+                    metrics.RecordToolUnits(
+                        job.Request.Capability, job.Request.Model, outcome.SecondaryUnits.Value, secondKind);
+                }
             }
 
             Forget(id);

@@ -22,6 +22,7 @@ is for.
 | `sd35-medium` | 2.5B MMDiT | 40 | ~16 GB, bf16 | Stability AI Community | generate | **no — licence + HF token** |
 | `sdxl-turbo` | 2.6B | **1** | ~8 GB, fp16 | Stability AI Non-Commercial | generate | **no — accept the licence** |
 | `qwen-360` | 20B + a rank-128 LoRA | 25 | ~19.5 GB at nf4 | Apache-2.0 base, **MIT** adapter | generate | yes — and it produces 360° panoramas |
+| `wan-t2v-1.3b` | 1.3B DiT + **11B text encoder** | 30 | ~15.5 GB, bf16 | Apache-2.0 | generate (**video**) | yes — 480p, 2–5 s, ~29 GB to download |
 
 Two of those numbers are the point of this phase. `flux-schnell` and `qwen-image` **do not fit a
 24 GB card at bf16** — 33 GB and 60 GB respectively — and nf4 is what makes them one-card models.
@@ -76,9 +77,56 @@ bare `401` that reads as "the model is gone".
   "projection": "equirectangular", // flat (default) | equirectangular
   "trigger": "360 degree panorama with equirectangular projection",
   "autoTrigger": true,             // append the trigger when the prompt lacks it
-  "guidanceParameter": "true_cfg_scale"   // default: guidance_scale
+  "guidanceParameter": "true_cfg_scale",  // default: guidance_scale
+
+  // Phase 57, and all six are optional. Absent `media` means `image`, which is why the seven
+  // recipes that predate video did not change by a byte.
+  "media": "video",                // image (default) | video
+  "vaeClass": "AutoencoderKLWan",  // loaded SEPARATELY, at `vaeDtype`, and passed in
+  "vaeDtype": "float32",           // NOT the transformer's dtype. See below — this one is load-bearing.
+  "schedulerFlowShift": 3.0,       // re-derives the scheduler from its config. 3.0 = 480p, 5.0 = 720p.
+  "fps": 16,                       // the rate the model was TRAINED at. Not a caller's knob.
+  "durations": [                   // whole seconds → frame counts. See below.
+    { "seconds": 2, "frames": 33 },
+    { "seconds": 5, "frames": 81 }
+  ]
 }
 ```
+
+### A video recipe is an image recipe with `media` and a clock
+
+Everything above still applies — the pin, the licence gate, the VRAM budget, `sizes`, `maxSteps`,
+`cpuViable`. What video adds is four facts that were read out of `diffusers==0.36.0` and the model's
+own configs rather than guessed, because **each one produces a plausible non-failure when it is
+wrong**:
+
+- **`vaeDtype` is not `dtype`.** Wan loads `AutoencoderKLWan` at **float32** under a **bfloat16**
+  transformer, exactly as upstream's example does. A uniform bf16 load does not error; it is the
+  difference between a video and noise, discovered four minutes into a job. `vaeClass` names the
+  class rather than inferring it, because inferring which VAE a repo wants is a capability registry
+  by the back door (29 D5).
+- **`schedulerFlowShift` is a scheduler setting, not a call argument.** Passing it to `__call__` is a
+  `TypeError`. This repo already ships `flow_shift: 3.0` in `scheduler/scheduler_config.json`, so the
+  field matches what is checked in; the mechanism exists for a 720p entry, where 5.0 is wanted.
+- **`sizes` sit on a 16 grid, not an 8 grid.** `WanPipeline.check_inputs` requires both sides
+  divisible by 16 where every image pipeline here downsamples by 8, so `840x480` is a perfectly good
+  *image* size that a video pipeline refuses.
+- **`durations` maps whole seconds to frame counts, and the two do not divide evenly.** A latent
+  video pipeline puts frames on a **4k+1** grid — `(num_frames - 1) // 4 + 1` latent frames — so 81
+  frames at 16 fps is **5.0625 s**, and OpenAI's Videos API takes `seconds` as small integers. The
+  list is therefore the *labels*, the response reports the **measured** duration, and an unoffered
+  value is refused naming the list rather than rounded to the nearest one: a caller who asks for six
+  seconds and silently gets five has a clip that is fine and wrong.
+
+**`fps` is not a caller's knob**, deliberately. Re-timing the frames at encode changes how fast the
+world moves in the clip, and the only honest setting is the trained one until somebody measures the
+others.
+
+> **"1.3B" names the transformer only.** The text encoder beside it is UMT5-XXL at ~11B, every weight
+> in the repo is stored **fp32 with no fp16 variant**, and the download is **~29 GB**. That is the
+> `variant`-is-not-`dtype` lesson in the one shape where there is nothing to fix — there is no
+> variant to ask for — so `vramMiB` is sized from the encoder and the disk cost is written down here
+> rather than discovered on a slow connection.
 
 ### `id` is not the repo id, and that is a decision
 

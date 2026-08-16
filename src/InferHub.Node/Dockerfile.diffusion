@@ -124,6 +124,9 @@ ENV PYTHONPATH=/opt/inferhub
 RUN /opt/inferhub/venv/bin/python -c \
       "import torch, diffusers, transformers, PIL, inferhub_worker; print('diffusion venv ok')" \
  && /opt/inferhub/venv/bin/python -c \
+      "import imageio; imageio.plugins.ffmpeg.get_exe(); \
+       from diffusers.utils import export_to_video; print('video encoder ok')" \
+ && /opt/inferhub/venv/bin/python -c \
       "import py_compile; py_compile.compile('/opt/inferhub/tools/diffusion_worker.py', doraise=True); print('worker compiles')" \
  && /opt/inferhub/venv/bin/python -c \
       "import json, glob, sys; \
@@ -134,8 +137,9 @@ RUN /opt/inferhub/venv/bin/python -c \
        from diffusers import PipelineQuantizationConfig; print('quantization ok')" \
  && /opt/inferhub/venv/bin/python -c \
       "import diffusers, json, glob, sys; \
-       missing = sorted({r['pipeline'] for p in glob.glob('/opt/inferhub/recipes/*.json') \
-                         for r in [json.load(open(p))] if not hasattr(diffusers, r.get('pipeline',''))}); \
+       names = [n for p in glob.glob('/opt/inferhub/recipes/*.json') for r in [json.load(open(p))] \
+                for n in (r.get('pipeline'), r.get('vaeClass')) if n]; \
+       missing = sorted({n for n in names if not hasattr(diffusers, n)}); \
        sys.exit('diffusers has no: ' + ', '.join(missing)) if missing else print('pipelines ok')"
 
 ENV NVIDIA_VISIBLE_DEVICES=all

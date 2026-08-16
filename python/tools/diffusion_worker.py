@@ -365,6 +365,147 @@ def pipeline_class(name: str):
     return cls
 
 
+# ---- video (phase 57) --------------------------------------------------------------------------
+
+MEDIA_IMAGE = "image"
+MEDIA_VIDEO = "video"
+
+
+def media_of(recipe: dict[str, Any]) -> str:
+    """
+    What this recipe produces. **Absent means ``image``** — phase-40 D1's "null is today's behaviour"
+    for the third time, which is why the seven recipes that predate phase 57 changed by zero bytes.
+    """
+    return MEDIA_VIDEO if str(recipe.get("media") or MEDIA_IMAGE).lower() == MEDIA_VIDEO else MEDIA_IMAGE
+
+
+def is_video(recipe: dict[str, Any]) -> bool:
+    return media_of(recipe) == MEDIA_VIDEO
+
+
+def can_encode_video() -> bool:
+    """
+    Whether an mp4 can actually be written here (phase-57 D8).
+
+    ``diffusers.utils.export_to_video`` **warns and silently drops to an OpenCV ``mp4v`` writer**
+    when ``imageio`` is absent — a container that plays badly, produced by a code path nobody chose,
+    on a job that already cost minutes of card. So this is asked *before* the capability is declared:
+    a node that cannot encode does not offer video at all (46 D7's withdraw-before-the-first-failure)
+    rather than accepting work it will finish badly.
+    """
+    try:
+        import imageio
+
+        imageio.plugins.ffmpeg.get_exe()
+        return True
+    except Exception as error:  # noqa: BLE001 - any failure here means "cannot encode"
+        log(f"video is not offered: no usable ffmpeg for imageio ({error}). Install imageio-ffmpeg.")
+        return False
+
+
+def named_dtype(name: Any, default: Any = None):
+    """A dtype the recipe named, resolved without inference. Unknown falls back to the default."""
+    import torch
+
+    if not name:
+        return default
+
+    return {
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+        "float32": torch.float32,
+        "fp32": torch.float32,
+    }.get(str(name).lower(), default)
+
+
+def durations_of(recipe: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    The ``(seconds, frames)`` pairs this recipe offers.
+
+    **Whole seconds map to frame counts because the two grids do not meet** (57 D5): a latent video
+    pipeline puts frames on a 4k+1 grid, so 81 frames at 16 fps is 5.0625 seconds, and OpenAI's
+    Videos API takes ``seconds`` as small integers. The label is what a caller says and the measured
+    duration is what the response reports.
+    """
+    offered_durations = recipe.get("durations")
+
+    if not isinstance(offered_durations, list):
+        return []
+
+    pairs = []
+
+    for entry in offered_durations:
+        if isinstance(entry, dict) and entry.get("seconds") and entry.get("frames"):
+            pairs.append({"seconds": float(entry["seconds"]), "frames": int(entry["frames"])})
+
+    return pairs
+
+
+def fps_of(recipe: dict[str, Any]) -> float:
+    """
+    The rate the model was trained at. **Not a caller's knob** (57's non-goals): re-timing frames at
+    encode changes how fast the world moves in the clip, and the only honest setting is the trained
+    one until somebody measures the others.
+    """
+    return float(recipe.get("fps") or 16)
+
+
+def resolve_duration(recipe: dict[str, Any], payload: dict[str, Any]) -> tuple[int, float]:
+    """
+    Returns ``(frames, fps)`` for the ``seconds`` a caller asked for, or refuses naming the list.
+
+    A frame count is never invented: an unoffered value is refused rather than rounded, because a
+    caller who asks for six seconds and silently gets five has a clip that is fine and wrong — the
+    failure shape phase-49 D3 refuses in the same words.
+    """
+    pairs = durations_of(recipe)
+    fps = fps_of(recipe)
+
+    if not pairs:
+        raise ToolError(
+            f"'{recipe['id']}' declares no durations, so this node cannot decide how long a clip "
+            "should be. Add a \"durations\" list to the recipe.",
+            ERROR_INVALID_REQUEST,
+        )
+
+    asked = payload.get("seconds")
+
+    if asked is None:
+        asked = (recipe.get("defaults") or {}).get("seconds")
+
+    if asked is None:
+        return pairs[-1]["frames"], fps
+
+    for pair in pairs:
+        if abs(pair["seconds"] - float(asked)) < 1e-9:
+            return pair["frames"], fps
+
+    available = ", ".join(f"{pair['seconds']:g}" for pair in pairs)
+
+    raise ToolError(
+        f"'{recipe['id']}' cannot render {float(asked):g} seconds. It offers: {available}. "
+        f"A frame count is fixed by the model's latent grid, so an unoffered duration is refused "
+        f"rather than rounded to the nearest one.",
+        ERROR_INVALID_REQUEST,
+    )
+
+
+def export_video(frames: Any, path: str, fps: float) -> None:
+    """
+    Write the mp4. ``imageio`` is checked at declaration time (``can_encode_video``) and again here,
+    because a worker that lost its encoder between the two should fail the job rather than write a
+    container nobody asked for.
+    """
+    from diffusers.utils import export_to_video
+
+    import imageio
+
+    imageio.plugins.ffmpeg.get_exe()
+    export_to_video(list(frames), path, fps=int(round(fps)))
+
+
 # ---- readiness (v3.14.1) -----------------------------------------------------------------------
 #
 # "Are this recipe's weights here?" has exactly one reliable answer, and it was found by running the
@@ -590,6 +731,27 @@ def _from_pretrained(recipe: dict[str, Any], local_files_only: bool):
     if recipe.get("variant"):
         kwargs["variant"] = recipe["variant"]
 
+    # THE VAE IS LOADED SEPARATELY AND AT ITS OWN DTYPE (phase-57 D4). Wan's example does exactly
+    # this — AutoencoderKLWan at float32 under a bfloat16 transformer — and a uniform bf16 load is
+    # NOT an error: it is the difference between a video and noise, discovered four minutes into a
+    # job. The class is named by the recipe rather than inferred, because inferring which VAE a repo
+    # wants is phase-29 D5's capability registry by the back door.
+    if recipe.get("vaeClass") and recipe.get("vaeDtype"):
+        vae_cls = getattr(__import__("diffusers"), str(recipe["vaeClass"]), None)
+
+        if vae_cls is None:
+            raise ToolError(
+                f"diffusers has no VAE class '{recipe['vaeClass']}'", ERROR_INVALID_REQUEST
+            )
+
+        kwargs["vae"] = vae_cls.from_pretrained(
+            recipe["repo"],
+            subfolder="vae",
+            revision=recipe["revision"],
+            torch_dtype=named_dtype(recipe["vaeDtype"]),
+            local_files_only=local_files_only,
+        )
+
     quantization = quantization_config(recipe)
 
     if quantization is not None:
@@ -628,6 +790,16 @@ def _from_pretrained(recipe: dict[str, Any], local_files_only: bool):
     # so the prefetch downloads and PROVES the LoRA exactly as a request will load it. A recipe
     # whose adapter is missing or mismatched is never declared, rather than failing on first use.
     apply_adapters(pipe, recipe, local_files_only)
+
+    # flow_shift IS A SCHEDULER SETTING, not a call argument (phase-57 D4) — passing it to __call__
+    # is a TypeError. It is applied only when the recipe names one: this model's own repo already
+    # ships flow_shift: 3.0 (the 480p value) in scheduler_config.json, so the declaration matches
+    # what is checked in and the mechanism exists for the 720p entry phase 58 will add, where 5.0 is
+    # wanted and the repo may not say so.
+    if recipe.get("schedulerFlowShift") is not None:
+        pipe.scheduler = type(pipe.scheduler).from_config(
+            pipe.scheduler.config, flow_shift=float(recipe["schedulerFlowShift"])
+        )
 
     return pipe
 
@@ -1174,6 +1346,9 @@ def handle(request: Request):
     if op in (EDIT, VARIATION):
         return edit(request, op)
 
+    if op == MEDIA_VIDEO:
+        return generate_video(request)
+
     if op == "pull":
         return pull(request)
 
@@ -1181,7 +1356,7 @@ def handle(request: Request):
         return delete(request)
 
     raise ToolError(
-        f"unknown op '{op}'; this tool does generate, edit, variation, pull and delete",
+        f"unknown op '{op}'; this tool does generate, video, edit, variation, pull and delete",
         ERROR_INVALID_REQUEST,
     )
 
@@ -1487,6 +1662,118 @@ def generate(request: Request):
         prompt_augmented=prompt_augmented,
         trigger=trigger,
     ), files
+
+
+# ---- video (phase 57) --------------------------------------------------------------------------
+
+
+def generate_video(request: Request):
+    """
+    One clip, one attachment, the same job model an image uses (57 D10).
+
+    It is deliberately *not* ``run_batch``: that loop is per-image and its every argument — ``n``,
+    the per-image seed derivation, the seam measurement, the projection — is about a still. Sharing
+    it would mean six ``if video`` branches inside the function that is hardest to read, to save a
+    loop that runs once.
+    """
+    import torch
+
+    recipe, _ = recipe_for(request)
+
+    if not is_video(recipe):
+        raise ToolError(
+            f"'{recipe['id']}' is not a video model. It produces {media_of(recipe)}s; "
+            f"ask for it on the images API instead.",
+            ERROR_INVALID_REQUEST,
+        )
+
+    require_operation(recipe, GENERATE)
+
+    payload = request.payload or {}
+    prompt = payload.get("prompt") or ""
+
+    if not prompt:
+        raise ToolError("prompt is required", ERROR_INVALID_REQUEST)
+
+    width, height = resolve_size(recipe, payload)
+    frames, fps = resolve_duration(recipe, payload)
+    prompt, prompt_augmented, trigger = apply_trigger(recipe, prompt)
+    defaults = recipe.get("defaults") or {}
+    steps = clamped_steps(recipe, payload)
+
+    guidance = payload.get("guidance")
+    guidance = float(guidance) if guidance is not None else float(defaults.get("guidance", 5.0))
+
+    seed = payload.get("seed")
+    seed = int(seed) if seed is not None else int(torch.seed() % (2 ** 31))
+
+    pipe, load_ms, evicted = load(recipe, accepted_licenses())
+    started = time.monotonic()
+
+    def on_step(_pipe, step, _timestep, kwargs):
+        request.progress(step + 1, total_steps=steps)
+        request.raise_if_cancelled()
+        return kwargs
+
+    arguments: dict[str, Any] = {
+        "prompt": prompt,
+        "height": height,
+        "width": width,
+        "num_frames": frames,
+        "num_inference_steps": steps,
+        str(recipe.get("guidanceParameter") or "guidance_scale"): guidance,
+        "generator": torch.Generator(device="cpu").manual_seed(seed),
+        "callback_on_step_end": on_step,
+    }
+
+    if payload.get("negative_prompt"):
+        arguments["negative_prompt"] = payload["negative_prompt"]
+
+    result = pipe(**arguments)
+    produced = result.frames[0]
+    generate_ms = (time.monotonic() - started) * 1000.0
+
+    output = request.output("video-0.mp4", "video/mp4")
+    export_video(produced, output.path, fps)
+
+    # The measured duration, not the label the caller used. `seconds: 5` names an offer of 81 frames
+    # and 81 frames at 16 fps is 5.0625 seconds — reporting the label would be describing a clip
+    # nobody has (46's "meter what was produced", applied to a field).
+    rendered = len(produced)
+    seconds = round(rendered / fps, 4) if fps > 0 else None
+
+    # The model, the geometry and the seed. NOT the prompt — a prompt is content (rule 7), and the
+    # trigger is a recipe constant and may therefore be named (49 D2).
+    log(
+        f"{request.model}: {rendered} frames at {width}x{height}, {fps:g} fps ({seconds:g}s), "
+        f"{steps} steps on {_device}"
+        f"{', trigger appended' if prompt_augmented else ''} "
+        f"(load {load_ms / 1000:.1f}s, generate {generate_ms / 1000:.1f}s)"
+    )
+
+    return {
+        "model": request.model,
+        "steps": steps,
+        "device": _device,
+        "promptAugmented": prompt_augmented,
+        "trigger": trigger,
+        "warnings": [],
+        "videos": [
+            {
+                "width": width,
+                "height": height,
+                "frames": rendered,
+                "fps": fps,
+                "seconds": seconds,
+                "seed": seed,
+                "steps": steps,
+            }
+        ],
+        "timing": {"loadMs": round(load_ms), "generateMs": round(generate_ms)},
+        "resident": resident(),
+        "evicted": evicted,
+        "quantization": recipe.get("quantization") or "none",
+    }, [output]
 
 
 # ---- editing (phase 50) ------------------------------------------------------------------------
@@ -1819,35 +2106,45 @@ def delete(request: Request):
 
 def capability_frames(recipes: dict[str, dict[str, Any]], ready: list[str]) -> list[dict[str, Any]]:
     """
-    The two kinds this worker declares, split by what each ready recipe can do (phase-50 D1).
+    The three kinds this worker declares, split by what each ready recipe can do (phase-50 D1,
+    extended in phase-57 D3).
 
-    ``image`` is the generators and ``image-edit`` is the ones that also edit or vary. Two kinds
-    rather than one kind with an operation list, because the router filters on ``(kind, model)`` and
-    nothing else — teaching it to read a nested operation set would mean teaching the affinity, the
-    queue and the saturation logic the same thing.
+    ``image`` is the generators, ``image-edit`` is the ones that also edit or vary, and ``video`` is
+    the recipes whose ``media`` says so. Separate kinds rather than one kind with an operation list,
+    because the router filters on ``(kind, model)`` and nothing else — teaching it to read a nested
+    operation set would mean teaching the affinity, the queue and the saturation logic the same
+    thing.
 
-    **Both frames are always sent, empty ones included.** An empty list is a declaration that this
-    node serves nothing under that kind, which is exactly what a box holding only ``flux-schnell``
-    should say about editing; omitting the frame would leave the node's previous declaration
-    standing, and a node that quietly kept offering an edit it can no longer do is a 502 waiting for
-    somebody.
+    **All three frames are always sent, empty ones included.** An empty list is a declaration that
+    this node serves nothing under that kind, which is exactly what a box holding only
+    ``flux-schnell`` should say about editing; omitting the frame would leave the node's previous
+    declaration standing, and a node that quietly kept offering an edit it can no longer do is a 502
+    waiting for somebody.
     """
-    editable = [i for i in ready if {EDIT, VARIATION} & set(operations_of(recipes[i]))]
-    generating = [i for i in ready if GENERATE in operations_of(recipes[i])]
+    pictures = [i for i in ready if media_of(recipes[i]) == MEDIA_IMAGE]
+    videos = [i for i in ready if media_of(recipes[i]) == MEDIA_VIDEO]
+
+    editable = [i for i in pictures if {EDIT, VARIATION} & set(operations_of(recipes[i]))]
+    generating = [i for i in pictures if GENERATE in operations_of(recipes[i])]
+
+    # An encoder that is not there is checked once per declaration rather than per request: a node
+    # that cannot write an mp4 declares no video at all (57 D8), so the hub never routes one here.
+    filming = [i for i in videos if GENERATE in operations_of(recipes[i])] if can_encode_video() else []
 
     return [
         {"kind": "image", "models": generating},
         {"kind": "image-edit", "models": editable},
+        {"kind": "video", "models": filming},
     ]
 
 
 def describe_offering(recipes: dict[str, dict[str, Any]], ready: list[str]) -> str:
     frames = capability_frames(recipes, ready)
-    editable = frames[1]["models"]
 
     return (
         f"offering recipes: {', '.join(frames[0]['models']) or 'none'}"
-        f" (editing: {', '.join(editable) or 'none'})"
+        f" (editing: {', '.join(frames[1]['models']) or 'none'};"
+        f" video: {', '.join(frames[2]['models']) or 'none'})"
     )
 
 

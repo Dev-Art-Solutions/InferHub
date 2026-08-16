@@ -149,6 +149,15 @@ public sealed class AdmissionControl
                     state.MegapixelStepsToday += units;
                     break;
 
+                // Phase 57. It has NO limit knob — a quota for a one-model catalogue is a key that
+                // is wrong by the time phase 58 lands — but it must have a case, because the default
+                // branch below counts whatever reaches it as TOKENS, and five seconds of video
+                // silently spending five tokens of somebody's minute budget is the quietest possible
+                // wrong number.
+                case UsageUnits.VideoSeconds:
+                    state.VideoSecondsToday += units;
+                    break;
+
                 default:
                     var tokens = (long)units;
                     state.TokenEvents.Enqueue(new TokenEvent(atUtc, tokens));
@@ -210,7 +219,8 @@ public sealed class AdmissionControl
                 state.TokensToday,
                 state.AudioSecondsToday,
                 state.CharactersToday,
-                state.MegapixelStepsToday);
+                state.MegapixelStepsToday,
+                state.VideoSecondsToday);
         }
     }
 
@@ -236,6 +246,8 @@ public sealed class AdmissionControl
         public double AudioSecondsToday;
         public double CharactersToday;
         public double MegapixelStepsToday;
+
+        public double VideoSecondsToday;
         public DateOnly Day = DateOnly.FromDateTime(DateTime.UtcNow);
         public readonly Queue<DateTimeOffset> RequestTimestamps = new();
         public readonly Queue<TokenEvent> TokenEvents = new();
@@ -263,6 +275,7 @@ public sealed class AdmissionControl
                 AudioSecondsToday = 0;
                 CharactersToday = 0;
                 MegapixelStepsToday = 0;
+                VideoSecondsToday = 0;
             }
         }
     }
@@ -296,4 +309,5 @@ public sealed record ClientLiveUsage(
     long TokensToday,
     double AudioSecondsToday = 0,
     double CharactersToday = 0,
-    double MegapixelStepsToday = 0);
+    double MegapixelStepsToday = 0,
+    double VideoSecondsToday = 0);

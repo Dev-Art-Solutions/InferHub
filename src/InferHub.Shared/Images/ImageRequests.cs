@@ -201,6 +201,13 @@ public interface IImageRequest
 
     int? Steps { get; }
 
+    /// <summary>
+    /// How long the produced media should run, for a video. <b>Null for every image</b>, which is
+    /// why it is a default interface member rather than a positional field on three records that
+    /// would all have to carry it (phase 57).
+    /// </summary>
+    double? Seconds => null;
+
     /// <summary>The worker's payload. What it does <em>not</em> contain is anything a hub logs.</summary>
     string ToToolPayload();
 

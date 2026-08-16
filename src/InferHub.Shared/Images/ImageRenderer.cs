@@ -46,6 +46,20 @@ public sealed record ImageOutcome
 
     public string UnitKind { get; init; } = UsageUnitKinds.MegapixelSteps;
 
+    /// <summary>
+    /// A second unit measured on the same work, metered beside <see cref="Units"/> rather than
+    /// instead of it (phase 57). Null for every image route.
+    /// </summary>
+    /// <remarks>
+    /// Phase 42's audio precedent: a modality may cost the fleet one thing and mean another to the
+    /// person paying. A video's card cost is megapixel-steps — the same quota an image spends,
+    /// because it is the same card — and its <em>duration</em> is the number a human asks about.
+    /// Neither can be derived from the other, so both are recorded and neither is invented.
+    /// </remarks>
+    public double? SecondaryUnits { get; init; }
+
+    public string? SecondaryUnitKind { get; init; }
+
     /// <summary>How many images came back, for the log line. Never what is in them.</summary>
     public int ImageCount { get; init; }
 
@@ -256,7 +270,7 @@ public static class ImageRenderer
     /// It costs one round trip to find out; the alternative is publishing a model catalogue over the
     /// mesh, which is a phase and is phase 48.
     /// </remarks>
-    private static ImageOutcome? Failure(ToolResult result)
+    internal static ImageOutcome? Failure(ToolResult result)
     {
         if (result.Success)
         {

@@ -106,7 +106,10 @@ public sealed class PostgresUsageLedger : IUsageLedger, IAsyncDisposable
                    -- v3.14 row reads correctly on a v3.13 hub (as an unfiltered zero). A per-unit
                    -- column would have cost a DDL step here, and a `sum(units)` across kinds would
                    -- have added megapixel-steps to seconds.
-                   coalesce(sum(units) FILTER (WHERE unit_kind = 'megapixel_steps'), 0) AS megapixel_steps
+                   coalesce(sum(units) FILTER (WHERE unit_kind = 'megapixel_steps'), 0) AS megapixel_steps,
+                   -- Phase 57 needed no migration either, for the same reason, and it is the FIFTH
+                   -- unit: a video meters megapixel-steps AND seconds, two rows on one job.
+                   coalesce(sum(units) FILTER (WHERE unit_kind = 'video_seconds'), 0)   AS video_seconds
             FROM {QualifiedTable}
             {where}
             GROUP BY client_id, model
@@ -127,7 +130,8 @@ public sealed class PostgresUsageLedger : IUsageLedger, IAsyncDisposable
                 reader.GetInt64(5),
                 reader.GetDouble(6),
                 reader.GetDouble(7),
-                reader.GetDouble(8)));
+                reader.GetDouble(8),
+                reader.GetDouble(9)));
         }
 
         return rows;

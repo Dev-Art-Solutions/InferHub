@@ -88,6 +88,7 @@ public static class LocalApiEndpoints
         // likely to have a proxy that tolerates a two-minute request is the one somebody is running
         // on a laptop.
         app.MapLocalImageJobEndpoints();
+        app.MapLocalVideoEndpoints();
 
         // Phase 38, amended in phase 44 (D3): mapped unconditionally now, because a coordinator can
         // start a corpus on a running node and ASP.NET cannot add an endpoint after the application

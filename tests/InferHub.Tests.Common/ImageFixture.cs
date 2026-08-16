@@ -53,29 +53,50 @@ internal static class ImageFixture
     /// <summary>An aspect bucket the echo worker accepts. Anything else is its <c>invalid_request</c>.</summary>
     public const string Size = "512x512";
 
+    /// <summary>The fixture's video recipe (phase 57). Declared only when a test asks for it.</summary>
+    public const string VideoModel = "wan-test";
+
+    /// <summary>A geometry the fixture's video recipe offers — and a multiple of 16, unlike <see cref="Size"/>.</summary>
+    public const string VideoSize = "832x480";
+
     /// <summary>The prompt <c>ImagePrivacyTests</c> hunts for. It must reach the worker and nothing else.</summary>
     public const string KnownPrompt = "a lighthouse in a storm, oil painting, dramatic light";
 
     public static ToolWorkerFixture.TempDirectory Manifests(params string[] workerArguments)
+        => Manifests(false, workerArguments);
+
+    /// <param name="video">
+    /// Declare the phase-57 <c>video</c> kind as well. <b>Off by default on purpose</b>: every suite
+    /// written before this phase asserts against a node that offers two kinds, and a fixture that
+    /// silently grew a third would make those assertions pass or fail for reasons nobody chose.
+    /// </param>
+    public static ToolWorkerFixture.TempDirectory Manifests(bool video, params string[] workerArguments)
     {
         var directory = new ToolWorkerFixture.TempDirectory("inferhub-image-manifests");
+
+        var capabilities = new List<object>
+        {
+            new { kind = "image", models = new[] { Model, GenerateOnlyModel } },
+
+            // Phase 50. The catalogue splits: one of the two models generates and edits, the other
+            // only generates — which is what makes "this recipe cannot edit" a real 503 with a real
+            // alternative in it rather than an assertion about a string.
+            new { kind = "image-edit", models = new[] { Model } },
+
+            // A second capability on the same node, so the 503-vs-404 split has something real to be
+            // wrong about: `speak-test` exists on this fleet, but not for `image`.
+            new { kind = "speak", models = new[] { "speak-test" } }
+        };
+
+        if (video)
+        {
+            capabilities.Add(new { kind = "video", models = new[] { VideoModel } });
+        }
 
         directory.WriteManifest("diffusion.json", new
         {
             id = "diffusion",
-            capabilities = new object[]
-            {
-                new { kind = "image", models = new[] { Model, GenerateOnlyModel } },
-
-                // Phase 50. The catalogue splits: one of the two models generates and edits, the
-                // other only generates — which is what makes "this recipe cannot edit" a real 503
-                // with a real alternative in it rather than an assertion about a string.
-                new { kind = "image-edit", models = new[] { Model } },
-
-                // A second capability on the same node, so the 503-vs-404 split has something real
-                // to be wrong about: `speak-test` exists on this fleet, but not for `image`.
-                new { kind = "speak", models = new[] { "speak-test" } }
-            },
+            capabilities = capabilities.ToArray(),
             command = ToolWorkerFixture.Command(workerArguments),
             requestTimeoutSeconds = 30,
             startTimeoutSeconds = 30
@@ -88,15 +109,24 @@ internal static class ImageFixture
     public static Task<(SoloHost Host, IDisposable Cleanup)> SoloAsync(params string[] workerArguments)
         => SoloAsync(null, workerArguments);
 
+    /// <summary>A solo node that also offers the phase-57 video kind.</summary>
+    public static Task<(SoloHost Host, IDisposable Cleanup)> SoloVideoAsync(params string[] workerArguments)
+        => SoloAsync(null, true, workerArguments);
+
     /// <param name="seamRepair">
     /// <c>Tools:Image:SeamRepair</c> (phase 55). Solo mode is the shape that shows this key is a
     /// <em>node's</em> answer rather than a hub's: there is no hub, and the ceiling still holds.
     /// </param>
+    public static Task<(SoloHost Host, IDisposable Cleanup)> SoloAsync(
+        string? seamRepair,
+        string[] workerArguments) => SoloAsync(seamRepair, false, workerArguments);
+
     public static async Task<(SoloHost Host, IDisposable Cleanup)> SoloAsync(
         string? seamRepair,
+        bool video,
         string[] workerArguments)
     {
-        var manifests = Manifests(workerArguments);
+        var manifests = Manifests(video, workerArguments);
         var scratch = new ToolWorkerFixture.TempDirectory("inferhub-image-scratch");
 
         var host = await SoloHost.StartAsync(
@@ -190,12 +220,13 @@ internal sealed class ImageMesh : IAsyncDisposable
         string clientId = "image-client",
         double? seamWarnThreshold = null,
         string? seamRepair = null,
+        bool video = false,
         params string[] workerArguments)
     {
         var mesh = new ImageMesh
         {
             seamRepair = seamRepair,
-            manifests = ImageFixture.Manifests(workerArguments),
+            manifests = ImageFixture.Manifests(video, workerArguments),
             nodeData = new ToolWorkerFixture.TempDirectory("inferhub-image-node"),
             Scratch = new ToolWorkerFixture.TempDirectory("inferhub-image-scratch"),
             ConfigureImages = configureImages,
@@ -296,6 +327,7 @@ internal sealed class ImageMesh : IAsyncDisposable
 
         app.MapImageEndpoints();
         app.MapImageJobEndpoints();
+        app.MapVideoEndpoints();
         app.MapHub<NodeHub>("/hubs/node");
 
         await app.StartAsync();

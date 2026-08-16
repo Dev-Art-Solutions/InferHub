@@ -241,6 +241,7 @@ public static class PrometheusFormatter
         var seconds = audio.Where(a => a.Seconds > 0).ToArray();
         var characters = audio.Where(a => a.Characters > 0).ToArray();
         var megapixelSteps = audio.Where(a => a.MegapixelSteps > 0).ToArray();
+        var videoSeconds = audio.Where(a => a.VideoSeconds > 0).ToArray();
 
         if (seconds.Length > 0)
         {
@@ -261,6 +262,16 @@ public static class PrometheusFormatter
             // while somebody moved the fleet from 4-step thumbnails to 30-step 2-megapixel renders.
             Header(builder, "inferhub_image_megapixel_steps_total", "counter", "Megapixel-steps generated (width x height x steps / 1e6), as the worker reported them.");
             foreach (var a in megapixelSteps) Sample(builder, "inferhub_image_megapixel_steps_total", [("kind", a.Kind), ("model", a.Model)], a.MegapixelSteps);
+        }
+
+        if (videoSeconds.Length > 0)
+        {
+            // Phase 57's SECOND unit, beside the megapixel-steps a video also spends — the same
+            // shape audio has had since phase 42, where seconds and characters are two series
+            // because adding them would produce a number nobody can detect is wrong. A fleet that
+            // has never rendered a clip emits neither series (28 D5).
+            Header(builder, "inferhub_video_seconds_total", "counter", "Seconds of video produced, as the worker measured them (frames / fps).");
+            foreach (var a in videoSeconds) Sample(builder, "inferhub_video_seconds_total", [("kind", a.Kind), ("model", a.Model)], a.VideoSeconds);
         }
     }
 

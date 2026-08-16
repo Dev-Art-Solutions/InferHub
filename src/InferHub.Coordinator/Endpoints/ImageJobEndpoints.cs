@@ -195,7 +195,7 @@ public static class ImageJobEndpoints
     {
         var client = BearerApiKeyMiddleware.ClientOf(httpContext);
 
-        var records = jobs.Store.ForClient(client.Id)
+        var records = jobs.Store.ForClient(client.Id, CapabilityKinds.IsImageKind)
             .Select(record => ImageJobView.Describe(record, jobs.QueuePosition(record.Id)))
             .ToArray();
 
@@ -446,7 +446,11 @@ public static class ImageJobEndpoints
             return false;
         }
 
-        var found = jobs.Find(parsed, BearerApiKeyMiddleware.ClientOf(httpContext).Id);
+        // Scoped to the image surface as well as to the client (phase 57): a video job's id here is
+        // the same 404 an unknown one earns, which keeps "which surface made this" from being a thing
+        // a caller can probe for.
+        var found = jobs.Store.Find(
+            parsed, BearerApiKeyMiddleware.ClientOf(httpContext).Id, CapabilityKinds.IsImageKind);
 
         if (found is null)
         {

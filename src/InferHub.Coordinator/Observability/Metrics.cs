@@ -118,6 +118,10 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
             case InferHub.Shared.Contracts.UsageUnitKinds.MegapixelSteps:
                 counter.Add(ref counter.MegapixelSteps, units);
                 break;
+
+            case InferHub.Shared.Contracts.UsageUnitKinds.VideoSeconds:
+                counter.Add(ref counter.VideoSeconds, units);
+                break;
         }
     }
 
@@ -212,8 +216,10 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
         var perAudioSnapshot = perAudio
             .Select(pair =>
             {
-                var (seconds, characters, megapixelSteps) = pair.Value.Read();
-                return new ToolUnitsSnapshot(pair.Key.Kind, pair.Key.Model, seconds, characters, megapixelSteps);
+                var (seconds, characters, megapixelSteps, videoSeconds) = pair.Value.Read();
+
+                return new ToolUnitsSnapshot(
+                    pair.Key.Kind, pair.Key.Model, seconds, characters, megapixelSteps, videoSeconds);
             })
             .OrderBy(snapshot => snapshot.Kind, StringComparer.OrdinalIgnoreCase)
             .ThenBy(snapshot => snapshot.Model, StringComparer.OrdinalIgnoreCase)
@@ -301,6 +307,8 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
         public double Characters;
         public double MegapixelSteps;
 
+        public double VideoSeconds;
+
         public void Add(ref double field, double units)
         {
             lock (gate)
@@ -309,11 +317,11 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
             }
         }
 
-        public (double Seconds, double Characters, double MegapixelSteps) Read()
+        public (double Seconds, double Characters, double MegapixelSteps, double VideoSeconds) Read()
         {
             lock (gate)
             {
-                return (Seconds, Characters, MegapixelSteps);
+                return (Seconds, Characters, MegapixelSteps, VideoSeconds);
             }
         }
     }
@@ -451,7 +459,8 @@ public sealed record ToolUnitsSnapshot(
     string Model,
     double Seconds,
     double Characters,
-    double MegapixelSteps = 0);
+    double MegapixelSteps = 0,
+    double VideoSeconds = 0);
 
 public sealed record NodeMetricsSnapshot(
     string NodeId,

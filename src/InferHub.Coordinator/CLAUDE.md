@@ -1016,3 +1016,16 @@ job on the next restart. And `GET /api/images/jobs` now reports `persistence` be
 `retainedBytes`/`retentionSeconds`, because it changes what those numbers mean: the console's
 "held in memory, dropped on delivery" line is chosen from it, and a panel that kept saying that over
 a hub configured to keep them would be a caveat that had quietly become false.
+
+### Phase 57 (the video seam) — the pointer, and the two host-side facts
+
+The decisions are in `src/InferHub.Shared/CLAUDE.md` (57 D1–D4): the dialect, the job-model reuse,
+the grids and the two units.
+
+What is *this* host's: `VideoEndpoints` maps four routes under `/v1/videos` plus two `501`s, and
+they are guarded by nothing new — `/v1` is already in `BearerApiKeyMiddleware.OpenAiPathPrefix`
+(21 D2), which `OpenAiAuthTests` now **checks** for each of them rather than assuming. And
+`ImageJobRegistry` grew exactly one fork: a `VideoGenerationRequest` renders through `VideoRenderer`
+and meters a second unit. The queue, the pump, the busy-node map, the `node_lost` refusal to retry
+and phase 56's archive are untouched — which is track D3 paying off, since 56 was sequenced first
+precisely so video would inherit a job model that already survives a restart.

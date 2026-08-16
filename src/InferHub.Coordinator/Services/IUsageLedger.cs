@@ -26,8 +26,15 @@ public static class UsageUnits
     /// <summary>Image generation (phase 46). See <see cref="UsageUnitKinds.MegapixelSteps"/> for why it is not "images".</summary>
     public const string MegapixelSteps = UsageUnitKinds.MegapixelSteps;
 
+    /// <summary>
+    /// How much video was produced (phase 57). It rides <em>beside</em>
+    /// <see cref="MegapixelSteps"/> on the same job rather than replacing it — see
+    /// <see cref="UsageUnitKinds.VideoSeconds"/>.
+    /// </summary>
+    public const string VideoSeconds = UsageUnitKinds.VideoSeconds;
+
     public static bool IsKnown(string? kind) =>
-        kind is Tokens or AudioSeconds or Characters or MegapixelSteps;
+        kind is Tokens or AudioSeconds or Characters or MegapixelSteps or VideoSeconds;
 }
 
 /// <summary>
@@ -120,7 +127,8 @@ public sealed record UsageAggregate(
     long FallbackRequests,
     double AudioSeconds = 0,
     double Characters = 0,
-    double MegapixelSteps = 0)
+    double MegapixelSteps = 0,
+    double VideoSeconds = 0)
 {
     public long TotalTokens => PromptTokens + CompletionTokens;
 }

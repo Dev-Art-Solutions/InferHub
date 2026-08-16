@@ -50,7 +50,7 @@ public class ImageJobRetentionTests
 
         // An in-flight job holds no bytes and must survive the pressure that evicts finished ones —
         // a budget that could evict work in progress would fail the request it was protecting.
-        store.TryCreate(Guid.NewGuid(), "client", "sd-test", 1, out var inFlight);
+        store.TryCreate(Guid.NewGuid(), "client", AJob(), out var inFlight);
         store.TryTransition(inFlight.Id, ImageJobStates.Running);
 
         time.Advance(TimeSpan.FromSeconds(1));
@@ -115,7 +115,7 @@ public class ImageJobRetentionTests
     public void ProgressIsMonotonicAndOnlyWhileTheJobIsRunning()
     {
         var store = new ImageJobStore(new ImageJobOptions());
-        store.TryCreate(Guid.NewGuid(), "client", "sd-test", 1, out var record);
+        store.TryCreate(Guid.NewGuid(), "client", AJob(), out var record);
 
         // A queued job has no steps to report; a frame that arrived before the transition would
         // otherwise show progress on a job nothing has started.
@@ -147,7 +147,7 @@ public class ImageJobRetentionTests
 
     private static ImageJobRecord Succeed(ImageJobStore store, string clientId)
     {
-        store.TryCreate(Guid.NewGuid(), clientId, "sd-test", 1, out var record);
+        store.TryCreate(Guid.NewGuid(), clientId, AJob(), out var record);
         store.TryTransition(record.Id, ImageJobStates.Running);
         store.TrySucceed(record.Id, [new ImageJobImage(Png, "image/png", new ImageSize(512, 512), 42)], units: 7.5);
         return record;
@@ -161,4 +161,12 @@ public class ImageJobRetentionTests
 
         public void Advance(TimeSpan by) => now += by;
     }
+
+    /// <summary>
+    /// A minimal generation request, so a store test says <em>what a job is</em> rather than
+    /// repeating five positional arguments (phase 57 changed <c>TryCreate</c> to take the request).
+    /// </summary>
+    private static ImageGenerationRequest AJob(string model = "sd-test") =>
+        new(model, "a prompt", null, 1, null, null, null, null);
+
 }

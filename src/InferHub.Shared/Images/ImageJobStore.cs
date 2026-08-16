@@ -137,6 +137,10 @@ public sealed class ImageJobOptions
 /// The mechanism the caller asked for and the worker ran — <c>blend</c> or <c>diffuse</c>. Absent
 /// when nobody asked, which is the default and is byte-for-byte v3.22.
 /// </param>
+/// <param name="Seconds">
+/// How long the produced media runs, for a video (phase 57). Null for every image, because absence is
+/// a fact (28 D5) and a zero would read as a still.
+/// </param>
 public sealed record ImageJobImage(
     byte[] Bytes,
     string MediaType,
@@ -146,7 +150,8 @@ public sealed record ImageJobImage(
     double? SeamDelta = null,
     int? Steps = null,
     double? SeamDeltaBefore = null,
-    string? SeamRepair = null);
+    string? SeamRepair = null,
+    double? Seconds = null);
 
 /// <summary>
 /// What is true of a finished request as a whole, as opposed to of one of its images.
@@ -188,17 +193,51 @@ public sealed record ImageJobFailure(
 /// </summary>
 public sealed class ImageJobRecord
 {
-    internal ImageJobRecord(Guid id, string clientId, string model, int count, DateTimeOffset createdAt)
+    internal ImageJobRecord(
+        Guid id,
+        string clientId,
+        string model,
+        int count,
+        DateTimeOffset createdAt,
+        string capability = Contracts.CapabilityKinds.Image,
+        ImageSize? size = null,
+        double? seconds = null)
     {
         Id = id;
         ClientId = clientId;
         Model = model;
         Count = count;
         CreatedAt = createdAt;
+        Capability = capability;
+        Size = size;
+        Seconds = seconds;
         State = ImageJobStates.Queued;
     }
 
     public Guid Id { get; }
+
+    /// <summary>
+    /// Which surface this job belongs to — <c>image</c>, <c>image-edit</c> or <c>video</c>
+    /// (phase 57, D10).
+    /// </summary>
+    /// <remarks>
+    /// One store holds all three, and the routes are scoped by this as well as by
+    /// <see cref="ClientId"/>: a video job id handed to <c>GET /api/images/jobs/{id}</c> is a
+    /// <c>404</c> and vice versa. Without it the images console would list video jobs it cannot
+    /// render, and <c>/v1/videos/{id}</c> would happily answer about a picture.
+    /// </remarks>
+    public string Capability { get; }
+
+    /// <summary>
+    /// The geometry, once it is known: what the caller asked for, replaced by what the worker
+    /// actually produced when it answers. Null while nobody has said — the recipe's own default is
+    /// the node's business (46 D6), and inventing one here would be the hub declaring a model's
+    /// native resolution.
+    /// </summary>
+    public ImageSize? Size { get; internal set; }
+
+    /// <summary>The clip's duration, for a video. Null for an image (phase 57).</summary>
+    public double? Seconds { get; internal set; }
 
     /// <summary>
     /// Who may see it. Every route is scoped by this, and another client's id is a <c>404</c>
@@ -305,7 +344,12 @@ public sealed class ImageJobStore
     /// <c>Retry-After</c> — the same status and header as every other limit in this codebase, so a
     /// client's retry logic behaves identically no matter which one it hit.
     /// </summary>
-    public bool TryCreate(Guid id, string clientId, string model, int count, out ImageJobRecord record)
+    /// <remarks>
+    /// It takes the <em>request</em> rather than the four fields it used to, because phase 57 needs
+    /// three more of them (the capability, the geometry and the duration) and a fifth and sixth
+    /// positional argument is how a call site silently swaps two.
+    /// </remarks>
+    public bool TryCreate(Guid id, string clientId, IImageRequest request, out ImageJobRecord record)
     {
         var now = time.GetUtcNow();
 
@@ -327,7 +371,18 @@ public sealed class ImageJobStore
                 return false;
             }
 
-            record = new ImageJobRecord(id, clientId, model, count, now) { LastTouched = now };
+            record = new ImageJobRecord(
+                id,
+                clientId,
+                request.Model,
+                request.Count,
+                now,
+                request.Capability,
+                request.Size,
+                request.Seconds)
+            {
+                LastTouched = now
+            };
             jobs[id] = record;
             order.Add(id);
             Persist(record);
@@ -353,6 +408,22 @@ public sealed class ImageJobStore
     }
 
     /// <summary>
+    /// The record, if it exists, belongs to this client <em>and</em> was submitted on the surface
+    /// asking (phase 57).
+    /// </summary>
+    /// <remarks>
+    /// The mismatch is a plain <c>null</c> and therefore the same <c>404</c> a nonexistent id earns,
+    /// for phase-25 D4's reason: "that id is real but it is a picture" tells a caller something about
+    /// an id they were not meant to reason about at all.
+    /// </remarks>
+    public ImageJobRecord? Find(Guid id, string clientId, Func<string, bool> capability)
+    {
+        var record = Find(id, clientId);
+
+        return record is not null && capability(record.Capability) ? record : null;
+    }
+
+    /// <summary>
     /// The record regardless of who owns it. <b>For a host's own bookkeeping only</b> — no route
     /// may reach it, because the whole point of <see cref="Find(Guid, string)"/> is that a client
     /// cannot learn a job exists but is not theirs.
@@ -365,15 +436,19 @@ public sealed class ImageJobStore
         }
     }
 
-    /// <summary>Every job this client owns, oldest first.</summary>
-    public IReadOnlyList<ImageJobRecord> ForClient(string clientId)
+    /// <summary>
+    /// Every job this client owns, oldest first — narrowed to one family of capabilities when the
+    /// caller is a surface rather than a bookkeeper (phase 57).
+    /// </summary>
+    public IReadOnlyList<ImageJobRecord> ForClient(string clientId, Func<string, bool>? capability = null)
     {
         lock (gate)
         {
             return order
                 .Select(id => jobs.TryGetValue(id, out var record) ? record : null)
                 .Where(record => record is not null
-                    && string.Equals(record.ClientId, clientId, StringComparison.Ordinal))
+                    && string.Equals(record.ClientId, clientId, StringComparison.Ordinal)
+                    && (capability is null || capability(record.Capability)))
                 .Select(record => record!)
                 .ToArray();
         }
@@ -568,6 +643,16 @@ public sealed class ImageJobStore
             record.Revision++;
             record.Images.Clear();
             record.Images.AddRange(images);
+
+            // What was asked for is replaced by what was produced, because a recipe may clamp either
+            // and the document has to describe the bytes the caller is about to fetch (46's
+            // "meter what the worker produced", said about a field instead of a number).
+            if (images.Count > 0)
+            {
+                record.Size = images[0].Size ?? record.Size;
+                record.Seconds = images[0].Seconds ?? record.Seconds;
+            }
+
             Persist(record);
             changed = record;
         }
@@ -663,6 +748,40 @@ public sealed class ImageJobStore
 
         Raise(changed);
         return image;
+    }
+
+    /// <summary>
+    /// Forgets a job at its owner's request, bytes and archive file included (phase 57).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It exists because OpenAI's Videos API has a <c>DELETE</c> and the images API has no such verb
+    /// — phase 47's only way to be rid of a result is to fetch it or to wait. <b>The record is
+    /// removed rather than expired</b>, because the dialect's <c>DELETE</c> means gone: a subsequent
+    /// <c>GET</c> is a <c>404</c>, and leaving an <c>expired</c> tombstone behind would answer
+    /// <c>410</c> with a sentence about retention that had nothing to do with what happened.
+    /// </para>
+    /// <para>
+    /// Cancelling a job that is still running is the <em>caller's</em> separate step and is not done
+    /// here: this class has never known how to reach a node.
+    /// </para>
+    /// </remarks>
+    public bool Drop(Guid id, string clientId)
+    {
+        lock (gate)
+        {
+            if (!jobs.TryGetValue(id, out var record)
+                || !string.Equals(record.ClientId, clientId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            record.Images.Clear();
+            jobs.Remove(id);
+            order.Remove(id);
+            Forget(id);
+            return true;
+        }
     }
 
     /// <summary>

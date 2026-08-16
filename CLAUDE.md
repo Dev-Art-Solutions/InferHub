@@ -84,10 +84,10 @@ longer pays for the Qdrant connector's UUID mapping and the cluster lease's spli
 
 | Working in | Also read | Holds |
 |---|---|---|
-| `src/InferHub.Shared/` | `src/InferHub.Shared/CLAUDE.md` | contracts, the OpenAI/Ollama dialects, the retrieval core, the vector stores, the image envelope · phases 24, 29, 33, 34, 40, 46, 47 |
-| `src/InferHub.Coordinator/` | `src/InferHub.Coordinator/CLAUDE.md` | endpoints, routing, admission, cluster, `/metrics`, the console · phases 21–23, 25, 26, 28, 30–32, 35, 44, 45, 51 |
-| `src/InferHub.Node/` | `src/InferHub.Node/CLAUDE.md` | backends, the Ollama supervisor, solo mode, the tool runtime, profiles · phases 36–39, 41–43, 48 |
-| `python/` | `python/CLAUDE.md` | the worker protocol, recipes, the diffusion worker · phases 49, 50 |
+| `src/InferHub.Shared/` | `src/InferHub.Shared/CLAUDE.md` | contracts, the OpenAI/Ollama dialects, the retrieval core, the vector stores, the image and video envelopes · phases 24, 29, 33, 34, 40, 46, 47, 57 |
+| `src/InferHub.Coordinator/` | `src/InferHub.Coordinator/CLAUDE.md` | endpoints, routing, admission, cluster, `/metrics`, the console · phases 21–23, 25, 26, 28, 30–32, 35, 44, 45, 51, 57 |
+| `src/InferHub.Node/` | `src/InferHub.Node/CLAUDE.md` | backends, the Ollama supervisor, solo mode, the tool runtime, profiles · phases 36–39, 41–43, 48, 57 |
+| `python/` | `python/CLAUDE.md` | the worker protocol, recipes, the diffusion worker · phases 49, 50, 55, 57 |
 | `tests/` | `tests/CLAUDE.md` | the four test projects and the testing discipline |
 | `deploy/`, any Dockerfile | `deploy/CLAUDE.md` | the five images and the permissions trap |
 | `plan/`, writing any plan | `plan/CLAUDE.md` | the brief format, the release checklist, the budget · phase 54 |
@@ -226,6 +226,11 @@ as load-bearing:
    46–51 added text-to-image, an async job model, a seven-model catalogue with quantization, 360°
    panoramas, editing and a console for all of it, at **zero** new `PackageReference`s.
    `InferHub.Shared.csproj` is still an empty `<Project Sdk="Microsoft.NET.Sdk">`.
+
+   **Phase 57 added a whole third modality on the same terms.** Video is `imageio-ffmpeg` in one
+   Dockerfile — a static encoder binary inside a wheel — reached through the same child process over
+   the same line protocol, and **zero** of it is a `PackageReference`. Nothing in any `.csproj`
+   compiles against a codec and no C# anywhere decodes a frame.
 6. **The node-facing *inference* job protocol is Ollama-shaped. Client-facing and upstream-facing
    dialects are translations at the boundary.**
    > **The word "inference" was added in phase 40, and it is a bounding, not a weakening.**
@@ -265,14 +270,20 @@ as load-bearing:
    >   dispatch and dropped; both travel as `image` and `mask` rather than under the caller's own
    >   filename, for the phase-42 reason above.
    >
+   > - **A video is content, and so is the frame nobody sees** (phase-57). The fourth kind, and the
+   >   one where the temptation to keep an intermediate is strongest: a decoded first frame would
+   >   make a lovely progress thumbnail, and it is a picture of what somebody asked for. Nothing
+   >   decodes or writes one, the durable record still has no field a prompt could occupy (56 D3),
+   >   and `VideoJobTests` asserts the prompt is absent from a real mesh's logs and ledger.
+   >
    > - **"No temp file" was a claim about our code, not about the request** (phase-53, measured).
    >   `ReadFormAsync` spills a section over 64 KB to an `ASPNETCORE_*.tmp`, so a buffered upload
    >   does briefly touch the hub's disk. Streaming it through does not. See
    >   `src/InferHub.Shared/CLAUDE.md`.
    >
    > The mechanism is the same each time and is the thing to preserve: **count, never content**
-   > (phase-25 D3). The usage path has gained four units — tokens, audio seconds, characters,
-   > megapixel-steps — and **no field that could hold a sample**, deliberately, because a field is
+   > (phase-25 D3). The usage path has gained five units — tokens, audio seconds, characters,
+   > megapixel-steps, video seconds — and **no field that could hold a sample**, deliberately, because a field is
    > an invitation. `ImagePrivacyTests` and `AudioPrivacyTests` both run a real request through a
    > real mesh with a capturing logger at `Trace` and fail if a known phrase appears anywhere in
    > the log or the ledger.

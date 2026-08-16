@@ -11,6 +11,7 @@ using System.Text.Json;
 //                        [--image-fail <code>] [--image-pad-bytes <n>]
 //                        [--image-projection equirectangular] [--image-seam wrap|break]
 //                        [--image-no-auto-trigger] [--image-repair-worse]
+//                        [--video-fail <code>] [--video-step-ms <n>] [--video-pad-bytes <n>]
 //                        [--redeclare-on-ping <kind>:<model>,<model>] [--wedge-on-ping]
 //
 // Phase 42 added two behaviours that are chosen by the request's *capability* rather than by a
@@ -29,6 +30,11 @@ using System.Text.Json;
 //               the scratch directory: the mask's size and its alpha channel are checked here
 //               because the hub never opened either of them, and the steps reported are the ones
 //               `strength` actually runs rather than the ones that were asked for
+//   video       (phase 57) write a real ISO-BMFF container into the scratch directory and name it
+//               back, reporting the geometry, the frame count, the fps and the MEASURED duration;
+//               refuse a size outside the buckets and a duration outside the offered list, both
+//               with `invalid_request` naming the list. The container is well-formed and its
+//               samples are padding — see Mp4, which says so rather than implying a codec
 //
 // Behaviours are asked for in the request payload's "behaviour" field:
 //   (absent)   echo the payload back
@@ -255,6 +261,12 @@ async Task HandleRequestAsync(JsonElement frame, CancellationToken cancellationT
     if (behaviour is null && capability is "image" or "image-edit")
     {
         await HandleImageAsync(id, payload, frame, cancellationToken);
+        return;
+    }
+
+    if (behaviour is null && capability is "video")
+    {
+        await HandleVideoAsync(id, payload, frame, cancellationToken);
         return;
     }
 
@@ -928,6 +940,167 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, 
     });
 }
 
+// ---- phase 57: the video behaviour --------------------------------------------------------------
+
+/// <summary>
+/// Answers a <c>video</c> job with a real ISO-BMFF container written into the scratch directory.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>The file is a real mp4 container and it holds no decodable frames</b>, and that boundary is
+/// stated rather than blurred: <see cref="Mp4"/> writes a well-formed <c>ftyp</c>/<c>moov</c>/
+/// <c>mdat</c> with a real track declaring the geometry, the timescale and the frame count, so a
+/// test can read the geometry back out of the bytes the way <c>Png.ReadHeader</c> does — and the
+/// sample data is padding, because a real H.264 stream needs an encoder. Everything this phase owns
+/// is reachable from here (the video object, the statuses, the progress, the cancel, the metering,
+/// the read-once, the wire); what is not reachable is whether a video is a video, which is what the
+/// published-image check and phase 60 are for.
+/// </para>
+/// <para>
+/// The refusals are the ones a real recipe makes: a size outside the buckets and a duration outside
+/// the offered list, both <c>invalid_request</c> with the list named (57 D5), because the edge
+/// deliberately does not hold a catalogue (46 D6).
+/// </para>
+/// </remarks>
+async Task HandleVideoAsync(string? id, JsonElement payload, JsonElement frame, CancellationToken cancellationToken)
+{
+    if (arguments.VideoFailCode is { } failure)
+    {
+        Send(new { type = "error", id, code = failure, message = $"the echo worker was asked to fail with {failure}" });
+        return;
+    }
+
+    const int Fps = 16;
+    var offered = new (double Seconds, int Frames)[] { (2, 33), (3, 49), (4, 65), (5, 81) };
+    var buckets = new[] { "832x480", "480x832" };
+
+    var width = Number(payload, "width") ?? 832;
+    var height = Number(payload, "height") ?? 480;
+
+    if (Array.IndexOf(buckets, $"{width}x{height}") < 0)
+    {
+        Send(new
+        {
+            type = "error",
+            id,
+            code = "invalid_request",
+            message = $"this recipe cannot render {width}x{height}. It was trained on: {string.Join(", ", buckets)}"
+        });
+
+        return;
+    }
+
+    var askedSeconds = Decimal(payload, "seconds") ?? 5d;
+    var match = Array.FindIndex(offered, entry => Math.Abs(entry.Seconds - askedSeconds) < 1e-9);
+
+    if (match < 0)
+    {
+        Send(new
+        {
+            type = "error",
+            id,
+            code = "invalid_request",
+            message = $"this recipe cannot render {askedSeconds:0.##} seconds. It offers: "
+                      + string.Join(", ", offered.Select(entry => entry.Seconds.ToString("0.##")))
+                      + ". A frame count is fixed by the model's latent grid, so an unoffered "
+                      + "duration is refused rather than rounded to the nearest one."
+        });
+
+        return;
+    }
+
+    var frames = offered[match].Frames;
+    var steps = Number(payload, "steps") ?? 30;
+    var seed = payload.ValueKind is JsonValueKind.Object
+               && payload.TryGetProperty("seed", out var seedField)
+               && seedField.ValueKind is JsonValueKind.Number
+        ? seedField.GetInt64()
+        : 4242L;
+
+    var scratch = frame.TryGetProperty("scratch", out var scratchField) ? scratchField.GetString() : null;
+
+    if (scratch is null)
+    {
+        Send(new { type = "error", id, message = "no scratch directory" });
+        return;
+    }
+
+    // The same two lines a real worker puts in `callback_on_step_end`, so cancel stays cooperative:
+    // the worker answers `cancelled` and is then still alive and still holding its weights.
+    if (arguments.VideoStepMs > 0)
+    {
+        for (var step = 1; step <= steps; step++)
+        {
+            try
+            {
+                await Task.Delay(arguments.VideoStepMs, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                Send(new
+                {
+                    type = "error",
+                    id,
+                    code = "cancelled",
+                    message = $"cancelled at step {step} of {steps}"
+                });
+
+                return;
+            }
+
+            Send(new { type = "progress", id, step, totalSteps = steps });
+        }
+    }
+
+    var name = "video-0.mp4";
+    var path = Path.Combine(scratch, name);
+    await File.WriteAllBytesAsync(path, Mp4.Create(width, height, frames, Fps, arguments.VideoPadBytes), cancellationToken);
+
+    Send(new
+    {
+        type = "result",
+        id,
+        payload = new
+        {
+            model = frame.TryGetProperty("model", out var m) ? m.GetString() : null,
+            steps,
+            warnings = Array.Empty<string>(),
+
+            // The MEASURED duration, not the label the request used: 81 frames at 16 fps is 5.0625
+            // seconds and `seconds: 5` was the name of that offer. Reporting the label back would
+            // describe a clip nobody has.
+            videos = new object[]
+            {
+                new
+                {
+                    width,
+                    height,
+                    frames,
+                    fps = (double)Fps,
+                    seconds = Math.Round(frames / (double)Fps, 4),
+                    seed,
+                    steps
+                }
+            }
+        },
+        files = new object[] { new { name, mediaType = "video/mp4", path } }
+    });
+}
+
+int? Number(JsonElement payload, string field) =>
+    payload.ValueKind is JsonValueKind.Object
+    && payload.TryGetProperty(field, out var value)
+    && value.ValueKind is JsonValueKind.Number
+        ? value.GetInt32()
+        : null;
+
+double? Decimal(JsonElement payload, string field) =>
+    payload.ValueKind is JsonValueKind.Object
+    && payload.TryGetProperty(field, out var value)
+    && value.ValueKind is JsonValueKind.Number
+        ? value.GetDouble()
+        : null;
+
 /// <summary>
 /// Reads the <c>image</c> and <c>mask</c> attachments the node wrote into the scratch directory,
 /// and applies the two checks only a worker can apply (phase 50, D2 and D4).
@@ -1036,6 +1209,180 @@ internal sealed record Edited(int Width, int Height, double Strength, bool Maske
 /// an assertion on <c>Content-Length</c> passes just as happily on the wrong bytes, so the test
 /// reads the IHDR back and checks the dimensions the worker claimed.
 /// </remarks>
+/// <summary>
+/// A real ISO base-media-format container, written by hand (phase 57).
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>What it is and what it is not, stated rather than implied.</b> The boxes are well-formed —
+/// <c>ftyp</c>, a single-track <c>moov</c> whose <c>tkhd</c> carries the geometry, whose <c>mdhd</c>
+/// carries the timescale and whose <c>stts</c>/<c>stsz</c> carry the frame count, and an
+/// <c>mdat</c> — so a test can read the declared geometry back out of the bytes the way
+/// <see cref="Png.ReadHeader"/> does, and an attachment that is not an mp4 is detectable. The
+/// samples are <b>padding</b>: a decodable H.264 stream needs an encoder, and shipping one in the
+/// test fixture would be a second, worse implementation of the thing the real worker's
+/// <c>imageio-ffmpeg</c> already does.
+/// </para>
+/// <para>
+/// <c>mdat</c> is written <em>before</em> <c>moov</c> on purpose, which is legal and is what makes
+/// <c>stco</c> writable in one pass: the chunk offset is known before the sample table exists.
+/// </para>
+/// </remarks>
+internal static class Mp4
+{
+    public static byte[] Create(int width, int height, int frames, int fps, int padBytes = 0)
+    {
+        var sampleSize = Math.Max(1, padBytes / Math.Max(1, frames));
+        var media = new byte[sampleSize * frames];
+
+        // Deterministic rather than random, for phase-42's reason: a fixture whose bytes change per
+        // run makes a size assertion flaky and a diff unreadable.
+        for (var i = 0; i < media.Length; i++)
+        {
+            media[i] = (byte)(i * 31 % 251);
+        }
+
+        var ftyp = Box("ftyp", Ascii("isom"), U32(512), Ascii("isom"), Ascii("iso2"), Ascii("mp41"));
+        var mdat = Box("mdat", media);
+        var mediaOffset = ftyp.Length + mdat.Length - media.Length;
+
+        var moov = Box(
+            "moov",
+            Box("mvhd", U32(0), U32(0), U32(0), U32(fps), U32(frames), U32(0x00010000), U16(0x0100),
+                U16(0), new byte[8], Matrix(), new byte[24], U32(2)),
+            Box(
+                "trak",
+                Box("tkhd", U32(0x0000000F), U32(0), U32(0), U32(1), U32(0), U32(frames), new byte[8],
+                    U16(0), U16(0), U16(0), U16(0), Matrix(), U32(width << 16), U32(height << 16)),
+                Box(
+                    "mdia",
+                    Box("mdhd", U32(0), U32(0), U32(0), U32(fps), U32(frames), U16(0x55C4), U16(0)),
+                    Box("hdlr", U32(0), U32(0), Ascii("vide"), new byte[12], Ascii("InferHub\0")),
+                    Box(
+                        "minf",
+                        Box("vmhd", U32(1), U16(0), U16(0), U16(0), U16(0)),
+                        Box("dinf", Box("dref", U32(0), U32(1), Box("url ", U32(1)))),
+                        Box(
+                            "stbl",
+                            Box("stsd", U32(0), U32(1), VisualSampleEntry(width, height)),
+                            Box("stts", U32(0), U32(1), U32(frames), U32(1)),
+                            Box("stsc", U32(0), U32(1), U32(1), U32(frames), U32(1)),
+                            Box("stsz", U32(0), U32(sampleSize), U32(frames)),
+                            Box("stco", U32(0), U32(1), U32(mediaOffset)))))));
+
+        return [.. ftyp, .. mdat, .. moov];
+    }
+
+    /// <summary>
+    /// The geometry and frame count a container declares, or null when the bytes are not an mp4 this
+    /// writer produced. Walks the boxes; it does not guess from the file name or the media type.
+    /// </summary>
+    public static (int Width, int Height, int Frames, int Timescale)? ReadHeader(byte[] bytes)
+    {
+        if (Find(bytes, 0, bytes.Length, "moov") is not { } moov
+            || Find(bytes, moov.Start, moov.End, "trak") is not { } trak
+            || Find(bytes, trak.Start, trak.End, "tkhd") is not { } tkhd
+            || Find(bytes, trak.Start, trak.End, "mdia") is not { } mdia
+            || Find(bytes, mdia.Start, mdia.End, "mdhd") is not { } mdhd)
+        {
+            return null;
+        }
+
+        // tkhd v0: 4 version/flags, 4 creation, 4 modification, 4 trackId, 4 reserved, 4 duration,
+        // 8 reserved, 2 layer, 2 alternate group, 2 volume, 2 reserved, 36 matrix — then 16.16 fixed
+        // width and height.
+        var geometry = tkhd.Start + 4 + 4 + 4 + 4 + 4 + 4 + 8 + 2 + 2 + 2 + 2 + 36;
+
+        if (geometry + 8 > tkhd.End || mdhd.Start + 20 > mdhd.End)
+        {
+            return null;
+        }
+
+        return (
+            (int)(ReadU32(bytes, geometry) >> 16),
+            (int)(ReadU32(bytes, geometry + 4) >> 16),
+            (int)ReadU32(bytes, mdhd.Start + 16),
+            (int)ReadU32(bytes, mdhd.Start + 12));
+    }
+
+    private static (int Start, int End)? Find(byte[] bytes, int from, int to, string type)
+    {
+        var cursor = from;
+
+        while (cursor + 8 <= to)
+        {
+            var size = (int)ReadU32(bytes, cursor);
+
+            if (size < 8 || cursor + size > to)
+            {
+                return null;
+            }
+
+            if (System.Text.Encoding.ASCII.GetString(bytes, cursor + 4, 4) == type)
+            {
+                return (cursor + 8, cursor + size);
+            }
+
+            cursor += size;
+        }
+
+        return null;
+    }
+
+    private static uint ReadU32(byte[] bytes, int at) =>
+        ((uint)bytes[at] << 24) | ((uint)bytes[at + 1] << 16) | ((uint)bytes[at + 2] << 8) | bytes[at + 3];
+
+    private static byte[] VisualSampleEntry(int width, int height)
+    {
+        var name = new byte[32];
+        name[0] = 8;
+        System.Text.Encoding.ASCII.GetBytes("InferHub", 0, 8, name, 1);
+
+        return Box(
+            "avc1",
+            new byte[6], U16(1), U16(0), U16(0), new byte[12], U16(width), U16(height),
+            U32(0x00480000), U32(0x00480000), U32(0), U16(1), name, U16(0x0018), U16(0xFFFF));
+    }
+
+    private static byte[] Box(string type, params byte[][] parts)
+    {
+        var length = 8 + parts.Sum(part => part.Length);
+        var box = new byte[length];
+
+        U32((uint)length).CopyTo(box, 0);
+        System.Text.Encoding.ASCII.GetBytes(type, 0, 4, box, 4);
+
+        var cursor = 8;
+
+        foreach (var part in parts)
+        {
+            part.CopyTo(box, cursor);
+            cursor += part.Length;
+        }
+
+        return box;
+    }
+
+    /// <summary>The identity transform, which every player expects to be present and nobody reads.</summary>
+    private static byte[] Matrix()
+    {
+        var matrix = new byte[36];
+        U32(0x00010000).CopyTo(matrix, 0);
+        U32(0x00010000).CopyTo(matrix, 16);
+        U32(0x40000000).CopyTo(matrix, 32);
+        return matrix;
+    }
+
+    private static byte[] Ascii(string value) => System.Text.Encoding.ASCII.GetBytes(value);
+
+    private static byte[] U32(uint value) =>
+        [(byte)(value >> 24), (byte)(value >> 16), (byte)(value >> 8), (byte)value];
+
+    private static byte[] U32(int value) => U32((uint)value);
+
+    private static byte[] U16(int value) => [(byte)(value >> 8), (byte)value];
+}
+
 internal static class Png
 {
     /// <summary>The three IHDR facts phase 50 needs, read back out of real bytes.</summary>
@@ -1425,7 +1772,10 @@ internal sealed record Args(
     string? ImageProjection = null,
     string? ImageSeam = null,
     bool ImageNoAutoTrigger = false,
-    bool ImageRepairWorse = false)
+    bool ImageRepairWorse = false,
+    string? VideoFailCode = null,
+    int VideoStepMs = 0,
+    int VideoPadBytes = 0)
 {
     public static Args Parse(string[] args)
     {
@@ -1445,6 +1795,9 @@ internal sealed record Args(
         string? imageSeam = null;
         var imageNoAutoTrigger = false;
         var imageRepairWorse = false;
+        string? videoFailCode = null;
+        var videoStepMs = 0;
+        var videoPadBytes = 0;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -1498,6 +1851,15 @@ internal sealed record Args(
                 case "--image-repair-worse":
                     imageRepairWorse = true;
                     break;
+                case "--video-fail" when i + 1 < args.Length:
+                    videoFailCode = args[++i];
+                    break;
+                case "--video-step-ms" when i + 1 < args.Length:
+                    videoStepMs = int.Parse(args[++i]);
+                    break;
+                case "--video-pad-bytes" when i + 1 < args.Length:
+                    videoPadBytes = int.Parse(args[++i]);
+                    break;
             }
         }
 
@@ -1517,7 +1879,10 @@ internal sealed record Args(
             imageProjection,
             imageSeam,
             imageNoAutoTrigger,
-            imageRepairWorse);
+            imageRepairWorse,
+            videoFailCode,
+            videoStepMs,
+            videoPadBytes);
     }
 
     /// <summary>"transcribe:a,b;speak:c" → the capability list a ready frame carries.</summary>

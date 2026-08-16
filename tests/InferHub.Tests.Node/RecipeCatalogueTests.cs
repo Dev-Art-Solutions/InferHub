@@ -211,7 +211,7 @@ public class RecipeCatalogueTests : IDisposable
         var shipped = ImageRecipeCatalogue.LoadDirectory(RepositoryRecipeDirectory(), NullLogger.Instance);
 
         Assert.Equal(
-            ["flux-schnell", "qwen-360", "qwen-image", "sd15", "sd35-medium", "sdxl", "sdxl-turbo"],
+            ["flux-schnell", "qwen-360", "qwen-image", "sd15", "sd35-medium", "sdxl", "sdxl-turbo", "wan-t2v-1.3b"],
             shipped.Keys.OrderBy(id => id, StringComparer.Ordinal).ToArray());
 
         // The two that need a licence decision, and only those two.
@@ -223,8 +223,17 @@ public class RecipeCatalogueTests : IDisposable
         Assert.Equal("nf4", shipped["qwen-image"].Quantization);
         Assert.Equal("nf4", shipped["qwen-360"].Quantization);
 
+        // Phase 57's video recipe is in the SAME catalogue and therefore behind the same two gates.
+        // `ImageRecipeCatalogue` reads three fields and does not know what a recipe produces —
+        // deliberately (48 deviation 3) — which is what makes the licence check and the VRAM budget
+        // cover a modality the class has never heard of.
+        Assert.True(shipped["wan-t2v-1.3b"].Permissive);
+        Assert.Equal("none", shipped["wan-t2v-1.3b"].Quantization);
+
         // …and every one of them fits a 24 GB card at the documented reserve, which is the claim
-        // the README makes and the only place it is checked.
+        // the README makes and the only place it is checked. Wan2.1's 15 500 MiB is the number that
+        // makes this worth re-reading: "1.3B" names the transformer, and the ~11B UMT5 text encoder
+        // beside it is what the budget is actually sized for.
         foreach (var recipe in shipped.Values)
         {
             Assert.True(

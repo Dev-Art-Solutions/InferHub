@@ -1067,16 +1067,34 @@ caller names a mechanism on a header, and this decides whether they may have it.
 **Nothing on the node parses a request payload to enforce it, and that is deliberate** — see the
 deviation recorded with those decisions. `ImageRecipeCatalogue` reads three fields out of *recipe
 files*; the runtime has never seen a request body, and teaching it to read diffusion requests to
-enforce a key the process that spends the steps can enforce itself would be the node learning about
-diffusion (41 D1). It is 48 D5's shape with the redundant half removed: the node states the grant,
-the worker refuses **naming the key**, and a solo caller reaching the worker directly meets the same
-refusal in the same words.
+enforce a key the worker can enforce itself would be the node learning about diffusion (41 D1). It is
+48 D5's shape with the redundant half removed: the node states the grant, the worker refuses
+**naming the key**, and a solo caller meets the same refusal in the same words.
 
 ### Phase 56 (durable image jobs) — the pointer
 
 The decisions are in `src/InferHub.Shared/CLAUDE.md` and the exception is argued in **rule 4** in the
 root file. What is this project's is one line of composition: the node builds the archive from the
 same key through the same `ImageJobArchives.Create`, so a solo node's jobs survive a restart exactly
-as a hub's do — 41 D8's pattern for the fifth time, and what keeps "does a solo node keep an image
-longer than a hub does" a question that cannot have two answers. `Images__Jobs__DataDirectory=/data/images`
-is set in all four node images: the container permissions trap, seventh instance.
+as a hub's do — 41 D8's pattern for the fifth time. `Images__Jobs__DataDirectory=/data/images` is set
+in all four node images: the container permissions trap, seventh instance.
+
+### Phase 57 (the video seam) — the pointer, and the one node-side fact
+
+The decisions are in `src/InferHub.Shared/CLAUDE.md` (57 D1–D4) and `python/CLAUDE.md`. What is
+*this* host's is one predicate and one deliberate omission.
+
+**`CapabilityKinds.IsGenerativeMedia` replaced `IsImageKind` at the three places
+`ProcessToolRuntime` reasons about a *recipe*** — the declaration narrowing, the VRAM budget taken
+after the worker slot, and the licence-and-budget refusal. That is 50 D1's sentence one kind on: a
+node that gated only the image kinds would happily render video with weights whose licence nobody
+accepted. `ImageRecipeCatalogue` needed **no** change, because it reads three fields (id, licence,
+`vramMiB`) and has never known what a recipe produces — which is what made a modality free here.
+
+**`NodeToolState.Images` was deliberately *not* widened, and the cost is stated rather than
+discovered.** It is what phase 51's Images panel renders and what `ConsoleContractTests` pins, so
+video rows would draw clips as pictures. Until phase 59 — which owns the console for this track —
+a **video recipe refused for its licence or its budget is invisible at the hub**.
+
+**Solo got the surface on the same day** (41 D8, 37 D2 for the fifth time): `LocalVideoEndpoints`
+maps the same four routes and the same two `501`s, and every sentence comes from `VideoRenderer`.

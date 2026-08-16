@@ -1,0 +1,31 @@
+{
+  "id": "wan-t2v-1.3b",
+  "notes": "Phase 57, the first video recipe. Four facts were read out of the pinned diffusers==0.36.0 wheel and this repo's own configs rather than guessed, because each one produces a plausible non-failure when it is wrong. (a) THE VAE LOADS SEPARATELY IN FLOAT32 while the transformer is bfloat16 — upstream's own example does AutoencoderKLWan.from_pretrained(repo, subfolder='vae', torch_dtype=torch.float32) and passes it in; a uniform bf16 load is not an error, it is the difference between a video and noise, discovered four minutes into a job. (b) HEIGHT AND WIDTH MUST BE MULTIPLES OF 16 (WanPipeline.check_inputs) where every image pipeline this project ships downsamples by 8, and num_frames sits on a 4k+1 grid because prepare_latents computes (num_frames - 1) // 4 + 1 latent frames against a temporal scale factor of 4 (vae config temperal_downsample = [false, true, true]). (c) flow_shift IS A SCHEDULER SETTING, NOT A CALL ARGUMENT — and THIS repo already ships flow_shift: 3.0 in scheduler/scheduler_config.json, which is the 480p value; upstream's example sets it by hand because it is written for the 14B 720p model, where 5.0 is wanted. The field below therefore matches the checked-in config and the worker only overrides when a recipe names one. (d) '1.3B' NAMES THE TRANSFORMER ONLY. The text encoder is UMT5-XXL at ~11B, and every weight in this repo is stored fp32 with NO fp16/bf16 variant — so the download is ~29 GB and the resident bf16 footprint is dominated by the encoder, not by the DiT. That is the v3.14.1 variant-is-not-dtype lesson in the one shape where there is nothing to fix: there is no variant to ask for, so torch_dtype does the cast and the disk cost is unavoidable. vramMiB below is sized from that, not from 1.3B.",
+  "media": "video",
+  "repo": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+  "revision": "0fad780a534b6463e45facd96134c9f345acfa5b",
+  "pipeline": "WanPipeline",
+  "vaeClass": "AutoencoderKLWan",
+  "license": {
+    "id": "Apache-2.0",
+    "permissive": true,
+    "url": "https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+  },
+  "operations": ["generate"],
+  "defaults": { "steps": 30, "guidance": 5.0, "size": "832x480", "seconds": 5 },
+  "sizes": ["832x480", "480x832"],
+  "fps": 16,
+  "durations": [
+    { "seconds": 2, "frames": 33 },
+    { "seconds": 3, "frames": 49 },
+    { "seconds": 4, "frames": 65 },
+    { "seconds": 5, "frames": 81 }
+  ],
+  "maxSteps": 50,
+  "vramMiB": 15500,
+  "dtype": "bfloat16",
+  "vaeDtype": "float32",
+  "schedulerFlowShift": 3.0,
+  "quantization": "none",
+  "cpuViable": false
+}

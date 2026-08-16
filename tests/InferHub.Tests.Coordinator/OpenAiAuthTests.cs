@@ -22,6 +22,12 @@ public class OpenAiAuthTests
     // possible route to add under a prefix nobody guards.
     [InlineData("/v1/audio/transcriptions")]
     [InlineData("/v1/audio/speech")]
+    // Phase 57. Checked rather than assumed (21 D2): these spend minutes of GPU per call, and the
+    // whole of D1 is that they were added under a prefix somebody else already guards — which is a
+    // claim, not a guarantee, until a test makes the request.
+    [InlineData("/v1/videos")]
+    [InlineData("/v1/videos/video_abc")]
+    [InlineData("/v1/videos/video_abc/content")]
     public async Task OpenAiRoutesRejectMissingToken(string path)
     {
         var middleware = NewBearerMiddleware(out var nextCalled, apiKeys: ["secret"]);

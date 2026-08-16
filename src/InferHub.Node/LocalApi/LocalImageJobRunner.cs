@@ -47,7 +47,7 @@ public sealed class LocalImageJobRunner(
     {
         var id = Guid.NewGuid();
 
-        if (!Store.TryCreate(id, clientId, request.Model, request.Count, out var record))
+        if (!Store.TryCreate(id, clientId, request, out var record))
         {
             return null;
         }
@@ -161,7 +161,13 @@ public sealed class LocalImageJobRunner(
         try
         {
             var result = await executor.RunAsync(toolJob, progress, job.Cancellation.Token);
-            var outcome = ImageRenderer.Render(result, job.Request, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+            // The same fork the hub makes, in the same words (phase-57 D10): one job model, two
+            // renderings. A solo node and a hub choosing it differently is exactly the parity bug
+            // ImageRenderer.Envelope exists to have already made impossible.
+            var outcome = job.Request is VideoGenerationRequest video
+                ? VideoRenderer.Render(result, video)
+                : ImageRenderer.Render(result, job.Request, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
 
             logger.LogInformation(
                 "{Capability} job {JobId} ({Model}): {Status}, {Images} image(s), {Units:F1} megapixel-steps",

@@ -43,4 +43,27 @@ public static class UsageUnitKinds
     /// </para>
     /// </remarks>
     public const string MegapixelSteps = "megapixel_steps";
+
+    /// <summary>
+    /// Video generation (phase 57): the duration of what was produced, <c>frames / fps</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>It is a second unit on the same work, not a replacement for
+    /// <see cref="MegapixelSteps"/></b> — phase 42's audio precedent exactly, where a transcription
+    /// meters seconds and a synthesis meters characters. The GPU cost of a video is still
+    /// <c>width × height × frames × steps / 1e6</c> megapixel-steps, because a video diffusion
+    /// transformer denoises the <em>whole</em> latent stack on every step, so pixels × steps is
+    /// literally what the card spent and the existing quota governs the same card. What this unit
+    /// adds is the question a human actually asks — "how much video did this client make" — which
+    /// megapixel-steps cannot answer at all.
+    /// </para>
+    /// <para>
+    /// <b>Considered and rejected: a unit of its own for the quota</b> (the track index guessed
+    /// <c>frame_seconds</c>). It would be a second answer to a question already answered, and it
+    /// would let a client whose image budget is exhausted spend the same GPU under a counter nobody
+    /// had set.
+    /// </para>
+    /// </remarks>
+    public const string VideoSeconds = "video_seconds";
 }

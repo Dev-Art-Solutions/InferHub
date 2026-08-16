@@ -66,11 +66,30 @@ public static class CapabilityKinds
     public const string ImageEdit = "image-edit";
 
     /// <summary>
+    /// Text to video (phase 57). Declared by the <em>same</em> tool runtime and the same worker the
+    /// two image kinds come from — a recipe says <c>"media": "video"</c> and the worker declares this
+    /// kind for it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The seam took a third modality with no protocol change, which is phase-40 D1 paying for itself
+    /// for the third time: a <c>ToolJob</c> carries the request, and neither <c>InferenceJob</c>, the
+    /// dispatcher, the router nor the mesh learned anything.
+    /// </para>
+    /// <para>
+    /// <b>Image-to-video is deliberately not this kind and is not in this release</b> (57's non-goals).
+    /// It takes a second input path and is 50 D1's argument unchanged — a separate kind rather than a
+    /// flag, because the router filters on <c>(kind, model)</c> and nothing else.
+    /// </para>
+    /// </remarks>
+    public const string Video = "video";
+
+    /// <summary>
     /// Only used at the client edge, for error messages. The mesh carries any string — see the
     /// remarks on <see cref="NodeCapability"/>.
     /// </summary>
     public static bool IsWellKnown(string? kind) =>
-        kind is Chat or Embed or Transcribe or Speak or Image or ImageEdit;
+        kind is Chat or Embed or Transcribe or Speak or Image or ImageEdit or Video;
 
     /// <summary>
     /// Either image kind — the question everything that reasons about a <em>recipe</em> asks.
@@ -85,6 +104,23 @@ public static class CapabilityKinds
     public static bool IsImageKind(string? kind) =>
         string.Equals(kind, Image, StringComparison.OrdinalIgnoreCase)
         || string.Equals(kind, ImageEdit, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Any kind served from a <em>recipe</em> — the two image kinds and video (phase 57, D3).
+    /// </summary>
+    /// <remarks>
+    /// This is <see cref="IsImageKind"/>'s argument one level up, and it is the predicate the licence
+    /// gate, the VRAM budget and the residency map ask. A node that applied its licence gate to the
+    /// image kinds only would happily render video with weights whose licence nobody accepted — which
+    /// is exactly the failure phase 50 headed off between generating and editing, in a release where
+    /// there was only one more kind to forget.
+    /// </remarks>
+    public static bool IsGenerativeMedia(string? kind) =>
+        IsImageKind(kind) || IsVideo(kind);
+
+    /// <summary>The video kind, as a predicate the job routes scope on (phase 57).</summary>
+    public static bool IsVideo(string? kind) =>
+        string.Equals(kind, Video, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// The capability an Ollama-shaped job kind needs. <c>generate</c> and <c>chat</c> are both

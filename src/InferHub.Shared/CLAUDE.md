@@ -646,3 +646,80 @@ in the shared framework — and `InferHub.Shared.csproj` is still an empty
 `<Project Sdk="Microsoft.NET.Sdk">`. Rule 2 holds too: the archive reports its failures through an
 `Action<string, Exception>` the host passes, so nothing here needs `ILogger`, and a full disk costs
 the archive rather than the render.
+
+### Phase 57 (the video seam) — also load-bearing
+
+**D1 — The client surface is OpenAI's Videos API, because unlike its Images API it already has an
+asynchronous one. This is the decision the phase turns on, and it is a *reversal of nothing*.**
+Phase 47 D1 built `/api/images/jobs` on an explicit premise — *"OpenAI has no asynchronous Images
+API to adopt"* — and phase-21 D3's rule is to adopt the dialect clients already speak and to invent
+only where there is none. For video there is one, async by construction: `POST /v1/videos` answers
+with a video object carrying `status` and `progress`, `GET /v1/videos/{id}` polls it,
+`GET /v1/videos/{id}/content` fetches the bytes, `DELETE` drops it. So nothing is invented here.
+**Considered and rejected: `/api/videos/jobs` mirroring the image five** — the smaller diff, and it
+makes `client.videos.create(...)` in every OpenAI SDK useless against a hub that can serve it.
+
+[VideoRenderer](src/InferHub.Shared/Images/VideoRenderer.cs) writes the object in **one** method
+building **dictionaries**, which is 49's `ImageRenderer.Envelope` lesson applied *before* the bug
+rather than after it: which keys are present is part of the contract, and the last time it was
+inherited from a serializer policy the hub emitted `revised_prompt: null` while a solo node omitted
+it, for three releases, under a parity suite.
+
+**Two of the dialect's routes are `501`s that name the reason.** `GET /v1/videos` enumerates a
+client's jobs and this project holds no such index (phase 51's images listing is a console-scoped
+exception no SDK calls); `POST /v1/videos/{id}/remix` needs the request kept after the job ends,
+which 56 D3 forbids in the sentence it is built on. A `404` would read as "an old hub".
+
+**The mapping loses exactly one distinction, on purpose.** `cancelling` renders as `in_progress`,
+because a job asked to stop is still running and may finish (47 D3), and inventing a status word the
+dialect's typed enums do not have would break the reason for adopting it. `expired` renders as
+`completed` with nothing to fetch: the render *happened*, and calling it `failed` would say it did
+not. `progress` is capped at **99** until a terminal state — a client that sees 100 and stops polling
+has stopped one round trip before the bytes exist.
+
+**D2 — A video is an `IImageRequest`, and the rename is refused here in writing.**
+`VideoGenerationRequest` implements phase 50's interface, so the queue, the per-step progress, the
+cooperative cancel, the read-once retention and phase 56's archive are the *same code*.
+**Considered and rejected: a parallel `VideoJobRegistry`** — two queues on one card is two ideas of
+fairness, which is what 47 D1 built a single path to prevent, and 56's archive would grow a second
+answer to "when do the bytes go away". **Considered and rejected: renaming the eleven `ImageJob*`
+types to `MediaJob*`** — 52 D4's rule, that a phase adding a modality is perfect cover for "while I
+was in there", and a bisect holding a new pipeline *and* four hundred renamed references is a bad
+afternoon. The names are wrong by one word; the wrongness is recorded rather than papered over.
+
+**A job is scoped to the surface that submitted it as well as to its client.** `ImageJobStore.Find`
+and `ForClient` take a capability predicate, so a video id on `/api/images/jobs/{id}` is the *same*
+404 an unknown id earns — phase-25 D4's reasoning about tenancy, applied to surfaces: "that id is
+real but it is a picture" tells a caller something about an id they were never meant to reason about.
+Without it the phase-51 Images panel would list clips it renders as broken pictures.
+
+**D3 — The grids are not the image grids, and `VideoSizes` exists because of it.**
+`WanPipeline.check_inputs` in the pinned `diffusers==0.36.0` requires both sides divisible by **16**
+where every image pipeline here downsamples by 8, so `840x480` is a perfectly good `ImageSize` and an
+invalid video size. Parsing a video size through `ImageSize.TryParse` would move that refusal to a
+`ValueError` four minutes into a job. **The duration is the worker's**: `durations` maps whole
+seconds to frame counts because a latent video pipeline puts frames on a **4k+1** grid, so 81 frames
+at 16 fps is 5.0625 s while OpenAI's `seconds` is a small integer — the label names an offer and the
+**response reports the measurement**. An unoffered value is refused naming the list, never rounded
+(49 D3).
+
+**D4 — Two units on one job, and the quota is the one the card actually spends.**
+`UsageUnitKinds.VideoSeconds` joins `MegapixelSteps` rather than replacing it — phase 42's audio
+precedent exactly. A video transformer denoises the **whole latent stack** every step, so
+`width × height × frames × steps / 1e6` is literally what the GPU did, and a 5-second 832×480 clip at
+30 steps is ~970 megapixel-steps against an SDXL image's 31. **Considered and rejected: a unit of its
+own for the quota** (the track index guessed `frame_seconds`) — a second answer to a question already
+answered, and it would let a client with an exhausted image budget spend the same card under a
+counter nobody had set. `video_seconds` is what a human asks about and cannot be derived from the
+other. **There is no `VideoSecondsPerDay`**: a quota knob for a one-model catalogue is a key that is
+wrong by the time 58 lands. `AdmissionControl` still had to learn the kind, because its `default`
+branch counts whatever reaches it as **tokens**.
+
+**Recorded deviation: there is no `Videos:` config section.** The brief's task list named
+`Videos:MaxResponseBytes`; a video is one attachment over the wire an image already uses, so it is
+bounded by `Images:MaxResponseBytes` clamped by `Tools:MaxAttachmentBytes` (46 D4). Two keys for one
+ceiling are two numbers an operator can raise independently — the v3.10.0 connection-tearing bug,
+rebuilt.
+
+**Rule 5 survived again.** **Zero** new `PackageReference`, no codec anywhere in C#, nothing that
+decodes a frame, and `InferHub.Shared.csproj` is still an empty `<Project Sdk="Microsoft.NET.Sdk">`.

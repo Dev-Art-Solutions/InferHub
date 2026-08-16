@@ -131,7 +131,10 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
                 !disabled.Any(id => string.Equals(id?.Trim(), model, StringComparison.OrdinalIgnoreCase)));
         }
 
-        if (!CapabilityKinds.IsImageKind(kind)
+        // Phase 57: the two image kinds AND video. The licence gate and the budget are about
+        // WEIGHTS ON A CARD, and a node that applied them to the image kinds only would happily
+        // render video with a model whose licence nobody accepted — 50 D1's sentence, one kind on.
+        if (!CapabilityKinds.IsGenerativeMedia(kind)
             || recipes.Count == 0)
         {
             return models;
@@ -227,6 +230,13 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
 
         foreach (var capability in tools.SelectMany(tool => tool.Capabilities))
         {
+            // Deliberately the IMAGE kinds only, in a release that added a third (phase 57).
+            // `NodeToolState.Images` is what phase 51's Images panel reads and `ConsoleContractTests`
+            // pins its shape; widening it here would put video rows into a panel that renders them
+            // as pictures. Phase 59 owns the console for the video track and is where this grows —
+            // the cost until then is that a video recipe refused for its licence or its budget is
+            // invisible at the hub, which is stated in the release notes rather than left to be
+            // discovered.
             if (!CapabilityKinds.IsImageKind(capability.Kind))
             {
                 continue;
@@ -486,7 +496,7 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
         // holding the slot already means nothing else on this pool is on the card, so the common
         // case never refuses — the gate earns its keep when an operator has raised concurrency or
         // when a second recipe would have to be resident beside a running one.
-        if (!CapabilityKinds.IsImageKind(capability)
+        if (!CapabilityKinds.IsGenerativeMedia(capability)
             || !recipes.TryGetValue(model, out var recipe))
         {
             return lease;
@@ -627,7 +637,7 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
                 $"'{model}' is switched off on this node by the coordinator's node profile");
         }
 
-        if (!CapabilityKinds.IsImageKind(capability)
+        if (!CapabilityKinds.IsGenerativeMedia(capability)
             || !recipes.TryGetValue(model, out var recipe))
         {
             return;

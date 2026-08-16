@@ -124,8 +124,8 @@ public class ImageJobDurabilityTests : IDisposable
     {
         var first = NewStore();
 
-        first.TryCreate(Guid.NewGuid(), "client", "sd-test", 1, out var queued);
-        first.TryCreate(Guid.NewGuid(), "client", "sd-test", 1, out var running);
+        first.TryCreate(Guid.NewGuid(), "client", AJob(), out var queued);
+        first.TryCreate(Guid.NewGuid(), "client", AJob(), out var running);
         first.TryTransition(running.Id, ImageJobStates.Running, nodeId: "node-a");
 
         var second = NewStore();
@@ -345,7 +345,7 @@ public class ImageJobDurabilityTests : IDisposable
 
     private static ImageJobRecord Succeed(ImageJobStore store, string clientId)
     {
-        store.TryCreate(Guid.NewGuid(), clientId, "sd-test", 1, out var record);
+        store.TryCreate(Guid.NewGuid(), clientId, AJob(), out var record);
         store.TryTransition(record.Id, ImageJobStates.Running);
         store.TrySucceed(record.Id, [new ImageJobImage(Png, "image/png", new ImageSize(512, 512), 42)], units: 7.5);
         return record;
@@ -359,4 +359,12 @@ public class ImageJobDurabilityTests : IDisposable
 
         public void Advance(TimeSpan by) => now += by;
     }
+
+    /// <summary>
+    /// A minimal generation request, so a store test says <em>what a job is</em> rather than
+    /// repeating five positional arguments (phase 57 changed <c>TryCreate</c> to take the request).
+    /// </summary>
+    private static ImageGenerationRequest AJob(string model = "sd-test") =>
+        new(model, "a prompt", null, 1, null, null, null, null);
+
 }

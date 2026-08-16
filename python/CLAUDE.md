@@ -333,3 +333,59 @@ run** — a bar that reaches 100% and then starts again is a bar that has lied o
 `requirements-diffusion.txt` — and `InferHub.Shared.csproj` is still an empty
 `<Project Sdk="Microsoft.NET.Sdk">`.
 
+### Phase 57 (video: one model, and four facts that were read rather than guessed) — also load-bearing
+
+**The same worker, the same loader, the same gates.** A recipe says `"media": "video"` — **absent
+means `image`**, which is why the seven recipes that predate this phase changed by zero bytes
+(40 D1's "null is today's behaviour", third use) — and `capability_frames` declares it under a third
+kind. **Considered and rejected: `video_worker.py`.** A second worker is a second copy of the
+readiness marker, the eviction, the licence gate, the VRAM budget and the `local_files_only`
+prefetch, every one of which is about *weights on a card* and none of which is about what comes out
+of the pipeline; it would also put two multi-gigabyte processes on one GPU the first time somebody
+enabled both.
+
+**D1 — Four facts about `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` were established from the pinned wheel and
+the repo's own configs, and each one produces a plausible non-failure when it is wrong.**
+
+1. **The VAE loads separately, in `float32`, under a `bfloat16` transformer.** Upstream's example
+   does exactly that; a uniform bf16 load does not error, it is the difference between a video and
+   noise, discovered four minutes into a job. `vaeClass` **names** the class rather than inferring
+   it — inferring which VAE a repo wants is 29 D5's capability registry by the back door.
+2. **`flow_shift` is a scheduler setting, not a call argument, and this repo already sets it.**
+   Passing it to `__call__` is a `TypeError`. Upstream's example sets 5.0 by hand because it is
+   written for the **14B 720p** model; the 1.3B repo ships `flow_shift: 3.0` — the 480p value — in
+   `scheduler/scheduler_config.json`. So `schedulerFlowShift` matches what is checked in, and the
+   override exists for the 720p entry phase 58 will add.
+3. **Height and width divide by 16, and frames sit on a 4k+1 grid.** `check_inputs` and
+   `prepare_latents` respectively. Both are recipe data, so 58 inherits them rather than re-deriving.
+4. **"1.3B" names the transformer only.** The text encoder is UMT5-XXL at ~11B, every weight in the
+   repo is fp32 with **no fp16 variant**, and the download is **~29 GB**. That is v3.14.1's
+   `variant`-is-not-`dtype` lesson in the one shape where there is nothing to fix — there is no
+   variant to ask for — so `vramMiB` (15 500) is sized from the encoder and the disk cost is
+   documented rather than discovered.
+
+**D2 — A node that cannot encode does not declare `video` at all.** `diffusers.utils.export_to_video`
+**warns and silently drops to an OpenCV `mp4v` writer** when `imageio` is absent: a container nobody
+chose, from a code path nobody read, on a job that already cost minutes of card. So `can_encode_video`
+is asked once per declaration (46 D7's withdraw-before-the-first-failure), `imageio` +
+`imageio-ffmpeg` are pinned, and `Dockerfile.diffusion` **asserts the import at build time** —
+46 D9's `docker build` step rather than a thing to remember. `imageio-ffmpeg` vendors a **static
+ffmpeg binary in the wheel**, so "which encoder was in 3.25.0" has a version for an answer rather
+than whatever the distribution mirror held that week (39 D9).
+
+**D3 — `generate_video` is not `run_batch`, deliberately.** That loop is per-image and every argument
+it takes — `n`, the per-image seed derivation, the seam measurement, the projection — is about a
+still. Sharing it would mean six `if video` branches inside the function that is hardest to read, to
+save a loop that runs once. **`fps` is not a caller's knob** (57's non-goals): re-timing the frames
+at encode changes how fast the world moves in the clip, and the only honest setting is the trained
+one until somebody measures the others.
+
+**The refusals are the worker's, and they name the list.** A size outside `sizes` and a duration
+outside `durations` are both `invalid_request` — 46 D6's deviation unchanged, because a recipe is a
+file on the node and the hub has no catalogue. The duration refusal says *why* it is a refusal rather
+than a rounding: "a frame count is fixed by the model's latent grid".
+
+**Rule 5 survived again**, and rule 7 met its fourth kind of content: the prompt is not logged, and
+**no intermediate frame is ever decoded or written** — the temptation is stronger here than anywhere,
+because a first frame would make a lovely progress thumbnail and it is a picture of what somebody
+asked for.

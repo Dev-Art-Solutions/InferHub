@@ -173,6 +173,14 @@ A restart used to turn a job id from thirty seconds ago into a `404` byte-identi
 existed. Writing the job down is a file write; the release is the list of things durability may *not*
 do — extend retention, survive a read, resume your job (nothing durable holds a prompt), or go in the
 database.
+
+**v3.25 makes the fleet render video** — [`POST /v1/videos`](#text-to-video-v325), and it is
+OpenAI's own API rather than one we invented. Phase 47 built InferHub's async image surface because
+OpenAI has no asynchronous *Images* API to adopt; it has an asynchronous *Videos* API, so this
+release adopts it and adds nothing. One model — `wan-t2v-1.3b`, Apache-2.0, 480p, 2–5 seconds — over
+**the same queue, the same cancel, the same read-once retention and the same optional durability**
+v3.15 and v3.24 already built. Still zero new `PackageReference`s: the encoder is a static ffmpeg
+binary inside a Python wheel, reached through the same child process as everything else.
 Still on the table beyond that: teaching the **coordinator** about backend health as a typed signal
 (a status column and an alert, rather than a line in the node's log), **active-active**
 multi-coordinator load sharing, an **OTLP push** exporter behind an explicit opt-in, and a dedicated
@@ -1396,6 +1404,85 @@ A standalone node serves `/api/images/jobs` itself, with the same bodies and the
 job at a time, because it is a box with a card in it. The deployment least likely to have a proxy
 that tolerates a two-minute request is the one somebody is running on a laptop.
 
+## Text to video (v3.25+)
+
+A node with a card and the `:diffusion` image can render short clips, and the API is **OpenAI's
+Videos API** — not one of ours:
+
+```bash
+curl -s http://localhost:5080/v1/videos   -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json'   -d '{"model":"wan-t2v-1.3b","prompt":"a paper boat on a puddle, slow dolly in","seconds":5}'
+# {"id":"video_8f3c…","object":"video","model":"wan-t2v-1.3b","status":"queued","progress":0,
+#  "seconds":5,"size":"832x480","created_at":1755400000}
+
+curl -s http://localhost:5080/v1/videos/video_8f3c… -H "Authorization: Bearer $KEY"
+# …"status":"in_progress","progress":42…
+
+curl -s http://localhost:5080/v1/videos/video_8f3c…/content -H "Authorization: Bearer $KEY" -o out.mp4
+```
+
+`GET /v1/videos/{id}` polls, `/content` fetches the bytes **once**, and `DELETE` cancels and drops
+it. That is the whole surface.
+
+### Why this one is adopted and the image one was invented
+
+[v3.15](#a-job-that-takes-two-minutes-v315) built `/api/images/jobs` because OpenAI has no
+asynchronous *Images* API to adopt, and this project's rule is to speak the dialect clients already
+speak and to invent only where there is none. Video has one, and it is asynchronous by construction
+— create, poll, fetch, delete — so `client.videos.create(...)` in any OpenAI SDK works against a
+hub that can serve it.
+
+Two of that dialect's routes are **501s that say why** rather than 404s that read like an old
+server. `GET /v1/videos` would enumerate your jobs, and this coordinator holds no such index — the
+id it handed you *is* the capability to fetch the bytes. `POST /v1/videos/{id}/remix` needs the
+request kept after the job ends, and nothing durable here holds a prompt.
+
+### It is the same job model, so it is the same everything else
+
+The queue, the per-step progress, the cooperative cancel that leaves the worker holding its weights,
+the five-minute read-once retention and [v3.24's optional
+durability](#a-job-can-survive-a-restart-if-you-say-so-v324) are the code the image jobs already
+run. `Images:Jobs:*` configures both, and `Images:MaxResponseBytes` bounds both — one wire, one
+ceiling, clamped by `Tools:MaxAttachmentBytes` as always.
+
+A video id will not open an image route and an image id will not open a video route: both are the
+same `404` an unknown id earns.
+
+### One model, and four things about it that are worth knowing
+
+`wan-t2v-1.3b` is `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` — **Apache-2.0**, so no licence decision — at
+832×480 or 480×832, 2 to 5 seconds, 16 fps.
+
+- **"1.3B" names the transformer only.** The text encoder beside it is UMT5-XXL at ~11B, every
+  weight in the repo is stored fp32 with **no fp16 variant**, and the first pull is **~29 GB**. The
+  recipe declares 15 500 MiB of VRAM for that reason, not for 1.3B of it.
+- **Sizes divide by 16, not by 8.** `840x480` is a perfectly good *image* size and an invalid video
+  one; the refusal says so at the edge rather than four minutes into a job.
+- **`seconds` is a label, and the response reports the measurement.** A latent video pipeline puts
+  frames on a 4k+1 grid, so `seconds: 5` means 81 frames and 81 frames at 16 fps is **5.06 s** —
+  which is what comes back. A duration the model does not offer is refused naming the list, never
+  rounded to the nearest one.
+- **`fps` is not yours to set.** It is the rate the model was trained at; re-timing the frames at
+  encode changes how fast the world moves.
+
+### Usage, and the two units
+
+A video meters **both**: `megapixel_steps` — `width × height × frames × steps / 1e6`, because a
+video transformer denoises the whole latent stack on every step — and `video_seconds`. The first is
+the card's real cost and spends the same `MegapixelStepsPerDay` budget an image does, because it is
+the same card: a 5-second 832×480 clip at 30 steps is about **970** megapixel-steps against an SDXL
+image's 31. The second is the number a human asks about, and neither can be derived from the other.
+`inferhub_video_seconds_total{kind,model}` is on `/metrics`, and emits nothing at all on a fleet
+that has never rendered one.
+
+### What v3.25 does not do
+
+**No image-to-video** — a second capability and a second input path, and it is named rather than
+forgotten. **No caller-chosen fps.** **No audio**: Wan2.1 T2V produces none, and a silent track
+added to look complete is a lie in a container. **No console panel and no per-recipe status at the
+hub** — a video recipe refused for its licence or its VRAM budget is currently invisible from the
+coordinator, which is the next release's job. **And no video has been watched**: every claim above
+about the model comes from its own configs and the pinned `diffusers` wheel, not from a card.
+
 ## Configure the fleet, not the boxes (v3.11+)
 
 Twenty nodes means twenty `appsettings.json` files and twenty restarts. A **node profile** is the
@@ -2172,7 +2259,7 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Queue:MaxWaitSeconds` | `30` | How long a request may wait for a saturated fleet before `503`. |
 | `Queue:MaxDepth` | `64` | How many requests may wait at once. Past it, an immediate `503`. |
 | `Images:MaxBatch` | `4` | v3.14. The absolute ceiling on `n`, whatever the size. A batch runs on **one** node. Bound by both hosts from the same section, so a request refused on a hub is refused identically on a solo node. |
-| `Images:MaxResponseBytes` | `26214400` | v3.14. An upper-bound estimate (`w × h × 4 × n`) checked *before a step runs*, with the refusal naming the largest `n` that fits. **Clamped by `Tools:MaxAttachmentBytes`** at use, because that cap sizes the mesh's SignalR message limit and exceeding a SignalR limit tears a node's connection down rather than failing a message. Raising one without the other gets you no change, deliberately. |
+| `Images:MaxResponseBytes` | `26214400` | v3.14. An upper-bound estimate (`w × h × 4 × n`) checked *before a step runs*, with the refusal naming the largest `n` that fits. **Clamped by `Tools:MaxAttachmentBytes`** at use, because that cap sizes the mesh's SignalR message limit and exceeding a SignalR limit tears a node's connection down rather than failing a message. Raising one without the other gets you no change, deliberately. **v3.25: it bounds a video too** — there is no `Videos:` section, because two keys for one wire ceiling are two numbers you could raise independently. A clip's size cannot be estimated from its geometry (that is an encoder's output), so what the edge checks instead is that the recipe offers the `(size, seconds)` pair you asked for. |
 | `Images:SyncMaxWaitSeconds` | `120` | v3.15. How long `/v1/images/generations` waits for its own job before a `503` naming the async route. **The job keeps running** and the message carries its id — discarding a minute of GPU because an HTTP client got bored is your call, not the hub's. See [A job that takes two minutes](#a-job-that-takes-two-minutes-v315). |
 | `Images:Jobs:RetentionSeconds` | `300` | v3.15. How long a finished job's record and image bytes survive, read or not. With `Images:Jobs:Persistence=none` (the default) nothing persists across a restart and **nothing touches disk**. |
 | `Images:Jobs:Persistence` | `none` | v3.24. `none` (byte-identical to v3.23) or `file`. Design rule 4's **fourth** recorded exception, and the one that stores user content — so it is off until you turn it on. With `file`, a finished job survives a restart for the rest of its retention window and not one second longer (the window is applied *on load*); a job that was in flight comes back `failed` with reason `hub_restarted` and is **never resumed**, because nothing durable holds a prompt. No `postgres`: image bytes are not row data. An unrecognised value fails startup rather than falling back to `none`, which would silently drop every job on the next restart. |

@@ -67,3 +67,14 @@ bitsandbytes==0.48.1
 # perfect until somebody makes a request.
 sentencepiece==0.2.1
 protobuf==6.33.1
+
+# THE ENCODER (phase 57). `diffusers.utils.export_to_video` needs `imageio` with an ffmpeg backend;
+# WITHOUT IT IT DOES NOT FAIL — it warns and silently drops to an OpenCV `mp4v` writer, producing a
+# container nobody chose from a code path nobody read, on a job that already cost minutes of card.
+# So both are pinned and the image ASSERTS the import at build time, exactly as it asserts torch.
+#
+# `imageio-ffmpeg` vendors a STATIC ffmpeg binary inside the wheel, which is why there is no
+# `apt-get install ffmpeg` beside it: "which encoder was in 3.25.0" then has a version for an answer
+# rather than whatever the distribution mirror held that week (phase-39 D9's question again).
+imageio==2.37.0
+imageio-ffmpeg==0.6.0
