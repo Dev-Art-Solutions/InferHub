@@ -45,14 +45,14 @@ https://inferhub.devart.solutions/#idocs_video
 
 ## X / Twitter
 
-**Post (269 characters)**
+**Post (278 characters X-weighted, URL counted as 23)**
 
 InferHub 3.25 renders video on your own card.
 
 The API is OpenAI's Videos API — not ours. In 3.15 we invented an async image API because OpenAI had
 none. This time there was one, so we adopted it and added nothing.
 
-No video has been watched yet. We say so.
+No video has been watched. We say so.
 
 https://inferhub.devart.solutions/#idocs_video
 

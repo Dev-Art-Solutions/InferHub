@@ -133,7 +133,44 @@ on v3.24; it is not a claim about the product and it is not being called one.
 
 ## Published-image check
 
-`ghcr.io/dev-art-solutions/inferhub-node:3.25.0-diffusion` is the one image this phase changed, and
-the one thing to run against it is the thing a green suite cannot see: that the venv still imports,
-that `imageio` finds its ffmpeg, and that the worker declares `video` for the new recipe. Results are
-appended below at release time.
+Done, on both images this phase touches. Both carry revision **`781ccd5`**, the phase commit, and
+all five tags are anonymously pullable with **no manual flip** — Gotcha 1 for the twelfth time.
+
+**`inferhub-node:3.25.0` (352 MB), solo mode, every video route driven through a real container.**
+This is the check that exists because v3.5.0 shipped solo mode *mapped and unreachable* in Docker:
+
+| | |
+|---|---|
+| `POST /v1/videos` with no key | **401** — phase-21 D2 checked, not assumed |
+| `POST /v1/videos` with a key | **503 + `Retry-After: 30`**, `capability_unavailable`, naming the model |
+| `GET /v1/videos` | **501**, with the sentence about holding no index |
+| `POST /v1/videos/{id}/remix` | **501**, with the sentence about nothing durable holding a prompt |
+| `GET`/`DELETE /v1/videos/{id}`, `/content` | **404** — mapped, reachable, and scoped |
+| `size: "840x480"` | **400** naming the /16 grid *at the edge*, before any dispatch |
+| `GET /api/images/jobs` | **200** — the image surface is untouched |
+
+**`inferhub-node:3.25.0-diffusion` (12.5 GB) — the four claims a green suite cannot make.**
+
+- **D8 holds on the artifact.** `imageio 2.37.0` + `imageio-ffmpeg 0.6.0`, and
+  `imageio.plugins.ffmpeg.get_exe()` resolves to a **76 MB static `ffmpeg-linux-x86_64-v7.0.2`
+  inside the wheel** — which is the whole reason there is no `apt-get install ffmpeg` beside it.
+  `export_to_video` imports, so the OpenCV fallback path is unreachable. `can_encode_video()` → `True`.
+- **`WanPipeline` and `AutoencoderKLWan` both resolve** in `diffusers 0.36.0`, which is the
+  build-time assertion re-run against the shipped venv rather than against the build log.
+- **The recipe is the one that was written**: `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` at `0fad780a534b`,
+  Apache-2.0 and permissive, `AutoencoderKLWan` at **float32** under a **bfloat16** transformer,
+  `schedulerFlowShift: 3.0`, `vramMiB: 15500`. **`media == video` for exactly one recipe** and the
+  other seven read as `image` — 40 D1's "absent means today's behaviour", confirmed on disk.
+- **`capability_frames` emits three kinds**, `video: ['wan-t2v-1.3b']` beside `image` and
+  `image-edit`, and the worker's own refusals answer with the list: `seconds=5 → (81 frames, 16 fps)`,
+  `seconds=3 → 49`, and **`seconds=6` → refused naming `2, 3, 4, 5`** with the latent-grid reason.
+  `840x480` is refused naming the buckets.
+- **The CPU and licence gates cover video, which is 57 D3's whole point.** On a CPU-only box the
+  offer collapses to `['sd15']` and the log says *"not offering 'wan-t2v-1.3b' on a CPU-only node"*
+  — so the hub is never routed at a card that is not there. With a card and nothing accepted, the
+  offer is the six permissive recipes **including** `wan-t2v-1.3b`, with `sd35-medium` and
+  `sdxl-turbo` named and dropped.
+
+**Still not done, and still said out loud: nothing was rendered.** This box has no CUDA, so no
+weights were fetched, no frame was decoded and no clip was watched. Everything above is about the
+*catalogue and the edge* on the published artifact; everything about the *picture* is phase 60's.
