@@ -130,6 +130,14 @@ every recipe file parses, and **every `pipeline` and `vaeClass` any recipe names
 `diffusers`** — which is exactly the assertion `cogvideox-2b` needs, since it is the first recipe to
 name `CogVideoXPipeline`. A tag whose image builds has proved that much.
 
-What has **not** been done is pulling the published `3.26.0` diffusion image onto the GPU box and
-watching it declare `cogvideox-2b`, decline `wan-t2v-14b-720p` on a 24 GB card, and render something.
-That needs the host, and it is the first item on phase 60's day.
+All five images published green on the tag, and the diffusion one was asked what it is rather than
+the dashboard: `inferhub-node:3.26.0-diffusion` resolves to
+`sha256:feb3cb8efae2…` and its config carries
+`org.opencontainers.image.revision = afb7fa45a8f065bc8e11b486dcbc2ae8626ec9c3` — the phase commit —
+with `Tools__Image__RecipeDirectory=/opt/inferhub/recipes` intact. **So the build-time assertions ran
+against these two recipes on the published artifact**: the JSON parses, and `CogVideoXPipeline`
+exists in the pinned `diffusers` — the first recipe in this project to name it.
+
+What has **not** been done is pulling that image onto the GPU box and watching it declare
+`cogvideox-2b`, decline `wan-t2v-14b-720p` on a 24 GB card, and render something. Reading a manifest
+is not running a container. That needs the host, and it is the first item on phase 60's day.
