@@ -1,0 +1,34 @@
+{
+  "id": "wan-t2v-14b-720p",
+  "notes": "Phase 58, the 720p entry phase 57 D4 said this field was built for. THREE FACTS, ALL READ RATHER THAN INHERITED. (a) THIS REPO ALSO SHIPS flow_shift: 3.0. scheduler/scheduler_config.json here is byte-identical to the 1.3B's on that field, and 3.0 is the 480p value; upstream's own 720p example passes 5.0 by hand. So schedulerFlowShift below is not a convenience for a config that might disagree — it is the only thing between a 720p render and the wrong sigma schedule, which does not error and does not obviously look wrong. (b) THE ID IS A MODEL AND A GEOMETRY (58 D1). vramMiB is what the node's admission gate is handed, once, before any caller exists — so it is sized at the LARGEST (size, seconds) pair this recipe offers: 1280x720 at 81 frames. An operator who wants this model's cheap corner ships a second recipe id with a shorter list, exactly as 48 D6 says of quantization. (c) THE ARITHMETIC, so the next reader can correct it rather than re-derive it: the transformer is 14B and the repo stores it fp32 (53 GB of the 75 GB download), so nf4 is ~7.7 GB resident against ~28 GB at bfloat16; the UMT5-XXL encoder is 20.8 GB of fp32 in this repo — ~5.2B parameters — so ~2.9 GB at nf4 against ~10.4 GB at bfloat16; the VAE is 0.47 GB and stays float32 (57 D4, unchanged and load-bearing). That is ~11 GB of weights, and the rest of the 24 000 is the 720p temporal latent and the attention activations over 75 600 tokens, which NOBODY HAS MEASURED. It does not fit a 24 GB card at the default reserve, and being refused there rather than dying at 2am is what the gate is for. THE DOWNLOAD IS ~75 GB.",
+  "media": "video",
+  "repo": "Wan-AI/Wan2.1-T2V-14B-Diffusers",
+  "revision": "38ec498cb3208fb688890f8cc7e94ede2cbd7f68",
+  "pipeline": "WanPipeline",
+  "vaeClass": "AutoencoderKLWan",
+  "license": {
+    "id": "Apache-2.0",
+    "permissive": true,
+    "url": "https://huggingface.co/Wan-AI/Wan2.1-T2V-14B-Diffusers"
+  },
+  "operations": ["generate"],
+  "defaults": { "steps": 30, "guidance": 5.0, "size": "1280x720", "seconds": 5 },
+  "sizes": ["1280x720", "720x1280"],
+  "fps": 16,
+  "durations": [
+    { "seconds": 2, "frames": 33 },
+    { "seconds": 3, "frames": 49 },
+    { "seconds": 4, "frames": 65 },
+    { "seconds": 5, "frames": 81 }
+  ],
+  "maxSteps": 50,
+  "vramMiB": 24000,
+  "vramUnquantizedMiB": 50000,
+  "dtype": "bfloat16",
+  "vaeDtype": "float32",
+  "schedulerFlowShift": 5.0,
+  "quantization": "nf4",
+  "quantizeComponents": ["transformer", "text_encoder"],
+  "vaeTiling": true,
+  "cpuViable": false
+}

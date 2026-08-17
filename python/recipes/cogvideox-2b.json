@@ -1,0 +1,26 @@
+{
+  "id": "cogvideox-2b",
+  "notes": "Phase 58, and the recipe that makes `fps` a required field (58 D4). THREE FACTS FROM THE CHECKED-IN CONFIGS AND THE MODEL CARD. (a) IT IS EIGHT FRAMES PER SECOND. The card says so and upstream's example ends export_to_video(video, 'output.mp4', fps=8); the worker's old fallback of 16 would have encoded a 49-frame clip at twice its rate — which is not an error, it is a video that plays at double speed and a model that reads as bad at motion. (b) ONE SIZE AND ONE DURATION, and both are the model rather than a default: transformer/config.json has use_rotary_positional_embeddings: false with sample_height 60, sample_width 90 and sample_frames 49 — learned positional embeddings sized for exactly one grid — and the card states '720 x 480, no support for other resolutions (including fine-tuning)'. 49 frames at 8 fps is 6.125 s, so `seconds: 6` is the label and 6.125 is what the response reports (57 D5). (c) THE VRAM FIGURE IS THE RESIDENT-PIPELINE ONE, NOT THE CARD'S. The card's 'diffusers FP16: starting from 4GB' is a sequential-CPU-offload path this worker deliberately does not take: 41 D4 and 48 D2 keep weights resident so a second request does not re-pay the transfer. Resident at float16 is transformer 3.15 GB + T5-XXL encoder 8.87 GB + VAE 0.8 GB ~ 12.9 GB, and vramMiB below adds the decode peak that vaeTiling bounds. THE DOWNLOAD IS ~13 GB, which makes this the smallest video model in the catalogue by a factor of six.",
+  "media": "video",
+  "repo": "THUDM/CogVideoX-2b",
+  "revision": "1137dacfc2c9c012bed6a0793f4ecf2ca8e7ba01",
+  "pipeline": "CogVideoXPipeline",
+  "license": {
+    "id": "Apache-2.0",
+    "permissive": true,
+    "url": "https://huggingface.co/THUDM/CogVideoX-2b"
+  },
+  "operations": ["generate"],
+  "defaults": { "steps": 50, "guidance": 6.0, "size": "720x480", "seconds": 6 },
+  "sizes": ["720x480"],
+  "fps": 8,
+  "durations": [
+    { "seconds": 6, "frames": 49 }
+  ],
+  "maxSteps": 50,
+  "vramMiB": 16000,
+  "dtype": "float16",
+  "quantization": "none",
+  "vaeTiling": true,
+  "cpuViable": false
+}

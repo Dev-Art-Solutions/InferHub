@@ -30,8 +30,25 @@ public sealed record ImageRecipeInfo(
     bool Permissive,
     string? LicenseUrl,
     int VramMiB,
-    string Quantization)
+    string Quantization,
+    string Media = ImageRecipeInfo.ImageMedia)
 {
+    public const string ImageMedia = "image";
+
+    public const string VideoMedia = "video";
+
+    /// <summary>
+    /// What this recipe produces, and the <em>fourth</em> field the node reads (phase 58, D3).
+    /// </summary>
+    /// <remarks>
+    /// It is still not the node learning about diffusion (41 D1): nothing here reads <c>fps</c>,
+    /// <c>durations</c>, <c>repo</c> or <c>pipeline</c>, and what <c>media</c> buys is not knowledge
+    /// of what a clip is — it is <em>which recipes must state their megabytes</em>, which is this
+    /// box's own subject. <b>Absent means image</b>, so the eight recipes that predate video are
+    /// unchanged (40 D1's "null is today's behaviour", fourth use).
+    /// </remarks>
+    public bool IsVideo => string.Equals(Media, VideoMedia, StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// Whether this node may run it. A permissive recipe always may; anything else needs its licence
     /// id in <c>Tools:Image:AcceptedLicenses</c>.
@@ -95,6 +112,24 @@ internal static class ImageRecipeCatalogue
                 continue;
             }
 
+            // PHASE 58, D3 — and the default is flipped for video only. Phase 48's rule is that a
+            // recipe with no declared figure is admitted rather than guessed at, because inventing
+            // a number would refuse a model the operator can see on the box. That is right where
+            // the miss is 4-8 GB and it is a loaded gun where the same silence admits a model that
+            // wants 24 GB onto a card holding 12 — and the failure lands as an out-of-memory error
+            // inside somebody's four-minute job rather than as a line in this log.
+            if (recipe.IsVideo && recipe.VramMiB <= 0)
+            {
+                logger.LogWarning(
+                    "Skipping video recipe '{Recipe}' ({Path}): a video recipe must declare 'vramMiB'. "
+                    + "An image recipe without one is admitted, because the miss is a few gigabytes; a "
+                    + "video model's is the whole card.",
+                    recipe.Id,
+                    path);
+
+                continue;
+            }
+
             catalogue[recipe.Id] = recipe;
         }
 
@@ -121,7 +156,10 @@ internal static class ImageRecipeCatalogue
             licence?.Permissive == true,
             string.IsNullOrWhiteSpace(licence?.Url) ? null : licence.Url.Trim(),
             file.VramMiB ?? 0,
-            string.IsNullOrWhiteSpace(file.Quantization) ? "none" : file.Quantization.Trim().ToLowerInvariant());
+            string.IsNullOrWhiteSpace(file.Quantization) ? "none" : file.Quantization.Trim().ToLowerInvariant(),
+            string.IsNullOrWhiteSpace(file.Media)
+                ? ImageRecipeInfo.ImageMedia
+                : file.Media.Trim().ToLowerInvariant());
     }
 
     private sealed record RecipeFile(
@@ -129,7 +167,8 @@ internal static class ImageRecipeCatalogue
         [property: JsonPropertyName("revision")] string? Revision,
         [property: JsonPropertyName("license")] LicenseFile? License,
         [property: JsonPropertyName("vramMiB")] int? VramMiB,
-        [property: JsonPropertyName("quantization")] string? Quantization);
+        [property: JsonPropertyName("quantization")] string? Quantization,
+        [property: JsonPropertyName("media")] string? Media);
 
     private sealed record LicenseFile(
         [property: JsonPropertyName("id")] string? Id,

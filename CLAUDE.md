@@ -86,8 +86,8 @@ longer pays for the Qdrant connector's UUID mapping and the cluster lease's spli
 |---|---|---|
 | `src/InferHub.Shared/` | `src/InferHub.Shared/CLAUDE.md` | contracts, the OpenAI/Ollama dialects, the retrieval core, the vector stores, the image and video envelopes · phases 24, 29, 33, 34, 40, 46, 47, 57 |
 | `src/InferHub.Coordinator/` | `src/InferHub.Coordinator/CLAUDE.md` | endpoints, routing, admission, cluster, `/metrics`, the console · phases 21–23, 25, 26, 28, 30–32, 35, 44, 45, 51, 57 |
-| `src/InferHub.Node/` | `src/InferHub.Node/CLAUDE.md` | backends, the Ollama supervisor, solo mode, the tool runtime, profiles · phases 36–39, 41–43, 48, 57 |
-| `python/` | `python/CLAUDE.md` | the worker protocol, recipes, the diffusion worker · phases 49, 50, 55, 57 |
+| `src/InferHub.Node/` | `src/InferHub.Node/CLAUDE.md` | backends, the Ollama supervisor, solo mode, the tool runtime, profiles · phases 36–39, 41–43, 48, 57, 58 |
+| `python/` | `python/CLAUDE.md` | the worker protocol, recipes, the diffusion worker · phases 49, 50, 55, 57, 58 |
 | `tests/` | `tests/CLAUDE.md` | the four test projects and the testing discipline |
 | `deploy/`, any Dockerfile | `deploy/CLAUDE.md` | the five images and the permissions trap |
 | `plan/`, writing any plan | `plan/CLAUDE.md` | the brief format, the release checklist, the budget · phase 54 |

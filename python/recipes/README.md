@@ -23,6 +23,13 @@ is for.
 | `sdxl-turbo` | 2.6B | **1** | ~8 GB, fp16 | Stability AI Non-Commercial | generate | **no — accept the licence** |
 | `qwen-360` | 20B + a rank-128 LoRA | 25 | ~19.5 GB at nf4 | Apache-2.0 base, **MIT** adapter | generate | yes — and it produces 360° panoramas |
 | `wan-t2v-1.3b` | 1.3B DiT + **11B text encoder** | 30 | ~15.5 GB, bf16 | Apache-2.0 | generate (**video**) | yes — 480p, 2–5 s, ~29 GB to download |
+| `wan-t2v-14b-720p` | 14B DiT + the same encoder | 30 | **~24 GB at nf4** (~50 GB at bf16) | Apache-2.0 | generate (**video**) | **not on a 24 GB card** — 720p, 2–5 s, ~75 GB to download |
+| `cogvideox-2b` | 1.6B DiT + 4.7B T5 | 50 | ~16 GB, fp16 | Apache-2.0 | generate (**video**) | yes — 720×480, **8 fps**, one 6 s offer, ~13 GB to download |
+
+**`wan-t2v-14b-720p` is the first recipe this project ships that does not fit a 24 GB card**, and
+that is the VRAM gate working rather than a packaging mistake: a node with 24 GB does not declare it,
+so the hub never routes to it and nobody discovers the ceiling inside a four-minute job. See "the
+declared figure is the largest pair" below.
 
 Two of those numbers are the point of this phase. `flux-schnell` and `qwen-image` **do not fit a
 24 GB card at bf16** — 33 GB and 60 GB respectively — and nf4 is what makes them one-card models.
@@ -85,11 +92,15 @@ bare `401` that reads as "the model is gone".
   "vaeClass": "AutoencoderKLWan",  // loaded SEPARATELY, at `vaeDtype`, and passed in
   "vaeDtype": "float32",           // NOT the transformer's dtype. See below — this one is load-bearing.
   "schedulerFlowShift": 3.0,       // re-derives the scheduler from its config. 3.0 = 480p, 5.0 = 720p.
-  "fps": 16,                       // the rate the model was TRAINED at. Not a caller's knob.
-  "durations": [                   // whole seconds → frame counts. See below.
+  "fps": 16,                       // the rate the model was TRAINED at. Not a caller's knob, and
+                                   // since phase 58 REQUIRED — there is no default.
+  "durations": [                   // whole seconds → frame counts. REQUIRED. See below.
     { "seconds": 2, "frames": 33 },
     { "seconds": 5, "frames": 81 }
-  ]
+  ],
+
+  // Phase 58, and it applies to image recipes too — it is video that needs it.
+  "vaeTiling": true                // decode in tiles: the peak allocation is at DECODE, not denoise
 }
 ```
 
@@ -121,6 +132,40 @@ wrong**:
 **`fps` is not a caller's knob**, deliberately. Re-timing the frames at encode changes how fast the
 world moves in the clip, and the only honest setting is the trained one until somebody measures the
 others.
+
+### `fps` and `durations` are required of a video recipe, and there is no default for either
+
+Phase 58 deleted the 16 that `fps` used to fall back to. Wan is 16 and **CogVideoX-2b is 8**; a
+fallback is a guess about somebody else's model, and the clip it produces does not fail — it plays
+at double speed, which reads as a model that is bad at motion. A video recipe missing either field
+is **skipped and logged by name**, before the capability is declared, and so is one whose
+`defaults.seconds` is not in its own `durations` list — that one refuses every request from the
+caller who named no duration at all, which is the caller who was trusting the recipe.
+
+### The declared `vramMiB` is the largest pair the recipe offers, and an id is a model *and* a geometry
+
+A video model's cost is dominated by the `(size, seconds)` pair: 1280×720 at 81 frames is 2.25× the
+latent of 832×480 at the same length. The node's gate is handed **one** number, once, when the
+capability is declared — minutes before any caller exists and without ever reading a request body —
+so the figure is sized at the **largest** pair the recipe offers, and a recipe for the cheap corner
+of a model is a second recipe id with a shorter `sizes`/`durations` list. That is the same shape as
+quantization: an operator who wants both ships two ids.
+
+**A video recipe with no `vramMiB` at all is not declared.** For an image recipe, silence still means
+"admit rather than guess" — the miss is 4–8 GB and inventing a number would refuse a model the
+operator can see on the box. For video the same silence admits a 24 GB model onto a 12 GB card, and
+the failure arrives as an out-of-memory error four minutes into somebody's job instead of as a line
+in a log at startup.
+
+### `vaeTiling` exists because the peak is at decode
+
+The denoise loop holds a latent; the VAE then materialises **every frame at full resolution at
+once**, which for 81 frames at 720p is the largest single allocation in the job — and it lands after
+all the expensive minutes. `AutoencoderKLWan` and `AutoencoderKLCogVideoX` both expose
+`enable_tiling()` (CogVideoX's own example pairs it with `enable_slicing()`, so both are called where
+they exist). It is asked for per recipe rather than always on, because tiling trades a quality risk —
+the seams between tiles — and that trade belongs to whoever wrote the recipe. A pipeline whose VAE
+has neither method logs and decodes in one piece.
 
 > **"1.3B" names the transformer only.** The text encoder beside it is UMT5-XXL at ~11B, every weight
 > in the repo is stored **fp32 with no fp16 variant**, and the download is **~29 GB**. That is the

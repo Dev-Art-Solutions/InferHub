@@ -1,6 +1,7 @@
 using System.Text.Json;
 using InferHub.Node.Configuration;
 using InferHub.Node.Tools;
+using InferHub.Shared.Images;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace InferHub.Tests;
@@ -179,6 +180,77 @@ public class RecipeCatalogueTests : IDisposable
             Path.Combine(directory, "nowhere"), NullLogger.Instance));
     }
 
+    /// <summary>
+    /// Phase 58, D3. <b>A video recipe with no <c>vramMiB</c> is not declared at all</b>, and an
+    /// image recipe with none still is.
+    /// </summary>
+    /// <remarks>
+    /// Phase 48's rule — no figure means admit rather than guess — exists so a number nobody wrote
+    /// down cannot refuse a model the operator can see on the box. It is right where the miss is
+    /// 4-8 GB. It is a loaded gun where the same silence admits a 24 GB model onto a 12 GB card and
+    /// the failure lands as a CUDA out-of-memory error four minutes into somebody's job. So the
+    /// default is flipped for video <em>only</em>, which is what keeps "a deployment that changes no
+    /// config behaves identically" true of every image recipe anybody already had.
+    /// </remarks>
+    [Fact]
+    public void AVideoRecipeWithNoVramFigureIsSkippedAndAnImageRecipeWithNoneIsNot()
+    {
+        Write("silent-video.json", """
+            {
+              "id": "silent-video",
+              "media": "video",
+              "repo": "somebody/something",
+              "revision": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+              "license": { "id": "Apache-2.0", "permissive": true }
+            }
+            """);
+
+        Write("silent-image.json", """
+            {
+              "id": "silent-image",
+              "repo": "somebody/something-else",
+              "revision": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+              "license": { "id": "Apache-2.0", "permissive": true }
+            }
+            """);
+
+        var catalogue = Load();
+
+        Assert.False(catalogue.ContainsKey("silent-video"));
+        Assert.True(catalogue.ContainsKey("silent-image"));
+
+        // …and the image one is admitted by the gate exactly as it was before this phase.
+        Assert.Equal(0, catalogue["silent-image"].VramMiB);
+        Assert.True(VramBudget.Fits(12288, 2048, catalogue["silent-image"].VramMiB));
+        Assert.False(catalogue["silent-image"].IsVideo);
+    }
+
+    /// <summary>
+    /// <c>media</c> is read, and <b>absent means image</b> — which is why the eight recipes that
+    /// predate video did not change by a byte when it landed (40 D1, fourth use).
+    /// </summary>
+    [Fact]
+    public void MediaIsReadAndDefaultsToImage()
+    {
+        Write("sdxl.json", Sdxl);
+        Write("clip.json", """
+            {
+              "id": "clip",
+              "media": "VIDEO",
+              "repo": "somebody/something",
+              "revision": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+              "license": { "id": "Apache-2.0", "permissive": true },
+              "vramMiB": 16000
+            }
+            """);
+
+        var catalogue = Load();
+
+        Assert.False(catalogue["sdxl"].IsVideo);
+        Assert.Equal("image", catalogue["sdxl"].Media);
+        Assert.True(catalogue["clip"].IsVideo);
+    }
+
     [Fact]
     public void QuantizationIsReadAndDefaultsToNone()
     {
@@ -211,7 +283,10 @@ public class RecipeCatalogueTests : IDisposable
         var shipped = ImageRecipeCatalogue.LoadDirectory(RepositoryRecipeDirectory(), NullLogger.Instance);
 
         Assert.Equal(
-            ["flux-schnell", "qwen-360", "qwen-image", "sd15", "sd35-medium", "sdxl", "sdxl-turbo", "wan-t2v-1.3b"],
+            [
+                "cogvideox-2b", "flux-schnell", "qwen-360", "qwen-image", "sd15", "sd35-medium",
+                "sdxl", "sdxl-turbo", "wan-t2v-1.3b", "wan-t2v-14b-720p"
+            ],
             shipped.Keys.OrderBy(id => id, StringComparer.Ordinal).ToArray());
 
         // The two that need a licence decision, and only those two.
@@ -223,23 +298,110 @@ public class RecipeCatalogueTests : IDisposable
         Assert.Equal("nf4", shipped["qwen-image"].Quantization);
         Assert.Equal("nf4", shipped["qwen-360"].Quantization);
 
-        // Phase 57's video recipe is in the SAME catalogue and therefore behind the same two gates.
-        // `ImageRecipeCatalogue` reads three fields and does not know what a recipe produces —
-        // deliberately (48 deviation 3) — which is what makes the licence check and the VRAM budget
-        // cover a modality the class has never heard of.
+        // The three video recipes are in the SAME catalogue and therefore behind the same two gates.
         Assert.True(shipped["wan-t2v-1.3b"].Permissive);
         Assert.Equal("none", shipped["wan-t2v-1.3b"].Quantization);
+        Assert.Equal(
+            ["cogvideox-2b", "wan-t2v-1.3b", "wan-t2v-14b-720p"],
+            shipped.Values.Where(r => r.IsVideo).Select(r => r.Id).OrderBy(id => id, StringComparer.Ordinal).ToArray());
 
-        // …and every one of them fits a 24 GB card at the documented reserve, which is the claim
-        // the README makes and the only place it is checked. Wan2.1's 15 500 MiB is the number that
-        // makes this worth re-reading: "1.3B" names the transformer, and the ~11B UMT5 text encoder
-        // beside it is what the budget is actually sized for.
+        // PHASE 58, D6 — the first recipe this project ships that does NOT fit a 24 GB card, named
+        // here rather than left to arithmetic. `VramBudget.Fits` has existed since phase 48 and has
+        // never withheld a shipped recipe from a target card until now; a node with 24 GB simply
+        // never declares this one, so the hub never routes to it and nobody meets it at 2am.
+        string[] needsMoreThanTwentyFour = ["wan-t2v-14b-720p"];
+
         foreach (var recipe in shipped.Values)
         {
+            var fitsTwentyFour = VramBudget.Fits(24576, 2048, recipe.VramMiB);
+
+            if (needsMoreThanTwentyFour.Contains(recipe.Id))
+            {
+                Assert.False(
+                    fitsTwentyFour,
+                    $"'{recipe.Id}' is documented as needing more than a 24 GB card. It declares "
+                    + $"{recipe.VramMiB} MiB, which now fits one — update the README's table with it.");
+
+                Assert.True(VramBudget.Fits(49152, 2048, recipe.VramMiB));
+                continue;
+            }
+
             Assert.True(
                 VramBudget.Fits(24576, 2048, recipe.VramMiB),
                 $"'{recipe.Id}' declares {recipe.VramMiB} MiB, which does not fit a 24 GB card with the default 2048 MiB reserve.");
         }
+    }
+
+    /// <summary>
+    /// Phase 58. Every shipped video recipe declares a clock the worker requires and geometry the
+    /// <em>edge</em> will accept — the two ends of a request that never meet in one file.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A recipe offering a size <see cref="VideoSizes"/> refuses is a model nobody can call: the
+    /// 400 arrives at the edge, naming a grid, for a size the recipe itself published. Video sizes
+    /// sit on a **16** grid where every image pipeline downsamples by 8 (57 D4), so this is exactly
+    /// the mistake a hand-edited recipe makes.
+    /// </para>
+    /// <para>
+    /// <c>fps</c> and <c>durations</c> are the worker's own gate (58 D4) and this asserts the
+    /// shipped files pass it, because the worker's copy runs in a container nothing in this suite
+    /// starts. <c>defaults.seconds</c> must be in the list for the caller who names nothing — the
+    /// one trusting the recipe.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void EveryShippedVideoRecipeDeclaresAClockAndSizesTheEdgeAccepts()
+    {
+        var directory = RepositoryRecipeDirectory();
+        var checkedAny = false;
+
+        foreach (var path in Directory.EnumerateFiles(directory, "*.json"))
+        {
+            using var recipe = JsonDocument.Parse(File.ReadAllText(path));
+            var root = recipe.RootElement;
+
+            if (!root.TryGetProperty("media", out var media) || media.GetString() != "video")
+            {
+                continue;
+            }
+
+            checkedAny = true;
+            var id = root.GetProperty("id").GetString();
+
+            Assert.True(root.TryGetProperty("fps", out var fps) && fps.GetDouble() > 0, $"'{id}' declares no fps");
+
+            var durations = root.GetProperty("durations").EnumerateArray()
+                .Select(entry => (Seconds: entry.GetProperty("seconds").GetDouble(), Frames: entry.GetProperty("frames").GetInt32()))
+                .ToArray();
+
+            Assert.NotEmpty(durations);
+
+            foreach (var (seconds, frames) in durations)
+            {
+                // A latent video pipeline computes (frames - 1) // 4 + 1 latent frames, so a count
+                // off the 4k+1 grid is silently rounded up inside the pipeline and the clip is
+                // longer than the label the response reports (57 D4, fact 3).
+                Assert.True((frames - 1) % 4 == 0, $"'{id}' offers {frames} frames, which is not on the 4k+1 grid");
+                Assert.True(seconds > 0);
+            }
+
+            var declaredSizes = root.GetProperty("sizes").EnumerateArray().Select(size => size.GetString()).ToArray();
+            Assert.NotEmpty(declaredSizes);
+
+            foreach (var size in declaredSizes)
+            {
+                Assert.True(
+                    VideoSizes.TryParse(size, out _, out var error),
+                    $"'{id}' offers the size '{size}', which the edge refuses: {error}");
+            }
+
+            var defaults = root.GetProperty("defaults");
+            Assert.Contains(defaults.GetProperty("size").GetString(), declaredSizes);
+            Assert.Contains(durations, pair => Math.Abs(pair.Seconds - defaults.GetProperty("seconds").GetDouble()) < 1e-9);
+        }
+
+        Assert.True(checkedAny, "no video recipe was found — this test would pass on an empty catalogue");
     }
 
     /// <summary>

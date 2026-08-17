@@ -978,18 +978,10 @@ lock on the process that would actually do those things, which a solo caller mee
 > says so. Both shipped non-permissive recipes have distinct licence ids, so the two readings behave
 > identically for this catalogue; the refusal prints the exact string to add and a link to the text.
 
-**D6 — Quantization is a recipe field with three values and a stated cost.** `none | int8 | nf4` via
-`diffusers`' native `bitsandbytes` integration, applied to the components `quantizeComponents`
-names — which for Qwen-Image **has to include the text encoder**, because 8.3B left at bf16 is the
-difference between fitting a 24 GB card and not. **It is a recipe field rather than a request
-parameter because it changes what the model *is*:** two requests to `qwen-image` that quantized
-differently produce different images from the same seed, and a per-request knob would make
-reproducibility a function of a header nobody logged. An operator who wants both ships two recipes
-with two ids. `vramMiB` is the **quantized** figure (what the gate admits against) and
-`vramUnquantizedMiB` is documentation, because "Qwen-Image needs 19 GB" and "Qwen-Image needs 60 GB"
-are both true sentences about different recipes. **One mechanism** — GGUF, Nunchaku and TensorRT are
-each faster on some model on some card and each is a second thing to reason about when a picture
-comes out worse than expected.
+**D6 — Quantization is a recipe field with three values and a stated cost**, and what this box needs
+from it is one number: `vramMiB` is the **quantized** figure the gate admits against.
+**The argument moved to `python/CLAUDE.md` in phase 58** (52 D2, and 58 is the phase that revisited
+it): it is about what a *recipe* is, not about what a node budgets.
 
 **The node reads recipe files, and that is not the node learning about diffusion.**
 [ImageRecipeCatalogue](src/InferHub.Node/Tools/ImageRecipeCatalogue.cs) parses exactly three things —
@@ -1008,12 +1000,8 @@ message. 43 D1 is unchanged: the hub cannot make a node accept a licence, find w
 card. A narrowed recipe **stops being declared**; the pool keeps running, so switching `sdxl-turbo`
 off does not take `sdxl` down with it (phase-43 D6's in-place shape).
 
-**Rule 5 survived again.** **Zero** new `PackageReference`, `InferHub.Shared.csproj` still an empty
-`<Project Sdk="Microsoft.NET.Sdk">`, and `bitsandbytes` is a line in `requirements-diffusion.txt` —
-the same category as phase-39's `curl`. It arrived **with its first consumer**, which is exactly why
-phase 46 refused to carry it: a pinned dependency nothing imports is a pin nobody can tell is wrong
-until the release that needs it.
-
+**Rule 5 survived again** — zero new `PackageReference`; `bitsandbytes` is a line in
+`requirements-diffusion.txt` and the argument for *when* it arrived is in `python/CLAUDE.md`.
 
 ### Phase 53 (the node writes a streamed upload) — also load-bearing
 
@@ -1079,22 +1067,34 @@ same key through the same `ImageJobArchives.Create`, so a solo node's jobs survi
 as a hub's do — 41 D8's pattern for the fifth time. `Images__Jobs__DataDirectory=/data/images` is set
 in all four node images: the container permissions trap, seventh instance.
 
-### Phase 57 (the video seam) — the pointer, and the one node-side fact
+### Phase 57 (the video seam) and 58 (the catalogue) — the pointers, and the node-side facts
 
-The decisions are in `src/InferHub.Shared/CLAUDE.md` (57 D1–D4) and `python/CLAUDE.md`. What is
-*this* host's is one predicate and one deliberate omission.
+The decisions are in `src/InferHub.Shared/CLAUDE.md` (57 D1–D4) and `python/CLAUDE.md` (57, 58).
+What is *this* host's is one predicate, one deliberate omission, and one default reversed for video.
 
 **`CapabilityKinds.IsGenerativeMedia` replaced `IsImageKind` at the three places
 `ProcessToolRuntime` reasons about a *recipe*** — the declaration narrowing, the VRAM budget taken
-after the worker slot, and the licence-and-budget refusal. That is 50 D1's sentence one kind on: a
-node that gated only the image kinds would happily render video with weights whose licence nobody
-accepted. `ImageRecipeCatalogue` needed **no** change, because it reads three fields (id, licence,
-`vramMiB`) and has never known what a recipe produces — which is what made a modality free here.
+after the worker slot, and the licence-and-budget refusal. 50 D1's sentence one kind on: a node
+gating only the image kinds would happily render video with weights whose licence nobody accepted.
 
 **`NodeToolState.Images` was deliberately *not* widened, and the cost is stated rather than
-discovered.** It is what phase 51's Images panel renders and what `ConsoleContractTests` pins, so
-video rows would draw clips as pictures. Until phase 59 — which owns the console for this track —
-a **video recipe refused for its licence or its budget is invisible at the hub**.
+discovered.** Phase 51's Images panel renders it and `ConsoleContractTests` pins it, so video rows
+would draw clips as pictures. Until phase 59 — which owns the console for this track — **a video
+recipe refused for its licence or its budget is invisible at the hub**. **Solo got the surface on
+the same day** (41 D8): `LocalVideoEndpoints` maps the same four routes and the same two `501`s.
 
-**Solo got the surface on the same day** (41 D8, 37 D2 for the fifth time): `LocalVideoEndpoints`
-maps the same four routes and the same two `501`s, and every sentence comes from `VideoRenderer`.
+**Phase 58 gave the catalogue a fourth field, `media`, and flipped one default for video only.**
+48 D2's *a recipe with no declared figure is admitted rather than guessed at* keeps a number nobody
+wrote down from refusing a model the operator can see on the box, and it is right where the miss is
+4–8 GB. The same silence admits a 24 GB model onto a 12 GB card as an out-of-memory error four
+minutes into somebody's job. So a **video** recipe with no `vramMiB` is not declared; an image recipe
+with none behaves exactly as it did in v3.25. **Considered and rejected: requiring it of every
+recipe** — tidier, and it silently stops declaring an operator's hand-written `sd15` clone on
+upgrade. Reading `media` is still not the node learning about diffusion (41 D1): nothing here reads
+`fps`, `durations`, `repo` or `pipeline`, and the field buys **which recipes must state their
+megabytes**. The clock is the worker's gate, one process down.
+
+**`VramBudget.Fits` withholds a shipped recipe for the first time**: `wan-t2v-14b-720p` declares
+24 000 MiB against a 24 GB card's 22 528 of headroom, so such a node never declares it. It has
+existed since 48 and never fired, so `RecipeCatalogueTests` names the exception rather than
+asserting everything fits.

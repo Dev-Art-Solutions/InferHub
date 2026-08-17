@@ -181,6 +181,13 @@ release adopts it and adds nothing. One model — `wan-t2v-1.3b`, Apache-2.0, 48
 **the same queue, the same cancel, the same read-once retention and the same optional durability**
 v3.15 and v3.24 already built. Still zero new `PackageReference`s: the encoder is a static ffmpeg
 binary inside a Python wheel, reached through the same child process as everything else.
+
+**v3.26 gives that surface a catalogue** — [three models instead of one](#three-models-since-v326-and-four-things-worth-knowing-about-all-of-them).
+`wan-t2v-14b-720p` at 720p and `cogvideox-2b` at **8 fps** are what make the fields a catalogue of one
+could not test: `fps` is now required and its old fallback of 16 is gone, because encoding
+CogVideoX's 49 frames at twice their rate is not an error — it is a clip that plays at double speed.
+The 14B entry is also the first recipe this project ships that **does not fit a 24 GB card**, which
+is the VRAM gate working: such a node never declares it, so nobody meets the ceiling mid-render.
 Still on the table beyond that: teaching the **coordinator** about backend health as a typed signal
 (a status column and an alert, rather than a line in the node's log), **active-active**
 multi-coordinator load sharing, an **OTLP push** exporter behind an explicit opt-in, and a dedicated
@@ -1447,10 +1454,24 @@ ceiling, clamped by `Tools:MaxAttachmentBytes` as always.
 A video id will not open an image route and an image id will not open a video route: both are the
 same `404` an unknown id earns.
 
-### One model, and four things about it that are worth knowing
+### Three models since v3.26, and four things worth knowing about all of them
 
-`wan-t2v-1.3b` is `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` — **Apache-2.0**, so no licence decision — at
-832×480 or 480×832, 2 to 5 seconds, 16 fps.
+| Recipe | Geometry | Clock | VRAM | Download |
+|---|---|---|---|---|
+| `wan-t2v-1.3b` | 832×480 / 480×832 | 16 fps, 2–5 s | ~15.5 GB, bf16 | ~29 GB |
+| `wan-t2v-14b-720p` | 1280×720 / 720×1280 | 16 fps, 2–5 s | **~24 GB at nf4** (~50 GB at bf16) | ~75 GB |
+| `cogvideox-2b` | 720×480 only | **8 fps**, one 6 s offer | ~16 GB, fp16 | ~13 GB |
+
+All three are **Apache-2.0**, so none of them needs a licence decision.
+**`wan-t2v-14b-720p` does not fit a 24 GB card**, and that is the VRAM gate doing its job rather
+than an oversight: a node with 24 GB never declares it, so the hub never routes to it and nobody
+finds the ceiling four minutes into a render. A recipe's figure is sized at the **largest**
+`(size, seconds)` pair it offers, because the gate is handed one number before any caller exists.
+
+**`cogvideox-2b` is why `fps` is a required field.** It runs at 8 where Wan runs at 16, and a
+worker that fell back to 16 would encode its 49 frames at twice their rate — not an error, a clip
+that plays at double speed. 49 frames at 8 fps is **6.125 s**, so `seconds: 6` is the label and
+6.125 is what comes back.
 
 - **"1.3B" names the transformer only.** The text encoder beside it is UMT5-XXL at ~11B, every
   weight in the repo is stored fp32 with **no fp16 variant**, and the first pull is **~29 GB**. The
@@ -1461,8 +1482,9 @@ same `404` an unknown id earns.
   frames on a 4k+1 grid, so `seconds: 5` means 81 frames and 81 frames at 16 fps is **5.06 s** —
   which is what comes back. A duration the model does not offer is refused naming the list, never
   rounded to the nearest one.
-- **`fps` is not yours to set.** It is the rate the model was trained at; re-timing the frames at
-  encode changes how fast the world moves.
+- **`fps` is not yours to set — and since v3.26 the recipe must state it.** It is the rate the model
+  was trained at; re-timing the frames at encode changes how fast the world moves. A recipe that does
+  not declare it is skipped and logged by name rather than assumed to be 16.
 
 ### Usage, and the two units
 
@@ -1474,14 +1496,17 @@ image's 31. The second is the number a human asks about, and neither can be deri
 `inferhub_video_seconds_total{kind,model}` is on `/metrics`, and emits nothing at all on a fleet
 that has never rendered one.
 
-### What v3.25 does not do
+### What the video track does not do yet
 
 **No image-to-video** — a second capability and a second input path, and it is named rather than
 forgotten. **No caller-chosen fps.** **No audio**: Wan2.1 T2V produces none, and a silent track
-added to look complete is a lie in a container. **No console panel and no per-recipe status at the
-hub** — a video recipe refused for its licence or its VRAM budget is currently invisible from the
+added to look complete is a lie in a container. **No 480p entry for the 14B** — the same weights at a
+second geometry means two recipe ids over one loaded pipeline, which the residency map would count
+twice against one card; that is a phase, not a JSON file. **No console panel and no per-recipe status
+at the hub** — a video recipe refused for its licence or its VRAM budget is still invisible from the
 coordinator, which is the next release's job. **And no video has been watched**: every claim above
-about the model comes from its own configs and the pinned `diffusers` wheel, not from a card.
+about these models comes from their own configs, their model cards and the pinned `diffusers` wheel,
+not from a card.
 
 ## Configure the fleet, not the boxes (v3.11+)
 

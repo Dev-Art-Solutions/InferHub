@@ -389,3 +389,71 @@ than a rounding: "a frame count is fixed by the model's latent grid".
 **no intermediate frame is ever decoded or written** — the temptation is stronger here than anywhere,
 because a first frame would make a lovely progress thumbnail and it is a picture of what somebody
 asked for.
+
+### Phase 58 (the video catalogue: a second model, a third, and a ceiling that refuses one)
+
+> **Moved here in this phase, from 48 D6 in `src/InferHub.Node/CLAUDE.md` (52 D2).**
+> **Quantization is a recipe field with three values and a stated cost:** `none | int8 | nf4` through
+> `diffusers`' native `bitsandbytes` integration, applied to the components `quantizeComponents`
+> names — which for Qwen-Image **has to include the text encoder**, because 8.3B left at bf16 is the
+> difference between fitting a 24 GB card and not, and which for `wan-t2v-14b-720p` includes it for
+> the same reason one model larger. **It is a recipe field rather than a request parameter because it
+> changes what the model *is*:** two requests to `qwen-image` that quantized differently produce
+> different images from the same seed, and a per-request knob would make reproducibility a function
+> of a header nobody logged. An operator who wants both ships two ids. `vramMiB` is the **quantized**
+> figure the node's gate admits against and `vramUnquantizedMiB` is documentation, because
+> "Qwen-Image needs 19 GB" and "Qwen-Image needs 60 GB" are both true sentences about different
+> recipes. **One mechanism** — GGUF, Nunchaku and TensorRT are each faster on some model on some card
+> and each is a second thing to reason about when a picture comes out worse than expected.
+>
+> **`bitsandbytes` arrived with its first consumer**, which is why phase 46 refused to carry it: a
+> pinned dependency nothing imports is a pin nobody can tell is wrong until the release that needs
+> it. It is a line in `requirements-diffusion.txt`, in phase-39's `curl` category, and no
+> `PackageReference` (rule 5).
+
+**A catalogue of one proves nothing about its own fields.** 57 shipped every field video needed and
+exactly one recipe using them, so `fps` fell back to 16 because the only recipe *was* 16, and
+`schedulerFlowShift`'s override had never overridden anything. `wan-t2v-14b-720p` and `cogvideox-2b`
+are what make each of them able to be wrong.
+
+**D1 — `fps` is required and the 16 it fell back to is deleted.** A default here is a guess about
+somebody else's model: CogVideoX-2b is **8**, and encoding its 49 frames at 16 does not error — the
+clip plays at double speed and the model reads as bad at motion. That is 57 D4's *plausible
+non-failure* reintroduced by a convenience. `load_recipes` now refuses to offer a video recipe with
+no `fps`, none with an empty `durations` list, and none whose `defaults.seconds` is outside that list
+— the last of which would refuse every request from the caller who named no duration, which is the
+caller trusting the recipe. All three are 41 D6's withdraw-*before*-the-first-failure, and each names
+the field to add. **Considered and rejected: validating on first use** — the first use is inside
+somebody's job, minutes in.
+
+**D2 — The 14B repository ships `flow_shift: 3.0` too, so the override is load-bearing rather than
+defensive.** 57 D4 built `schedulerFlowShift` for "the 720p entry phase 58 will add, where 5.0 is
+wanted and the repo may not say so". It was read rather than assumed:
+`Wan2.1-T2V-14B-Diffusers/scheduler/scheduler_config.json` is byte-identical to the 1.3B's on that
+field, and 3.0 is the **480p** value, while upstream's own 720p example passes 5.0 by hand. Without
+the override a 720p render gets the wrong sigma schedule, which does not error and does not obviously
+look wrong.
+
+**D3 — `vaeTiling`, because a video job's peak allocation is at decode and it lands after all the
+expensive minutes.** The loop holds a latent; the VAE then materialises every frame at full
+resolution at once. `AutoencoderKLWan` and `AutoencoderKLCogVideoX` both expose `enable_tiling` in
+the pinned wheel, and CogVideoX's example pairs it with `enable_slicing`, so `enable_vae_tiling` asks
+for both and skips whichever the class lacks. **Considered and rejected: always tiling** — it trades
+tile seams for headroom, which is the second kind of seam this project would then own, and 49 D5's
+lesson is that a trade like that belongs to whoever asked for it. A failure to enable it is logged
+and not fatal: losing a load over an optimisation is worse than the OOM it avoids being possible.
+
+**D4 — `cogvideox-2b` offers one size and one duration, and that is the model rather than a
+default.** `transformer/config.json` has `use_rotary_positional_embeddings: false` with
+`sample_height: 60`, `sample_width: 90`, `sample_frames: 49` — learned positional embeddings sized
+for exactly one grid — and the model card says *"720 x 480, no support for other resolutions
+(including fine-tuning)"*. 49 frames at 8 fps is **6.125 s**, so the offer is labelled `6` and the
+response reports 6.125 (57 D5, and the gap is wider here than Wan's hundredth of a second, which is
+the point). The refusal a caller meets reads *"it offers: 6"* — a one-entry list is a catalogue, and
+a range would be a lie.
+
+**What was not established: anything on a GPU.** No clip has been rendered from either recipe, no
+weight has been downloaded, and both `vramMiB` figures are arithmetic over the repositories' own file
+sizes plus an activation allowance nobody has measured. Every other claim here is read from the
+pinned wheel or from the models' checked-in configs. See the release notes, where somebody looking
+for a number will find the same sentence.

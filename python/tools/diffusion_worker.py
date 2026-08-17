@@ -265,9 +265,51 @@ def load_recipes() -> dict[str, dict[str, Any]]:
             log(f"skipping {identifier}: 'revision' is required — pin a commit sha, not a branch")
             continue
 
+        if is_video(recipe) and (reason := video_declaration_problem(recipe)):
+            log(f"skipping {identifier}: {reason}")
+            continue
+
         found[identifier] = recipe
 
     return found
+
+
+def video_declaration_problem(recipe: dict[str, Any]) -> str | None:
+    """
+    Why this video recipe cannot be offered, or ``None``. Phase 58, D4.
+
+    Every one of these is a **plausible non-failure** if it is let through — the class 57 D4 spent a
+    day on. A missing ``fps`` used to fall back to 16, which encodes CogVideoX's 49 frames at twice
+    their rate: not an error, a clip that plays at double speed and a model that reads as bad at
+    motion. A missing ``durations`` list is a recipe every request refuses at the moment somebody is
+    waiting for it, and a ``defaults.seconds`` outside that list is the same refusal for the caller
+    who named nothing at all — the one who was trusting the recipe.
+
+    So the answer is given before the capability is declared (41 D6's withdraw-before-the-first-
+    failure), naming the field to add.
+    """
+    if not recipe.get("fps"):
+        return (
+            "a video recipe must declare \"fps\" — the rate the model was TRAINED at. There is no "
+            "default: encoding at the wrong rate is not an error, it is a clip that plays at the "
+            "wrong speed."
+        )
+
+    if not durations_of(recipe):
+        return "a video recipe must declare a \"durations\" list of {\"seconds\", \"frames\"} pairs"
+
+    default_seconds = (recipe.get("defaults") or {}).get("seconds")
+
+    if default_seconds is not None and not any(
+        abs(pair["seconds"] - float(default_seconds)) < 1e-9 for pair in durations_of(recipe)
+    ):
+        offered = ", ".join(f"{pair['seconds']:g}" for pair in durations_of(recipe))
+        return (
+            f"its defaults.seconds is {float(default_seconds):g}, which is not in its own durations "
+            f"({offered}) — every request that does not name a duration would be refused"
+        )
+
+    return None
 
 
 _vram_total_mib: int | None = None
@@ -448,8 +490,22 @@ def fps_of(recipe: dict[str, Any]) -> float:
     The rate the model was trained at. **Not a caller's knob** (57's non-goals): re-timing frames at
     encode changes how fast the world moves in the clip, and the only honest setting is the trained
     one until somebody measures the others.
+
+    **There is no default, and phase 58 D4 deleted the 16 that used to be one.** Wan is 16 and
+    CogVideoX-2b is 8; a fallback is a guess about somebody else's model, and the clip it produces
+    plays at the wrong speed rather than failing. `load_recipes` refuses to offer a video recipe
+    without it, so this raise is the second lock on a door the declaration gate already shut.
     """
-    return float(recipe.get("fps") or 16)
+    declared = recipe.get("fps")
+
+    if not declared:
+        raise ToolError(
+            f"'{recipe['id']}' declares no \"fps\". A video recipe must name the rate the model was "
+            "trained at.",
+            ERROR_INVALID_REQUEST,
+        )
+
+    return float(declared)
 
 
 def resolve_duration(recipe: dict[str, Any], payload: dict[str, Any]) -> tuple[int, float]:
@@ -801,7 +857,44 @@ def _from_pretrained(recipe: dict[str, Any], local_files_only: bool):
             pipe.scheduler.config, flow_shift=float(recipe["schedulerFlowShift"])
         )
 
+    if recipe.get("vaeTiling"):
+        enable_vae_tiling(pipe, recipe)
+
     return pipe
+
+
+def enable_vae_tiling(pipe, recipe: dict[str, Any]) -> None:
+    """
+    Decode the frames in tiles (phase-58 D5).
+
+    **A video job's peak allocation is at decode, not at denoise**, and it lands after all the
+    expensive minutes: the loop holds a latent, and the VAE then materialises every frame at full
+    resolution at once. Both `AutoencoderKLWan` and `AutoencoderKLCogVideoX` expose `enable_tiling`
+    in the pinned wheel, and CogVideoX's own example pairs it with `enable_slicing`, so both are
+    asked for and each is skipped where the class has no such method.
+
+    **It is asked for per recipe rather than always on**, because tiling trades a quality risk — the
+    seams between tiles, the second kind of seam this project would then own — and that trade belongs
+    to whoever wrote the recipe. A failure here is logged and not fatal: a pipeline that decodes in
+    one piece still produces the clip, and losing the job over the optimisation would be worse than
+    the OOM it is trying to avoid being possible.
+    """
+    vae = getattr(pipe, "vae", None)
+
+    if vae is None:
+        log(f"{recipe['id']}: vaeTiling is set but this pipeline has no VAE — ignored")
+        return
+
+    for method in ("enable_tiling", "enable_slicing"):
+        call = getattr(vae, method, None)
+
+        if call is None:
+            continue
+
+        try:
+            call()
+        except Exception as error:  # noqa: BLE001 - an optimisation must not fail a load
+            log(f"{recipe['id']}: {method}() failed ({error}); decoding in one piece instead")
 
 
 def evict_for(identifier: str) -> list[str]:
