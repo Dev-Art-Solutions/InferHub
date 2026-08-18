@@ -1108,6 +1108,11 @@ public static class ImageJobView
         id = record.Id.ToString(),
         state = record.State,
         model = record.Model,
+
+        // Phase 59, D6. One job model serves two capabilities and they are fetched from two
+        // different routes, so a listing that did not say which left a panel to infer it from the
+        // model name — which is a recipe id it has no catalogue for.
+        capability = record.Capability,
         n = record.Count,
         createdAt = record.CreatedAt,
         startedAt = record.StartedAt,
@@ -1124,10 +1129,18 @@ public static class ImageJobView
                 .Select(index => new
                 {
                     index,
-                    url = $"/api/images/jobs/{record.Id}/content/{index}",
+
+                    // The route this job's own capability is fetched from (59 D6). A video job whose
+                    // row pointed at /api/images/jobs/.../content/0 was a 404 with a plausible shape,
+                    // which is worse than no url at all.
+                    url = ContentUrl(record, index),
                     size = record.Images[index].Size?.ToString(),
                     seed = record.Images[index].Seed,
                     bytes = record.Images[index].Bytes.Length,
+
+                    // Present only where the worker measured one, so an image row is unchanged
+                    // (phase-28 D5): a picture has no duration and reports none rather than a zero.
+                    seconds = record.Images[index].Seconds,
 
                     // Phase 49. A viewer picks a renderer from this rather than from the aspect
                     // ratio, which is what everyone does today and is wrong for every 2:1 photo.
@@ -1157,4 +1170,18 @@ public static class ImageJobView
         // reading the sentence — the same reason the synchronous route can still render a 400.
         errorCode = record.Failure?.ErrorCode
     };
+
+    /// <summary>
+    /// Where the bytes of one output are fetched from, which depends on the job's capability and on
+    /// nothing else (phase 59, D6).
+    /// </summary>
+    /// <remarks>
+    /// A video is fetched over OpenAI's own dialect — <c>/v1/videos/{id}/content</c>, one clip, no
+    /// index — and a picture over the route phase 47 invented because that dialect had none. Both
+    /// reads are still <b>read-once</b>: this is a pointer, not a promise that it is still there.
+    /// </remarks>
+    private static string ContentUrl(ImageJobRecord record, int index) =>
+        Contracts.CapabilityKinds.IsVideo(record.Capability)
+            ? $"/v1/videos/{VideoRenderer.Identifier(record.Id)}/content"
+            : $"/api/images/jobs/{record.Id}/content/{index}";
 }

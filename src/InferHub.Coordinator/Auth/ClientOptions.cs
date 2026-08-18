@@ -59,6 +59,26 @@ public sealed class ClientLimits
     public double? MegapixelStepsPerDay { get; set; }
 
     /// <summary>
+    /// Seconds of video this client may have generated per UTC day (phase 59, D3). The knob phase 57
+    /// deferred until there was a catalogue to spend it on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Video is billed in <b>both</b> units (57 D6): megapixel-steps, because it is the same card an
+    /// image spends, and seconds, because that is the question a human asks. Until this release only
+    /// the first was a gate — which is 42 D7's rule failing in a new unit, since a client whose only
+    /// limit is a picture budget renders clips against a figure nobody sized for them. A five-second
+    /// clip is ≈970 megapixel-steps against an SDXL image's ≈31.
+    /// </para>
+    /// <para>
+    /// There is deliberately no per-minute companion: a clip's seconds arrive in one lump when the
+    /// job ends, minutes after it was admitted, so a sliding window would refuse the wrong request.
+    /// The burst control for a four-minute job is <see cref="MaxConcurrent"/>.
+    /// </para>
+    /// </remarks>
+    public double? VideoSecondsPerDay { get; set; }
+
+    /// <summary>
     /// Models this client may use. Empty/null = all. A request outside the list is a 404
     /// identical to a model that does not exist — a client is not told what exists but is
     /// not for them.
@@ -73,5 +93,6 @@ public sealed class ClientLimits
         || AudioSecondsPerDay is not null
         || CharactersPerDay is not null
         || MegapixelStepsPerDay is not null
+        || VideoSecondsPerDay is not null
         || AllowedModels is { Count: > 0 };
 }

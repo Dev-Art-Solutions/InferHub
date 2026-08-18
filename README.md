@@ -1496,15 +1496,33 @@ image's 31. The second is the number a human asks about, and neither can be deri
 `inferhub_video_seconds_total{kind,model}` is on `/metrics`, and emits nothing at all on a fleet
 that has never rendered one.
 
+**Since v3.27 both units are also gates.** `VideoSecondsPerDay` is the budget in the unit a person
+sizes; `MegapixelStepsPerDay` remains the one that describes the card. A submission is refused if
+*either* is spent, with a `402` naming which — before v3.27 only the megapixel-step budget was
+checked, so a fleet that meant "an hour of video a day" had no way to say it.
+
+### Watching one from the console
+
+`/console` has a **Video** panel: submit a prompt, watch the row (queue position, step *n* of *m*,
+elapsed, which node), cancel, and play the clip in the page. It speaks `/v1/videos` — the same routes
+an SDK calls — for everything except listing, which that dialect refuses on purpose; the listing is
+`GET /api/videos/jobs` and is client-scoped, so the panel holds a **client** key rather than the
+admin key. A fetched clip is consumed: it lives in the browser tab and the hub has dropped its copy.
+
+Underneath it, **Video recipes on the fleet** answers "why can I not use that model" for clips the
+way the Images panel does for pictures — the licence, the card, a profile, or weights that are not
+there yet. `wan-t2v-14b-720p` showing `over-budget` on a 24 GB box is the ceiling working, not a
+fault, and the row says so.
+
 ### What the video track does not do yet
 
 **No image-to-video** — a second capability and a second input path, and it is named rather than
 forgotten. **No caller-chosen fps.** **No audio**: Wan2.1 T2V produces none, and a silent track
 added to look complete is a lie in a container. **No 480p entry for the 14B** — the same weights at a
 second geometry means two recipe ids over one loaded pipeline, which the residency map would count
-twice against one card; that is a phase, not a JSON file. **No console panel and no per-recipe status
-at the hub** — a video recipe refused for its licence or its VRAM budget is still invisible from the
-coordinator, which is the next release's job. **And no video has been watched**: every claim above
+twice against one card; that is a phase, not a JSON file. **No listing on `/v1/videos`** — an id is
+the capability to fetch the bytes, so the dialect's enumeration stays a `501` that says why, and the
+console's listing is a client-scoped route of our own. **And no video has been watched**: every claim above
 about these models comes from their own configs, their model cards and the pinned `diffusers` wheel,
 not from a card.
 
@@ -1872,15 +1890,22 @@ response", one layer up.
 | Series | Labels | Present when |
 |---|---|---|
 | `inferhub_image_queue_depth`, `inferhub_image_jobs_active`, `inferhub_image_retained_bytes` | — | **always, at zero** — a hub with a queue and nothing in it is saying something |
-| `inferhub_image_jobs_total` | `recipe`, `outcome` | a recipe has finished at least one job |
-| `inferhub_image_job_seconds` (histogram) | `recipe` | ditto — buckets at 1/5/15/60/300s, from **submission**, so queue time counts |
+| `inferhub_image_jobs_total` | `recipe`, `media`, `outcome` | a recipe has finished at least one job |
+| `inferhub_image_job_seconds` (histogram) | `recipe`, `media` | ditto — buckets at 1/5/15/60/300s, from **submission**, so queue time counts |
 | `inferhub_image_megapixel_steps_total` | `kind`, `model` | work has been metered |
-| `inferhub_image_recipe` | `node`, `recipe`, `reason` | a node reports image recipes |
+| `inferhub_image_recipe` | `node`, `recipe`, `media`, `reason` | a node reports recipes of either medium |
 | `inferhub_node_vram_budget_mib`, `_reserve_mib`, `_resident_mib` | `node` | **a budget is declared** |
 | `inferhub_node_vram_measured_mib` | `node` | the worker reported a reading |
 
 `inferhub_image_recipe{reason="unlicensed"}` and `{reason="over-budget"}` are the two to alert on:
 both mean a model you configured is not being served and nothing else in the fleet will tell you.
+
+**`media` is a label rather than a second family of series (v3.27).** These counters have included
+video since v3.25 with nothing to separate it; a four-minute clip and a nine-second picture in one
+histogram make both unreadable. Existing queries keep working and now sum both media, which is the
+honest arithmetic — add `media="image"` or `media="video"` to split them. `inferhub_image_recipe`
+gained the same label in the release that started reporting video recipes at all: before it, a clip
+model refused for its licence or the card was simply missing from the hub's view.
 
 **A node with no declared VRAM budget emits no VRAM series at all** — not a zero. Undeclared is not
 "this box has no card"; it means nobody set `Node:Vram:BudgetMiB` and there is no gate on that box.
@@ -2085,6 +2110,11 @@ a key an identity and, optionally, limits:
           // whose only limit is TokensPerDay could transcribe a library for free.
           "AudioSecondsPerDay": 3600,
           "CharactersPerDay": 200000,
+          // v3.14 and v3.27. Pictures and clips are metered on the same card, so a clip spends
+          // MegapixelStepsPerDay too — and a clip is ~970 of them per five seconds, which is why
+          // it also has a budget in the unit a human sizes.
+          "MegapixelStepsPerDay": 200000,
+          "VideoSecondsPerDay": 600,
           "AllowedModels": ["llama3", "nomic-embed-text"]
         }
       }
@@ -2101,7 +2131,7 @@ What happens at the boundary, per status code:
 | Situation | Response |
 |---|---|
 | Over `MaxConcurrent`, `RequestsPerMinute` or `TokensPerMinute` | `429` with a window-accurate `Retry-After` |
-| Over `TokensPerDay`, `AudioSecondsPerDay` or `CharactersPerDay` | `402 Payment Required`, `Retry-After` pointing at UTC midnight. Each unit has its own budget and consumes only its own. |
+| Over `TokensPerDay`, `AudioSecondsPerDay`, `CharactersPerDay`, `MegapixelStepsPerDay` or `VideoSecondsPerDay` | `402 Payment Required`, `Retry-After` pointing at UTC midnight. Each unit has its own budget and consumes only its own. A video is metered in two units and **both** are checked (v3.27); the 402 names the one that ran out. |
 | Model outside `AllowedModels` | `404`, byte-identical to a model that does not exist |
 | Every capable node at its declared cap, longer than `Queue:MaxWaitSeconds` | `503` with `Retry-After` |
 

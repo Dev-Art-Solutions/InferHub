@@ -296,32 +296,39 @@ public static class PrometheusFormatter
     {
         if (recipes is not { Count: > 0 }) return;
 
-        Header(builder, "inferhub_image_jobs_total", "counter", "Image jobs that reached a terminal state, by recipe and outcome.");
+        Header(builder, "inferhub_image_jobs_total", "counter", "Generative-media jobs that reached a terminal state, by recipe, medium and outcome.");
         foreach (var recipe in recipes)
         {
+            var media = ImageRecipeMedia.Normalize(recipe.Media);
+
             foreach (var outcome in recipe.Outcomes)
             {
                 Sample(builder, "inferhub_image_jobs_total",
-                    [("recipe", recipe.Recipe), ("outcome", outcome.Outcome)], outcome.Count);
+                    [("recipe", recipe.Recipe), ("media", media), ("outcome", outcome.Outcome)], outcome.Count);
             }
         }
 
-        Header(builder, "inferhub_image_job_seconds", "histogram", "How long an image job took from submission to a terminal state.");
+        Header(builder, "inferhub_image_job_seconds", "histogram", "How long a generative-media job took from submission to a terminal state.");
         foreach (var recipe in recipes)
         {
+            // Phase 59, D2: the medium is a label on the series that already counted both, not a
+            // second series. A clip and a picture sharing one histogram is why this is here — the
+            // buckets are seconds, and video's live in the last two.
+            var media = ImageRecipeMedia.Normalize(recipe.Media);
+
             for (var i = 0; i < ImageJobBuckets.Bounds.Count && i < recipe.Buckets.Count; i++)
             {
                 Sample(builder, "inferhub_image_job_seconds_bucket",
-                    [("recipe", recipe.Recipe), ("le", FormatValue(ImageJobBuckets.Bounds[i]))], recipe.Buckets[i]);
+                    [("recipe", recipe.Recipe), ("media", media), ("le", FormatValue(ImageJobBuckets.Bounds[i]))], recipe.Buckets[i]);
             }
 
             // The +Inf bucket is not optional: without it the series is not a histogram and
             // `histogram_quantile` returns nothing at all rather than an obviously wrong number.
             Sample(builder, "inferhub_image_job_seconds_bucket",
-                [("recipe", recipe.Recipe), ("le", "+Inf")], recipe.Count);
+                [("recipe", recipe.Recipe), ("media", media), ("le", "+Inf")], recipe.Count);
 
-            Sample(builder, "inferhub_image_job_seconds_sum", [("recipe", recipe.Recipe)], recipe.SecondsTotal);
-            Sample(builder, "inferhub_image_job_seconds_count", [("recipe", recipe.Recipe)], recipe.Count);
+            Sample(builder, "inferhub_image_job_seconds_sum", [("recipe", recipe.Recipe), ("media", media)], recipe.SecondsTotal);
+            Sample(builder, "inferhub_image_job_seconds_count", [("recipe", recipe.Recipe), ("media", media)], recipe.Count);
         }
     }
 
@@ -385,11 +392,14 @@ public static class PrometheusFormatter
 
         if (rows.Length == 0) return;
 
-        Header(builder, "inferhub_image_recipe", "gauge", "1 for the reason a node's image recipe is or is not offered: ok, unlicensed, over-budget, narrowed or not-ready.");
+        Header(builder, "inferhub_image_recipe", "gauge", "1 for the reason a node's recipe is or is not offered: ok, unlicensed, over-budget, narrowed or not-ready.");
         foreach (var (node, recipe) in rows)
         {
+            // The medium joins the labels in the release that started reporting video recipes at all
+            // (59 D1/D2). The four reasons are the same four for a clip, which is why this is one
+            // series and not two.
             Sample(builder, "inferhub_image_recipe",
-                [("node", node), ("recipe", recipe.Id), ("reason", recipe.Reason)], 1);
+                [("node", node), ("recipe", recipe.Id), ("media", ImageRecipeMedia.Normalize(recipe.Media)), ("reason", recipe.Reason)], 1);
         }
     }
 

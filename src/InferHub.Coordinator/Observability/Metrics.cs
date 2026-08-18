@@ -141,11 +141,17 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
     /// dropping every third render — and "how many of my jobs fail" is the first question anyone
     /// asks of a queue.
     /// </para>
+    /// <para>
+    /// <b><paramref name="media"/> is a label rather than a second series</b> (phase 59, D2). Video
+    /// jobs have been in this counter since v3.25 with nothing to tell them apart, and a four-minute
+    /// clip sharing a histogram with a nine-second picture makes both unreadable. The series keeps
+    /// its name because these names are in other people's dashboards.
+    /// </para>
     /// </remarks>
-    public void RecordImageJob(string recipe, string outcome, double seconds)
+    public void RecordImageJob(string recipe, string outcome, double seconds, string? media = null)
     {
         var counter = perImageRecipe.GetOrAdd(recipe, _ => new ImageJobCounter());
-        counter.Record(outcome, seconds);
+        counter.Record(outcome, seconds, media);
     }
 
     public void RecordVectorReplicaHealed() => Interlocked.Increment(ref vectorReplicasHealed);
@@ -350,10 +356,19 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
         private long count;
         private double secondsTotal;
 
-        public void Record(string outcome, double seconds)
+        /// <summary>
+        /// What this recipe produces. A recipe is one medium for its whole life — a second geometry
+        /// or a second quantization is a second id (58 D1) — so the first job to name it settles it,
+        /// and a caller that names nothing leaves it at the default the label formats as
+        /// <c>image</c>.
+        /// </summary>
+        private string? media;
+
+        public void Record(string outcome, double seconds, string? recipeMedia)
         {
             lock (gate)
             {
+                media ??= recipeMedia;
                 outcomes[outcome] = outcomes.GetValueOrDefault(outcome) + 1;
                 count++;
                 secondsTotal += Math.Max(0, seconds);
@@ -379,7 +394,8 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
                         .ToArray(),
                     count,
                     secondsTotal,
-                    buckets.ToArray());
+                    buckets.ToArray(),
+                    media);
             }
         }
     }
@@ -434,7 +450,12 @@ public sealed record ImageJobSnapshot(
     long Count,
     double SecondsTotal,
     /// <summary>Cumulative counts against <c>ImageJobBuckets.Bounds</c>, in that order.</summary>
-    IReadOnlyList<long> Buckets);
+    IReadOnlyList<long> Buckets,
+    /// <summary>
+    /// <c>image</c> or <c>video</c> (phase 59, D2). Null on a snapshot taken before any job named it,
+    /// and formatted as <c>image</c> — which is what every job in this counter was until v3.25.
+    /// </summary>
+    string? Media = null);
 
 public sealed record ImageOutcomeCount(string Outcome, long Count);
 

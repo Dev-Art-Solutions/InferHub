@@ -230,14 +230,12 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
 
         foreach (var capability in tools.SelectMany(tool => tool.Capabilities))
         {
-            // Deliberately the IMAGE kinds only, in a release that added a third (phase 57).
-            // `NodeToolState.Images` is what phase 51's Images panel reads and `ConsoleContractTests`
-            // pins its shape; widening it here would put video rows into a panel that renders them
-            // as pictures. Phase 59 owns the console for the video track and is where this grows —
-            // the cost until then is that a video recipe refused for its licence or its budget is
-            // invisible at the hub, which is stated in the release notes rather than left to be
-            // discovered.
-            if (!CapabilityKinds.IsImageKind(capability.Kind))
+            // Every kind served from a recipe, image and video alike (phase 59, D1). Phase 57 kept
+            // video out of here so it could not land in a panel that draws pictures; the console now
+            // splits on the recipe's `media` instead, and the cost of the old arrangement — a video
+            // recipe refused for its licence or its budget being invisible at the hub — is paid off
+            // rather than restated.
+            if (!CapabilityKinds.IsGenerativeMedia(capability.Kind))
             {
                 continue;
             }
@@ -281,7 +279,11 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
                     recipe.VramMiB,
                     recipe.LicenseId,
                     recipe.LicenseUrl,
-                    recipe.Quantization);
+                    recipe.Quantization,
+
+                    // The fourth field phase 58 taught the node to read, travelling one level up so
+                    // the hub can tell a refused clip from a refused picture (59 D1).
+                    recipe.Media);
             })
             .ToArray();
     }

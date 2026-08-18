@@ -112,6 +112,10 @@ public class ConsoleContractTests
         "nodes[].tools.images[].vramMiB",
         "nodes[].tools.images[].licenseId",
         "nodes[].tools.images[].licenseUrl",
+
+        // Phase 59. The field the console splits this one list into two panels on: a payload that
+        // stopped carrying it would silently draw every clip in the pictures table.
+        "nodes[].tools.images[].media",
         "nodes[].tools.vram.budgetMiB",
         "nodes[].tools.vram.reserveMiB",
         "nodes[].tools.vram.measuredMiB",
@@ -533,7 +537,8 @@ internal sealed class ConsoleFixture : IAsyncDisposable
                         VramMiB: 8000,
                         LicenseId: "CreativeML-OpenRAIL++-M",
                         LicenseUrl: "https://example.invalid/sdxl-licence",
-                        Quantization: "none"),
+                        Quantization: "none",
+                        Media: ImageRecipeMedia.Image),
                     new NodeImageRecipeState(
                         "sdxl-turbo",
                         Offered: false,
@@ -542,7 +547,23 @@ internal sealed class ConsoleFixture : IAsyncDisposable
                         VramMiB: 8000,
                         LicenseId: "sai-nc-community",
                         LicenseUrl: "https://example.invalid/turbo-licence",
-                        Quantization: "none")
+                        Quantization: "none",
+                        Media: ImageRecipeMedia.Image),
+
+                    // Phase 59. A video recipe held back by the card, which is the shipped
+                    // catalogue's own case: wan-t2v-14b-720p wants more than a 24 GB box can offer
+                    // and is refused BY DESIGN. It is in the fixture so the video panel's table and
+                    // the strip's video row both have a populated example to resolve against.
+                    new NodeImageRecipeState(
+                        "wan-t2v-14b-720p",
+                        Offered: false,
+                        ImageRecipeReasons.OverBudget,
+                        [],
+                        VramMiB: 24000,
+                        LicenseId: "Apache-2.0",
+                        LicenseUrl: "https://example.invalid/wan-licence",
+                        Quantization: "nf4",
+                        Media: ImageRecipeMedia.Video)
                 ]));
         }
 

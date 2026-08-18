@@ -616,11 +616,15 @@
       // `not-ready` is deliberately NOT on the strip — weights that are still downloading are a
       // fleet working correctly, and a strip that cried about every cold start would be a strip
       // people learn to close.
+      // Phase 59: the same list now carries video recipes, and the strip says which — the fix for
+      // an unlicensed 20B video model and an unlicensed SDXL are the same shape and different
+      // sentences, and "over-budget" is the expected state of a 14B on a 24 GB card rather than a
+      // surprise.
       for (const recipe of node.tools?.images ?? []) {
         if (recipe.offered || recipe.reason === "not-ready") continue;
 
         items.push({
-          kind: "image", where: label, what: recipe.id,
+          kind: recipe.media === "video" ? "video" : "image", where: label, what: recipe.id,
           why: recipe.reason === "unlicensed"
             ? `licence '${recipe.licenseId}' is not permissive and is not in Tools:Image:AcceptedLicenses`
             : recipe.reason === "over-budget"
@@ -703,6 +707,7 @@
       renderCorpora(latestStatus);
       renderProfileNodes(latestStatus);
       renderImageRecipes(latestStatus);
+      renderVideoRecipes(latestStatus);
       renderImageVram(latestStatus);
       renderRefusals(latestStatus);
     }
@@ -1228,7 +1233,7 @@
 
     // One client key, two panels that need one (phase 49 added the second). Both badges, or the
     // 360° viewer would keep saying "no key" after the documents panel has just been given one.
-    for (const id of ["documents-key-state", "pano-key-state", "images-key-state"]) {
+    for (const id of ["documents-key-state", "pano-key-state", "images-key-state", "video-key-state"]) {
       const badge = document.getElementById(id);
       if (badge) badge.style.display = clientKey ? "" : "none";
     }
@@ -1973,8 +1978,13 @@
     const tbody = document.getElementById("image-recipes");
     if (!tbody) return;
 
+    // Phase 59, D1: one mailbox, two panels. The rows a node reports now include video recipes and
+    // this table is the picture half — a clip in a table whose next column is "generate / edit" is
+    // the thing phase 57 refused to ship, and it is refused here rather than upstream.
     const rows = (status?.nodes ?? []).flatMap(node =>
-      (node.tools?.images ?? []).map(recipe => ({ node, recipe })));
+      (node.tools?.images ?? [])
+        .filter(recipe => recipe.media !== "video")
+        .map(recipe => ({ node, recipe })));
 
     if (rows.length === 0) {
       tbody.innerHTML = emptyRow("image-recipes", 6, "No node reports image recipes. Run the :diffusion image on a box with a card.");
@@ -2215,6 +2225,237 @@
       imagePoll = null;
       await refreshImageJobs();
     }, 1500);
+  };
+
+  // ---------------------------------------------------------------- Video (phase 59, D4)
+  //
+  // This panel speaks OpenAI's own Videos dialect for everything a client can do — POST /v1/videos,
+  // GET /v1/videos/{id}/content, DELETE to cancel — because that dialect is asynchronous by
+  // construction and is what a customer's SDK calls. The console therefore exercises the real
+  // surface rather than an admin shortcut. Enumeration is the one thing it refuses (501, and it
+  // says why), so the listing alone comes from /api/videos/jobs.
+  //
+  // No gallery, for the images panel's reason and one more: a clip is tens of megabytes and the
+  // store's read-once rule means the copy in this tab is the only one left.
+
+  let videoJobs = [];
+  let videoObjectUrl = null;
+
+  const videoNote = (message, kind) => {
+    const note = document.getElementById("video-note");
+    if (!note) return;
+    note.textContent = message;
+    note.className = kind === "err" ? "row-msg" : "row-msg info";
+  };
+
+  const renderVideoJobs = () => {
+    const tbody = document.getElementById("video-jobs");
+    if (!tbody) return;
+
+    if (videoJobs.length === 0) {
+      tbody.innerHTML = emptyRow("video-jobs", 9, "No video jobs. Submit one above, or POST /v1/videos.");
+      return;
+    }
+
+    tbody.innerHTML = videoJobs.map(job => {
+      const clip = (job.images ?? [])[0];
+      const ready = job.state === "succeeded" && clip;
+
+      const warnings = (job.warnings ?? []).length > 0
+        ? ` <span class="pill pill-warn">${escapeHtml(job.warnings.join(", "))}</span>` : "";
+
+      const result = ready
+        ? `${fmtBytes(clip.bytes ?? 0)}${warnings}`
+        : job.error
+          ? `<span class="why">${escapeHtml(job.errorCode ? `${job.errorCode}: ${job.error}` : job.error)}</span>`
+          : job.reason === "delivered" ? "collected" : "—";
+
+      // The measured duration, not the one that was asked for: a recipe offers 6 and produces
+      // 6.125 because 49 frames at 8 fps is what the model can do (57 D5, 58 D7).
+      const measured = clip?.seconds
+        ? `${clip.seconds.toFixed(3)} s${clip.size ? ` · ${escapeHtml(clip.size)}` : ""}`
+        : "—";
+
+      const actions = [];
+      if (ready) actions.push(`<button data-video-fetch="${escapeHtml(job.id)}">Fetch</button>`);
+      if (!["succeeded", "failed", "cancelled", "expired"].includes(job.state)) {
+        actions.push(`<button data-video-cancel="${escapeHtml(job.id)}">Cancel</button>`);
+      }
+
+      return `<tr>
+          <td><code title="${escapeHtml(job.id)}">${escapeHtml(job.id.slice(0, 8))}</code></td>
+          <td><code>${escapeHtml(job.model)}</code></td>
+          <td>${imageStatePill(job)}</td>
+          <td>${progressCell(job)}</td>
+          <td>${escapeHtml(job.node ?? "—")}</td>
+          <td>${imageElapsed(job)}</td>
+          <td>${measured}</td>
+          <td>${result}</td>
+          <td>${actions.join(" ") || "—"}</td>
+        </tr>`;
+    }).join("");
+  };
+
+  // The video half of the one recipe mailbox. Same four reasons, and one of them is expected
+  // rather than broken: wan-t2v-14b-720p over-budget on a 24 GB card is the ceiling doing its job,
+  // which is why the sentence for it names the card and not a mistake.
+  const renderVideoRecipes = (status) => {
+    const tbody = document.getElementById("video-recipes");
+    if (!tbody) return;
+
+    const rows = (status?.nodes ?? []).flatMap(node =>
+      (node.tools?.images ?? [])
+        .filter(recipe => recipe.media === "video")
+        .map(recipe => ({ node, recipe })));
+
+    if (rows.length === 0) {
+      tbody.innerHTML = emptyRow("video-recipes", 6, "No node reports video recipes. They ship in the :diffusion image — a node running an older one reports none.");
+      return;
+    }
+
+    tbody.innerHTML = rows.map(({ node, recipe }) => `
+        <tr${recipe.offered ? "" : ' class="refusal-row"'}>
+          <td>${escapeHtml(node.name)}</td>
+          <td><code>${escapeHtml(recipe.id)}</code></td>
+          <td>${recipe.offered ? '<span class="pill pill-ok">yes</span>' : '<span class="pill pill-warn">no</span>'}</td>
+          <td><span class="why">${recipe.offered ? "" : imageRecipeWhy(recipe)}</span></td>
+          <td>${recipe.vramMiB ? `${recipe.vramMiB} MiB` : "—"}</td>
+          <td><code>${escapeHtml(recipe.licenseId ?? "—")}</code></td>
+        </tr>`).join("");
+  };
+
+  const refreshVideoJobs = async () => {
+    const res = await imageFetch("/api/videos/jobs");
+    if (!res) return;
+
+    if (!res.ok) {
+      videoNote(`Could not list video jobs: HTTP ${res.status}`, "err");
+      return;
+    }
+
+    const body = await res.json();
+    videoJobs = body.jobs ?? [];
+    renderVideoJobs();
+
+    // One queue, so these are the fleet's numbers and not video's — a panel that reported a
+    // video-only depth would be describing a queue that does not exist (47 D1).
+    const durable = (body.persistence ?? "none") !== "none";
+
+    videoNote(
+      `${body.active ?? 0} active, ${body.queued ?? 0} waiting in the one job queue · ` +
+      `${fmtBytes(body.retainedBytes ?? 0)} held ${durable ? "in memory and on disk" : "in memory"}, ` +
+      `dropped on delivery or after ${fmtSeconds(body.retentionSeconds ?? 0)}. ` +
+      "A render is minutes; fetching a clip consumes it.",
+      "info");
+
+    scheduleVideoPoll();
+  };
+
+  document.getElementById("video-refresh")?.addEventListener("click", refreshVideoJobs);
+
+  document.getElementById("video-submit")?.addEventListener("click", async () => {
+    const model = (document.getElementById("video-model")?.value ?? "").trim();
+    const prompt = (document.getElementById("video-prompt")?.value ?? "").trim();
+    const size = (document.getElementById("video-size")?.value ?? "").trim();
+    const seconds = (document.getElementById("video-seconds")?.value ?? "").trim();
+
+    if (!model || !prompt) {
+      videoNote("A model and a prompt, at least. The model is a recipe id — wan-t2v-1.3b, not a repo id.", "err");
+      return;
+    }
+
+    const body = { model, prompt };
+    if (size) body.size = size;
+    if (seconds) body.seconds = Number(seconds);
+
+    const res = await imageFetch("/v1/videos", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+
+    if (!res) return;
+
+    const answer = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      // The edge's own sentence again: a duration outside the recipe's list is refused NAMING the
+      // list, and a size off the /16 grid names the grid. Summarising either would throw away the
+      // only message written to be acted on.
+      videoNote(answer?.error?.message ?? `HTTP ${res.status}`, "err");
+      return;
+    }
+
+    videoNote(`Submitted ${answer.id}. Minutes, not seconds — the row updates while it runs.`, "info");
+    await refreshVideoJobs();
+  });
+
+  document.getElementById("video-jobs")?.addEventListener("click", async (event) => {
+    const cancelId = event.target?.getAttribute?.("data-video-cancel");
+    const fetchId = event.target?.getAttribute?.("data-video-fetch");
+
+    // The dialect's own id, which is what both routes below take: /api/videos/jobs reports the raw
+    // job id, and /v1/videos speaks `video_<hex>`.
+    const identifier = (id) => (id.startsWith("video_") ? id : `video_${id.replace(/-/g, "")}`);
+
+    if (cancelId) {
+      const res = await imageFetch(`/v1/videos/${identifier(cancelId)}`, { method: "DELETE" });
+      if (!res) return;
+
+      videoNote(res.ok
+        ? "Cancel asked for. It is cooperative — the worker answers and keeps its weights, so a job near the end may still finish."
+        : `Could not cancel: HTTP ${res.status}`, res.ok ? "info" : "err");
+
+      await refreshVideoJobs();
+      return;
+    }
+
+    if (fetchId) {
+      videoNote("Fetching — a clip is tens of megabytes.", "info");
+
+      const res = await imageFetch(`/v1/videos/${identifier(fetchId)}/content`);
+      if (!res) return;
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        videoNote(body?.error?.message ?? `HTTP ${res.status}`, "err");
+        await refreshVideoJobs();
+        return;
+      }
+
+      // One clip at a time, and the previous object URL is revoked rather than left holding tens of
+      // megabytes in a tab somebody leaves open all day.
+      if (videoObjectUrl) URL.revokeObjectURL(videoObjectUrl);
+      videoObjectUrl = URL.createObjectURL(await res.blob());
+
+      const stage = document.getElementById("video-stage");
+      const player = document.getElementById("video-player");
+      if (stage) stage.style.display = "";
+      if (player) player.src = videoObjectUrl;
+
+      videoNote("Fetched. It is in this tab only: the hub dropped its copy on delivery.", "info");
+      await refreshVideoJobs();
+    }
+  });
+
+  // Slower than the images poll on purpose. A video job reports a step every several seconds at
+  // best, and polling a four-minute render at 1.5 s buys nothing but requests.
+  let videoPoll = null;
+
+  const scheduleVideoPoll = () => {
+    const busy = videoJobs.some(job => !["succeeded", "failed", "cancelled", "expired"].includes(job.state));
+
+    if (!busy) {
+      if (videoPoll) { clearTimeout(videoPoll); videoPoll = null; }
+      return;
+    }
+
+    if (videoPoll) return;
+
+    videoPoll = setTimeout(async () => {
+      videoPoll = null;
+      await refreshVideoJobs();
+    }, 5000);
   };
 
   // ---------------------------------------------------------------- 360° viewer (phase 49)

@@ -308,6 +308,79 @@ public class PrometheusMetricsTests
     }
 
     /// <summary>
+    /// Phase 59, D1/D2. A video recipe is reported at all — it was filtered out of the node's report
+    /// until v3.27 — and it is the <em>same</em> series with a <c>media</c> label, because "why is
+    /// this model not offered" is one question with one answer shape.
+    /// </summary>
+    [Fact]
+    public void ARefusedVideoRecipeIsTheSameSeriesWithItsMediumOnIt()
+    {
+        var parsed = Exposition.Parse(PrometheusFormatter.Format(TrackScrape()));
+
+        var clip = Assert.Single(parsed.Samples,
+            s => s.Name == "inferhub_image_recipe" && s.Labels["recipe"] == "wan-t2v-14b-720p");
+
+        Assert.Equal("video", clip.Labels["media"]);
+        Assert.Equal("over-budget", clip.Labels["reason"]);
+        Assert.Equal(1, clip.Value);
+
+        // And the picture rows say so too, rather than leaving the label absent on the ones that
+        // were here first — an unlabelled series beside a labelled one is two series to a query.
+        Assert.Equal("image", Assert.Single(parsed.Samples,
+            s => s.Name == "inferhub_image_recipe" && s.Labels["recipe"] == "sdxl").Labels["media"]);
+    }
+
+    /// <summary>
+    /// The job counter and its histogram have counted video since v3.25 with nothing to tell the
+    /// two apart — a four-minute clip and a nine-second picture in one set of buckets.
+    /// </summary>
+    [Fact]
+    public void TheJobCounterSeparatesClipsFromPicturesByLabel()
+    {
+        var metrics = new Metrics();
+        metrics.RecordImageJob("sdxl", "succeeded", 8, ImageRecipeMedia.Image);
+        metrics.RecordImageJob("wan-t2v-1.3b", "succeeded", 240, ImageRecipeMedia.Video);
+
+        var parsed = Exposition.Parse(PrometheusFormatter.Format(
+            SampleScrape() with { Metrics = metrics.Snapshot(DateTimeOffset.UtcNow) }));
+
+        Assert.Equal("image", Assert.Single(parsed.Samples,
+            s => s.Name == "inferhub_image_jobs_total" && s.Labels["recipe"] == "sdxl").Labels["media"]);
+
+        Assert.Equal("video", Assert.Single(parsed.Samples,
+            s => s.Name == "inferhub_image_jobs_total" && s.Labels["recipe"] == "wan-t2v-1.3b").Labels["media"]);
+
+        // The histogram carries it too, or `histogram_quantile` over one medium would silently
+        // include the other's four minutes.
+        Assert.Equal(1, Assert.Single(parsed.Samples,
+            s => s.Name == "inferhub_image_job_seconds_bucket"
+                && s.Labels["media"] == "video"
+                && s.Labels["le"] == "300").Value);
+
+        Assert.Equal(0, Assert.Single(parsed.Samples,
+            s => s.Name == "inferhub_image_job_seconds_bucket"
+                && s.Labels["media"] == "image"
+                && s.Labels["le"] == "5").Value);
+    }
+
+    /// <summary>
+    /// A caller that names no medium — every path that existed before this release — is formatted as
+    /// <c>image</c>, which is what every job in this counter was until v3.25.
+    /// </summary>
+    [Fact]
+    public void AJobRecordedWithoutAMediumIsLabelledImage()
+    {
+        var metrics = new Metrics();
+        metrics.RecordImageJob("sdxl", "succeeded", 3);
+
+        var parsed = Exposition.Parse(PrometheusFormatter.Format(
+            SampleScrape() with { Metrics = metrics.Snapshot(DateTimeOffset.UtcNow) }));
+
+        Assert.Equal("image", Assert.Single(parsed.Samples,
+            s => s.Name == "inferhub_image_jobs_total").Labels["media"]);
+    }
+
+    /// <summary>
     /// The declared budget and the worker's own reading, side by side and never merged — a
     /// disagreement is the thing worth seeing, and a hub that adopted the measurement would have
     /// re-detected VRAM after phase 48 decided not to (48 D1).
@@ -467,9 +540,14 @@ public class PrometheusMetricsTests
                 new NodeVramState(24576, 2048, 24564, [new NodeResidentModel("sdxl", 8000, InUse: true)]),
                 [
                     new NodeImageRecipeState("sdxl", true, ImageRecipeReasons.Ok, ["image", "image-edit"],
-                        8000, "CreativeML-OpenRAIL++-M", null, "none"),
+                        8000, "CreativeML-OpenRAIL++-M", null, "none", ImageRecipeMedia.Image),
                     new NodeImageRecipeState("sdxl-turbo", false, ImageRecipeReasons.Unlicensed, [],
-                        8000, "sai-nc-community", null, "none")
+                        8000, "sai-nc-community", null, "none", ImageRecipeMedia.Image),
+
+                    // Phase 59: a video recipe held back by the card — the shipped catalogue's own
+                    // case, and the reason the reason list did not need a fifth entry.
+                    new NodeImageRecipeState("wan-t2v-14b-720p", false, ImageRecipeReasons.OverBudget, [],
+                        24000, "Apache-2.0", null, "nf4", ImageRecipeMedia.Video)
                 ])
             ],
             Profiles = [new ProfileScrapeSample("gpu-boxes", "refused", 1)],

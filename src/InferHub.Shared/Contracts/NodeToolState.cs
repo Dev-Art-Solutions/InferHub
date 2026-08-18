@@ -88,7 +88,48 @@ public sealed record NodeImageRecipeState(
     [property: JsonPropertyName("vramMiB")] int VramMiB,
     [property: JsonPropertyName("licenseId")] string LicenseId,
     [property: JsonPropertyName("licenseUrl")] string? LicenseUrl = null,
-    [property: JsonPropertyName("quantization")] string? Quantization = null);
+    [property: JsonPropertyName("quantization")] string? Quantization = null,
+
+    /// <summary>
+    /// What this recipe produces — <c>image</c> or <c>video</c> (phase 59, D1).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Video recipes ride in this list rather than in one of their own.</b> Phase 57 filtered them
+    /// out of it and said so, because a video row in a panel that draws pictures is wrong — but that
+    /// is a <em>rendering</em> problem and the console is where it is now solved. The four reasons in
+    /// <see cref="ImageRecipeReasons"/> are already the right four for a clip: the licence, the
+    /// budget, a profile, or weights that are not there yet, each with the fix it had for a picture.
+    /// A second array would be a second mailbox to keep in step and a second copy of that list.
+    /// </para>
+    /// <para>
+    /// <b>Absent means <c>image</c></b> (40 D1, fifth use), so a v3.26 node reporting into a v3.27
+    /// hub says exactly what it used to say and is read exactly as it used to be read.
+    /// </para>
+    /// </remarks>
+    [property: JsonPropertyName("media")] string? Media = null);
+
+/// <summary>
+/// What a recipe produces, as the hub spells it (phase 59, D1).
+/// </summary>
+/// <remarks>
+/// The node has its own copy of these two words in <c>ImageRecipeInfo</c>, where they are read out
+/// of a recipe file. This is not that: it is the vocabulary of the <em>report</em>, and it exists so
+/// a console, a metric label and a test do not each write <c>"video"</c> as a literal.
+/// <see cref="Normalize"/> is where "absent means image" lives — one place, so a payload from a
+/// v3.26 node cannot be read as one thing by the strip and another by the panel.
+/// </remarks>
+public static class ImageRecipeMedia
+{
+    public const string Image = "image";
+
+    public const string Video = "video";
+
+    public static string Normalize(string? media) =>
+        string.Equals(media?.Trim(), Video, StringComparison.OrdinalIgnoreCase) ? Video : Image;
+
+    public static bool IsVideo(string? media) => Normalize(media) == Video;
+}
 
 /// <summary>
 /// Why a recipe is not offered. A short list on purpose: each entry exists because the <b>fix is

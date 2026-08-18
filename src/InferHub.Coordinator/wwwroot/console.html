@@ -578,6 +578,85 @@
   </section>
 
   <!--
+    Phase 59, D4. The video panel speaks OpenAI's own Videos dialect — POST /v1/videos, poll
+    /v1/videos/{id}, fetch /content, DELETE to cancel — because that dialect is asynchronous by
+    construction and a customer's SDK calls exactly these routes. The one thing it refuses is
+    enumeration, so the job list comes from GET /api/videos/jobs, the single route this phase adds.
+
+    Same CLIENT key as the images panel, and the same sentence about it: a video id IS the capability
+    to fetch tens of megabytes, so the listing is client-scoped and this console holds a key an
+    operator pasted rather than the admin key the rest of the page uses.
+
+    There is no gallery here either. A fetched clip is an object URL in this tab, it is revoked on
+    the next fetch, and the bytes on the hub are gone the moment they are delivered.
+  -->
+  <section>
+    <h2>Video <span id="video-key-state" class="pill pill-ok" style="display:none">client key set</span></h2>
+
+    <div class="docs-bar">
+      <label for="video-model">Model</label>
+      <input type="text" id="video-model" placeholder="wan-t2v-1.3b" style="width:150px">
+      <label for="video-prompt">Prompt</label>
+      <input type="text" id="video-prompt" placeholder="a paper boat on a puddle, slow dolly in" style="flex:1">
+      <label for="video-size">Size</label>
+      <input type="text" id="video-size" placeholder="832x480" style="width:110px">
+      <label for="video-seconds">Seconds</label>
+      <input type="number" id="video-seconds" min="1" step="1" placeholder="5" style="width:70px">
+      <button id="video-submit" class="primary">Generate</button>
+      <button id="video-refresh">Refresh</button>
+    </div>
+
+    <div id="video-note" class="row-msg info">
+      A render is <b>minutes</b>, not seconds — the row below updates while it runs. A duration the
+      recipe does not offer is refused by name rather than rounded, and a finished clip is
+      <b>read once</b>: fetching it here consumes it.
+    </div>
+
+    <div class="table-wrap">
+      <table id="video-jobs-table">
+        <thead>
+          <tr>
+            <th>Job</th>
+            <th>Model</th>
+            <th>State</th>
+            <th>Progress</th>
+            <th>Node</th>
+            <th>Elapsed</th>
+            <th>Clip</th>
+            <th>Result</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="video-jobs"></tbody>
+      </table>
+    </div>
+
+    <div class="card" id="video-stage" style="display:none;margin-top:12px">
+      <video id="video-player" controls playsinline style="width:100%;max-height:420px;background:#0b0d11;border-radius:6px"></video>
+      <div class="row-msg info" style="margin-top:10px">
+        This clip lives in <b>this browser tab</b>. The hub dropped its copy when it was fetched.
+      </div>
+    </div>
+
+    <h3>Video recipes on the fleet</h3>
+    <div class="table-wrap">
+      <table id="video-recipes-table">
+        <thead>
+          <tr>
+            <th>Node</th>
+            <th>Recipe</th>
+            <th>Offered</th>
+            <th>Why not</th>
+            <th>VRAM</th>
+            <th>Licence</th>
+          </tr>
+        </thead>
+        <tbody id="video-recipes"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!--
     Phase 49. A 360° panorama and a 2:1 landscape photograph are the same bytes in the same shape,
     and this panel picks its renderer from the projection the WORKER declared rather than from the
     aspect ratio — which is what every viewer on the internet does and is wrong for both of them.

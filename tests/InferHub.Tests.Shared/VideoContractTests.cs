@@ -291,4 +291,79 @@ public class VideoContractTests
         Assert.False(CapabilityKinds.IsImageKind(CapabilityKinds.Video));
         Assert.True(CapabilityKinds.IsWellKnown(CapabilityKinds.Video));
     }
+
+    // ---- the job view a console reads (phase 59, D4/D6) ------------------------------------------
+
+    /// <summary>
+    /// One job model, two fetch surfaces. A video row pointing at the images content path was a 404
+    /// with a plausible shape, which is the failure a panel cannot diagnose.
+    /// </summary>
+    [Fact]
+    public void AVideoJobsRowNamesItsCapabilityAndTheRouteItsBytesComeFrom()
+    {
+        var store = new ImageJobStore(new ImageJobOptions());
+        var id = Guid.NewGuid();
+
+        store.TryCreate(id, "client", AVideoRequest(), out var record);
+        store.TryTransition(id, ImageJobStates.Running);
+        store.TrySucceed(
+            id,
+            [new ImageJobImage([1, 2, 3], "video/mp4", new ImageSize(832, 480), 7, Seconds: 5.0625)],
+            units: 970);
+
+        var view = JsonDocument.Parse(ImageJobView.Render(record, null)).RootElement;
+
+        Assert.Equal("video", view.GetProperty("capability").GetString());
+
+        var clip = view.GetProperty("images")[0];
+
+        Assert.Equal(
+            $"/v1/videos/{VideoRenderer.Identifier(id)}/content",
+            clip.GetProperty("url").GetString());
+
+        // The measured duration, not the one that was asked for (57 D5).
+        Assert.Equal(5.0625, clip.GetProperty("seconds").GetDouble(), 4);
+    }
+
+    /// <summary>
+    /// And an image job is untouched: same route it has had since phase 47, and no duration —
+    /// a picture has none, and a zero would be a measurement nobody made (phase-28 D5).
+    /// </summary>
+    [Fact]
+    public void AnImageJobsRowIsUnchangedByTheVideoOne()
+    {
+        var store = new ImageJobStore(new ImageJobOptions());
+        var id = Guid.NewGuid();
+
+        store.TryCreate(id, "client", new ImageGenerationRequest("sdxl", "a prompt", null, 1, null, null, null, null), out var record);
+        store.TryTransition(id, ImageJobStates.Running);
+        store.TrySucceed(id, [new ImageJobImage([1, 2, 3], "image/png", new ImageSize(1024, 1024), 42)], units: 31.5);
+
+        var view = JsonDocument.Parse(ImageJobView.Render(record, null)).RootElement;
+        var picture = view.GetProperty("images")[0];
+
+        Assert.Equal("image", view.GetProperty("capability").GetString());
+        Assert.Equal($"/api/images/jobs/{id}/content/0", picture.GetProperty("url").GetString());
+        Assert.False(picture.TryGetProperty("seconds", out _));
+    }
+
+    /// <summary>
+    /// The listing the console reads is scoped by capability as well as by client (57 D10, 59 D4):
+    /// an image job is not in the video listing and a video job is not in the images one.
+    /// </summary>
+    [Fact]
+    public void TheTwoListingsSeeOnlyTheirOwnCapability()
+    {
+        var store = new ImageJobStore(new ImageJobOptions());
+
+        store.TryCreate(Guid.NewGuid(), "client", AVideoRequest(), out var clip);
+        store.TryCreate(Guid.NewGuid(), "client", new ImageGenerationRequest("sdxl", "a prompt", null, 1, null, null, null, null), out var picture);
+
+        Assert.Equal([clip.Id], store.ForClient("client", CapabilityKinds.IsVideo).Select(r => r.Id));
+        Assert.Equal([picture.Id], store.ForClient("client", CapabilityKinds.IsImageKind).Select(r => r.Id));
+
+        // And another client sees neither, which is the property the capability scope must not have
+        // quietly replaced.
+        Assert.Empty(store.ForClient("somebody-else", CapabilityKinds.IsVideo));
+    }
 }

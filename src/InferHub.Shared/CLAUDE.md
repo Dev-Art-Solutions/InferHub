@@ -711,9 +711,10 @@ precedent exactly. A video transformer denoises the **whole latent stack** every
 own for the quota** (the track index guessed `frame_seconds`) — a second answer to a question already
 answered, and it would let a client with an exhausted image budget spend the same card under a
 counter nobody had set. `video_seconds` is what a human asks about and cannot be derived from the
-other. **There is no `VideoSecondsPerDay`**: a quota knob for a one-model catalogue is a key that is
-wrong by the time 58 lands. `AdmissionControl` still had to learn the kind, because its `default`
-branch counts whatever reaches it as **tokens**.
+other. `AdmissionControl` still had to learn the kind, because its `default` branch counts whatever
+reaches it as **tokens**. **`VideoSecondsPerDay` was deferred until a catalogue existed and landed in
+v3.27** — a quota knob for a one-model catalogue would have been a key that was wrong by the time 58
+shipped. Both units are gates now; see 59 D3 in `src/InferHub.Coordinator/CLAUDE.md`.
 
 **Recorded deviation: there is no `Videos:` config section.** The brief's task list named
 `Videos:MaxResponseBytes`; a video is one attachment over the wire an image already uses, so it is
@@ -723,3 +724,12 @@ rebuilt.
 
 **Rule 5 survived again.** **Zero** new `PackageReference`, no codec anywhere in C#, nothing that
 decodes a frame, and `InferHub.Shared.csproj` is still an empty `<Project Sdk="Microsoft.NET.Sdk">`.
+
+### Phase 59 (the job view) — the one decision that is this library's
+
+**D6 — A job's row names the route *its own capability* is fetched from.** `ImageJobView.Describe`
+hard-coded `/api/images/jobs/{id}/content/{index}`, which for a video job is a 404 with a plausible
+shape — one job model (57 D10) means two fetch surfaces, and the view is where that arrives. It now
+emits `/v1/videos/{id}/content` for a video job, plus `capability` on the row and `seconds` on the
+output where the worker measured one (absent on a picture: a zero would be a measurement nobody
+made). The rest of phase 59 is the coordinator's and is recorded there.

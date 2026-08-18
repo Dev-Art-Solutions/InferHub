@@ -1077,11 +1077,10 @@ What is *this* host's is one predicate, one deliberate omission, and one default
 after the worker slot, and the licence-and-budget refusal. 50 D1's sentence one kind on: a node
 gating only the image kinds would happily render video with weights whose licence nobody accepted.
 
-**`NodeToolState.Images` was deliberately *not* widened, and the cost is stated rather than
-discovered.** Phase 51's Images panel renders it and `ConsoleContractTests` pins it, so video rows
-would draw clips as pictures. Until phase 59 — which owns the console for this track — **a video
-recipe refused for its licence or its budget is invisible at the hub**. **Solo got the surface on
-the same day** (41 D8): `LocalVideoEndpoints` maps the same four routes and the same two `501`s.
+**`NodeToolState.Images` carries video recipes since v3.27**, with the recipe's `media` on each row
+— 57 kept them out so clips could not land in a panel that draws pictures, and 59 D1 moved that
+split to the console instead. **Solo got the surface on the same day** (41 D8):
+`LocalVideoEndpoints` maps the same four routes and the same two `501`s.
 
 **Phase 58 gave the catalogue a fourth field, `media`, and flipped one default for video only.**
 48 D2's *a recipe with no declared figure is admitted rather than guessed at* keeps a number nobody

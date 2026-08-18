@@ -32,14 +32,25 @@ public sealed class AdmissionControl
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, ClientState> states =
         new(StringComparer.Ordinal);
 
-    public AdmissionDecision TryAdmit(ResolvedClient client, string model, string unitKind = UsageUnits.Tokens)
-        => TryAdmit(client, model, DateTimeOffset.UtcNow, unitKind);
+    public AdmissionDecision TryAdmit(
+        ResolvedClient client,
+        string model,
+        string unitKind = UsageUnits.Tokens,
+        string? secondaryUnitKind = null)
+        => TryAdmit(client, model, DateTimeOffset.UtcNow, unitKind, secondaryUnitKind);
 
+    /// <param name="secondaryUnitKind">
+    /// The second unit this request will also be metered in, or null (phase 59, D3). A video is
+    /// billed in megapixel-steps <em>and</em> in seconds; <c>ImageOutcome</c> has carried both since
+    /// phase 57 and until now the gate looked only at the first, so a client whose only limit was a
+    /// picture budget spent a clip budget nobody was checking.
+    /// </param>
     internal AdmissionDecision TryAdmit(
         ResolvedClient client,
         string model,
         DateTimeOffset now,
-        string unitKind = UsageUnits.Tokens)
+        string unitKind = UsageUnits.Tokens,
+        string? secondaryUnitKind = null)
     {
         var limits = client.Limits;
 
@@ -70,12 +81,25 @@ public sealed class AdmissionControl
             // D7). A chat request cannot exhaust an audio budget and a transcription cannot exhaust
             // a token budget, because neither consumes the other's unit — and a client whose only
             // limit is TokensPerDay would otherwise transcribe a library for free.
-            if (DailyBudget(limits, unitKind) is { } daily && Consumed(state, unitKind) >= daily)
+            if (ExhaustedBudget(limits, state, unitKind) is { } spent)
             {
                 return new AdmissionDecision(
                     false,
                     StatusCodes.Status402PaymentRequired,
-                    $"daily {Describe(unitKind)} budget of {Format(daily)} exhausted for client '{client.Id}'",
+                    $"daily {Describe(spent.Unit)} budget of {Format(spent.Daily)} exhausted for client '{client.Id}'",
+                    SecondsUntilUtcMidnight(now));
+            }
+
+            // The second unit a request is metered in, checked in its own right and named in its own
+            // sentence (59 D3). The request's primary unit is checked first on purpose: a caller who
+            // is out of both should hear about the one the request is principally measured in.
+            if (secondaryUnitKind is not null
+                && ExhaustedBudget(limits, state, secondaryUnitKind) is { } secondary)
+            {
+                return new AdmissionDecision(
+                    false,
+                    StatusCodes.Status402PaymentRequired,
+                    $"daily {Describe(secondary.Unit)} budget of {Format(secondary.Daily)} exhausted for client '{client.Id}'",
                     SecondsUntilUtcMidnight(now));
             }
 
@@ -168,11 +192,25 @@ public sealed class AdmissionControl
         }
     }
 
+    /// <summary>
+    /// One unit's daily budget, when it exists and is already spent. Null covers both "this client
+    /// has no limit in that unit" and "there is room left in it", which are the same answer to the
+    /// only question the caller is asking.
+    /// </summary>
+    private static (string Unit, double Daily)? ExhaustedBudget(
+        ClientLimits limits,
+        ClientState state,
+        string unitKind) =>
+        DailyBudget(limits, unitKind) is { } daily && Consumed(state, unitKind) >= daily
+            ? (unitKind, daily)
+            : null;
+
     private static double? DailyBudget(ClientLimits limits, string unitKind) => unitKind switch
     {
         UsageUnits.AudioSeconds => limits.AudioSecondsPerDay,
         UsageUnits.Characters => limits.CharactersPerDay,
         UsageUnits.MegapixelSteps => limits.MegapixelStepsPerDay,
+        UsageUnits.VideoSeconds => limits.VideoSecondsPerDay,
         _ => limits.TokensPerDay
     };
 
@@ -181,6 +219,7 @@ public sealed class AdmissionControl
         UsageUnits.AudioSeconds => state.AudioSecondsToday,
         UsageUnits.Characters => state.CharactersToday,
         UsageUnits.MegapixelSteps => state.MegapixelStepsToday,
+        UsageUnits.VideoSeconds => state.VideoSecondsToday,
         _ => state.TokensToday
     };
 
@@ -189,6 +228,7 @@ public sealed class AdmissionControl
         UsageUnits.AudioSeconds => "audio-second",
         UsageUnits.Characters => "character",
         UsageUnits.MegapixelSteps => "megapixel-step",
+        UsageUnits.VideoSeconds => "video-second",
         _ => "token"
     };
 

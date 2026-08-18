@@ -274,6 +274,9 @@ app.MapImageJobEndpoints();
 // Phase 57. OpenAI's Videos API, which unlike its Images API is asynchronous by construction — so
 // this is an adoption rather than an invention (57 D1), over phase 47's job model unchanged.
 app.MapVideoEndpoints();
+
+// Phase 59. The one route that dialect refuses and a console cannot be built without (59 D4).
+app.MapVideoJobEndpoints();
 app.MapAdminEndpoints();
 
 if (vectorStoreEnabled)

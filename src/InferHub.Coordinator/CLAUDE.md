@@ -1029,3 +1029,43 @@ they are guarded by nothing new — `/v1` is already in `BearerApiKeyMiddleware.
 and meters a second unit. The queue, the pump, the busy-node map, the `node_lost` refusal to retry
 and phase 56's archive are untouched — which is track D3 paying off, since 56 was sequenced first
 precisely so video would inherit a job model that already survives a restart.
+
+### Phase 59 (console, metrics and docs for the video track) — load-bearing
+
+**D1 — Video recipes ride in the mailbox that already exists, and the *console* splits them, not the
+payload.** `NodeImageRecipeState` grew `media` and the node stopped filtering video out of it
+(the filter and its comment were phase 57's, naming this phase). The four reasons in
+`ImageRecipeReasons` are already the right four for a clip — a licence, the card, a profile, weights
+that are not there yet — and each has the fix it had for a picture. **Considered and rejected: a
+second `videos` array on `NodeToolState`** — two mailboxes to keep in step and a second copy of the
+reason list. What genuinely differs is *rendering*, so `console.js` filters on `media` for the
+Images table and the new Video one, and the needs-attention strip labels the row with it.
+
+**D2 — The `image` metric names keep their names and gain a `media` label; the `MediaJob*` rename is
+refused for good.** `inferhub_image_recipe`, `inferhub_image_jobs_total` and
+`inferhub_image_job_seconds` carry `media="image"|"video"`. The counters have included video since
+v3.25 with nothing to separate it, and a four-minute clip in a picture histogram makes both
+unreadable. **Considered and rejected: `inferhub_video_*` as its own family** — 45's audio precedent
+is two series for two *questions*, and "why is this model not offered" is one question with one
+answer shape; two families means every fleet-refusal query written twice and one of them forgotten.
+57 D10 deferred the type rename here: **no**, permanently. These names are in other people's
+dashboards, and a label delivers the split for free.
+
+**D3 — `VideoSecondsPerDay`, and `TryAdmit` checks the request's secondary unit too.** `ImageOutcome`
+has carried two units since 57 and the gate looked at one, so a client whose only limit was a picture
+budget rendered clips against a figure nobody sizes in megapixel-steps. The primary unit is still
+checked first — a caller out of both hears about the one the request is principally measured in — and
+the 402 names the unit that ran out, because "megapixel-step" would send an operator to the wrong
+knob. **Considered and rejected: leaving video on the megapixel-step budget alone**, which is 42 D7
+failing in a new unit. No per-minute companion: a clip's seconds arrive in one lump minutes after
+admission, so a sliding window would refuse the wrong request; `MaxConcurrent` is the burst control.
+
+**D4/D5 — One new route, and the `501` that becomes false is rewritten in the same commit.**
+`GET /api/videos/jobs` ([VideoJobEndpoints](src/InferHub.Coordinator/Endpoints/VideoJobEndpoints.cs))
+is client-scoped and capability-scoped; everything else the panel does goes over `/v1/videos`,
+because that dialect *is* asynchronous and a console driving the real surface is worth more than an
+admin shortcut. **Considered and rejected: `/api/images/jobs?media=video`** — a query parameter
+standing in for a scope, over two jobs whose bytes come from two different routes. And
+`GET /v1/videos` stays a 501, but no longer on the ground that "this coordinator holds no
+client-scoped index of jobs": it holds one now. The reason it keeps is the one that was always
+load-bearing — an id **is** the capability to fetch the bytes.

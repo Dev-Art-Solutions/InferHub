@@ -22,10 +22,10 @@ namespace InferHub.Coordinator.OpenAi;
 /// </para>
 /// <para>
 /// <b>Two of the dialect's routes are refused rather than mapped</b>, with a <c>501</c> that names
-/// the reason. Listing enumerates a client's jobs, and this project has never had a route that does
-/// (the images listing phase 51 added is a console-scoped exception nobody's SDK calls);
-/// <c>remix</c> needs the original request kept after the job ends, which 56 D3 forbids in the one
-/// sentence it is built on. A <c>404</c> would read as "an old hub"; a <c>501</c> that says why is
+/// the reason. Listing enumerates a client's jobs, and the only routes here that do are the two
+/// console-scoped ones — <c>/api/images/jobs</c> (phase 51) and <c>/api/videos/jobs</c> (phase 59) —
+/// reached with a key an operator pasted rather than one every SDK holds; <c>remix</c> needs the
+/// original request kept after the job ends, which 56 D3 forbids in the one sentence it is built on. A <c>404</c> would read as "an old hub"; a <c>501</c> that says why is
 /// what 46 D5 does about <c>response_format=url</c>.
 /// </para>
 /// <para>
@@ -48,10 +48,15 @@ public static class VideoEndpoints
         app.MapDelete("/v1/videos/{id}", Delete);
 
         // Mapped so the refusal is a sentence rather than a 404 a client reads as "old hub".
+        // Phase 59 D5: the reason this used to give — "no client-scoped index of jobs" — stopped
+        // being true the moment GET /api/videos/jobs landed, so it is gone rather than left standing.
+        // The refusal survives on the reason it always had: a video id IS the capability to fetch the
+        // bytes, and this dialect is the one every SDK calls.
         app.MapGet("/v1/videos", () => NotImplemented(
-            "listing videos is not supported: this coordinator holds no client-scoped index of jobs, "
-            + "and building one here would hand every caller a way to enumerate ids that are "
-            + "themselves the capability to fetch the bytes. Keep the id POST /v1/videos returned."));
+            "listing videos is not supported: a video id is itself the capability to fetch the bytes, "
+            + "so this API does not hand a caller a way to enumerate other jobs. The console reads "
+            + "GET /api/videos/jobs with an operator's own client key. Keep the id POST /v1/videos "
+            + "returned."));
 
         app.MapPost("/v1/videos/{id}/remix", (string id) => NotImplemented(
             $"remixing '{id}' is not supported: nothing durable holds the request that made a video "
@@ -100,8 +105,11 @@ public static class VideoEndpoints
         // The quota is megapixel-steps, because it is the same card an image spends (57 D6). A video
         // is a large number of them and that is the point: a counter that billed a five-second clip
         // like one picture would be wrong in the direction that scales with usage.
+        //
+        // And seconds beside it, because the meter has reported both since phase 57 and only one of
+        // them was ever a gate (59 D3). Both are checked; whichever is exhausted names itself.
         var admission = httpContext.RequestServices.GetRequiredService<AdmissionControl>()
-            .TryAdmit(client, request.Model, UsageUnits.MegapixelSteps);
+            .TryAdmit(client, request.Model, UsageUnits.MegapixelSteps, UsageUnits.VideoSeconds);
 
         if (!admission.Allowed)
         {

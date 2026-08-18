@@ -182,6 +182,102 @@ public class AdmissionControlTests
         Assert.True(admission.TryAdmit(client, "llama3", Noon).Allowed);
     }
 
+    // ---- the second unit a request is metered in (phase 59, D3) --------------------------
+
+    /// <summary>
+    /// A video is billed in megapixel-steps <em>and</em> in seconds, and until v3.27 only the first
+    /// was a gate — so a client whose clip budget was long gone kept being admitted.
+    /// </summary>
+    [Fact]
+    public void AnExhaustedVideoSecondBudgetRefusesEvenWhenTheStepBudgetHasRoom()
+    {
+        var admission = new AdmissionControl();
+        var client = new ResolvedClient("acme", new ClientLimits
+        {
+            MegapixelStepsPerDay = 100_000,
+            VideoSecondsPerDay = 10
+        });
+
+        admission.TryAdmit(client, "wan-t2v-1.3b", Noon, UsageUnits.MegapixelSteps, UsageUnits.VideoSeconds)
+            .Lease!.Dispose();
+
+        admission.RecordUnits("acme", UsageUnits.VideoSeconds, 10, Noon);
+
+        var refused = admission.TryAdmit(
+            client, "wan-t2v-1.3b", Noon, UsageUnits.MegapixelSteps, UsageUnits.VideoSeconds);
+
+        Assert.False(refused.Allowed);
+        Assert.Equal(StatusCodes.Status402PaymentRequired, refused.Status);
+
+        // The unit it ran out of, named — a 402 that said "megapixel-step" would send the operator
+        // to raise the wrong knob.
+        Assert.Contains("video-second", refused.Message!);
+    }
+
+    /// <summary>
+    /// The gate the request is principally measured in is still checked first, and still fires on
+    /// its own: naming the secondary unit must not weaken the primary one.
+    /// </summary>
+    [Fact]
+    public void TheStepBudgetStillRefusesFirstWhenBothAreGone()
+    {
+        var admission = new AdmissionControl();
+        var client = new ResolvedClient("acme", new ClientLimits
+        {
+            MegapixelStepsPerDay = 5,
+            VideoSecondsPerDay = 5
+        });
+
+        admission.TryAdmit(client, "wan-t2v-1.3b", Noon, UsageUnits.MegapixelSteps, UsageUnits.VideoSeconds)
+            .Lease!.Dispose();
+
+        admission.RecordUnits("acme", UsageUnits.MegapixelSteps, 970, Noon);
+        admission.RecordUnits("acme", UsageUnits.VideoSeconds, 5, Noon);
+
+        var refused = admission.TryAdmit(
+            client, "wan-t2v-1.3b", Noon, UsageUnits.MegapixelSteps, UsageUnits.VideoSeconds);
+
+        Assert.False(refused.Allowed);
+        Assert.Contains("megapixel-step", refused.Message!);
+    }
+
+    /// <summary>
+    /// A deployment that set no clip budget behaves exactly as v3.26 did: the second unit is checked
+    /// and finds no limit, which is not the same as finding a zero.
+    /// </summary>
+    [Fact]
+    public void NoVideoSecondBudgetMeansNoSecondGate()
+    {
+        var admission = new AdmissionControl();
+        var client = new ResolvedClient("acme", new ClientLimits { MegapixelStepsPerDay = 100_000 });
+
+        for (var i = 0; i < 20; i++)
+        {
+            var decision = admission.TryAdmit(
+                client, "wan-t2v-1.3b", Noon, UsageUnits.MegapixelSteps, UsageUnits.VideoSeconds);
+
+            Assert.True(decision.Allowed);
+            decision.Lease!.Dispose();
+            admission.RecordUnits("acme", UsageUnits.VideoSeconds, 5, Noon);
+        }
+    }
+
+    /// <summary>
+    /// Chat is unaffected: a spent clip budget is not a token budget, which is 42 D7 read in the
+    /// other direction.
+    /// </summary>
+    [Fact]
+    public void AnExhaustedVideoBudgetDoesNotRefuseChat()
+    {
+        var admission = new AdmissionControl();
+        var client = new ResolvedClient("acme", new ClientLimits { VideoSecondsPerDay = 1 });
+
+        admission.TryAdmit(client, "llama3", Noon).Lease!.Dispose();
+        admission.RecordUnits("acme", UsageUnits.VideoSeconds, 60, Noon);
+
+        Assert.True(admission.TryAdmit(client, "llama3", Noon).Allowed);
+    }
+
     // ---- live view ----------------------------------------------------------------------
 
     [Fact]

@@ -416,7 +416,14 @@ public sealed class ImageJobRegistry
         metrics.RecordImageJob(
             record.Model,
             state,
-            ((record.CompletedAt ?? DateTimeOffset.UtcNow) - record.CreatedAt).TotalSeconds);
+            ((record.CompletedAt ?? DateTimeOffset.UtcNow) - record.CreatedAt).TotalSeconds,
+
+            // The job's own capability, folded to the medium the label carries (59 D2). Read from
+            // the record rather than from a recipe catalogue, because the hub has never had one
+            // (46 D6) and this phase is not where it gets one.
+            CapabilityKinds.IsVideo(record.Capability)
+                ? ImageRecipeMedia.Video
+                : ImageRecipeMedia.Image);
     }
 
     internal static ImageJobFailure Failure(ImageOutcome outcome) => new(
