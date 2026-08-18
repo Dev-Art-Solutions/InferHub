@@ -4,7 +4,7 @@
 of a video, and nothing has been rendered on a card. A screenshot of a panel driven by a fake worker
 would be a picture of a fixture.
 
-**Blog post is live:** https://devart.solutions/blog/inferhub-3-27-a-refusal-nobody-can-see
+**Blog post is live:** https://blog.devart.solutions/blog/inferhub-3-27-a-refusal-nobody-can-see
 
 ---
 
