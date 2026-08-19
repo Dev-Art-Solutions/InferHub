@@ -89,6 +89,78 @@ public class OpenAiAuthTests
         Assert.Equal(StatusCodes.Status401Unauthorized, context.Response.StatusCode);
     }
 
+    /// <summary>
+    /// Phase 60. <c>/api/status</c> is the fleet view the console polls, and it accepted the client
+    /// scope alone — so an operator holding only an admin key got a 401 from the page built around
+    /// that key, on every containerised hub (the loopback exemption never applies behind a bridge).
+    /// Found by pulling the published image, not by any suite.
+    /// </summary>
+    [Fact]
+    public async Task StatusAcceptsAnAdminKeyAsWellAsAClientKey()
+    {
+        var middleware = NewBearerMiddleware(
+            out var nextCalled,
+            apiKeys: ["client-key"],
+            adminKeys: ["admin-key"],
+            requireAuthForLoopback: true);
+        var context = NewContext(
+            "/api/status",
+            remoteIp: IPAddress.Parse("8.8.8.8"),
+            authorization: "Bearer admin-key");
+
+        await middleware.InvokeAsync(context);
+
+        Assert.True(nextCalled());
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+    }
+
+    /// <summary>
+    /// The widening above is one read-only path and must stay one. An admin key is still not an
+    /// inference key — the three scopes in the root <c>CLAUDE.md</c>'s table stay separate, and this
+    /// is what stops "the console needed it" from becoming a general grant.
+    /// </summary>
+    [Theory]
+    [InlineData("/v1/chat/completions")]
+    [InlineData("/api/chat")]
+    [InlineData("/api/generate")]
+    [InlineData("/api/tags")]
+    public async Task AnAdminKeyStillCannotRunInference(string path)
+    {
+        var middleware = NewBearerMiddleware(
+            out var nextCalled,
+            apiKeys: ["client-key"],
+            adminKeys: ["admin-key"],
+            requireAuthForLoopback: true);
+        var context = NewContext(
+            path,
+            remoteIp: IPAddress.Parse("8.8.8.8"),
+            authorization: "Bearer admin-key");
+
+        await middleware.InvokeAsync(context);
+
+        Assert.False(nextCalled());
+        Assert.Equal(StatusCodes.Status401Unauthorized, context.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task StatusStillRejectsATokenThatIsNeitherScope()
+    {
+        var middleware = NewBearerMiddleware(
+            out var nextCalled,
+            apiKeys: ["client-key"],
+            adminKeys: ["admin-key"],
+            requireAuthForLoopback: true);
+        var context = NewContext(
+            "/api/status",
+            remoteIp: IPAddress.Parse("8.8.8.8"),
+            authorization: "Bearer neither");
+
+        await middleware.InvokeAsync(context);
+
+        Assert.False(nextCalled());
+        Assert.Equal(StatusCodes.Status401Unauthorized, context.Response.StatusCode);
+    }
+
     [Fact]
     public async Task OpenAiRoutesRequireKeyOnLoopbackWhenRequireAuthForLoopbackIsTrue()
     {

@@ -1,6 +1,7 @@
 using InferHub.Node.Backends;
 using InferHub.Node.Backends.Supervision;
 using InferHub.Node.Configuration;
+using InferHub.Shared.Contracts;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -352,6 +353,57 @@ public class BundledNodeTests
     }
 
     /// <summary>
+    /// Phase 60, measured. A manifest that declares <c>video</c> needs a request deadline sized for
+    /// one, and <c>diffusion.json</c> carried the 900 s it was given when it only drew pictures: a
+    /// five-second <c>wan-t2v-1.3b</c> clip on a 3090 Ti reached step 30 of 30 and was **killed in
+    /// the VAE decode at exactly 900 s**, having spent nine minutes of card. The number is a floor
+    /// rather than an equality — an operator may raise it further — and it is keyed on the manifest
+    /// declaring video, so a tool that only generates images is not made to wait an hour on a wedge.
+    /// </summary>
+    [Fact]
+    public void AManifestThatServesVideoAllowsAVideoLengthRequest()
+    {
+        using var manifest = System.Text.Json.JsonDocument.Parse(
+            File.ReadAllText(Path.Combine(RepoRoot(), "python", "manifests", "diffusion.json")));
+
+        var declaresVideo = manifest.RootElement
+            .GetProperty("capabilities")
+            .EnumerateArray()
+            .Any(capability => capability.GetProperty("kind").GetString() == CapabilityKinds.Video);
+
+        Assert.True(declaresVideo);
+
+        Assert.True(
+            manifest.RootElement.GetProperty("requestTimeoutSeconds").GetInt32() >= 1800,
+            "the diffusion manifest declares 'video' and must allow a clip to finish; 900s killed a "
+                + "five-second render at step 30 of 30, in the decode.");
+    }
+
+    /// <summary>
+    /// Phase 60. <c>diffusers</c> uses two packages it does not declare, and both fail at
+    /// <em>request</em> time rather than at import time — which is how three releases shipped
+    /// without either: <c>WanPipeline.prompt_clean</c> calls <c>ftfy.fix_text</c> unconditionally
+    /// behind an <c>if is_ftfy_available()</c> import, so every video request died with a
+    /// <c>NameError</c> after the weights had loaded; and <c>load_lora_weights</c> is the PEFT
+    /// backend, so <c>qwen-360</c> — the whole panorama recipe — never became offerable at all.
+    /// Pinned, and asserted at build time beside torch for exactly the v3.10.0 reason.
+    /// </summary>
+    [Fact]
+    public void TheDiffusionImagePinsAndAssertsTheBackendsDiffusersDoesNotDeclare()
+    {
+        var requirements = File.ReadAllText(
+            Path.Combine(RepoRoot(), "python", "requirements-diffusion.txt"));
+
+        Assert.Matches(@"(?m)^ftfy==\d", requirements);
+        Assert.Matches(@"(?m)^peft==\d", requirements);
+
+        var dockerfile = DiffusionInstructions();
+
+        Assert.Contains("is_ftfy_available", dockerfile);
+        Assert.Contains("is_peft_available", dockerfile);
+    }
+
+    /// <summary>
     /// Every shipped recipe pins a commit sha. Without it, "which weights were in 3.14.0" has no
     /// answer and two builds of the same tag can contain different models — phase-39 D9's question,
     /// asked of a Hugging Face repo instead of a tarball.
@@ -381,6 +433,56 @@ public class BundledNodeTests
             // A list, not a range: SDXL was trained on fixed aspect buckets, and a size outside them
             // does not fail — it produces duplicated limbs, which reads as a bad model.
             Assert.NotEmpty(root.GetProperty("sizes").EnumerateArray());
+        }
+    }
+
+    /// <summary>
+    /// The manifest is the ceiling, so a kind it does not name is a kind the node throws away —
+    /// <c>ToolWorkerPool.Narrow</c> iterates the <em>manifest's</em> capabilities and drops anything
+    /// a worker reports outside them. Phase 57 added the <c>video</c> kind, phase 58 catalogued
+    /// three video recipes and phase 59 built a console for them, and <c>diffusion.json</c> was
+    /// never told: the worker declared <c>video</c>, the node discarded it, and no clip could be
+    /// generated through any published image for three releases.
+    /// </summary>
+    /// <remarks>
+    /// Keyed on the shipped recipes rather than on a list in this test, so adding a fourth modality
+    /// fails here on the day its first recipe lands rather than on somebody's verification day.
+    /// </remarks>
+    [Fact]
+    public void TheDiffusionManifestDeclaresAKindForEveryMediaItsRecipesShip()
+    {
+        var required = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["image"] = [CapabilityKinds.Image, CapabilityKinds.ImageEdit],
+            ["video"] = [CapabilityKinds.Video]
+        };
+
+        var media = Directory
+            .GetFiles(Path.Combine(RepoRoot(), "python", "recipes"), "*.json")
+            .Select(path => System.Text.Json.JsonDocument.Parse(File.ReadAllText(path)))
+            .Select(document => document.RootElement.TryGetProperty("media", out var value)
+                ? value.GetString() ?? "image"
+
+                // Absent means image — 40 D1's null-is-today's-behaviour, and what every pre-57
+                // recipe relies on.
+                : "image")
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        Assert.NotEmpty(media);
+
+        using var manifest = System.Text.Json.JsonDocument.Parse(
+            File.ReadAllText(Path.Combine(RepoRoot(), "python", "manifests", "diffusion.json")));
+
+        var declared = manifest.RootElement
+            .GetProperty("capabilities")
+            .EnumerateArray()
+            .Select(capability => capability.GetProperty("kind").GetString())
+            .ToArray();
+
+        foreach (var kind in media.SelectMany(value => required[value]))
+        {
+            Assert.Contains(kind, declared);
         }
     }
 

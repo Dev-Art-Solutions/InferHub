@@ -1069,3 +1069,13 @@ standing in for a scope, over two jobs whose bytes come from two different route
 `GET /v1/videos` stays a 501, but no longer on the ground that "this coordinator holds no
 client-scoped index of jobs": it holds one now. The reason it keeps is the one that was always
 load-bearing — an id **is** the capability to fetch the bytes.
+
+### Phase 60 — `/api/status` accepts an admin key, and the console actually sends one
+
+The fleet view was guarded by the **client** scope alone, and `console.js` sent **no credential at
+all** on it. Both halves had to be wrong for the console to work anywhere, and it did — on a
+`dotnet run` hub, where the loopback exemption covers it. Inside a container the hub sees the bridge
+gateway, so every containerised deployment got `401` on the poll every panel hangs off.
+`BearerApiKeyMiddleware` now also accepts an admin key **on that one read-only path**, which grants
+nothing new (an admin key already reads `/api/admin/nodes`, which carries more), and
+`AnAdminKeyStillCannotRunInference` is what keeps the widening from spreading.

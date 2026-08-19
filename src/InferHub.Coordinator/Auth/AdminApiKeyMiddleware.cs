@@ -92,7 +92,13 @@ public sealed class AdminApiKeyMiddleware(
         return string.IsNullOrEmpty(token) ? null : token;
     }
 
-    private static bool IsTokenAccepted(string presented, IReadOnlyList<string> adminApiKeys)
+    /// <summary>
+    /// Whether a presented token is one of the admin keys, in constant time. Internal rather than
+    /// private since phase 60: <see cref="BearerApiKeyMiddleware"/> asks the same question for
+    /// <c>/api/status</c>, and a second copy of a fixed-time comparison is a second place to get it
+    /// wrong.
+    /// </summary>
+    internal static bool IsTokenAccepted(string presented, IReadOnlyList<string> adminApiKeys)
     {
         if (adminApiKeys.Count == 0)
         {

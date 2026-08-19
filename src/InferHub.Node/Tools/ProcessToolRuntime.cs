@@ -343,7 +343,8 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
                 options,
                 time,
                 loggerFactory.CreateLogger($"InferHub.Node.Tools.{manifest.Id}"),
-                vram.BudgetMiB);
+                vram.BudgetMiB,
+                vram.HeadroomMiB);
 
             pool.CapabilitiesChanged += RaiseCapabilitiesChanged;
 

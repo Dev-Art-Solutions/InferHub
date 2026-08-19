@@ -50,18 +50,28 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
 
     private readonly int declaredVramMiB;
 
+    /// <summary>
+    /// The declared budget minus the reserve — what is actually available to a model, and the figure
+    /// the worker's own prefetch gate needs (phase 60). Separate from
+    /// <see cref="declaredVramMiB"/>, which is the whole-card number the measured cross-check
+    /// compares against and would be the wrong one to fetch on.
+    /// </summary>
+    private readonly int modelBudgetMiB;
+
     public ToolWorkerPool(
         ToolManifest manifest,
         ToolOptions options,
         TimeProvider time,
         ILogger logger,
-        int declaredVramMiB = 0)
+        int declaredVramMiB = 0,
+        int modelBudgetMiB = 0)
     {
         this.manifest = manifest;
         this.options = options;
         this.time = time;
         this.logger = logger;
         this.declaredVramMiB = declaredVramMiB;
+        this.modelBudgetMiB = modelBudgetMiB;
         slots = new SemaphoreSlim(manifest.MaxWorkers, manifest.MaxWorkers);
         lastRecoveryProbe = time.GetUtcNow();
     }
@@ -639,7 +649,7 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
 
         try
         {
-            var worker = await ToolWorkerProcess.StartAsync(manifest, options.WorkerEnvironment(), logger, cancellationToken);
+            var worker = await ToolWorkerProcess.StartAsync(manifest, options.WorkerEnvironment(modelBudgetMiB), logger, cancellationToken);
 
             // v3.14.1. A worker may report a *different* set later than it did at handshake; the
             // narrowing clamp is applied to it exactly as it is at start, so this cannot widen
@@ -683,7 +693,7 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
 
         try
         {
-            var worker = await ToolWorkerProcess.StartAsync(manifest, options.WorkerEnvironment(), logger, cancellationToken);
+            var worker = await ToolWorkerProcess.StartAsync(manifest, options.WorkerEnvironment(modelBudgetMiB), logger, cancellationToken);
 
             logger.LogInformation(
                 "Tool '{ToolId}' started again after giving up; its capabilities are back on this node.",

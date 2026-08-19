@@ -127,6 +127,11 @@ RUN /opt/inferhub/venv/bin/python -c \
       "import imageio; imageio.plugins.ffmpeg.get_exe(); \
        from diffusers.utils import export_to_video; print('video encoder ok')" \
  && /opt/inferhub/venv/bin/python -c \
+      "import sys; from diffusers.utils import is_ftfy_available, is_peft_available; \
+       sys.exit('ftfy is missing: every video request dies in WanPipeline.prompt_clean') if not is_ftfy_available() else None; \
+       sys.exit('peft is missing: every LoRA recipe fails to load') if not is_peft_available() else None; \
+       print('undeclared diffusers backends ok')" \
+ && /opt/inferhub/venv/bin/python -c \
       "import py_compile; py_compile.compile('/opt/inferhub/tools/diffusion_worker.py', doraise=True); print('worker compiles')" \
  && /opt/inferhub/venv/bin/python -c \
       "import json, glob, sys; \

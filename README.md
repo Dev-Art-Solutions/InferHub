@@ -2281,7 +2281,7 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Urls` | `http://localhost:5080` | Address the coordinator listens on. |
 | `NodeRegistry:TimeoutSeconds` | `30` | Heartbeat-miss window before a node is evicted and its in-flight jobs are failed. |
 | `NodeRegistry:ReaperIntervalSeconds` | `5` | How often the reaper sweeps for stale nodes. |
-| `Dispatcher:TimeoutSeconds` | `300` | Per-job wall-clock timeout (applies to streaming and blocking). |
+| `Dispatcher:TimeoutSeconds` | `300` | Per-job wall-clock timeout (streaming, blocking **and tool jobs, which means video**). A five-second `wan-t2v-1.3b` clip measured ~143 s of cold load + ~330 s of generation on a 3090 Ti, so **raise this to 1800 if you generate video** — at 300 the hub gives up while the model is still loading. |
 | `Router:AffinitySlidingMinutes` | `10` | Sticky-conversation idle expiry. |
 | `Router:AffinityLoadBreakThreshold` | `2` | Extra in-flight jobs the sticky node may have before affinity is broken in favour of a less-busy node. |
 | `Router:Strategy` | `least-busy` | How capable nodes are ranked (v2.8): `least-busy` (default, unchanged) or `throughput` (measured tokens/sec, EWMA, load-adjusted). Affinity still wins. See [Fleet operations](#fleet-operations-v28). |

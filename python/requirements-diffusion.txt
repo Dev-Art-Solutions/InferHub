@@ -78,3 +78,23 @@ protobuf==6.33.1
 # rather than whatever the distribution mirror held that week (phase-39 D9's question again).
 imageio==2.37.0
 imageio-ffmpeg==0.6.0
+
+# TWO DEPENDENCIES `diffusers` USES AND DOES NOT DECLARE. Both were found on the phase-60
+# verification day, on the published v3.27.0 image, and both fail at REQUEST time rather than at
+# import time — which is why three releases shipped without either of them being noticed.
+#
+# `ftfy`: WanPipeline's `prompt_clean` calls `ftfy.fix_text(text)` UNCONDITIONALLY while the import
+# above it sits behind `if is_ftfy_available():`. Without the package every single video request
+# dies with `NameError: name 'ftfy' is not defined` after the model has loaded — minutes of card,
+# spent, for an error that names a library nobody asked for.
+#
+# `peft`: `load_lora_weights` is the PEFT backend, so `qwen-360` — a rank-128 LoRA over Qwen-Image
+# (phase 49) — cannot load at all without it: `ValueError: PEFT backend is required for this
+# method`, raised during the background prove, so the recipe simply never becomes offerable and the
+# node says nothing louder than "fetching".
+#
+# Both are asserted at build time in Dockerfile.diffusion, beside torch and the encoder, for the
+# same reason those are: an import that only fails on somebody's first real request is the v3.10.0
+# class of bug this image has now shipped three times.
+ftfy==6.3.1
+peft==0.17.1

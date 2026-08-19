@@ -115,9 +115,26 @@ public sealed class ToolOptions
     /// than inherited — the environment is cleared first (phase-41 D3), so this is the only way a
     /// consent flag reaches a worker, and a worker cannot pick one up by accident.
     /// </summary>
-    public IReadOnlyDictionary<string, string> WorkerEnvironment()
+    /// <param name="modelBudgetMiB">
+    /// What <c>Node:Vram:BudgetMiB</c> leaves for models once the reserve is taken off, or 0 when no
+    /// budget was declared. Phase 60: without it the worker <em>prefetches weights the node has
+    /// already refused</em> — an operator running the default catalogue on a 24 GB card was queued
+    /// for a ~75 GB download of <c>wan-t2v-14b-720p</c>, a recipe the node had announced at startup
+    /// it would never offer. The licence grant below has been defence in depth since phase 48; this
+    /// is the same treatment for the other gate, and it is the fetch planner that needed it.
+    /// </param>
+    public IReadOnlyDictionary<string, string> WorkerEnvironment(int modelBudgetMiB = 0)
     {
         var environment = BaseWorkerEnvironment();
+
+        // Absent rather than zero when nothing was declared (phase-28 D5): a worker reading "0"
+        // would have to guess whether that means "no card" or "nobody said", and the two answers
+        // are opposite. No variable means no gate, which is what a node with no budget does too.
+        if (modelBudgetMiB > 0)
+        {
+            environment["INFERHUB_IMAGE_VRAM_BUDGET_MIB"] =
+                modelBudgetMiB.ToString(CultureInfo.InvariantCulture);
+        }
 
         // Only when it is set. An empty HF_TOKEN is not the same as no HF_TOKEN to
         // `huggingface_hub`: it sends the blank one and gets a 401 on a repo that would have been

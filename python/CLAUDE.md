@@ -457,3 +457,39 @@ weight has been downloaded, and both `vramMiB` figures are arithmetic over the r
 sizes plus an activation allowance nobody has measured. Every other claim here is read from the
 pinned wheel or from the models' checked-in configs. See the release notes, where somebody looking
 for a number will find the same sentence.
+
+### Phase 60 (the verification day) — three things the worker was wrong about, all found by running it
+
+Recorded here rather than in `src/InferHub.Node/CLAUDE.md` because all three are about the
+**worker** — the node's half is one environment variable — and because that file is at its budget.
+
+**D1 — `offered()` has a third gate: the VRAM budget, which reaches the worker as
+`INFERHUB_IMAGE_VRAM_BUDGET_MIB`.** The node has refused an oversized recipe by name since 48, and
+the worker **fetched its weights anyway**, because `offered()` gated on licence and `cpuViable` only.
+On a 24 GB box the default catalogue therefore queued ~75 GB for `wan-t2v-14b-720p` — a recipe the
+node had announced at startup it would never offer. Not a routing hole (the hub is never told) and
+not a licence hole: a disk-and-bandwidth one, invisible until a volume filled. This is 48 D5's shape
+for the other gate — *the node decides what it declares, the worker is the lock on the process that
+would actually spend the resource* — and the fetch planner is the third place that spends one.
+**Absent, not zero, when nothing was declared** (28 D5): a worker reading `0` cannot tell "no card"
+from "nobody said", and one of those answers refuses the whole catalogue.
+
+**D2 — `diffusers` uses `ftfy` and `peft` without declaring either, and both fail at *request* time.**
+`WanPipeline.prompt_clean` calls `ftfy.fix_text` unconditionally under an
+`if is_ftfy_available(): import ftfy`, so **every** video request died with
+`NameError: name 'ftfy' is not defined` *after* the weights had loaded — minutes of card, spent, for
+a library nobody asked for. `load_lora_weights` **is** the PEFT backend, so `qwen-360` raised
+`ValueError: PEFT backend is required for this method` during the background prove and simply never
+became offerable; the node said nothing louder than "fetching". Both are now pinned in
+`requirements-diffusion.txt` and **asserted at build time** beside torch and the encoder, which is
+the only thing that stops the v3.10.0 shape recurring. Three releases shipped without them because
+nothing had ever run a video request or a LoRA recipe against a published image.
+
+**D3 — A manifest that does not name a kind throws that kind away, so `diffusion.json` names
+`video`.** `ToolWorkerPool.Narrow` iterates the **manifest's** capabilities and drops anything a
+worker reports outside them — the manifest is the operator's ceiling (41 D2), which is right. Phase
+57 added the `video` kind, 58 catalogued three video recipes, 59 built a console for them, and the
+manifest was never told: the worker declared `video: wan-t2v-1.3b`, the node discarded it, and **no
+clip could be generated through any published image**. `BundledNodeTests` now keys on the shipped
+recipes' `media` rather than on a list in the test, so a fourth modality fails on the day its first
+recipe lands.

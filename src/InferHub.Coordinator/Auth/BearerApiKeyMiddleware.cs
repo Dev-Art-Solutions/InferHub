@@ -16,6 +16,12 @@ public sealed class BearerApiKeyMiddleware(
     private const string OllamaPathPrefix = "/api";
     private const string BearerPrefix = "Bearer ";
 
+    /// <summary>
+    /// The read-only fleet view. Guarded by the client scope like everything else under
+    /// <c>/api</c>, and — since phase 60 — readable with an admin key as well.
+    /// </summary>
+    private const string StatusPath = "/api/status";
+
     public async Task InvokeAsync(HttpContext context)
     {
         // Both client-facing dialects are guarded by the same inference-key scope. A new
@@ -61,6 +67,26 @@ public sealed class BearerApiKeyMiddleware(
         }
 
         var client = clients.Resolve(token);
+
+        // Phase 60, found by pulling the image. `/api/status` is the fleet view the console polls
+        // every five seconds, and it sat behind the CLIENT scope alone — so an operator holding only
+        // an admin key could not read it, and the console (which sends nothing at all on that call)
+        // could not read it from anywhere except a loopback hub. Every containerised deployment sees
+        // the bridge gateway rather than a loopback address, so this was 401 on the one surface it
+        // matters on, in every real deployment, since the console existed.
+        //
+        // Widening it grants nothing new: an admin key already reads `/api/admin/nodes`, which
+        // carries the same fleet and more. It stays scoped to this one read-only path — an admin key
+        // must still never run inference, which is what the table in the root CLAUDE.md says and
+        // what `AnAdminKeyStillCannotRunInference` holds.
+        if (client is null
+            && context.Request.Path.StartsWithSegments(StatusPath)
+            && AdminApiKeyMiddleware.IsTokenAccepted(token, settings.AdminApiKeys))
+        {
+            context.Items[ClientItemKey] = ResolvedClient.Anonymous;
+            await next(context);
+            return;
+        }
 
         if (client is null)
         {

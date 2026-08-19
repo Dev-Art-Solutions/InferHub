@@ -359,6 +359,32 @@ public class ToolSecurityTests
         Assert.Equal("off", new ToolOptions().WorkerEnvironment()["INFERHUB_IMAGE_SEAM_REPAIR"]);
     }
 
+    /// <summary>
+    /// Phase 60. The VRAM budget travels to the worker too, and unlike the seam ceiling it is
+    /// <b>absent</b> rather than zero when nothing was declared — 28 D5, because a worker reading
+    /// "0" cannot tell "no card" from "nobody said", and the two answers are opposite.
+    /// </summary>
+    /// <remarks>
+    /// Found on the verification day: without this the worker prefetched weights the node had
+    /// already refused by name. A 24 GB box refuses <c>wan-t2v-14b-720p</c> at startup and was then
+    /// queued for its ~75 GB download anyway.
+    /// </remarks>
+    [Fact]
+    public void TheModelVramBudgetIsStatedIntoTheWorkersEnvironmentAndIsAbsentWhenUndeclared()
+    {
+        Assert.Equal(
+            "20952",
+            new ToolOptions().WorkerEnvironment(20952)["INFERHUB_IMAGE_VRAM_BUDGET_MIB"]);
+
+        Assert.DoesNotContain(
+            "INFERHUB_IMAGE_VRAM_BUDGET_MIB",
+            new ToolOptions().WorkerEnvironment().Keys);
+
+        Assert.DoesNotContain(
+            "INFERHUB_IMAGE_VRAM_BUDGET_MIB",
+            new ToolOptions().WorkerEnvironment(0).Keys);
+    }
+
     private static async Task<JsonElement> Ask(ToolExecutor executor, string variable)
     {
         var payload = JsonSerializer.Serialize(new { model = "echo", behaviour = "env", name = variable });

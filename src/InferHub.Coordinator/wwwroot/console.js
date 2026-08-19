@@ -204,8 +204,18 @@
     return res.json();
   };
 
+  // The fleet poll. It sent NO credential until phase 60, which worked only where the loopback
+  // exemption applied — never inside a container, because the hub sees the bridge gateway rather
+  // than a loopback address. Every panel on this page hangs off this call, so a hub in Docker
+  // showed an empty console and a 401 every five seconds.
+  //
+  // The admin key first: it is the key this console is built around, and /api/status accepts one
+  // from v3.28. The client key is the fallback for an operator who only pasted that one.
   const fetchStatus = async () => {
-    const res = await fetch("/api/status", { headers: { "Accept": "application/json" } });
+    const headers = { "Accept": "application/json" };
+    const key = adminKey ?? clientKey;
+    if (key) headers["Authorization"] = `Bearer ${key}`;
+    const res = await fetch("/api/status", { headers });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   };

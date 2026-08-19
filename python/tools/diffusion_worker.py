@@ -166,6 +166,21 @@ def resident_limit() -> int:
         return 1
 
 
+def vram_budget_mib() -> int:
+    """
+    ``Node:Vram:BudgetMiB`` minus ``Node:Vram:ReserveMiB``, or 0 when the node declared no budget
+    (phase 60).
+
+    Absent is not zero and the two must not be conflated: no variable means no gate, which is
+    exactly what a node with no declared budget does. A worker that read a missing value as 0 would
+    refuse the whole catalogue.
+    """
+    try:
+        return max(0, int(os.environ.get("INFERHUB_IMAGE_VRAM_BUDGET_MIB") or "0"))
+    except ValueError:
+        return 0
+
+
 def seam_warn_threshold() -> float:
     """
     ``Tools:Image:SeamWarnThreshold``. Invariant parsing, always — a decimal comma here would be a
@@ -363,13 +378,14 @@ def offered(recipes: dict[str, dict[str, Any]], device: str) -> list[str]:
     """
     Which recipes this box will actually accept work for, before readiness is considered.
 
-    Two gates, and both are refusals rather than warnings because the cost lands on somebody else:
+    Three gates, and all are refusals rather than warnings because the cost lands on somebody else:
     a recipe that is not ``cpuViable`` on a CPU-only node is *not declared*, so the hub never routes
     to it (41 D6's withdraw-on-failure, applied before the first failure), and a recipe whose
     licence the operator has not accepted is not declared either — accepting a licence on somebody's
     behalf is the one thing in this phase that is definitely not ours to do.
     """
     accepted = accepted_licenses()
+    budget_mib = vram_budget_mib()
     viable: list[str] = []
 
     for identifier in sorted(recipes):
@@ -388,6 +404,22 @@ def offered(recipes: dict[str, dict[str, Any]], device: str) -> list[str]:
             log(
                 f"not offering '{identifier}' on a CPU-only node: it is not marked cpuViable. "
                 "Set Tools:Image:AllowSlowCpu=true to offer it anyway (minutes per image)."
+            )
+            continue
+
+        # Phase 60, found on the verification day. THE NODE ALREADY REFUSES THESE — and the worker
+        # prefetched them anyway, because this gate did not exist: `wan-t2v-14b-720p` declares
+        # 24 000 MiB, a 24 GB box refuses it at startup by name, and the fetch planner below then
+        # queued ~75 GB of weights for a recipe the hub would never be told about. Not a routing
+        # hole; a disk-and-bandwidth one, and one nobody would see until the volume filled.
+        #
+        # The same shape as the licence gate above it (48 D5): the node decides what it DECLARES,
+        # and the worker is the lock on the process that would actually spend the resource.
+        if budget_mib > 0 and int(recipe.get("vramMiB") or 0) > budget_mib:
+            log(
+                f"not offering '{identifier}': it needs {recipe.get('vramMiB')} MiB and this node "
+                f"budgets {budget_mib} MiB for models (Node:Vram:BudgetMiB minus "
+                "Node:Vram:ReserveMiB). Its weights are not fetched either."
             )
             continue
 

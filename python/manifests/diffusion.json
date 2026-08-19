@@ -8,6 +8,10 @@
     {
       "kind": "image-edit",
       "models": []
+    },
+    {
+      "kind": "video",
+      "models": []
     }
   ],
   "command": ["/opt/inferhub/venv/bin/python", "-u", "/opt/inferhub/tools/diffusion_worker.py"],
@@ -20,6 +24,6 @@
   "minWorkers": 0,
   "maxWorkers": 1,
   "startTimeoutSeconds": 600,
-  "requestTimeoutSeconds": 900,
+  "requestTimeoutSeconds": 3600,
   "idleTimeoutSeconds": 1800
 }
