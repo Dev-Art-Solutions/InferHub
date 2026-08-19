@@ -38,7 +38,14 @@ One finding no metric could have made: the panorama model's default of 25 steps 
 under-denoised, and the seam number moves by 0.0016 between that and a clean render at 50. A green
 suite and a well-formed response describe the bad one as a success.
 
-Written up in full, including the two things we did not fix and the one we now owe.
+One thing we deliberately did not fix: the hub's dispatch deadline is a single number covering chat
+and a six-minute render. A per-capability deadline is new configuration, which is a feature, and this
+release ships none — so it is documented with the measured figures instead.
+
+And one we said we owed and then paid the same evening: the release changes the images, so the day's
+checks ran against the previous ones. The build finished 14 minutes after the tag, so we pulled the new
+image and confirmed the fixes are actually in it — including a clip rendered from the artifact with
+nothing mounted, byte-identical to the one from before the release at the same seed.
 
 ---
 
@@ -112,10 +119,13 @@ render. A per-capability deadline is new config — a feature — and this relea
 
 Documented with the measured figures instead.
 
-11/ And what we owe: this release changes the images, and the day's matrix ran against the previous
-ones. Confirming the fixes are in the artifact is 3.29's first job.
+11/ And the one we owed: this release changes the images, and the day's checks ran against the
+previous ones.
 
-The price of fixing on the day we meant only to measure. Named, not buried.
+The build finished 14 min after the tag, so we paid it the same evening — pulled the new image,
+confirmed the fixes are in it, rendered a clip from the artifact with nothing mounted.
+
+Byte-identical to the pre-release one at the same seed.
 
 ---
 
