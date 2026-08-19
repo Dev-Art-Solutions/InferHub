@@ -82,11 +82,18 @@ unaudited figure for another is not an improvement.
 - **Six recipes were never fetched** — `sd15`, `sdxl-turbo`, `flux-schnell`, `sd35-medium`,
   `qwen-image`, `cogvideox-2b`. Their `vramMiB` figures remain arithmetic.
 - **`wan-t2v-14b-720p` was verified as a refusal and never downloaded**, by design.
-- **This release's own images have not been pulled and run**, because it changes them and the day's
-  matrix ran against v3.27.0. Everything above was verified by mounting the fixed manifest, recipe
-  and worker into the published container and by running a patched coordinator from source. **The
-  first task of v3.29.0 is to pull `:diffusion` and confirm `video`, `ftfy`, `peft` and the timeout
-  are in the artifact.** This is the cost of overturning "nothing is fixed here", and it is stated
-  rather than absorbed.
+- ~~**This release's own images have not been pulled and run**~~ — **that stood at publication and
+  was discharged the same evening.** Everything in the sections above was verified by mounting the
+  fixed manifest, recipe and worker into the published v3.27.0 container and by running a patched
+  coordinator from source, because v3.28.0's images did not exist yet. `docker-publish` finished 14
+  minutes after the tag, so what was written as v3.29.0's first task became an addendum instead: the
+  published `:diffusion` image carries the `video` kind, `ftfy` 6.3.1, `peft` 0.17.1,
+  `requestTimeoutSeconds: 3600`, `vaeTiling` and `vramMiB: 18000`; a clip rendered from it with
+  **nothing mounted** came back byte-identical to the pre-release one at the same seed; and the
+  published coordinator answers `/api/status` to an admin key while still refusing one on
+  `/v1/chat/completions`. Full numbers in the addendum at the end of
+  `.claude/verification-v3.28.0.md`. **The blog post still names this as v3.29.0's job**: it was true
+  when the post went up, and that connector is insert-only with a locking slug, so it cannot be
+  amended.
 - **No browser was opened.** The console fix is verified at the HTTP layer — the exact call
   `fetchStatus` makes, with and without each key — not by loading the page.

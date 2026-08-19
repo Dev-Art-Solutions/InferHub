@@ -627,3 +627,54 @@ they hold rather than for the code they call:
 `TheModelVramBudgetIsStatedIntoTheWorkersEnvironmentAndIsAbsentWhenUndeclared`,
 `StatusAcceptsAnAdminKeyAsWellAsAClientKey`, `StatusStillRejectsATokenThatIsNeitherScope`, and
 `AnAdminKeyStillCannotRunInference` over four routes.
+
+## Addendum — the artifact check this release said it could not do for itself, done the same day
+
+Written after publication. The release notes and the blog post both state that v3.28.0's own images
+had not been pulled, and that confirming the fixes in the artifact was v3.29.0's first task. That was
+true when both were written; `docker-publish` finished 14 minutes after the tag, so it was done the
+same evening instead. **The GitHub release carries this addendum; the blog post does not and cannot —
+the connector is insert-only and its slug locks. The post describes the state at publication, which
+is what it claimed to describe.**
+
+`ghcr.io/dev-art-solutions/inferhub-node:3.28.0-diffusion` → `sha256:33b7ff30bc095357586ce24e155dec9a8b9337a7900de16a05a5534d7fa5b6bf`,
+`org.opencontainers.image.revision` = `79bee9d` — the phase-60 commit. `:diffusion` resolves to the
+same digest, `:latest` is still the 352 MB base node, coordinator `3.28.0` and `:latest` agree.
+
+**Read out of the image, with nothing mounted:**
+
+```
+manifest:  kinds ['image', 'image-edit', 'video']    requestTimeoutSeconds 3600
+packages:  ftfy 6.3.1 | peft 0.17.1 | diffusers is_ftfy_available() and is_peft_available() both True
+recipe:    wan-t2v-1.3b  vramMiB 18000  vaeTiling true
+worker:    INFERHUB_IMAGE_VRAM_BUDGET_MIB present in diffusion_worker.py
+```
+
+**Run as an operator would, full default catalogue, no mounts of any kind:**
+
+```
+not offering 'wan-t2v-14b-720p': it needs 24000 MiB and this node budgets 20952 MiB for models
+(Node:Vram:BudgetMiB minus Node:Vram:ReserveMiB). Its weights are not fetched either.
+catalogue: 10 recipe(s), 7 offerable on this box, at most 1 resident at a time
+offering recipes: qwen-360, sdxl (editing: sdxl; video: wan-t2v-1.3b)
+```
+
+F2 fires from the shipped worker with the budget from the shipped node binary; F3 reaches the hub,
+which reads `video ['wan-t2v-1.3b']`. The licence gate is unchanged — `sd35-medium` and `sdxl-turbo`
+are still refused by name with the text to accept.
+
+**F1, against the published coordinator** (`3.28.0`, off-loopback): admin key **200**, client key
+**200**, an unknown token **401**, and an admin key on `/v1/chat/completions` still **401**.
+
+**A clip, from the artifact:** 362 s, 81 frames, `seconds: 5.06`, VRAM peak 19 197 MiB (a prefetch of
+four other recipes was running on the same card), **982 330 bytes — byte-identical to the clip
+rendered before the release from mounted files, at the same seed.** Frame 40 extracted and looked at:
+the same paper boat on the same wet cobbles. Determinism across a rebuilt container and a different
+image, which nothing had checked before.
+
+**One observation, not a defect.** A fresh node with the default recipe directory fetches every
+offerable recipe at once — here `cogvideox-2b`, `flux-schnell`, `qwen-image` and `sd15` began
+downloading behind the ones already cached, and the disk went from 88 GB free to 74 while this ran.
+It is documented behaviour ("weights are fetched on a background thread and a recipe is offered only
+once it is proven loadable") and the cost is real: an operator meets it when the volume fills, not
+when they read the sentence.
