@@ -1021,6 +1021,14 @@ reproducible without re-rolling the other three.
 — a **rank-128 LoRA**, MIT licensed, over Qwen-Image's 20B MMDiT — and it produces **equirectangular**
 panoramas whose left edge continues into their right edge.
 
+> **Raise the step count. Measured in v3.28**: at the recipe's default of **25** steps a 2048×1024
+> panorama comes out visibly under-denoised — a fine mottled speckle over stone, sky and ground
+> alike. At **50** (`X-InferHub-Image-Steps: 50`, the recipe's `maxSteps`) with the same seed it is
+> gone: 181 s instead of 107 s, and twice the megapixel-steps on the meter. **`seam_delta` moves by
+> 0.0016 between those two images**, so nothing in the pipeline will tell you — this is a judgement
+> the metric cannot make for you. Note that `steps`, `guidance` and `seed` travel as
+> `X-InferHub-Image-*` **headers**; only `seed` is also read from the body.
+
 ```bash
 curl http://localhost:5080/api/images/jobs \
   -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
@@ -1429,6 +1437,14 @@ curl -s http://localhost:5080/v1/videos/video_8f3c…/content -H "Authorization:
 
 `GET /v1/videos/{id}` polls, `/content` fetches the bytes **once**, and `DELETE` cancels and drops
 it. That is the whole surface.
+
+> **Measured in v3.28, on a 3090 Ti, and worth knowing before you first run one.** A five-second
+> `wan-t2v-1.3b` clip at 832×480 is **~143 s of cold model load plus ~340 s of generation** — 378 s
+> end to end, 81 frames, 982 KB of H.264. Two things follow. **Raise
+> `Dispatcher:TimeoutSeconds` to 1800**: the default of 300 covers tool jobs too and gives up while
+> the model is still loading. And the first pull is **~29 GB**, because "1.3B" names the transformer
+> only — the UMT5 text encoder is ~11B and every weight in that repository is fp32 with no fp16
+> variant.
 
 ### Why this one is adopted and the image one was invented
 
