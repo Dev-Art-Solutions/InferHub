@@ -35,7 +35,7 @@ public static class OpenAiEndpoints
         HttpContext httpContext,
         Services.IRouter router,
         IDispatcher dispatcher,
-        IFallbackDispatcher fallback,
+        IProviderDispatcher providers,
         Metrics metrics,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
@@ -109,7 +109,7 @@ public static class OpenAiEndpoints
             router,
             httpContext.RequestServices.GetRequiredService<INodeRegistry>(),
             dispatcher,
-            fallback,
+            providers,
             metrics,
             logger,
             cancellationToken);
@@ -151,7 +151,7 @@ public static class OpenAiEndpoints
         HttpContext httpContext,
         Services.IRouter router,
         IDispatcher dispatcher,
-        IFallbackDispatcher fallback,
+        IProviderDispatcher providers,
         Metrics metrics,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
@@ -186,7 +186,7 @@ public static class OpenAiEndpoints
             router,
             httpContext.RequestServices.GetRequiredService<INodeRegistry>(),
             dispatcher,
-            fallback,
+            providers,
             metrics,
             logger,
             cancellationToken);

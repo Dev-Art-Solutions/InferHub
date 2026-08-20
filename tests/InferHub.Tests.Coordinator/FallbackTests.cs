@@ -321,7 +321,13 @@ public class FallbackTests
         return options;
     }
 
-    private static FallbackDispatcher Dispatcher(
+    /// <summary>
+    /// Built from the <c>Fallback:</c> section alone and with an empty <c>Providers:</c> map, which
+    /// is deliberately the shape of a v3.28 deployment: everything in this file asserts the legacy
+    /// section still behaves exactly as it did, now that it reaches the upstream through the phase-61
+    /// projection rather than through a path of its own (61 D2).
+    /// </summary>
+    private static ProviderDispatcher Dispatcher(
         FallbackOptions options,
         INodeRegistry? registry = null,
         StubUpstream? upstream = null,
@@ -329,14 +335,14 @@ public class FallbackTests
         => new(
             new StubHttpClientFactory(upstream ?? StubUpstream.Json("{}")),
             registry ?? new NodeRegistry(),
-            Options.Create(options),
+            new ProviderRegistry(Options.Create(new ProviderOptions()), Options.Create(options)),
             metrics ?? new Metrics(),
-            NullLogger<FallbackDispatcher>.Instance);
+            NullLogger<ProviderDispatcher>.Instance);
 
     private static Task<InferenceCore.DispatchOutcome> Route(
         string model,
         RoutableNode? node,
-        IFallbackDispatcher fallback)
+        IProviderDispatcher fallback)
         => InferenceCore.DispatchAsync(
             "chat",
             ChatJob,
@@ -392,32 +398,32 @@ public class FallbackTests
         public void FailForConnection(string connectionId, Exception? error = null) => throw new NotImplementedException();
     }
 
-    private sealed class NeverFallback : IFallbackDispatcher
+    private sealed class NeverFallback : IProviderDispatcher
     {
         public bool ShouldServe(string model, bool hasCapableNode) => false;
 
-        public Task<FallbackResult> DispatchAsync(string kind, string rawJson, string model, bool stream, CancellationToken cancellationToken)
+        public Task<ProviderResult> DispatchAsync(string kind, string rawJson, string model, bool stream, CancellationToken cancellationToken)
             => throw new InvalidOperationException("fallback must not be dispatched when it is off");
     }
 
-    private sealed class RecordingFallback(bool serves) : IFallbackDispatcher
+    private sealed class RecordingFallback(bool serves) : IProviderDispatcher
     {
         public string? LastModel { get; private set; }
 
         public bool ShouldServe(string model, bool hasCapableNode) => serves;
 
-        public Task<FallbackResult> DispatchAsync(string kind, string rawJson, string model, bool stream, CancellationToken cancellationToken)
+        public Task<ProviderResult> DispatchAsync(string kind, string rawJson, string model, bool stream, CancellationToken cancellationToken)
         {
             LastModel = model;
-            return Task.FromResult(new FallbackResult(null, """{"model":"llama3","done":true}"""));
+            return Task.FromResult(new ProviderResult(null, """{"model":"llama3","done":true}""", InferenceCore.ServedByFallback));
         }
     }
 
-    private sealed class ThrowingFallback : IFallbackDispatcher
+    private sealed class ThrowingFallback : IProviderDispatcher
     {
         public bool ShouldServe(string model, bool hasCapableNode) => true;
 
-        public Task<FallbackResult> DispatchAsync(string kind, string rawJson, string model, bool stream, CancellationToken cancellationToken)
+        public Task<ProviderResult> DispatchAsync(string kind, string rawJson, string model, bool stream, CancellationToken cancellationToken)
             => throw new HttpRequestException("upstream unreachable");
     }
 

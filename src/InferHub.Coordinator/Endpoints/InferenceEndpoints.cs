@@ -144,7 +144,7 @@ public static class InferenceEndpoints
         HttpContext httpContext,
         Services.IRouter router,
         IDispatcher dispatcher,
-        IFallbackDispatcher fallback,
+        IProviderDispatcher providers,
         Metrics metrics,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
@@ -185,7 +185,7 @@ public static class InferenceEndpoints
             conversationKey: null,
             router,
             dispatcher,
-            fallback,
+            providers,
             metrics,
             logger,
             cancellationToken);
@@ -195,7 +195,7 @@ public static class InferenceEndpoints
         HttpContext httpContext,
         Services.IRouter router,
         IDispatcher dispatcher,
-        IFallbackDispatcher fallback,
+        IProviderDispatcher providers,
         Metrics metrics,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
@@ -237,7 +237,7 @@ public static class InferenceEndpoints
             conversationKey,
             router,
             dispatcher,
-            fallback,
+            providers,
             metrics,
             logger,
             cancellationToken);
@@ -381,7 +381,7 @@ public static class InferenceEndpoints
         string? conversationKey,
         Services.IRouter router,
         IDispatcher dispatcher,
-        IFallbackDispatcher fallback,
+        IProviderDispatcher providers,
         Metrics metrics,
         ILogger logger,
         CancellationToken cancellationToken)
@@ -396,7 +396,7 @@ public static class InferenceEndpoints
             router,
             httpContext.RequestServices.GetRequiredService<Services.INodeRegistry>(),
             dispatcher,
-            fallback,
+            providers,
             metrics,
             logger,
             cancellationToken);

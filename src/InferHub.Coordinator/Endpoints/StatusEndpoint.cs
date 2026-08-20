@@ -57,6 +57,7 @@ public static class StatusEndpoint
                 snapshot,
                 vectorBlock,
                 BuildFallbackBlock(fallback.Value, snapshot),
+                BuildProviderBlocks(services.GetService(typeof(IProviderRegistry)) as IProviderRegistry, snapshot),
                 BuildQueueBlock(queue),
                 BuildClusterBlock(membership)));
         });
@@ -141,6 +142,46 @@ public static class StatusEndpoint
             metrics.FallbackDispatched,
             metrics.LastFallbackModel,
             metrics.LastFallbackAtUtc);
+
+    /// <summary>
+    /// The named providers (phase 61), each with its counter — <b>null</b> where none is configured,
+    /// so a hub that only ever had a <c>Fallback:</c> section keeps the exact v3.28 payload.
+    /// </summary>
+    /// <remarks>
+    /// Reported whether or not anything has been dispatched, for 22 D5's reason: "is this thing
+    /// sending my prompts anywhere" is a question the status page answers, not one an operator has
+    /// to go and read the config for. A provider that has served nothing shows a zero here and
+    /// <em>no</em> metric series (phase-28 D5) — the two surfaces answer different questions.
+    /// </remarks>
+    internal static IReadOnlyList<ProviderStatusBlock>? BuildProviderBlocks(
+        IProviderRegistry? providers,
+        MetricsSnapshot metrics)
+    {
+        if (providers is null || providers.Configured.Count == 0)
+        {
+            return null;
+        }
+
+        var dispatched = (metrics.PerProvider ?? [])
+            .ToDictionary(provider => provider.Provider, StringComparer.Ordinal);
+
+        return providers.Configured
+            .Select(route =>
+            {
+                dispatched.TryGetValue(route.Id, out var counter);
+
+                return new ProviderStatusBlock(
+                    route.Id,
+                    route.Definition.NormalizedType(),
+                    route.Definition.NormalizedTrigger(),
+                    string.IsNullOrWhiteSpace(route.Definition.ApiKey) ? "absent" : "configured",
+                    route.Definition.ModelMap.Keys.OrderBy(model => model, StringComparer.OrdinalIgnoreCase).ToArray(),
+                    counter?.Dispatched ?? 0,
+                    counter?.LastModel,
+                    counter?.LastAtUtc);
+            })
+            .ToArray();
+    }
 
     // Returns null when the vector store is disabled — matches the phase-13 contract that
     // Enabled=false is byte-for-byte unchanged for existing status consumers who never
@@ -246,6 +287,13 @@ public static class StatusEndpoint
         MetricsSnapshot Metrics,
         VectorStatusBlock? Vector,
         FallbackStatusBlock Fallback,
+        // Phase 61. Null when no `Providers:` entry is configured, and **omitted** rather than
+        // written as null — every other optional block here (vector, cluster) predates a consumer,
+        // but this one would appear in a payload that had no such key in v3.28. The projected legacy
+        // provider is never listed here either: it is already reported one field up.
+        [property: System.Text.Json.Serialization.JsonIgnore(
+            Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        IReadOnlyList<ProviderStatusBlock>? Providers,
         QueueStatusBlock Queue,
         ClusterStatusBlock? Cluster);
 
@@ -267,6 +315,21 @@ public static class StatusEndpoint
     internal sealed record FallbackStatusBlock(
         bool Enabled,
         string Trigger,
+        IReadOnlyList<string> MappedModels,
+        long Dispatched,
+        string? LastModel,
+        DateTimeOffset? LastAtUtc);
+
+    /// <param name="Credential">
+    /// <c>configured</c> or <c>absent</c> — never a prefix, never a length, never a hash. A status
+    /// page that renders four characters of somebody's API key has published four characters of
+    /// somebody's API key.
+    /// </param>
+    internal sealed record ProviderStatusBlock(
+        string Id,
+        string Type,
+        string Trigger,
+        string Credential,
         IReadOnlyList<string> MappedModels,
         long Dispatched,
         string? LastModel,

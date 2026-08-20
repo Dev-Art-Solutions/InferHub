@@ -343,11 +343,11 @@ public class CapabilityRoutingTests
         }
     }
 
-    private sealed class DisabledFallback : IFallbackDispatcher
+    private sealed class DisabledFallback : IProviderDispatcher
     {
         public bool ShouldServe(string model, bool hasCapableNode) => false;
 
-        public Task<FallbackResult> DispatchAsync(
+        public Task<ProviderResult> DispatchAsync(
             string kind,
             string rawJson,
             string model,

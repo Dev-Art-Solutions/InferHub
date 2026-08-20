@@ -20,6 +20,11 @@ internal static class InferenceCore
     /// <summary>Values of the <c>X-InferHub-Served-By</c> response header.</summary>
     public const string ServedByNode = "node";
 
+    /// <summary>
+    /// The legacy value, still emitted for a deployment configured through the <c>Fallback:</c>
+    /// section (61 D4). A named provider answers <c>provider:&lt;id&gt;</c>, which the dispatcher
+    /// hands back rather than this file deciding.
+    /// </summary>
     public const string ServedByFallback = "fallback";
 
     public const string ServedByHeader = "X-InferHub-Served-By";
@@ -49,8 +54,8 @@ internal static class InferenceCore
         public static DispatchOutcome Failure(int status, string message, int? retryAfterSeconds = null)
             => new(null, null, status, message, RetryAfterSeconds: retryAfterSeconds);
 
-        public static DispatchOutcome Fallback(FallbackResult result)
-            => new(result.Stream, result.ResponseJson, null, null, ServedByFallback);
+        public static DispatchOutcome Provider(ProviderResult result)
+            => new(result.Stream, result.ResponseJson, null, null, result.ServedBy);
 
         public bool IsError => ErrorStatus is not null;
     }
@@ -94,7 +99,7 @@ internal static class InferenceCore
         Services.IRouter router,
         Services.INodeRegistry registry,
         IDispatcher dispatcher,
-        IFallbackDispatcher fallback,
+        IProviderDispatcher providers,
         Metrics metrics,
         ILogger logger,
         CancellationToken cancellationToken)
@@ -136,28 +141,28 @@ internal static class InferenceCore
             // a saturated fleet overflows to the upstream INSTEAD of queueing — the upstream answers
             // in seconds, the queue in tens of seconds, and a client who opted into burst asked for
             // the former (precedence recorded in CLAUDE.md, covered by QueueTests).
-            if (fallback.ShouldServe(model, hasCapableNode: node is not null))
+            if (providers.ShouldServe(model, hasCapableNode: node is not null))
             {
                 try
                 {
-                    var result = await fallback.DispatchAsync(
+                    var result = await providers.DispatchAsync(
                         kind,
                         rawJson,
                         model,
                         stream is not false,
                         cancellationToken);
 
-                    if (result.Stream is { } fallbackStream)
+                    if (result.Stream is { } providerStream)
                     {
                         leaseHandedOff = true;
-                        return DispatchOutcome.Fallback(result) with
+                        return DispatchOutcome.Provider(result) with
                         {
-                            Stream = context.Usage.WrapStream(fallbackStream, context.Client, kind, model, fallback: true, lease)
+                            Stream = context.Usage.WrapStream(providerStream, context.Client, kind, model, fallback: true, lease)
                         };
                     }
 
                     context.Usage.RecordResponse(context.Client, kind, model, result.ResponseJson ?? "{}", fallback: true);
-                    return DispatchOutcome.Fallback(result);
+                    return DispatchOutcome.Provider(result);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {

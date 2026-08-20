@@ -115,6 +115,21 @@ public static class PrometheusFormatter
                 [("model", m.LastFallbackModel!)]);
         }
 
+        // Phase 61. The total above is unchanged and is still the sum; this is the same event
+        // attributed. A provider that has served nothing emits no series, so configuring a vendor
+        // does not put traffic-shaped zeros on a dashboard (phase-28 D5).
+        if (m.PerProvider is { Count: > 0 } providers)
+        {
+            Header(builder, "inferhub_provider_dispatched_total", "counter", "Requests served by a configured cloud provider instead of a node.");
+            foreach (var provider in providers) Sample(builder, "inferhub_provider_dispatched_total", [("provider", provider.Provider)], provider.Dispatched);
+
+            foreach (var provider in providers.Where(p => !string.IsNullOrWhiteSpace(p.LastModel)))
+            {
+                Info(builder, "inferhub_provider_last_model", "Model of the most recent dispatch to this provider.",
+                    [("provider", provider.Provider), ("model", provider.LastModel!)]);
+            }
+        }
+
         Counter(builder, "inferhub_vector_replicas_healed_total", "Vector replicas re-pushed by the healing service.", m.VectorReplicasHealed);
         Counter(builder, "inferhub_vector_rebuilds_from_raw_total", "Vector index rebuilds from the raw store.", m.VectorRebuildsFromRaw);
         Gauge(builder, "inferhub_vector_under_replicated", "Collections currently below their replication factor.", m.VectorUnderReplicated);

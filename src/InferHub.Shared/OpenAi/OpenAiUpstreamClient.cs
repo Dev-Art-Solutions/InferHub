@@ -21,7 +21,7 @@ namespace InferHub.Shared.OpenAi;
 /// The <see cref="HttpClient"/> is supplied and owned by the caller — including for the async
 /// iterators, whose enumeration must not outlive it.
 /// </remarks>
-public sealed class OpenAiUpstreamClient(HttpClient http)
+public sealed class OpenAiUpstreamClient(HttpClient http) : InferHub.Shared.Upstream.IUpstreamDialect
 {
     private const string ChatPath = "chat/completions";
     private const string CompletionsPath = "completions";

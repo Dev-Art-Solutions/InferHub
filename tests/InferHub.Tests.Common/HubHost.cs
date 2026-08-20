@@ -66,7 +66,7 @@ internal sealed class HubHost : IAsyncDisposable
         builder.Services.AddSingleton<INodeRegistry>(registry);
         builder.Services.AddSingleton<IRouter>(new AlwaysRoutes());
         builder.Services.AddSingleton<IDispatcher>(host.Dispatcher);
-        builder.Services.AddSingleton<IFallbackDispatcher>(new NoFallback());
+        builder.Services.AddSingleton<IProviderDispatcher>(new NoProvider());
         builder.Services.AddSingleton<IEmbeddingDispatcher>(new ScriptedEmbeddings(retrieval));
         builder.Services.AddSingleton<Metrics>();
         builder.Services.AddSingleton<AdmissionControl>();
@@ -296,11 +296,11 @@ internal sealed class HubHost : IAsyncDisposable
             => new("conn-1", "node-1", "parity-node");
     }
 
-    private sealed class NoFallback : IFallbackDispatcher
+    private sealed class NoProvider : IProviderDispatcher
     {
         public bool ShouldServe(string model, bool hasCapableNode) => false;
 
-        public Task<FallbackResult> DispatchAsync(
+        public Task<ProviderResult> DispatchAsync(
             string kind,
             string rawJson,
             string model,

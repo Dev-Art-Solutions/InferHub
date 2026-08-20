@@ -4,19 +4,19 @@ using System.Threading.Channels;
 using InferHub.Coordinator.Observability;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.OpenAi;
-using Microsoft.Extensions.Options;
+using InferHub.Shared.Upstream;
 
 namespace InferHub.Coordinator.Services;
 
-public interface IFallbackDispatcher
+public interface IProviderDispatcher
 {
     /// <summary>
-    /// Whether this request may burst. False for every request unless fallback is enabled, the
-    /// model is mapped and allowed, and the trigger condition actually holds.
+    /// Whether this request may go to a provider. False for every request unless some enabled
+    /// provider maps the model and that provider's trigger condition actually holds.
     /// </summary>
     bool ShouldServe(string model, bool hasCapableNode);
 
-    Task<FallbackResult> DispatchAsync(
+    Task<ProviderResult> DispatchAsync(
         string kind,
         string rawJson,
         string model,
@@ -25,35 +25,33 @@ public interface IFallbackDispatcher
 }
 
 /// <summary>Ollama-shaped, exactly like a node's — the endpoint formatters cannot tell.</summary>
-public sealed record FallbackResult(ChannelReader<InferenceChunk>? Stream, string? ResponseJson);
+/// <param name="ServedBy">
+/// What the response header says: <c>fallback</c> for the projected legacy provider, and
+/// <c>provider:&lt;id&gt;</c> for a named one (61 D4).
+/// </param>
+public sealed record ProviderResult(ChannelReader<InferenceChunk>? Stream, string? ResponseJson, string ServedBy);
 
 /// <summary>
-/// Forwards a request the fleet cannot serve to a configured OpenAI-compatible upstream. It is a
-/// proxy hop, not a cache: the request body goes out in flight and the response streams straight
-/// through, and the coordinator retains neither (rule 7).
+/// Forwards a request the fleet cannot serve to the provider that claimed the model. It is a proxy
+/// hop, not a cache: the request body goes out in flight and the response streams straight through,
+/// and the coordinator retains neither (rule 7, 22 D4).
 ///
-/// The wire work is <see cref="OpenAiUpstreamClient"/>, the same class the node's OpenAI backend
-/// drives — the translation exists once.
+/// The wire work is an <see cref="IUpstreamDialect"/> — <see cref="OpenAiUpstreamClient"/> for every
+/// provider this release knows — so the translation exists once and phases 63/64 add a dialect
+/// without touching this file.
 /// </summary>
-public sealed class FallbackDispatcher(
+public sealed class ProviderDispatcher(
     IHttpClientFactory httpClientFactory,
     INodeRegistry registry,
-    IOptions<FallbackOptions> options,
+    IProviderRegistry providers,
     Metrics metrics,
-    ILogger<FallbackDispatcher> logger) : IFallbackDispatcher
+    ILogger<ProviderDispatcher> logger) : IProviderDispatcher
 {
-    public const string HttpClientName = "inferhub-fallback";
+    public const string HttpClientName = "inferhub-provider";
 
     public bool ShouldServe(string model, bool hasCapableNode)
     {
-        var fallback = options.Value;
-
-        if (!fallback.Enabled || string.IsNullOrWhiteSpace(fallback.BaseUrl))
-        {
-            return false;
-        }
-
-        if (ResolveUpstreamModel(model) is null)
+        if (providers.Resolve(model) is not { } route)
         {
             return false;
         }
@@ -63,46 +61,51 @@ public sealed class FallbackDispatcher(
             return true;
         }
 
-        return fallback.NormalizedTrigger() == FallbackOptions.TriggerNoNodeOrSaturated
+        return route.Definition.NormalizedTrigger() == FallbackOptions.TriggerNoNodeOrSaturated
             && IsSaturated(model);
     }
 
-    public async Task<FallbackResult> DispatchAsync(
+    public async Task<ProviderResult> DispatchAsync(
         string kind,
         string rawJson,
         string model,
         bool stream,
         CancellationToken cancellationToken)
     {
-        var upstreamModel = ResolveUpstreamModel(model)
-            ?? throw new InvalidOperationException($"model '{model}' is not mapped for fallback");
+        var route = providers.Resolve(model)
+            ?? throw new InvalidOperationException($"model '{model}' is not mapped to any provider");
 
         // The upstream knows the request by *its* name for the model, not ours.
-        var upstreamJson = RewriteModel(rawJson, upstreamModel);
+        var upstreamJson = RewriteModel(rawJson, route.UpstreamModel);
 
-        metrics.RecordFallbackDispatched(model);
+        metrics.RecordProviderDispatched(route.Id, model);
 
-        // Loud on purpose. A user must be able to find every request that left their machines.
+        // Loud on purpose. A user must be able to find every request that left their machines, and
+        // now also which vendor it went to.
         logger.LogInformation(
-            "Cloud burst: no node for {Model}; serving {Kind} from the fallback upstream as {UpstreamModel}",
-            model,
+            "Provider dispatch: serving {Kind} for {Model} from provider '{Provider}' as {UpstreamModel}",
             kind,
-            upstreamModel);
+            model,
+            route.Id,
+            route.UpstreamModel);
 
         if (!stream)
         {
-            using var http = CreateHttpClient();
-            var client = new OpenAiUpstreamClient(http);
+            using var http = CreateHttpClient(route);
+            var client = Dialect(route, http);
 
             var responseJson = kind == "chat"
                 ? await client.ChatAsync(upstreamJson, cancellationToken)
                 : await client.GenerateAsync(upstreamJson, cancellationToken);
 
             // Answer in the model the caller asked for; they never named the upstream one.
-            return new FallbackResult(null, RewriteModel(responseJson, model));
+            return new ProviderResult(null, RewriteModel(responseJson, model), route.ServedBy);
         }
 
-        return new FallbackResult(StreamAsync(kind, upstreamJson, model, cancellationToken), null);
+        return new ProviderResult(
+            StreamAsync(kind, upstreamJson, model, route, cancellationToken),
+            null,
+            route.ServedBy);
     }
 
     /// <summary>
@@ -114,6 +117,7 @@ public sealed class FallbackDispatcher(
         string kind,
         string upstreamJson,
         string model,
+        ProviderRoute route,
         CancellationToken cancellationToken)
     {
         var channel = Channel.CreateUnbounded<InferenceChunk>(new UnboundedChannelOptions
@@ -128,10 +132,9 @@ public sealed class FallbackDispatcher(
         {
             try
             {
-                using var http = CreateHttpClient();
+                using var http = CreateHttpClient(route);
 
-                await foreach (var chunk in new OpenAiUpstreamClient(http)
-                    .StreamAsync(kind, upstreamJson, cancellationToken))
+                await foreach (var chunk in Dialect(route, http).StreamAsync(kind, upstreamJson, cancellationToken))
                 {
                     var responseJson = RewriteModel(chunk, model);
                     var done = IsDone(responseJson);
@@ -147,7 +150,7 @@ public sealed class FallbackDispatcher(
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Cloud burst stream for {Model} failed", model);
+                logger.LogWarning(ex, "Provider '{Provider}' stream for {Model} failed", route.Id, model);
 
                 // Same contract the node path honours: a terminal error chunk beats a hung stream.
                 await channel.Writer.WriteAsync(
@@ -164,39 +167,28 @@ public sealed class FallbackDispatcher(
     }
 
     // Saturation is defined once, in FleetSaturation — the request queue (phase 25) must agree
-    // with cloud burst about what "full" means, or the two features fight at the boundary.
+    // with a provider burst about what "full" means, or the two features fight at the boundary.
     private bool IsSaturated(string model) => FleetSaturation.IsSaturated(registry, model);
 
-    private string? ResolveUpstreamModel(string model)
-    {
-        var fallback = options.Value;
-
-        if (!fallback.ModelMap.TryGetValue(model, out var upstreamModel)
-            || string.IsNullOrWhiteSpace(upstreamModel))
+    /// <summary>
+    /// One dialect per provider type. The switch is exhaustive because
+    /// <see cref="ProviderOptionsValidator"/> already refused an unknown type at startup — a
+    /// provider that failed to be understood must not become a request that fails at dispatch,
+    /// hours later, in front of a user.
+    /// </summary>
+    private static IUpstreamDialect Dialect(ProviderRoute route, HttpClient http)
+        => route.Definition.NormalizedType() switch
         {
-            return null;
-        }
+            ProviderDefinition.TypeOpenAiCompatible => new OpenAiUpstreamClient(http),
+            var type => throw new InvalidOperationException($"provider type '{type}' has no dialect")
+        };
 
-        if (fallback.AllowedModels.Count > 0
-            && !fallback.AllowedModels.Any(allowed =>
-                string.Equals(allowed?.Trim(), model, StringComparison.OrdinalIgnoreCase)))
-        {
-            return null;
-        }
-
-        return upstreamModel;
-    }
-
-    private HttpClient CreateHttpClient()
-    {
-        var fallback = options.Value;
-
-        return OpenAiUpstreamClient.Configure(
+    private HttpClient CreateHttpClient(ProviderRoute route)
+        => OpenAiUpstreamClient.Configure(
             httpClientFactory.CreateClient(HttpClientName),
-            fallback.BaseUrl!,
-            fallback.ApiKey,
-            fallback.TimeoutSeconds);
-    }
+            route.Definition.BaseUrl!,
+            route.Definition.ApiKey,
+            route.Definition.TimeoutSeconds);
 
     // The body already exists as a string; swapping one field is cheaper and safer than a
     // round-trip through a typed DTO that would drop fields it does not know about.

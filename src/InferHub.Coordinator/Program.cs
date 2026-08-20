@@ -161,11 +161,18 @@ else
     builder.Services.AddSingleton<IUsageLedger, InMemoryUsageLedger>();
 }
 
-// Cloud burst. Registered always, disabled unless Fallback:Enabled — with it off, ShouldServe
-// is a single `false` and every existing behaviour is byte-for-byte unchanged.
+// Cloud providers (phase 61). Registered always and inert unless something is configured: with no
+// `Providers:` section and no `Fallback:Enabled`, ProviderRegistry.Resolve is a null for every model
+// and ShouldServe is a single `false` — byte-for-byte the pre-v3.29 behaviour.
 builder.Services.Configure<FallbackOptions>(builder.Configuration.GetSection(FallbackOptions.SectionName));
-builder.Services.AddHttpClient(FallbackDispatcher.HttpClientName);
-builder.Services.AddSingleton<IFallbackDispatcher, FallbackDispatcher>();
+builder.Services.AddOptions<ProviderOptions>()
+    .Configure<IConfiguration>((options, configuration) =>
+        configuration.GetSection(ProviderOptions.SectionName).Bind(options.Entries))
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<ProviderOptions>, ProviderOptionsValidator>();
+builder.Services.AddSingleton<IProviderRegistry, ProviderRegistry>();
+builder.Services.AddHttpClient(ProviderDispatcher.HttpClientName);
+builder.Services.AddSingleton<IProviderDispatcher, ProviderDispatcher>();
 
 // High availability (phase 32). Off by default and inert when off: no lease, no Postgres
 // connection, and SingleCoordinatorMembership reports Enabled=false so the role header, the

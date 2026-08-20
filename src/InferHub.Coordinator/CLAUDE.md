@@ -194,10 +194,9 @@ that touches them — to save two `JsonSerializer` round-trips on a request that
 spend seconds on a GPU. Take the round-trips. The reason is written in
 [UpstreamTranslator](src/InferHub.Shared/OpenAi/UpstreamTranslator.cs) so nobody "fixes" it.
 
-**D4 — Cloud burst stores nothing.** [FallbackDispatcher](src/InferHub.Coordinator/Services/FallbackDispatcher.cs)
-forwards the body in flight and streams the response straight through. It is a proxy hop, not
-a cache. Rule 7 is load-bearing and this does not dent it: the model name is metered, the
-prompt and the answer are not.
+**D4 — Cloud burst stores nothing.** [ProviderDispatcher](src/InferHub.Coordinator/Services/ProviderDispatcher.cs)
+(`FallbackDispatcher` until 61) forwards the body in flight and streams the response straight through
+— a proxy hop, not a cache. The model name is metered; the prompt and the answer are not.
 
 **D5 — Cloud burst is off by default and loud when on.** Silently shipping a user's prompts to
 a third party because their GPU was asleep is a betrayal, not a feature. So: `Fallback:Enabled`
@@ -213,11 +212,11 @@ event stream. Writing bursts into it would overwrite a node's cordon history and
 a node that by definition did not serve them. The visibility requirement is met by the log
 line, the metric, the header and the status block instead.
 
-**One backend implementation, five servers.** `Backend:Type=openai` covers vLLM, llama.cpp's
-server, LM Studio, TGI and every hosted provider, because they all landed on the same dialect.
-[OpenAiUpstreamClient](src/InferHub.Shared/OpenAi/OpenAiUpstreamClient.cs) is the single place
-that speaks it, and **both** the node's `OpenAiBackend` and the coordinator's
-`FallbackDispatcher` drive it. Do not grow a second one.
+**One implementation, five servers** — `Backend:Type=openai` covers vLLM, llama.cpp's server, LM
+Studio, TGI and every hosted provider, and
+[OpenAiUpstreamClient](src/InferHub.Shared/OpenAi/OpenAiUpstreamClient.cs) is the single place that
+speaks that dialect. *"Do not grow a second one" was the right rule for one dialect; 61 D3 replaced
+it with the shape that survives four — a second dialect is a second `IUpstreamDialect`.*
 
 **Rule 5 survived again.** Phase 22 added **zero** new dependencies: `HttpClient` and
 `System.Net.Http.Json` ship in the shared framework, and the SSE *parser* is written by hand
@@ -1069,6 +1068,26 @@ standing in for a scope, over two jobs whose bytes come from two different route
 `GET /v1/videos` stays a 501, but no longer on the ground that "this coordinator holds no
 client-scoped index of jobs": it holds one now. The reason it keeps is the one that was always
 load-bearing — an id **is** the capability to fetch the bytes.
+
+### Phase 61 (named cloud providers) — load-bearing; the dialect seam itself is 61 D3 in `src/InferHub.Shared/CLAUDE.md`
+
+**D1 — One model is claimed by exactly one enabled provider, and a second claim fails startup.**
+[ProviderOptionsValidator](src/InferHub.Coordinator/Services/ProviderOptionsValidator.cs) names the
+model and both providers, counting the projected `Fallback:` section as a claimant so a collision is
+caught on the *upgrade*. **Rejected: first match in declaration order** — what every gateway does,
+and it makes the most consequential choice here (whose servers see a prompt) depend on JSON key
+ordering surviving three layers of binding. **Rejected: a duplicate as a failover pair.**
+
+**D2 — `Fallback:` is projected onto a provider named `fallback`, never read twice.** One dispatch
+path, so "changes no config ⇒ behaves identically" is asserted against the *new* code, which is what `FallbackTests` now is.
+
+**D4/D5/D6 — the wire is what it was.** `X-InferHub-Served-By` says `provider:<id>` for a named one
+and still `fallback` for the legacy section; `inferhub_fallback_dispatched_total` keeps counting
+*every* provider dispatch (it always meant "requests the fleet did not serve") with
+`inferhub_provider_dispatched_total{provider}` beside it. The trigger moved onto the provider — it
+was never a property of the hub. Internally the types say `Provider`; the config section, header
+value, status key and metric names did not move. `/api/status` gains a `providers` array **omitted
+when none is configured**, whose `credential` reads `configured`/`absent`, never a prefix of a key.
 
 ### Phase 60 — `/api/status` accepts an admin key, and the console actually sends one
 

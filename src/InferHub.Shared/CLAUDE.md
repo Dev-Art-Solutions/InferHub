@@ -733,3 +733,26 @@ shape — one job model (57 D10) means two fetch surfaces, and the view is where
 emits `/v1/videos/{id}/content` for a video job, plus `capability` on the row and `seconds` on the
 output where the worker measured one (absent on a picture: a zero would be a measurement nobody
 made). The rest of phase 59 is the coordinator's and is recorded there.
+
+### Phase 61 (the upstream dialect seam) — the one decision that is this library's
+
+**D3 — A cloud provider is an [`IUpstreamDialect`](src/InferHub.Shared/Upstream/IUpstreamDialect.cs):
+Ollama JSON in, Ollama JSON out, five members, no ASP.NET.** The shape is not invented — it is what
+`OpenAiUpstreamClient` already had, because the node's `OpenAiBackend` and the hub's provider
+dispatcher have both driven it since 22 D1. Naming it is what lets phase 63 add Anthropic's
+`/v1/messages` and 64 add Gemini's `:generateContent` without either touching a dispatcher, a router
+or an endpoint — and what lets phase 67 give the node the same four providers by *composing* the
+same clients rather than writing a second set.
+
+Ollama JSON on **both** sides is the point, and it is rule 6 arriving here rather than being
+weakened: a provider is an *upstream-facing* dialect translated at the boundary, so the mesh's
+internals never learn a second wire format exists. An implementation that handed back its own
+envelope would be asking for the polymorphic job payload 22 D3 costed out and refused.
+
+**Considered and rejected: waiting for 63 to extract the interface**, on the grounds that one with a
+single implementation is a guess. It is not a guess when the next two phases are named and written
+down; the alternative is that 63 rewrites the dispatcher it was meant to plug into. **Also rejected:
+putting it in the coordinator** — the node needs the same seam in 67, and moving it later means
+moving it across a project boundary while two implementations exist. Rule 2 and rule 5 both hold: a
+plain interface over `HttpClient`, and `InferHub.Shared.csproj` is still an empty
+`<Project Sdk="Microsoft.NET.Sdk">`.

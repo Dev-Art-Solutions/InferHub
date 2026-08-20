@@ -188,6 +188,17 @@ could not test: `fps` is now required and its old fallback of 16 is gone, becaus
 CogVideoX's 49 frames at twice their rate is not an error — it is a clip that plays at double speed.
 The 14B entry is also the first recipe this project ships that **does not fit a 24 GB card**, which
 is the VRAM gate working: such a node never declares it, so nobody meets the ceiling mid-render.
+**v3.29 gives the cloud upstream a name — and lets there be more than one of them.**
+[Named providers](#named-providers-v329) turns the single anonymous `Fallback:` upstream into a map:
+OpenAI with one key, OpenRouter with another, a vLLM box on your own network with none, each with its
+own models and its own trigger. The consent model is untouched — a model absent from every `ModelMap`
+is still never sent anywhere — and **one model may be claimed by exactly one enabled provider**, with
+a second claim failing startup by name, because which vendor receives a prompt is not something this
+hub will decide by configuration ordering. A deployment that keeps its `Fallback:` block behaves
+byte-identically, header included. This is the first of eight releases that end with Anthropic and
+Gemini speaking their own dialects and a request being *routed* to a provider rather than falling
+into one; zero new `PackageReference`s, and there will be none in the other seven either.
+
 Still on the table beyond that: teaching the **coordinator** about backend health as a typed signal
 (a status column and an alert, rather than a line in the node's log), **active-active**
 multi-coordinator load sharing, an **OTLP push** exporter behind an explicit opt-in, and a dedicated
@@ -2089,6 +2100,44 @@ off becomes degradation rather than an outage.
 Set `Fallback:ApiKey` via `Fallback__ApiKey` or user-secrets. With fallback disabled, a request
 for a model no node holds returns exactly the `404` it always has.
 
+### Named providers (v3.29+)
+
+One upstream with no name works until you have two. `Providers:` is the same feature with an id on
+each one — its own credential, its own models, its own trigger:
+
+```jsonc
+{
+  "Providers": {
+    "openai":     { "BaseUrl": "https://api.openai.com/v1",
+                    "ModelMap": { "llama3": "gpt-4o-mini" } },
+    "openrouter": { "BaseUrl": "https://openrouter.ai/api/v1",
+                    "Trigger": "no-node-or-saturated",
+                    "ModelMap": { "big-code": "qwen/qwen3-coder" } }
+  }
+}
+```
+
+Keys go in the environment: `Providers__openrouter__ApiKey`. Everything the warning above promises
+still holds, and two rules are new:
+
+- **One model, one provider.** Two enabled providers mapping the same model **fails startup**,
+  naming the model and both providers. Picking the first is what most gateways do; it would make the
+  most consequential choice here — whose servers see a prompt — depend on the order your JSON keys
+  happened to bind in.
+- **`Type` must be one this release knows** (`openai-compatible`: OpenAI, OpenRouter, vLLM,
+  LM Studio, TGI). A typo fails startup rather than silently disabling a provider.
+
+Responses served by a named provider carry `X-InferHub-Served-By: provider:<id>`; a deployment
+configured through `Fallback:` still gets `fallback`, unchanged. `/api/status` grows a `providers`
+array — reported whether or not anything has been dispatched, with `credential` reading
+`configured` or `absent` and never a character of the key itself — and `/metrics` grows
+`inferhub_provider_dispatched_total{provider}` beside the existing total, which still counts every
+request the fleet did not serve.
+
+> **A provider is still consulted only when the fleet cannot serve.** Routing a model to a provider
+> *by preference*, while the fleet is up, is v3.33. What v3.29 changed is who "the upstream" is, not
+> when it is asked.
+
 ## Authentication & configuration
 
 InferHub keeps secrets out of source. Configure them at runtime via environment variables
@@ -2320,6 +2369,14 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Fallback:ModelMap` | `{}` | Local model name → upstream model name. **Only mapped models are ever sent upstream.** |
 | `Fallback:AllowedModels` | `[]` | Narrower allowlist within the map. Empty = every mapped model. |
 | `Fallback:TimeoutSeconds` | `300` | Per-request timeout against the upstream. |
+| `Providers:<id>:Enabled` | `true` | Named cloud providers (v3.29). Set `false` to park one without deleting its map. |
+| `Providers:<id>:Type` | `openai-compatible` | The only value this release knows. An unknown one fails startup. |
+| `Providers:<id>:BaseUrl` | _(empty)_ | Required and absolute when the provider is enabled. |
+| `Providers:<id>:ApiKey` | _(empty)_ | Env (`Providers__<id>__ApiKey`) / user-secrets only. |
+| `Providers:<id>:Trigger` | `no-node` | Per provider, not per hub. Same two values as `Fallback:Trigger`. |
+| `Providers:<id>:ModelMap` | `{}` | Local → upstream model name. **One model may be mapped by exactly one enabled provider; a second mapping fails startup.** |
+| `Providers:<id>:AllowedModels` | `[]` | Narrower allowlist within that provider's map. |
+| `Providers:<id>:TimeoutSeconds` | `300` | Per-request timeout against that provider. |
 | `Metrics:OpenScrape` | `false` | Whether `GET /metrics` is reachable without an admin key. See [Prometheus `/metrics`](#prometheus-metrics-v210). |
 | `Cluster:Enabled` | `false` | Warm-standby HA (v3.0). Off = byte-identical to v2.13. Requires `VectorStore:Provider=postgres`. See [High availability](#high-availability-v30). |
 | `Cluster:InstanceId` | _(machine name)_ | Names this hub in the lease row, the logs, `/api/status` and `/metrics`. |
@@ -3122,7 +3179,7 @@ What is exposed, all namespaced `inferhub_*`:
 | Area | Series |
 |---|---|
 | Fleet | `requests_total`, `requests_in_flight`, `requests_completed_total`, `requests_failed_total`, `failovers_attempted_total`, `failovers_succeeded_total`, `nodes_evicted_total`, `openai_requests_total`, `uptime_seconds`, `build_info{version}` |
-| Cloud burst | `fallback_dispatched_total`, `fallback_last_model{model}` |
+| Cloud burst | `fallback_dispatched_total`, `fallback_last_model{model}`, and since v3.29 `provider_dispatched_total{provider}`, `provider_last_model{provider,model}` — the same events, attributed |
 | Per node (`node=`) | `node_up{node,name}`, `node_cordoned`, `node_models`, `node_local_in_flight`, `node_seconds_since_heartbeat`, `node_requests_total`, `node_requests_in_flight`, `node_requests_completed_total`, `node_requests_failed_total`, `node_tokens_per_second{node,model}` |
 | Vector (`collection=`) | `vector_replicas_healed_total`, `vector_rebuilds_from_raw_total`, `vector_under_replicated`, `collection_queries_total`, `collection_query_latency_avg_ms`, `collection_documents_ingested_total`, `collection_chunks_embedded_total`, `collection_ingestion_failures_total` |
 | Queue | `queue_depth`, `queue_queued_total`, `queue_admitted_total`, `queue_timed_out_total`, `queue_rejected_total`, `queue_wait_median_ms` |

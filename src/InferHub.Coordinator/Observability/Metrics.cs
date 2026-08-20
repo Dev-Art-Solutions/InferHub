@@ -26,6 +26,13 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
     private readonly ConcurrentDictionary<string, VectorCollectionCounter> perCollection = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<(string Kind, string Model), ToolUnitCounter> perAudio = new();
 
+    /// <summary>
+    /// Dispatches per provider (phase 61). A provider nobody has bursted to produces <b>no entry</b>,
+    /// which is phase-28 D5 again: a zero row for a vendor an operator merely configured reads as
+    /// traffic that happened.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, ProviderCounter> perProvider = new(StringComparer.Ordinal);
+
     /// <summary>Image jobs per recipe (phase 51): outcomes, and how long they took.</summary>
     private readonly ConcurrentDictionary<string, ImageJobCounter> perImageRecipe = new(StringComparer.Ordinal);
 
@@ -83,6 +90,22 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
         Interlocked.Increment(ref fallbackDispatched);
         lastFallbackModel = model;
         Interlocked.Exchange(ref lastFallbackAtTicks, DateTimeOffset.UtcNow.UtcTicks);
+    }
+
+    /// <summary>
+    /// The same event, attributed to the provider that served it (phase 61). The global counter is
+    /// deliberately still incremented: <c>inferhub_fallback_dispatched_total</c> has always meant
+    /// "requests the fleet did not serve", which is exactly what it still counts, and a dashboard
+    /// built on it must not quietly go flat the day an operator names their upstream.
+    /// </summary>
+    public void RecordProviderDispatched(string providerId, string model)
+    {
+        RecordFallbackDispatched(model);
+
+        var counter = perProvider.GetOrAdd(providerId, _ => new ProviderCounter());
+        Interlocked.Increment(ref counter.Dispatched);
+        counter.LastModel = model;
+        Interlocked.Exchange(ref counter.LastAtTicks, DateTimeOffset.UtcNow.UtcTicks);
     }
 
     /// <summary>
@@ -255,6 +278,10 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
             perImageRecipe
                 .Select(pair => pair.Value.Read(pair.Key))
                 .OrderBy(snapshot => snapshot.Recipe, StringComparer.Ordinal)
+                .ToArray(),
+            perProvider
+                .Select(pair => pair.Value.Read(pair.Key))
+                .OrderBy(snapshot => snapshot.Provider, StringComparer.Ordinal)
                 .ToArray());
     }
 
@@ -298,6 +325,24 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
         public long InFlight;
         public long Completed;
         public long Failed;
+    }
+
+    private sealed class ProviderCounter
+    {
+        public long Dispatched;
+        public long LastAtTicks;
+        public volatile string? LastModel;
+
+        public ProviderDispatchSnapshot Read(string provider)
+        {
+            var ticks = Interlocked.Read(ref LastAtTicks);
+
+            return new ProviderDispatchSnapshot(
+                provider,
+                Interlocked.Read(ref Dispatched),
+                LastModel,
+                ticks == 0 ? null : new DateTimeOffset(ticks, TimeSpan.Zero));
+        }
     }
 
     /// <summary>
@@ -434,7 +479,24 @@ public sealed record MetricsSnapshot(
     // builds a snapshot by hand keeps compiling and keeps meaning what it meant.
     IReadOnlyList<ToolUnitsSnapshot>? PerAudio = null,
     // Appended in phase 51 with a default, for the same reason PerAudio was in 45.
-    IReadOnlyList<ImageJobSnapshot>? PerImageRecipe = null);
+    IReadOnlyList<ImageJobSnapshot>? PerImageRecipe = null,
+    // Appended in phase 61, same reason again. Null on a snapshot built by hand, and an empty list
+    // on a hub where no provider has served anything — including one with providers configured.
+    IReadOnlyList<ProviderDispatchSnapshot>? PerProvider = null);
+
+/// <summary>
+/// One provider's dispatches (phase 61): how many, and the model of the most recent one.
+/// </summary>
+/// <remarks>
+/// There is no token count here and that is deliberate: this release reads nothing from a provider's
+/// usage block, and a zero sitting where a measurement belongs is worse than a column that is not
+/// there yet. The track's D5 gives it a home in phase 65.
+/// </remarks>
+public sealed record ProviderDispatchSnapshot(
+    string Provider,
+    long Dispatched,
+    string? LastModel,
+    DateTimeOffset? LastAtUtc);
 
 /// <summary>
 /// One recipe's image jobs (phase 51): how they ended, and how long they took.

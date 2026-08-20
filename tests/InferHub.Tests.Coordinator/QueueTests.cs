@@ -185,7 +185,7 @@ public class QueueTests
     private static Task<InferenceCore.DispatchOutcome> Dispatch(
         NodeRegistry registry,
         QueueOptions queueOptions,
-        IFallbackDispatcher fallback)
+        IProviderDispatcher fallback)
         => InferenceCore.DispatchAsync(
             "chat",
             ChatJob,
@@ -222,24 +222,24 @@ public class QueueTests
         public void FailForConnection(string connectionId, Exception? exception) => throw new NotImplementedException();
     }
 
-    private sealed class NeverFallback : IFallbackDispatcher
+    private sealed class NeverFallback : IProviderDispatcher
     {
         public bool ShouldServe(string model, bool hasCapableNode) => false;
 
-        public Task<FallbackResult> DispatchAsync(string kind, string rawJson, string model, bool stream, CancellationToken cancellationToken)
+        public Task<ProviderResult> DispatchAsync(string kind, string rawJson, string model, bool stream, CancellationToken cancellationToken)
             => throw new InvalidOperationException("must not be called");
     }
 
-    private sealed class RecordingFallback : IFallbackDispatcher
+    private sealed class RecordingFallback : IProviderDispatcher
     {
         public string? LastModel { get; private set; }
 
         public bool ShouldServe(string model, bool hasCapableNode) => true;
 
-        public Task<FallbackResult> DispatchAsync(string kind, string rawJson, string model, bool stream, CancellationToken cancellationToken)
+        public Task<ProviderResult> DispatchAsync(string kind, string rawJson, string model, bool stream, CancellationToken cancellationToken)
         {
             LastModel = model;
-            return Task.FromResult(new FallbackResult(null, """{"model":"llama3","done":true}"""));
+            return Task.FromResult(new ProviderResult(null, """{"model":"llama3","done":true}""", InferenceCore.ServedByFallback));
         }
     }
 }
