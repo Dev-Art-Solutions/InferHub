@@ -59,74 +59,49 @@ Next: Anthropic's own `/v1/messages`.
 
 ## X / Twitter
 
-**Thread**
+**Four, not ten.** The setup — what the type buys, the id shape, the attribution headers — works in
+the Facebook post where there is room. On X it only delays the punch. The two bugs are what makes
+somebody stop scrolling.
 
-1/ InferHub 3.30 adds OpenRouter, and it cost no new dialect.
+**1/**
 
-That is the point, not the excuse. OpenRouter *is* OpenAI's wire format — same client object, nothing
-new written to talk to them.
+InferHub 3.30 adds OpenRouter. It cost no new dialect — they speak OpenAI's wire format.
 
-So what is the release for?
+What it did cost: reading their docs instead of assuming. That found two bugs, and neither was about
+OpenRouter.
 
-2/ Everything about them that is not the dialect.
+**2/**
 
-You already could point a generic `openai-compatible` provider at their URL and have it work. What
-you could not do is find out at boot that your map was wrong.
+error.code is a NUMBER there and a STRING at OpenAI.
 
-3/ Every OpenRouter model id is `vendor/model` — optionally `~`-prefixed for a floating alias,
-`:free` / `:batch` suffixed.
-
-So `"fast": "gpt-4o-mini"` looks fine and cannot work. Real OpenAI id. Never an OpenRouter one.
-
-4/ Left alone that is a 400 you discover weeks later, on the one request your fleet could not serve.
-
-Now it is a startup failure naming the value and the shape.
-
-Shape check only — validating against their live /models listing would make your boot depend on their
-uptime.
-
-5/ OpenRouter takes two optional headers that list your app on their PUBLIC rankings.
-
-Easy to default them to InferHub's own name and URL. Every deployment would then quietly feed a
-leaderboard entry for us.
-
-Absent by default. If you want to be listed, say so.
-
-6/ Now the part that made the release worth doing.
-
-Rule here: read the vendor's docs on the day, do not assume the compatibility layer holds.
-
-It found two bugs. Neither was about OpenRouter.
-
-7/ `error.code` is a NUMBER there and a STRING at OpenAI.
-
-Our envelope declared it a string → parse threw → the code caught its own exception → fell back to
-the raw body.
+Our envelope declared it a string → the parse threw → the code caught its own exception → fell back
+to the raw body.
 
 The one sentence saying what to fix, buried in the JSON it came in.
 
-8/ And an error arriving AFTER the response headers ended the stream quietly.
+**3/**
+
+An error arriving AFTER the response headers ended the stream quietly.
 
 Request died at token 40. Came back 200. Looked finished.
 
 A truncated answer presented as complete is the worst shape a failure can take — nobody goes looking.
 
-9/ Both live for every OpenAI-compatible upstream since 2.4. vLLM, LM Studio, TGI, OpenAI itself.
+**4/**
 
-Both fixed for all of them.
+Both live for every OpenAI-compatible upstream since 2.4. vLLM, LM Studio, TGI, OpenAI itself. Both
+fixed for all of them.
 
 Adding a vendor found them. Neither belonged to that vendor.
 
-10/ No live provider was called. Recorded payloads — a captured 429, a captured mid-stream error
-frame — and both fixes were confirmed to FAIL without the fix before being kept.
-
-Zero new dependencies. Next: Anthropic's own /v1/messages.
+https://blog.devart.solutions/blog/inferhub-3-30-two-bugs-that-were-never-about-openrouter
 
 ---
 
-## The one-liner, if only one thing gets posted
+## The single post, if only one thing goes out
 
-Adding OpenRouter cost no new dialect and found two bugs that had been true of every
-OpenAI-compatible upstream since 2.4: an error code that is a number instead of a string turned every
-failure into a wall of raw JSON, and an error arriving mid-stream ended the response as a 200 that
-looked finished.
+Adding OpenRouter to InferHub found two bugs live since 2.4 in every OpenAI-compatible upstream: an
+error code that is a number not a string, so failures arrived as raw JSON — and a mid-stream error
+that returned 200 and looked finished.
+
+https://blog.devart.solutions/blog/inferhub-3-30-two-bugs-that-were-never-about-openrouter
