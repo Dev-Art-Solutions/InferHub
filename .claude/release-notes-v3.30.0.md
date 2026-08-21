@@ -138,3 +138,23 @@ binder and an outgoing header set are precisely what a unit test does not exerci
   same binder and the same outgoing headers; the image check follows.
 - **Nothing on the node changed.** `Backend:Type=openai` gets both dialect fixes for free, because
   they landed in `InferHub.Shared` — but it does not get the `Providers:` map. That is phase 67.
+
+## Addendum — the published image, checked
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.30.0`, pulled ~18 minutes after the tag. Its
+`org.opencontainers.image.version` reads `3.30.0` and its `revision` is `45129f7`, which is this
+phase's commit — the image was asked, not the dashboard.
+
+- `Providers__or__*` bound an `openrouter` provider inside the container and `/api/status` reported
+  `"type": "openrouter"`, `"credential": "configured"`, with `sk-or-v1-secret-value` appearing
+  nowhere in the payload.
+- One burst reached a stub upstream on the host carrying `HTTP-Referer: https://mesh.example.com`,
+  `X-OpenRouter-Title: Example mesh` and `{"model":"qwen/qwen3-coder",…}`; the answer came back as
+  `big-code` with `X-InferHub-Served-By: provider:or` and the upstream's token counts.
+- The same image with `ModelMap: { "big-code": "gpt-4o-mini" }` under `Type: openrouter` **refused to
+  start**, with the sentence that names the value and the shape.
+
+**One thing worth writing down, and it is not new:** `/api/status` on the container answered **401**
+until an admin key was configured and sent. That is phase 60's finding working as intended — inside a
+container the hub sees the bridge gateway, so the loopback exemption does not apply — and it is what
+a from-source run cannot show you.
