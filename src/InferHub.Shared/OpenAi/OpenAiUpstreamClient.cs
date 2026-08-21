@@ -262,8 +262,63 @@ public sealed class OpenAiUpstreamClient(HttpClient http) : InferHub.Shared.Upst
                 yield break;
             }
 
+            // A failure after the response headers rides in a frame, not in a status code
+            // (phase 62). Ending the stream quietly here is what made a request that died at
+            // token 40 return 200 and *look finished*.
+            ThrowIfErrorFrame(payload);
+
             yield return payload;
         }
+    }
+
+    /// <summary>
+    /// A streamed frame carrying a top-level <c>error</c> is a failure, and it is raised as one.
+    /// </summary>
+    /// <remarks>
+    /// Both callers already know what to do with an exception from mid-iteration — the coordinator's
+    /// provider dispatcher writes a terminal error chunk ("a terminal error chunk beats a hung
+    /// stream") and the node's <c>OpenAiBackend</c> carries it back as a failed job. So this reuses
+    /// two contracts and adds none. <b>Considered and rejected: yielding an Ollama error chunk from
+    /// here</b> — it reaches the same place, and it makes this interface's contract "an error is a
+    /// value here and an exception there", which the next implementer has to discover.
+    ///
+    /// The status is the upstream's own when it named a plausible HTTP one (OpenRouter writes the
+    /// status into <c>error.code</c>); otherwise 502, because the transport succeeded and the
+    /// upstream did not. Nothing is inferred from the *text* — 29 D6's line, unmoved.
+    /// </remarks>
+    private static void ThrowIfErrorFrame(string payload)
+    {
+        // Every ordinary delta carries "choices" and no "error"; the substring check is what keeps
+        // this off the per-token path.
+        if (!payload.Contains("\"error\"", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        OpenAiErrorBody? error;
+
+        try
+        {
+            error = JsonSerializer.Deserialize<OpenAiErrorEnvelope>(payload, JsonOptions)?.Error;
+        }
+        catch (JsonException)
+        {
+            // A frame that merely mentions the word. Let the caller's own parse decide.
+            return;
+        }
+
+        if (error is null || string.IsNullOrWhiteSpace(error.Message))
+        {
+            return;
+        }
+
+        var status = int.TryParse(error.Code, out var code) && code is >= 400 and <= 599
+            ? code
+            : (int)HttpStatusCode.BadGateway;
+
+        throw new OpenAiUpstreamException(
+            status,
+            $"the upstream failed mid-stream with {status}: {error.Message.Trim()}");
     }
 
     // ---- plumbing ---------------------------------------------------------------------

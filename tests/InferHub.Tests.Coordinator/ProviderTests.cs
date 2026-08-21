@@ -171,7 +171,9 @@ public class ProviderTests
         var result = Validate(Configured(("claude", typo)));
 
         Assert.True(result.Failed);
-        Assert.Contains(ProviderDefinition.TypeOpenAiCompatible, Assert.Single(result.Failures));
+        var failure = Assert.Single(result.Failures);
+        Assert.Contains(ProviderDefinition.TypeOpenAiCompatible, failure);
+        Assert.Contains(ProviderDefinition.TypeOpenRouter, failure);
     }
 
     [Fact]
@@ -316,6 +318,128 @@ public class ProviderTests
         Assert.Empty(scrape.PerProvider!);
     }
 
+    // ---- OpenRouter (phase 62) ---------------------------------------------------------
+
+    [Fact]
+    public async Task AnOpenRouterProviderNeedsNoBaseUrlAndReachesOpenRouter()
+    {
+        var upstream = new RecordingUpstream(UpstreamAnswer);
+        var openrouter = Provider(baseUrl: null, "key-or", ("big-code", "qwen/qwen3-coder"));
+        openrouter.Type = ProviderDefinition.TypeOpenRouter;
+
+        var dispatcher = Dispatcher(Registry(("openrouter", openrouter)), upstream);
+        var result = await dispatcher.DispatchAsync("chat", ChatJob, "big-code", stream: false, CancellationToken.None);
+
+        Assert.Equal("provider:openrouter", result.ServedBy);
+        Assert.Equal("https://openrouter.ai/api/v1/chat/completions", upstream.Requests[0].Url);
+        Assert.Equal("Bearer key-or", upstream.Requests[0].Authorization);
+    }
+
+    [Fact]
+    public async Task AnOperatorsOwnBaseUrlStillWinsForAnOpenRouterProvider()
+    {
+        // A proxy in front of a vendor is a deployment somebody has; a default that cannot be
+        // replaced is a wall.
+        var upstream = new RecordingUpstream(UpstreamAnswer);
+        var proxied = Provider("https://gateway.internal/openrouter/v1", "k", ("big-code", "qwen/qwen3-coder"));
+        proxied.Type = ProviderDefinition.TypeOpenRouter;
+
+        await Dispatcher(Registry(("openrouter", proxied)), upstream)
+            .DispatchAsync("chat", ChatJob, "big-code", stream: false, CancellationToken.None);
+
+        Assert.Equal("https://gateway.internal/openrouter/v1/chat/completions", upstream.Requests[0].Url);
+    }
+
+    [Fact]
+    public async Task NoDeploymentIsPutOnAVendorsPublicRankingsWithoutSayingSo()
+    {
+        // 62 D2. Absent means absent: the headers are what list an app on OpenRouter's public
+        // pages, and an operator who never wrote one down did not ask to be listed.
+        var upstream = new RecordingUpstream(UpstreamAnswer);
+        var anonymous = Provider(baseUrl: null, "k", ("big-code", "qwen/qwen3-coder"));
+        anonymous.Type = ProviderDefinition.TypeOpenRouter;
+
+        await Dispatcher(Registry(("openrouter", anonymous)), upstream)
+            .DispatchAsync("chat", ChatJob, "big-code", stream: false, CancellationToken.None);
+
+        Assert.DoesNotContain("HTTP-Referer", upstream.Requests[0].Headers.Keys);
+        Assert.DoesNotContain("X-OpenRouter-Title", upstream.Requests[0].Headers.Keys);
+    }
+
+    [Fact]
+    public async Task TheAttributionHeadersAreSentWhenTheOperatorConfiguredThem()
+    {
+        // Guard on the guard: the assertion above has to be able to see one when it is there.
+        var upstream = new RecordingUpstream(UpstreamAnswer);
+        var attributed = Provider(baseUrl: null, "k", ("big-code", "qwen/qwen3-coder"));
+        attributed.Type = ProviderDefinition.TypeOpenRouter;
+        attributed.Referer = "https://mesh.example.com";
+        attributed.Title = "Example mesh";
+
+        await Dispatcher(Registry(("openrouter", attributed)), upstream)
+            .DispatchAsync("chat", ChatJob, "big-code", stream: false, CancellationToken.None);
+
+        Assert.Equal("https://mesh.example.com", upstream.Requests[0].Headers["HTTP-Referer"]);
+        Assert.Equal("Example mesh", upstream.Requests[0].Headers["X-OpenRouter-Title"]);
+    }
+
+    [Fact]
+    public async Task AnOpenAiCompatibleProviderNeverSendsThem()
+    {
+        // They are OpenRouter's; sending them to OpenAI or a vLLM box is telling a server something
+        // about a deployment for no reason at all.
+        var upstream = new RecordingUpstream(UpstreamAnswer);
+        var vllm = Provider("http://vllm.internal/v1", "k", ("big-code", "Qwen/Qwen3-32B"));
+        vllm.Referer = "https://mesh.example.com";
+        vllm.Title = "Example mesh";
+
+        await Dispatcher(Registry(("vllm", vllm)), upstream)
+            .DispatchAsync("chat", ChatJob, "big-code", stream: false, CancellationToken.None);
+
+        Assert.DoesNotContain("HTTP-Referer", upstream.Requests[0].Headers.Keys);
+        Assert.DoesNotContain("X-OpenRouter-Title", upstream.Requests[0].Headers.Keys);
+    }
+
+    [Fact]
+    public void AnOpenRouterMapValueWithNoVendorPrefixFailsStartupNamingIt()
+    {
+        // `gpt-4o-mini` is a real OpenAI id and has never been an OpenRouter one. Left to run, it
+        // is a 400 discovered weeks later, on the one request the fleet could not serve.
+        var wrong = Provider(baseUrl: null, "k", ("fast", "gpt-4o-mini"));
+        wrong.Type = ProviderDefinition.TypeOpenRouter;
+
+        var result = Validate(Configured(("openrouter", wrong)));
+
+        Assert.True(result.Failed);
+        var failure = Assert.Single(result.Failures);
+        Assert.Contains("gpt-4o-mini", failure);
+        Assert.Contains("vendor/model", failure);
+    }
+
+    [Theory]
+    [InlineData("qwen/qwen3-coder")]
+    [InlineData("~anthropic/claude-sonnet-latest")]
+    [InlineData("meta-llama/llama-3.3-70b-instruct:free")]
+    [InlineData("anthropic/claude-opus-4.5:batch")]
+    [InlineData("openrouter/auto")]
+    public void TheShapesOpenRouterActuallyPublishesAreAccepted(string upstreamModel)
+    {
+        // Read from the live listing on the day: a floating `~` alias, a `:variant` suffix, dots in
+        // a version, and the auto-router — 419 of 419 ids carry a slash.
+        var provider = Provider(baseUrl: null, "k", ("fast", upstreamModel));
+        provider.Type = ProviderDefinition.TypeOpenRouter;
+
+        Assert.False(Validate(Configured(("openrouter", provider))).Failed);
+    }
+
+    [Fact]
+    public void AnOpenAiCompatibleProviderIsNotHeldToOpenRoutersIdShape()
+    {
+        // `gpt-4o-mini` is exactly right there, and a validator that refused it would be this
+        // project deciding what OpenAI's models are called.
+        Assert.False(Validate(Configured(("openai", Provider("https://api.openai.com/v1", "k", ("fast", "gpt-4o-mini"))))).Failed);
+    }
+
     // ---- harness -----------------------------------------------------------------------
 
     private static ProviderDefinition Provider(string? baseUrl, string? apiKey, params (string Local, string Upstream)[] map)
@@ -396,7 +520,11 @@ public class ProviderTests
                 request.Headers.Authorization?.ToString(),
                 JsonDocument.Parse(body).RootElement.TryGetProperty("model", out var model)
                     ? model.GetString()
-                    : null));
+                    : null,
+                request.Headers.ToDictionary(
+                    header => header.Key,
+                    header => string.Join(",", header.Value),
+                    StringComparer.OrdinalIgnoreCase)));
 
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
@@ -407,6 +535,10 @@ public class ProviderTests
             };
         }
 
-        internal sealed record Sent(string Url, string? Authorization, string? Model);
+        internal sealed record Sent(
+            string Url,
+            string? Authorization,
+            string? Model,
+            IReadOnlyDictionary<string, string> Headers);
     }
 }

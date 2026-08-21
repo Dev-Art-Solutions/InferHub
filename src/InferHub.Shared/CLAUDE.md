@@ -756,3 +756,36 @@ putting it in the coordinator** — the node needs the same seam in 67, and movi
 moving it across a project boundary while two implementations exist. Rule 2 and rule 5 both hold: a
 plain interface over `HttpClient`, and `InferHub.Shared.csproj` is still an empty
 `<Project Sdk="Microsoft.NET.Sdk">`.
+
+### Phase 62 (two ways an OpenAI-compatible upstream is not OpenAI) — found by reading OpenRouter's docs
+
+Both are `OpenAiUpstreamClient`'s and both were live for every `openai-compatible` upstream, not
+only the new one. The provider *configuration* half of the phase is the coordinator's (62 D1/D2/D5).
+
+**D3 — `error.code` is read as either a number or a string, in the one envelope both vendors use.**
+OpenAI writes `"rate_limit_exceeded"`; OpenRouter writes `429`. `OpenAiErrorBody.Code` is
+`string?`, so the whole envelope threw, `Describe` caught its own `JsonException` and fell back to
+the **raw body** — the one sentence saying what to fix, delivered buried in the JSON it arrived in,
+which is 29 D6's wall of backslashes reached by another route. `LenientErrorCodeConverter` reads
+both; writing is unchanged, because a code this project produces is a string.
+**Considered and rejected: a second error envelope** — the field is spelled `code` in both and means
+the same thing, and what differs is a JSON scalar type, which is not a schema. **Also rejected: try
+one shape then the other** — two deserializations and a silent preference between them, to avoid
+writing down that servers disagree about this.
+
+**D4 — A failure that arrives *after* the response headers throws, rather than ending the stream.**
+OpenRouter reports one as an SSE frame carrying a top-level `error` and `finish_reason: "error"`;
+`ReadFramesAsync` read that as a terminal delta, so a request that died at token 40 returned **200
+and looked finished**. `ThrowIfErrorFrame` raises `OpenAiUpstreamException` mid-iteration, and both
+callers already know what to do with that — the hub's `ProviderDispatcher` writes a terminal error
+chunk ("a terminal error chunk beats a hung stream") and the node's `OpenAiBackend` carries it back
+as a failed job. **Considered and rejected: yielding an Ollama error chunk from here** — it reaches
+the same place, and it makes this interface's contract "an error is a value here and an exception
+there", which the next implementer has to discover.
+
+*The status is the upstream's own when it named a plausible HTTP one and 502 otherwise; nothing is
+inferred from the error **text**, which is 29 D6 unmoved.* The check is behind a substring test for
+`"error"` so it stays off the per-token path, and `AnOrdinaryStreamStillEndsWithADoneChunkAndNothingElse`
+is the guard on the guard — a delta whose *content* mentions the word must not become a 502.
+
+**Rule 5 survived again.** **Zero** new `PackageReference`; the converter is `System.Text.Json`.

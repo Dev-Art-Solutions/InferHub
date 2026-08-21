@@ -50,14 +50,19 @@ public sealed partial class ProviderOptionsValidator(IOptions<FallbackOptions> f
                 continue;
             }
 
-            if (provider.NormalizedType() != ProviderDefinition.TypeOpenAiCompatible)
+            var type = provider.NormalizedType();
+
+            if (type is not (ProviderDefinition.TypeOpenAiCompatible or ProviderDefinition.TypeOpenRouter))
             {
                 failures.Add($"Providers:{id}:Type is '{provider.Type}'. The types this release knows "
-                             + $"are: {ProviderDefinition.TypeOpenAiCompatible}.");
+                             + $"are: {ProviderDefinition.TypeOpenAiCompatible}, "
+                             + $"{ProviderDefinition.TypeOpenRouter}.");
             }
 
-            if (string.IsNullOrWhiteSpace(provider.BaseUrl)
-                || !Uri.TryCreate(provider.BaseUrl, UriKind.Absolute, out _))
+            // openrouter supplies its own, so a BaseUrl there is an override rather than a
+            // requirement — but a *malformed* one is still refused, in either type.
+            if (provider.ResolvedBaseUrl() is not { } baseUrl
+                || !Uri.TryCreate(baseUrl, UriKind.Absolute, out _))
             {
                 failures.Add($"Providers:{id}:BaseUrl is required and must be an absolute URL "
                              + "when the provider is enabled.");
@@ -74,6 +79,15 @@ public sealed partial class ProviderOptionsValidator(IOptions<FallbackOptions> f
                 {
                     failures.Add($"Providers:{id}:ModelMap:{model} has no upstream model name. "
                                  + "An empty mapping is not a way to disable one — remove the entry.");
+                    continue;
+                }
+
+                if (type == ProviderDefinition.TypeOpenRouter && !OpenRouterModelId().IsMatch(upstream.Trim()))
+                {
+                    failures.Add($"Providers:{id}:ModelMap:{model} is '{upstream}', which is not an "
+                                 + "OpenRouter model id. Every id there is 'vendor/model', optionally "
+                                 + "prefixed with '~' for a floating alias and suffixed with ':free', "
+                                 + "':batch' or ':thinking' — for example 'qwen/qwen3-coder'.");
                     continue;
                 }
 
@@ -97,4 +111,19 @@ public sealed partial class ProviderOptionsValidator(IOptions<FallbackOptions> f
 
     [GeneratedRegex("^[a-z0-9][a-z0-9-]*$")]
     private static partial Regex ProviderId();
+
+    /// <summary>
+    /// OpenRouter's id shape (62 D5): <c>vendor/model</c>, optional <c>~</c> for a floating "latest"
+    /// alias, optional <c>:variant</c>. Checked against the shape and against no catalogue — a
+    /// checked-in list of vendors is 48 D1's "usually right" in its purest form, and validating
+    /// against the live <c>/models</c> listing would make booting depend on a vendor being up.
+    /// </summary>
+    /// <remarks>
+    /// Read from that listing on the day this was written: <b>419 of 419 ids carry a slash</b>. The
+    /// risk, stated rather than mitigated: the day an unnamespaced id ships there, this refuses a
+    /// valid configuration — a one-line fix behind a message that says what it wanted, which is the
+    /// trade an unknown <c>Type</c> and a doubly-claimed model already make in this file.
+    /// </remarks>
+    [GeneratedRegex(@"^~?[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*(:[a-z]+)?$")]
+    private static partial Regex OpenRouterModelId();
 }

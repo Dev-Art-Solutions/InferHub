@@ -30,6 +30,17 @@ public sealed class ProviderDefinition
     public const string TypeOpenAiCompatible = "openai-compatible";
 
     /// <summary>
+    /// OpenRouter (phase 62). <b>The same dialect</b> — <c>ProviderDispatcher</c> hands both types
+    /// to <see cref="InferHub.Shared.OpenAi.OpenAiUpstreamClient"/> — and a type of its own anyway,
+    /// because three things about it are not the dialect: a base URL nobody should have to type, an
+    /// attribution header set, and a model id shape that is checked at startup.
+    /// </summary>
+    public const string TypeOpenRouter = "openrouter";
+
+    /// <summary>Used when a <c>Type: openrouter</c> provider names no <see cref="BaseUrl"/>.</summary>
+    public const string OpenRouterBaseUrl = "https://openrouter.ai/api/v1";
+
+    /// <summary>
     /// Off is off: a disabled provider maps nothing, so its models are simply not eligible. It is
     /// here so an operator can park a provider without deleting the map they spent time on.
     /// </summary>
@@ -51,6 +62,21 @@ public sealed class ProviderDefinition
 
     public int TimeoutSeconds { get; set; } = 300;
 
+    /// <summary>
+    /// <c>HTTP-Referer</c>, sent only to an <see cref="TypeOpenRouter"/> provider and only when set.
+    /// </summary>
+    /// <remarks>
+    /// This and <see cref="Title"/> put an app on OpenRouter's <b>public</b> rankings, which is why
+    /// neither has a default (62 D2). Filling them in with this product's own name and URL would be
+    /// free marketing paid for with somebody else's deployment appearing on a vendor's public page
+    /// because they configured a model. Not the caller's content, but a fact about the caller's
+    /// infrastructure — so the sending is the operator's sentence, not ours.
+    /// </remarks>
+    public string? Referer { get; set; }
+
+    /// <summary><c>X-OpenRouter-Title</c>. See <see cref="Referer"/> — opt-in, no default.</summary>
+    public string? Title { get; set; }
+
     /// <summary>Local model name → this provider's name for it. The map is the consent.</summary>
     public Dictionary<string, string> ModelMap { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
@@ -64,6 +90,16 @@ public sealed class ProviderDefinition
 
     public string NormalizedType()
         => string.IsNullOrWhiteSpace(Type) ? TypeOpenAiCompatible : Type.Trim().ToLowerInvariant();
+
+    /// <summary>
+    /// The base URL to point an <c>HttpClient</c> at: the operator's when they named one, and
+    /// OpenRouter's own when the type supplies it. Still overridable — a proxy in front of a vendor
+    /// is a deployment somebody has, and a default that cannot be replaced is a wall.
+    /// </summary>
+    public string? ResolvedBaseUrl()
+        => !string.IsNullOrWhiteSpace(BaseUrl)
+            ? BaseUrl!.Trim()
+            : NormalizedType() == TypeOpenRouter ? OpenRouterBaseUrl : null;
 }
 
 /// <summary>

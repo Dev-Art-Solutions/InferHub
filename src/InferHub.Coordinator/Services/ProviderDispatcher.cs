@@ -179,16 +179,39 @@ public sealed class ProviderDispatcher(
     private static IUpstreamDialect Dialect(ProviderRoute route, HttpClient http)
         => route.Definition.NormalizedType() switch
         {
-            ProviderDefinition.TypeOpenAiCompatible => new OpenAiUpstreamClient(http),
+            // Phase 62. OpenRouter *is* the OpenAI dialect — the identity is the claim, not an
+            // implementation detail. What its type buys is configuration, one method down.
+            ProviderDefinition.TypeOpenAiCompatible or ProviderDefinition.TypeOpenRouter
+                => new OpenAiUpstreamClient(http),
             var type => throw new InvalidOperationException($"provider type '{type}' has no dialect")
         };
 
     private HttpClient CreateHttpClient(ProviderRoute route)
-        => OpenAiUpstreamClient.Configure(
+    {
+        var http = OpenAiUpstreamClient.Configure(
             httpClientFactory.CreateClient(HttpClientName),
-            route.Definition.BaseUrl!,
+            route.Definition.ResolvedBaseUrl()!,
             route.Definition.ApiKey,
             route.Definition.TimeoutSeconds);
+
+        if (route.Definition.NormalizedType() == ProviderDefinition.TypeOpenRouter)
+        {
+            // Absent unless the operator wrote one down (62 D2): these two put a deployment on
+            // OpenRouter's public rankings, and this hub does not volunteer somebody else's.
+            AddIfPresent(http, "HTTP-Referer", route.Definition.Referer);
+            AddIfPresent(http, "X-OpenRouter-Title", route.Definition.Title);
+        }
+
+        return http;
+    }
+
+    private static void AddIfPresent(HttpClient http, string header, string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            http.DefaultRequestHeaders.TryAddWithoutValidation(header, value.Trim());
+        }
+    }
 
     // The body already exists as a string; swapping one field is cheaper and safer than a
     // round-trip through a typed DTO that would drop fields it does not know about.

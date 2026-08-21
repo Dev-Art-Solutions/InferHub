@@ -188,6 +188,16 @@ could not test: `fps` is now required and its old fallback of 16 is gone, becaus
 CogVideoX's 49 frames at twice their rate is not an error — it is a clip that plays at double speed.
 The 14B entry is also the first recipe this project ships that **does not fit a 24 GB card**, which
 is the VRAM gate working: such a node never declares it, so nobody meets the ceiling mid-render.
+**v3.30 adds OpenRouter, and it cost no new dialect — which is the point.**
+[`Type: "openrouter"`](#openrouter-v330) speaks the same OpenAI wire format the seam already spoke,
+so what the type actually buys is the part that was never the dialect: a base URL you need not type,
+a model map checked at boot against OpenRouter's `vendor/model` id shape, and attribution headers
+that are **absent unless you set them**, because they list your deployment on a vendor's public
+rankings and that is not a thing this hub volunteers on your behalf. Two bugs fell out of reading
+their docs, and both were live for *every* OpenAI-compatible upstream: an `error.code` that is a
+number instead of a string made every failure arrive as a wall of raw JSON, and an error that
+happened mid-stream ended the response quietly — 200, and it looked finished.
+
 **v3.29 gives the cloud upstream a name — and lets there be more than one of them.**
 [Named providers](#named-providers-v329) turns the single anonymous `Fallback:` upstream into a map:
 OpenAI with one key, OpenRouter with another, a vLLM box on your own network with none, each with its
@@ -2110,7 +2120,7 @@ each one — its own credential, its own models, its own trigger:
   "Providers": {
     "openai":     { "BaseUrl": "https://api.openai.com/v1",
                     "ModelMap": { "llama3": "gpt-4o-mini" } },
-    "openrouter": { "BaseUrl": "https://openrouter.ai/api/v1",
+    "openrouter": { "Type": "openrouter",
                     "Trigger": "no-node-or-saturated",
                     "ModelMap": { "big-code": "qwen/qwen3-coder" } }
   }
@@ -2124,8 +2134,38 @@ still holds, and two rules are new:
   naming the model and both providers. Picking the first is what most gateways do; it would make the
   most consequential choice here — whose servers see a prompt — depend on the order your JSON keys
   happened to bind in.
-- **`Type` must be one this release knows** (`openai-compatible`: OpenAI, OpenRouter, vLLM,
-  LM Studio, TGI). A typo fails startup rather than silently disabling a provider.
+- **`Type` must be one this release knows** — `openai-compatible` (OpenAI, vLLM, LM Studio, TGI) or
+  `openrouter`. A typo fails startup rather than silently disabling a provider.
+
+#### OpenRouter (v3.30+)
+
+`Type: "openrouter"` is the **same dialect** — OpenRouter speaks OpenAI's wire format, which is
+exactly why it was the first provider added after the seam. What the type buys is the part that is
+*not* the dialect:
+
+- **You need not type the base URL.** `https://openrouter.ai/api/v1` is the default; set `BaseUrl`
+  anyway if you reach it through a proxy of your own.
+- **The model map is checked at startup** against OpenRouter's id shape — `vendor/model`, optionally
+  `~`-prefixed for a floating alias (`~openai/gpt-mini-latest`) and `:variant`-suffixed (`:free`,
+  `:batch`). `gpt-4o-mini` is a real OpenAI id and has never been an OpenRouter one; catching that
+  at boot beats catching it as a `400` on the one request your fleet could not serve.
+- **Attribution is yours to give.** `Referer` and `Title` become `HTTP-Referer` and
+  `X-OpenRouter-Title`, which list an app on OpenRouter's **public** rankings. They are sent only if
+  you set them — InferHub does not put your deployment on somebody's public page for you.
+
+```jsonc
+"openrouter": {
+  "Type": "openrouter",
+  "Referer": "https://mesh.example.com",   // optional, and absent by default
+  "Title": "Example mesh",
+  "ModelMap": { "big-code": "qwen/qwen3-coder" }
+}
+```
+
+Token counts come back from OpenRouter's own `usage` block and land in the ledger like any other.
+Its `cost` field is deliberately **not** read: a number InferHub did not measure does not belong in
+the same column as ones it did. `openrouter/auto` works, and the hub cannot tell you which model
+actually answered — it reports the name you asked for.
 
 Responses served by a named provider carry `X-InferHub-Served-By: provider:<id>`; a deployment
 configured through `Fallback:` still gets `fallback`, unchanged. `/api/status` grows a `providers`
@@ -2370,8 +2410,10 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Fallback:AllowedModels` | `[]` | Narrower allowlist within the map. Empty = every mapped model. |
 | `Fallback:TimeoutSeconds` | `300` | Per-request timeout against the upstream. |
 | `Providers:<id>:Enabled` | `true` | Named cloud providers (v3.29). Set `false` to park one without deleting its map. |
-| `Providers:<id>:Type` | `openai-compatible` | The only value this release knows. An unknown one fails startup. |
-| `Providers:<id>:BaseUrl` | _(empty)_ | Required and absolute when the provider is enabled. |
+| `Providers:<id>:Type` | `openai-compatible` | Or `openrouter` (v3.30). An unknown one fails startup, naming both. |
+| `Providers:<id>:BaseUrl` | _(empty)_ | Required and absolute when the provider is enabled — except under `openrouter`, which supplies its own and still accepts an override. |
+| `Providers:<id>:Referer` | _(empty)_ | `openrouter` only (v3.30). Sent as `HTTP-Referer`. It lists you on OpenRouter's public rankings, so it is never defaulted. |
+| `Providers:<id>:Title` | _(empty)_ | `openrouter` only (v3.30). Sent as `X-OpenRouter-Title`. Same reasoning as `Referer`. |
 | `Providers:<id>:ApiKey` | _(empty)_ | Env (`Providers__<id>__ApiKey`) / user-secrets only. |
 | `Providers:<id>:Trigger` | `no-node` | Per provider, not per hub. Same two values as `Fallback:Trigger`. |
 | `Providers:<id>:ModelMap` | `{}` | Local → upstream model name. **One model may be mapped by exactly one enabled provider; a second mapping fails startup.** |

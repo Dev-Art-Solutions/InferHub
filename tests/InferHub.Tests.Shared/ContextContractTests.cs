@@ -59,6 +59,9 @@ public class ContextContractTests
         ("CLAUDE.md", 400),
         ("src/InferHub.Shared/CLAUDE.md", ScopedBudget),
         ("src/InferHub.Coordinator/CLAUDE.md", ScopedBudget),
+        // Phase 62. The coordinator's file hit 1100 and the retrieval decisions were the largest
+        // coherent subtree in it that the provider track had nothing to do with (62 D6).
+        ("src/InferHub.Coordinator/Vector/CLAUDE.md", ScopedBudget),
         ("src/InferHub.Node/CLAUDE.md", ScopedBudget),
         ("python/CLAUDE.md", ScopedBudget),
         ("tests/CLAUDE.md", ScopedBudget),
