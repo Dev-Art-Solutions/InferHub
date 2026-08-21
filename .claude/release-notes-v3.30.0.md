@@ -134,8 +134,8 @@ binder and an outgoing header set are precisely what a unit test does not exerci
   provider id.
 - **The 502 sentence still says "the fallback upstream failed"** even for a named provider —
   unchanged from v3.29, and still a piece of v3.33's work.
-- **The published image was not pulled at the time of writing.** The from-source run above covers the
-  same binder and the same outgoing headers; the image check follows.
+- ~~**The published image was not pulled at the time of writing.**~~ It has been now — see the
+  addendum below, written the same evening.
 - **Nothing on the node changed.** `Backend:Type=openai` gets both dialect fixes for free, because
   they landed in `InferHub.Shared` — but it does not get the `Providers:` map. That is phase 67.
 
