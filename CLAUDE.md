@@ -14,7 +14,8 @@ inference backend (Ollama today, pluggable). No port forwarding on the node side
 
 ```
 src/
-  InferHub.Shared/        Contracts + Ollama DTOs + OpenAI DTOs/translators (both ends speak it),
+  InferHub.Shared/        Contracts + Ollama DTOs + the upstream dialects behind IUpstreamDialect
+                          (OpenAi/ since phase 22, Anthropic/ since 63 — both ends speak them),
                           and since phase 38 the whole *pure* retrieval core: Vector/ (IVectorStore,
                           LocalVectorStore, InvertedIndex, HybridSearch, RetrievalPipeline) and
                           Ingestion/ (TextExtractor, Chunker, DocumentIndex, IngestionPipeline).
@@ -84,8 +85,8 @@ longer pays for the Qdrant connector's UUID mapping and the cluster lease's spli
 
 | Working in | Also read | Holds |
 |---|---|---|
-| `src/InferHub.Shared/` | `src/InferHub.Shared/CLAUDE.md` | contracts, the OpenAI/Ollama dialects, the retrieval core, the vector stores, the image and video envelopes, the upstream dialect seam · phases 24, 29, 33, 34, 40, 46, 47, 57, 61 |
-| `src/InferHub.Coordinator/` | `src/InferHub.Coordinator/CLAUDE.md` | endpoints, routing, admission, cluster, `/metrics`, the console, the cloud providers · phases 21–23, 25, 26, 28, 30, 32, 45, 51, 57, 59–62 |
+| `src/InferHub.Shared/` | `src/InferHub.Shared/CLAUDE.md` | contracts, the OpenAI/Ollama dialects, the retrieval core, the vector stores, the image and video envelopes, the upstream dialects (OpenAI and Anthropic) · phases 24, 29, 33, 34, 40, 46, 47, 57, 61, 63 |
+| `src/InferHub.Coordinator/` | `src/InferHub.Coordinator/CLAUDE.md` | endpoints, routing, admission, cluster, `/metrics`, the console, the cloud providers · phases 21–23, 25, 26, 28, 30, 32, 45, 51, 57, 59–63 |
 | `src/InferHub.Coordinator/Vector/` | `src/InferHub.Coordinator/Vector/CLAUDE.md` | the three vector providers, replication and healing, collection ownership, cross-provider migration · phases 31, 35, 44 (split out in phase 62) |
 | `src/InferHub.Node/` | `src/InferHub.Node/CLAUDE.md` | backends, the Ollama supervisor, solo mode, the tool runtime, profiles · phases 36–39, 41–43, 48, 57, 58 |
 | `python/` | `python/CLAUDE.md` | the worker protocol, recipes, the diffusion worker · phases 49, 50, 55, 57, 58 |

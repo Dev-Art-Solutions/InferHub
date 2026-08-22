@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using InferHub.Shared.Ollama;
+using InferHub.Shared.Upstream;
 
 namespace InferHub.Shared.OpenAi;
 
@@ -20,12 +21,6 @@ namespace InferHub.Shared.OpenAi;
 public static class UpstreamTranslator
 {
     private const string ObjectRole = "assistant";
-
-    // Not `u8` literals: 0x89 and 0xFF are not ASCII, and a UTF-8 literal would encode them as
-    // two bytes each — a signature that matches nothing.
-    private static ReadOnlySpan<byte> PngSignature => [0x89, 0x50, 0x4E, 0x47];
-
-    private static ReadOnlySpan<byte> JpegSignature => [0xFF, 0xD8, 0xFF];
 
     // ---- Ollama request → OpenAI request ---------------------------------------------
 
@@ -278,36 +273,20 @@ public static class UpstreamTranslator
 
     /// <summary>
     /// Ollama's <c>images</c> are bare base64 with no media type, but an OpenAI data URL needs
-    /// one — so it is sniffed from the magic bytes rather than guessed at a default. An upstream
-    /// handed <c>image/png</c> for a JPEG is a failure that looks like a bad model answer, which
-    /// is exactly the class of quiet wrongness this codebase spends errors to avoid.
+    /// one — so it is sniffed from the magic bytes rather than guessed at a default. The sniff
+    /// itself moved to <see cref="Base64MediaType"/> in phase 63, because Anthropic's image block
+    /// wants exactly the same answer; what stays here is the status this dialect gives it.
     /// </summary>
     private static string SniffMediaType(string base64)
     {
-        // 16 base64 chars decode to 12 bytes — enough for every signature below, and a valid
-        // standalone block, so no padding games.
-        Span<byte> header = stackalloc byte[12];
-        var prefix = base64.Length >= 16 ? base64[..16] : base64;
-
-        if (!Convert.TryFromBase64String(prefix, header, out var written) || written < 4)
+        try
         {
-            throw new OpenAiRequestException(
-                "an image could not be forwarded upstream: its media type is unreadable",
-                statusCode: 400);
+            return Base64MediaType.Sniff(base64);
         }
-
-        var bytes = header[..written];
-
-        if (bytes.StartsWith(PngSignature)) return "image/png";
-        if (bytes.StartsWith(JpegSignature)) return "image/jpeg";
-        if (bytes.StartsWith("GIF8"u8)) return "image/gif";
-        if (written >= 12 && bytes.StartsWith("RIFF"u8) && bytes[8..12].SequenceEqual("WEBP"u8)) return "image/webp";
-
-        // Fail clean rather than silently mislabel: an upstream that can't carry this image
-        // should say so here, not answer about something it never decoded.
-        throw new OpenAiRequestException(
-            "an image could not be forwarded upstream: only PNG, JPEG, GIF and WebP are recognised",
-            statusCode: 400);
+        catch (Base64MediaTypeException ex)
+        {
+            throw new OpenAiRequestException(ex.Message, statusCode: 400);
+        }
     }
 
     /// <summary>

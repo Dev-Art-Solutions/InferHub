@@ -52,15 +52,28 @@ public sealed partial class ProviderOptionsValidator(IOptions<FallbackOptions> f
 
             var type = provider.NormalizedType();
 
-            if (type is not (ProviderDefinition.TypeOpenAiCompatible or ProviderDefinition.TypeOpenRouter))
+            if (type is not (ProviderDefinition.TypeOpenAiCompatible
+                or ProviderDefinition.TypeOpenRouter
+                or ProviderDefinition.TypeAnthropic))
             {
                 failures.Add($"Providers:{id}:Type is '{provider.Type}'. The types this release knows "
                              + $"are: {ProviderDefinition.TypeOpenAiCompatible}, "
-                             + $"{ProviderDefinition.TypeOpenRouter}.");
+                             + $"{ProviderDefinition.TypeOpenRouter}, "
+                             + $"{ProviderDefinition.TypeAnthropic}.");
             }
 
-            // openrouter supplies its own, so a BaseUrl there is an override rather than a
-            // requirement — but a *malformed* one is still refused, in either type.
+            // Anthropic requires max_tokens on every request and Ollama never sends one, so a
+            // provider that declares a nonsensical ceiling would fail on the first prompt instead
+            // of at boot (63 D2). Checked only where it is used: the field is inert elsewhere.
+            if (type == ProviderDefinition.TypeAnthropic && provider.MaxTokens <= 0)
+            {
+                failures.Add($"Providers:{id}:MaxTokens must be greater than zero. Anthropic requires "
+                             + "max_tokens on every request, and this is the value used when a caller "
+                             + "names no options.num_predict.");
+            }
+
+            // openrouter and anthropic supply their own, so a BaseUrl there is an override rather
+            // than a requirement — but a *malformed* one is still refused, in every type.
             if (provider.ResolvedBaseUrl() is not { } baseUrl
                 || !Uri.TryCreate(baseUrl, UriKind.Absolute, out _))
             {
@@ -82,6 +95,12 @@ public sealed partial class ProviderOptionsValidator(IOptions<FallbackOptions> f
                     continue;
                 }
 
+                // There is deliberately no equivalent shape check for `anthropic` (63 D8).
+                // OpenRouter's is one namespace with 419-of-419 evidence behind it; Anthropic's ids
+                // are `claude-…` on the first-party API, `anthropic.claude-…` on Bedrock and
+                // `claude-…@2025…` on Vertex — and a BaseUrl override is exactly how somebody
+                // reaches those. A `claude-` prefix check would refuse a valid configuration for a
+                // proxy this project encourages, which is 48 D1's "usually right".
                 if (type == ProviderDefinition.TypeOpenRouter && !OpenRouterModelId().IsMatch(upstream.Trim()))
                 {
                     failures.Add($"Providers:{id}:ModelMap:{model} is '{upstream}', which is not an "

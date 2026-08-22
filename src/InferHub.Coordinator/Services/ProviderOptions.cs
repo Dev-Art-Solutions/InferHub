@@ -41,6 +41,17 @@ public sealed class ProviderDefinition
     public const string OpenRouterBaseUrl = "https://openrouter.ai/api/v1";
 
     /// <summary>
+    /// Anthropic's own <c>/v1/messages</c> (phase 63) — a real second dialect, unlike
+    /// <see cref="TypeOpenRouter"/>. The credential is <c>x-api-key</c> rather than a Bearer token,
+    /// the version header is required, and <see cref="MaxTokens"/> exists because the vendor
+    /// requires a field Ollama has no equivalent for.
+    /// </summary>
+    public const string TypeAnthropic = "anthropic";
+
+    /// <summary>Used when a <c>Type: anthropic</c> provider names no <see cref="BaseUrl"/>.</summary>
+    public const string AnthropicBaseUrl = "https://api.anthropic.com/v1";
+
+    /// <summary>
     /// Off is off: a disabled provider maps nothing, so its models are simply not eligible. It is
     /// here so an operator can park a provider without deleting the map they spent time on.
     /// </summary>
@@ -77,6 +88,25 @@ public sealed class ProviderDefinition
     /// <summary><c>X-OpenRouter-Title</c>. See <see cref="Referer"/> — opt-in, no default.</summary>
     public string? Title { get; set; }
 
+    /// <summary>
+    /// The <c>anthropic-version</c> header. Overridable so a deployment can pin one; defaulted so
+    /// nobody has to type it. <see cref="TypeAnthropic"/> only.
+    /// </summary>
+    public string? AnthropicVersion { get; set; }
+
+    /// <summary>
+    /// The <c>max_tokens</c> an Anthropic request carries when the caller named none (63 D2).
+    /// Anthropic requires the field; Ollama has no equivalent to carry, so it is <b>declared</b>
+    /// here rather than detected — and a caller's <c>options.num_predict</c> always wins.
+    /// </summary>
+    /// <remarks>
+    /// It is a ceiling, not a target: the model stops at <c>end_turn</c> long before it, and when it
+    /// does not, <c>stop_reason: max_tokens</c> becomes Ollama's <c>done_reason: length</c>, which is
+    /// a thing clients already read. Raise it here when long answers arrive truncated — a number an
+    /// operator cannot see is a number they cannot raise.
+    /// </remarks>
+    public int MaxTokens { get; set; } = 4096;
+
     /// <summary>Local model name → this provider's name for it. The map is the consent.</summary>
     public Dictionary<string, string> ModelMap { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
@@ -97,9 +127,25 @@ public sealed class ProviderDefinition
     /// is a deployment somebody has, and a default that cannot be replaced is a wall.
     /// </summary>
     public string? ResolvedBaseUrl()
-        => !string.IsNullOrWhiteSpace(BaseUrl)
-            ? BaseUrl!.Trim()
-            : NormalizedType() == TypeOpenRouter ? OpenRouterBaseUrl : null;
+    {
+        if (!string.IsNullOrWhiteSpace(BaseUrl))
+        {
+            return BaseUrl!.Trim();
+        }
+
+        return NormalizedType() switch
+        {
+            TypeOpenRouter => OpenRouterBaseUrl,
+            TypeAnthropic => AnthropicBaseUrl,
+            _ => null
+        };
+    }
+
+    /// <summary>The pinned <c>anthropic-version</c>, or the one this release was written against.</summary>
+    public string ResolvedAnthropicVersion()
+        => string.IsNullOrWhiteSpace(AnthropicVersion)
+            ? InferHub.Shared.Anthropic.AnthropicUpstreamClient.DefaultVersion
+            : AnthropicVersion!.Trim();
 }
 
 /// <summary>

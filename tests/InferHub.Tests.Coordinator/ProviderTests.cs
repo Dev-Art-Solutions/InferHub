@@ -29,6 +29,11 @@ public class ProviderTests
     }
     """;
 
+    private const string AnthropicAnswer = """
+    {"id":"msg_01","type":"message","role":"assistant","content":[{"type":"text","text":"Hello."}],
+     "model":"claude-opus-5","stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}
+    """;
+
     // ---- two providers, two vendors ----------------------------------------------------
 
     [Fact]
@@ -165,8 +170,10 @@ public class ProviderTests
     [Fact]
     public void AnUnknownTypeFailsStartupNamingTheTypesThatExist()
     {
-        var typo = Provider("https://api.anthropic.com", "k", ("claude", "claude-sonnet-4"));
-        typo.Type = "anthropic";
+        // This test's example used to be `anthropic`, which phase 63 made real. The example moves;
+        // the assertion does not, and the list it checks grows with each phase that adds a dialect.
+        var typo = Provider("https://bedrock.example/v1", "k", ("claude", "claude-sonnet-4"));
+        typo.Type = "bedrock";
 
         var result = Validate(Configured(("claude", typo)));
 
@@ -174,6 +181,7 @@ public class ProviderTests
         var failure = Assert.Single(result.Failures);
         Assert.Contains(ProviderDefinition.TypeOpenAiCompatible, failure);
         Assert.Contains(ProviderDefinition.TypeOpenRouter, failure);
+        Assert.Contains(ProviderDefinition.TypeAnthropic, failure);
     }
 
     [Fact]
@@ -438,6 +446,58 @@ public class ProviderTests
         // `gpt-4o-mini` is exactly right there, and a validator that refused it would be this
         // project deciding what OpenAI's models are called.
         Assert.False(Validate(Configured(("openai", Provider("https://api.openai.com/v1", "k", ("fast", "gpt-4o-mini"))))).Failed);
+    }
+
+    // ---- anthropic: a second dialect rather than a second base URL (phase 63) -----------
+
+    [Fact]
+    public async Task AnAnthropicProviderReachesTheMessagesEndpointWithItsOwnCredential()
+    {
+        // A Bearer token is a 401 here that reads like a bad key, and the version header is
+        // required on every call — which is why the type buys a dialect and not a URL (63 D1).
+        var upstream = new RecordingUpstream(AnthropicAnswer);
+        var claude = Provider(baseUrl: null, "sk-ant-key", ("big-code", "claude-opus-5"));
+        claude.Type = ProviderDefinition.TypeAnthropic;
+
+        await Dispatcher(Registry(("claude", claude)), upstream)
+            .DispatchAsync("chat", ChatJob, "big-code", stream: false, CancellationToken.None);
+
+        var sent = upstream.Requests[0];
+
+        Assert.Equal("https://api.anthropic.com/v1/messages", sent.Url);
+        Assert.Null(sent.Authorization);
+        Assert.Equal("sk-ant-key", sent.Headers["x-api-key"]);
+        Assert.Equal("2023-06-01", sent.Headers["anthropic-version"]);
+    }
+
+    [Theory]
+    [InlineData("claude-opus-5")]
+    [InlineData("anthropic.claude-opus-4-8")]
+    [InlineData("claude-opus-4-5@20251101")]
+    public void AnAnthropicModelIdIsNotHeldToAShape(string upstreamModel)
+    {
+        // 63 D8, and it is not an inconsistency with 62 D5: the same model is spelled three ways
+        // across the first-party API, Bedrock and Vertex, and a BaseUrl override is exactly how
+        // somebody reaches the latter two. A `claude-` prefix check is 48 D1's "usually right".
+        var provider = Provider(baseUrl: null, "k", ("fast", upstreamModel));
+        provider.Type = ProviderDefinition.TypeAnthropic;
+
+        Assert.False(Validate(Configured(("claude", provider))).Failed);
+    }
+
+    [Fact]
+    public void AnAnthropicProviderWithNoMaxTokensCeilingFailsStartup()
+    {
+        // Anthropic requires max_tokens on every request and Ollama never sends one, so a zero
+        // here is a provider that fails on its first prompt rather than at boot (63 D2).
+        var provider = Provider(baseUrl: null, "k", ("fast", "claude-opus-5"));
+        provider.Type = ProviderDefinition.TypeAnthropic;
+        provider.MaxTokens = 0;
+
+        var result = Validate(Configured(("claude", provider)));
+
+        Assert.True(result.Failed);
+        Assert.Contains("MaxTokens", Assert.Single(result.Failures));
     }
 
     // ---- harness -----------------------------------------------------------------------

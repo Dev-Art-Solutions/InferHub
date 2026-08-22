@@ -789,3 +789,69 @@ inferred from the error **text**, which is 29 D6 unmoved.* The check is behind a
 is the guard on the guard — a delta whose *content* mentions the word must not become a 502.
 
 **Rule 5 survived again.** **Zero** new `PackageReference`; the converter is `System.Text.Json`.
+
+### Phase 63 (Anthropic's own dialect) — the second `IUpstreamDialect`, and what reading the docs changed
+
+`src/InferHub.Shared/Anthropic/` — the DTOs, the translator and `AnthropicUpstreamClient`. The
+provider *configuration* half (the type, `MaxTokens`, the absent id-shape check) is the
+coordinator's (63 D2/D8). **Zero new `PackageReference`**: `HttpClient`, `System.Text.Json`, and an
+SSE parser written by hand, exactly as 22's was and 33 D2's connector before it.
+
+**D1 — `/v1/messages` is a second dialect, not a second client, and nothing outside this folder
+learns Anthropic exists.** `ProviderDispatcher.Dialect` gained one arm; the router, the endpoints,
+the affinity keys and the retrieval pipeline gained nothing, which is 61 D3 paying for itself the
+first time. The one thing the seam lacked was a way to catch a dialect failure without naming
+OpenAI, so `UpstreamDialectException` is now the base of both — **a base rather than a rename**,
+because 57 D10 refused exactly that rename and the two suites asserting `OpenAiUpstreamException`
+keep passing untouched. **Considered and rejected: pointing `OpenAiUpstreamClient` at Anthropic's
+compatibility endpoint**, which is what an operator can already do and is the thing the track exists
+to improve on: that layer flattens four token counts into two, so `/api/admin/usage` disagrees with
+the invoice and the first question a user asks is why.
+
+**D3 — Every `system` message is lifted to the top-level `system` field, in order.** Anthropic's
+`messages` has exactly two roles. **Considered and rejected: the mid-conversation
+`{"role":"system"}` form** — it is real, and it is a **400 on Sonnet 5** while working on Opus 5 and
+Opus 4.8, so adopting it would make the translation depend on which model the operator happened to
+map. A hub that guesses right for two of the mapped models is worse than one that treats all of them
+alike.
+
+**D4 — The options Anthropic does not have are dropped, not approximated.** `temperature`, `top_p`,
+`top_k`, `stop` → `stop_sequences` and `num_predict` → `max_tokens` translate; **`seed`,
+`presence_penalty` and `frequency_penalty` are dropped**, because Anthropic 400s an unknown
+top-level parameter. **Considered and rejected: refusing a request that carries one** — it breaks a
+working client over a knob the vendor never had. **Also rejected: approximating `seed`**, which
+offers a reproducibility promise the upstream does not make, in the field a caller reads as though
+it did. The drop is documented in the README and on the site, which is the only channel there is.
+
+**D5 — Token counts are *taken* from the last `message_delta`, never summed, and the cache pair is
+not folded in. Read on the day, and it contradicts the OpenAI path's instinct.** OpenAI sends one
+usage-only chunk at the end. Anthropic sends `input_tokens` in `message_start` — **with
+`output_tokens: 1` already on it** — and then a **cumulative** `output_tokens` in every
+`message_delta`, which the vendor's docs say in a warning box. Summing over-reports every stream,
+and an invented number sitting in the column beside measured ones is how a usage report stops being
+evidence (25 D3). `cache_creation_input_tokens` / `cache_read_input_tokens` are reported and priced
+separately and are **not** added into `prompt_eval_count` — a total this hub composed would match no
+line on the invoice. A stream with no usage at all yields no counts, not zeros (v3.13.1).
+
+**D6 — There is no `[DONE]`; `message_stop` ends the stream, an unknown event is skipped, and an
+`error` event throws.** Three ways Anthropic's SSE is not OpenAI's, which is why `ReadFramesAsync`
+is **not** reused: its sentinel never arrives and its error envelope is the wrong one. What *is*
+reused is 62 D4's contract — the hub writes a terminal error chunk, the node carries a failed job —
+and `overloaded_error` is the frame that would otherwise arrive as a 200 that looks finished.
+Skipping an unknown event is the vendor's own versioning policy honoured rather than discovered.
+**Considered and rejected: one frame reader with a mode flag** — two frame contracts wearing one
+function, with the flag read on the per-token path.
+
+**D7 — There are no embeddings, and the refusal names the reason once.** `EmbedAsync` throws a 501.
+Nothing on the hub reaches it (an embedding request goes to `EmbeddingDispatcher` and the fleet), so
+the sentence is written for **67**, where a chat-only provider becomes a declared capability and 40
+D1's router answers with a 503 that names it. **Considered and rejected: a 503 with `Retry-After`**
+— "try later" for an endpoint that will never exist. **Also rejected: an empty vector**, a wrong
+answer shaped like a right one, in the one place nobody notices for weeks.
+
+*Phase 29's base64 magic-byte sniff moved to `Upstream/Base64MediaType.cs`* — Anthropic's
+`{"type":"image","source":{"media_type":…}}` wants the same answer a data URL did, and the
+alternative was four signatures in two dialects, diverging the first time a fifth format arrives.
+**Not translated, deliberately:** tool calls, thinking blocks, `cache_control`, PDFs and citations
+(track-level deferrals). **No live provider was called by any test** — every payload in
+`AnthropicDialectTests` is a recorded one (track D6); the first real key is phase 68's.

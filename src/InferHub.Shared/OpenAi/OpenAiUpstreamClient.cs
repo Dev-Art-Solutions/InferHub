@@ -386,8 +386,9 @@ public sealed class OpenAiUpstreamClient(HttpClient http) : InferHub.Shared.Upst
     private static string Serialize<T>(T value) => JsonSerializer.Serialize(value, JsonOptions);
 }
 
-/// <summary>An upstream server answered, and it answered badly. Carries the status it used.</summary>
-public sealed class OpenAiUpstreamException(int statusCode, string message) : Exception(message)
-{
-    public int StatusCode { get; } = statusCode;
-}
+/// <summary>
+/// An OpenAI-shaped upstream answered, and it answered badly. The base is phase 63's, added when
+/// Anthropic became the second dialect; the name and the two suites that catch it are unchanged.
+/// </summary>
+public sealed class OpenAiUpstreamException(int statusCode, string message)
+    : InferHub.Shared.Upstream.UpstreamDialectException(statusCode, message);

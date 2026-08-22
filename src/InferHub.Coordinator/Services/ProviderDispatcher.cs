@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using InferHub.Coordinator.Observability;
+using InferHub.Shared.Anthropic;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.OpenAi;
 using InferHub.Shared.Upstream;
@@ -36,9 +37,10 @@ public sealed record ProviderResult(ChannelReader<InferenceChunk>? Stream, strin
 /// hop, not a cache: the request body goes out in flight and the response streams straight through,
 /// and the coordinator retains neither (rule 7, 22 D4).
 ///
-/// The wire work is an <see cref="IUpstreamDialect"/> — <see cref="OpenAiUpstreamClient"/> for every
-/// provider this release knows — so the translation exists once and phases 63/64 add a dialect
-/// without touching this file.
+/// The wire work is an <see cref="IUpstreamDialect"/> — <see cref="OpenAiUpstreamClient"/> for the
+/// OpenAI-shaped upstreams and <see cref="AnthropicUpstreamClient"/> since phase 63 — so the
+/// translation exists once per dialect and this file gains one arm per vendor, not a branch per
+/// request.
 /// </summary>
 public sealed class ProviderDispatcher(
     IHttpClientFactory httpClientFactory,
@@ -183,13 +185,35 @@ public sealed class ProviderDispatcher(
             // implementation detail. What its type buys is configuration, one method down.
             ProviderDefinition.TypeOpenAiCompatible or ProviderDefinition.TypeOpenRouter
                 => new OpenAiUpstreamClient(http),
+
+            // Phase 63, and the opposite claim: Anthropic's /v1/messages is a real second dialect,
+            // which is what 61 D3 extracted the interface for.
+            ProviderDefinition.TypeAnthropic
+                => new AnthropicUpstreamClient(http, route.Definition.MaxTokens),
+
             var type => throw new InvalidOperationException($"provider type '{type}' has no dialect")
         };
 
+    /// <summary>
+    /// Each dialect configures its own client, because the credential is part of the dialect: a
+    /// Bearer token sent to Anthropic is a 401 that reads like a bad key (63 D1).
+    /// </summary>
     private HttpClient CreateHttpClient(ProviderRoute route)
     {
+        var pooled = httpClientFactory.CreateClient(HttpClientName);
+
+        if (route.Definition.NormalizedType() == ProviderDefinition.TypeAnthropic)
+        {
+            return AnthropicUpstreamClient.Configure(
+                pooled,
+                route.Definition.ResolvedBaseUrl()!,
+                route.Definition.ApiKey,
+                route.Definition.TimeoutSeconds,
+                route.Definition.ResolvedAnthropicVersion());
+        }
+
         var http = OpenAiUpstreamClient.Configure(
-            httpClientFactory.CreateClient(HttpClientName),
+            pooled,
             route.Definition.ResolvedBaseUrl()!,
             route.Definition.ApiKey,
             route.Definition.TimeoutSeconds);

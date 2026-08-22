@@ -902,3 +902,31 @@ gateway, so every containerised deployment got `401` on the poll every panel han
 `BearerApiKeyMiddleware` now also accepts an admin key **on that one read-only path**, which grants
 nothing new (an admin key already reads `/api/admin/nodes`, which carries more), and
 `AnAdminKeyStillCannotRunInference` is what keeps the widening from spreading.
+
+### Phase 63 (Anthropic) — the config half; the dialect itself is 63 D1/D3–D7 in `src/InferHub.Shared/CLAUDE.md`
+
+**D2 — `MaxTokens` is declared per provider, because the vendor requires a field Ollama has none
+for.** Anthropic 400s a request without `max_tokens`; an Ollama client sends `num_predict` only when
+somebody set it. So the ceiling is config (default **4096**), a caller's `num_predict` always wins,
+and `stop_reason: max_tokens` comes back as Ollama's `done_reason: length` — visible, not silent.
+**Rejected: a constant in the code** — the per-model ceiling differs, and a number an operator
+cannot see is a number they cannot raise when a long answer arrives truncated. **Rejected: refusing
+a request that names none**, which is every Ollama client. This is 48 D1 the other way round: the
+value is *declared* rather than detected, because absent is not an option the API allows.
+
+**D8 — There is deliberately no id-shape check for `anthropic`, and that is not an inconsistency
+with 62 D5.** OpenRouter's check is one namespace with 419-of-419 evidence. The same Anthropic model
+is `claude-opus-5` first-party, `anthropic.claude-opus-5` on Bedrock and `claude-…@2025…` on
+Vertex — and a `BaseUrl` override is exactly how somebody reaches the latter two, which this project
+encourages. A `claude-` prefix check would refuse a valid configuration, which is 48 D1's "usually
+right" wearing 62's clothes. What still runs is 61's: the type is known, the URL is absolute, the
+timeout is positive, `MaxTokens` is positive, and no model is claimed twice.
+
+*The credential is part of the dialect*, so `CreateHttpClient` asks the dialect to configure itself
+rather than setting a Bearer token for everyone: `x-api-key` plus a required `anthropic-version`,
+and **never an `Authorization` header** — a Bearer token here is a 401 that reads like a bad key.
+`AnUnknownTypeFailsStartupNamingTheTypesThatExist` used `anthropic` as its example of an unknown
+type until this phase made it real; the example moved to `bedrock` and the assertion now checks all
+three names.
+
+**Rule 5 survived again.** Phase 63 added **zero** new dependencies.

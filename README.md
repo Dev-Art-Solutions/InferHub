@@ -188,6 +188,18 @@ could not test: `fps` is now required and its old fallback of 16 is gone, becaus
 CogVideoX's 49 frames at twice their rate is not an error — it is a clip that plays at double speed.
 The 14B entry is also the first recipe this project ships that **does not fit a 24 GB card**, which
 is the VRAM gate working: such a node never declares it, so nobody meets the ceiling mid-render.
+**v3.31 speaks Anthropic's own `/v1/messages`, not their OpenAI-compatibility endpoint.**
+[`Type: "anthropic"`](#anthropic-v331) is the first *real* second dialect behind the seam — hand-rolled
+over `HttpClient`, still zero new packages — and the reason to write one is the number you get back:
+Anthropic reports four token counts, the compatibility layer flattens them into two, and the first
+question anyone asks is why `/api/admin/usage` disagrees with the invoice. Four wire facts were read
+from their docs on the day rather than recalled, and two of them contradicted the first draft of the
+plan: `message_delta` usage is **cumulative** (so counts are taken, never summed — `message_start`
+already carries `output_tokens: 1`), and there is **no `[DONE]` sentinel** — the stream ends at
+`message_stop`. `max_tokens` is required by the vendor and has no Ollama equivalent, so it is declared
+per provider; an unknown SSE event is skipped rather than fatal; and an `error` event mid-stream is
+raised rather than ending the response as a 200 that looks finished.
+
 **v3.30 adds OpenRouter, and it cost no new dialect — which is the point.**
 [`Type: "openrouter"`](#openrouter-v330) speaks the same OpenAI wire format the seam already spoke,
 so what the type actually buys is the part that was never the dialect: a base URL you need not type,
@@ -2134,8 +2146,8 @@ still holds, and two rules are new:
   naming the model and both providers. Picking the first is what most gateways do; it would make the
   most consequential choice here — whose servers see a prompt — depend on the order your JSON keys
   happened to bind in.
-- **`Type` must be one this release knows** — `openai-compatible` (OpenAI, vLLM, LM Studio, TGI) or
-  `openrouter`. A typo fails startup rather than silently disabling a provider.
+- **`Type` must be one this release knows** — `openai-compatible` (OpenAI, vLLM, LM Studio, TGI),
+  `openrouter` or `anthropic`. A typo fails startup rather than silently disabling a provider.
 
 #### OpenRouter (v3.30+)
 
@@ -2166,6 +2178,44 @@ Token counts come back from OpenRouter's own `usage` block and land in the ledge
 Its `cost` field is deliberately **not** read: a number InferHub did not measure does not belong in
 the same column as ones it did. `openrouter/auto` works, and the hub cannot tell you which model
 actually answered — it reports the name you asked for.
+
+#### Anthropic (v3.31+)
+
+`Type: "anthropic"` is the first **second dialect** rather than a second base URL. Anthropic publishes
+an OpenAI-compatible endpoint and you could always point `openai-compatible` at it; what you got was
+that layer's idea of your usage and your errors. This speaks `POST /v1/messages` directly — `x-api-key`
+rather than a Bearer token, `anthropic-version` on every call, typed SSE events — so the token counts,
+the stop reasons and the error bodies are the vendor's own.
+
+```jsonc
+"claude": {
+  "Type": "anthropic",          // BaseUrl and anthropic-version defaulted; both overridable
+  "MaxTokens": 4096,            // the ceiling used when a caller sends no options.num_predict
+  "ModelMap": { "big": "claude-opus-5", "cheap": "claude-haiku-4-5" }
+}
+```
+
+`Providers__claude__ApiKey` in the environment. Four things are worth knowing before you map a model:
+
+- **`max_tokens` is required by that API and Ollama has no equivalent**, so `MaxTokens` supplies it
+  (default 4096) and a caller's `options.num_predict` always wins. It is a ceiling, not a target — the
+  model stops at `end_turn` long before it, and when it does not you get `done_reason: "length"`.
+  Raise it if long answers arrive truncated.
+- **The token counts are taken, not summed.** Anthropic reports usage cumulatively across the stream
+  and reports cache reads and cache writes as two more numbers beside the input count. InferHub records
+  `input_tokens` and `output_tokens` as they stood at the end, and deliberately does **not** fold the
+  cache pair into the prompt count — a total this hub composed would match no line on your invoice.
+- **`seed`, `presence_penalty` and `frequency_penalty` are dropped.** Anthropic has no counterpart and
+  rejects unknown parameters, so forwarding them would 400 every request that carried one.
+  `temperature`, `top_p`, `top_k`, `stop` and `num_predict` all translate.
+- **There are no embeddings there.** An Anthropic provider serves chat; map an embedding model to a
+  node or to another provider.
+
+A `system` message anywhere in your `messages` array is lifted into Anthropic's top-level `system`
+field, in order, because that API has exactly two message roles. Model ids are **not** shape-checked:
+the same model is `claude-opus-5` on the first-party API, `anthropic.claude-opus-5` on Bedrock and
+`claude-…@2025…` on Vertex, and `BaseUrl` is how you reach the latter two. Tool calls, thinking blocks
+and prompt caching are not translated yet.
 
 Responses served by a named provider carry `X-InferHub-Served-By: provider:<id>`; a deployment
 configured through `Fallback:` still gets `fallback`, unchanged. `/api/status` grows a `providers`
@@ -2410,8 +2460,8 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Fallback:AllowedModels` | `[]` | Narrower allowlist within the map. Empty = every mapped model. |
 | `Fallback:TimeoutSeconds` | `300` | Per-request timeout against the upstream. |
 | `Providers:<id>:Enabled` | `true` | Named cloud providers (v3.29). Set `false` to park one without deleting its map. |
-| `Providers:<id>:Type` | `openai-compatible` | Or `openrouter` (v3.30). An unknown one fails startup, naming both. |
-| `Providers:<id>:BaseUrl` | _(empty)_ | Required and absolute when the provider is enabled — except under `openrouter`, which supplies its own and still accepts an override. |
+| `Providers:<id>:Type` | `openai-compatible` | Or `openrouter` (v3.30) or `anthropic` (v3.31). An unknown one fails startup, naming the ones that exist. |
+| `Providers:<id>:BaseUrl` | _(empty)_ | Required and absolute when the provider is enabled — except under `openrouter` and `anthropic`, which supply their own and still accept an override. |
 | `Providers:<id>:Referer` | _(empty)_ | `openrouter` only (v3.30). Sent as `HTTP-Referer`. It lists you on OpenRouter's public rankings, so it is never defaulted. |
 | `Providers:<id>:Title` | _(empty)_ | `openrouter` only (v3.30). Sent as `X-OpenRouter-Title`. Same reasoning as `Referer`. |
 | `Providers:<id>:ApiKey` | _(empty)_ | Env (`Providers__<id>__ApiKey`) / user-secrets only. |
@@ -2419,6 +2469,8 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Providers:<id>:ModelMap` | `{}` | Local → upstream model name. **One model may be mapped by exactly one enabled provider; a second mapping fails startup.** |
 | `Providers:<id>:AllowedModels` | `[]` | Narrower allowlist within that provider's map. |
 | `Providers:<id>:TimeoutSeconds` | `300` | Per-request timeout against that provider. |
+| `Providers:<id>:MaxTokens` | `4096` | `anthropic` only (v3.31). That API requires `max_tokens` on every request; a caller's `options.num_predict` overrides this. |
+| `Providers:<id>:AnthropicVersion` | `2023-06-01` | `anthropic` only (v3.31). The `anthropic-version` header. Pin it if you need to. |
 | `Metrics:OpenScrape` | `false` | Whether `GET /metrics` is reachable without an admin key. See [Prometheus `/metrics`](#prometheus-metrics-v210). |
 | `Cluster:Enabled` | `false` | Warm-standby HA (v3.0). Off = byte-identical to v2.13. Requires `VectorStore:Provider=postgres`. See [High availability](#high-availability-v30). |
 | `Cluster:InstanceId` | _(machine name)_ | Names this hub in the lease row, the logs, `/api/status` and `/metrics`. |
