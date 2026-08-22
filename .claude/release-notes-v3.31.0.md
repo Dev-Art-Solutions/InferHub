@@ -121,3 +121,63 @@ because the exception base touches it. `ContextContractTests` green, including t
 brief's `Status:` matching `plan/00-overview.md`.
 
 **Zero new `PackageReference`; `InferHub.Shared.csproj` is still an empty `<Project Sdk="…">`.**
+
+## The published image, checked (the same evening)
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.31.0`, pulled ~15 minutes after the tag —
+`org.opencontainers.image.version` reads **3.31.0** and `.revision` **a1abc0e**, which is this
+release's commit. Run with `Providers__claude__Type=anthropic` pointed at a recording stub on the
+host, and driven with `curl`. What the artifact actually did:
+
+**On the wire, from the container:**
+
+```
+POST /messages HTTP/1.1
+anthropic-version: 2023-06-01
+x-api-key: sk-ant-stub-key
+...
+{"model":"claude-opus-5","max_tokens":4096,"messages":[{"role":"user","content":"hi"}],
+ "system":"Be terse.","stream":false}
+```
+
+`x-api-key` and the version header are there, **no `Authorization` header is**, `max_tokens` was
+supplied from `MaxTokens`, and the `system` turn was lifted out of `messages` — D2 and D3, observed
+rather than asserted.
+
+**Blocking**, against a stub reporting `input_tokens: 25`, `output_tokens: 7` and
+`cache_read_input_tokens: 140`:
+
+```
+X-InferHub-Served-By: provider:claude
+{"model":"big",…,"message":{"role":"assistant","content":"Hello from the stub."},
+ "done":true,"prompt_eval_count":25,"eval_count":7,"done_reason":"stop"}
+```
+
+The 140 cache-read tokens are **not** in `prompt_eval_count`. That is D5's second half, on the
+artifact.
+
+**Streaming**, against a recorded stream carrying `output_tokens` of 1, then 8, then 15, plus a
+`ping` and an event type this release has never seen:
+
+```
+{"message":{"content":"Hel"},"done":false}
+{"message":{"content":"lo"},"done":false}
+{"message":{"content":""},"done":true,"prompt_eval_count":25,"eval_count":15,"done_reason":"stop"}
+```
+
+**`eval_count` is 15, not 24.** The counts were taken, not summed — D5's first half, proven on the
+thing that shipped rather than in a unit test. The `ping` and the unknown event produced nothing.
+
+**A mid-stream `error` event:**
+
+```
+{"message":{"content":"Hel"},"done":false}
+{"error":"the Anthropic upstream failed mid-stream: Overloaded","done":true}
+```
+
+A terminal error chunk, never a 200 that looks finished.
+
+**Not checked, said out loud:** no live Anthropic endpoint was called here either — the stub is a
+recording of their documented shapes, not their server. `/v1/models`, the `/api/generate` path and
+the image-block translation were exercised by unit tests only. The node image is unchanged by this
+phase and was not pulled.
