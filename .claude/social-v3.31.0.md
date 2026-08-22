@@ -70,3 +70,15 @@ A test that needs somebody's API key is a test CI can't run, so it's a test ever
 The real keys come out once, on their own day.
 
 MIT, self-hosted, zero new packages.
+
+---
+
+## X — single post (267 chars with the link counted as t.co's 23)
+
+InferHub 3.31 speaks Anthropic's own /v1/messages, not their OpenAI-compat endpoint.
+
+Their streamed token counts are cumulative — sum them and you report 24 tokens for a 15-token answer.
+
+Taken, never summed. MIT, self-hosted, zero new deps.
+
+https://blog.devart.solutions/blog/inferhub-3-31-the-counts-were-cumulative
