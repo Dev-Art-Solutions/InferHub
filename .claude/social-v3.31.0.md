@@ -3,7 +3,7 @@
 **Status: unposted.** No connector — posted by hand. No image: the visual would be a screenshot of
 a JSON body.
 
-Blog post: <https://blog.devart.solutions/blog/inferhub-3-31-the-counts-were-cumulative>
+Blog post: <https://blog.devart.solutions/blog/inferhub-3-31-the-counts-were-cumulative> (ID 6a88eb260c6b951079f18622, EN-visible / BG-hidden, one create_post, no connector outage)
 Release: <https://github.com/Dev-Art-Solutions/InferHub/releases/tag/v3.31.0>
 
 ---
