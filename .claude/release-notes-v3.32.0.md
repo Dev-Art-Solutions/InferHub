@@ -204,6 +204,18 @@ applies to both — the difference is only that Anthropic has no such API and Ge
 Two new tests in `GeminiDialectTests`, and **both were confirmed to fail without the fix** before it
 went in. `tests/InferHub.Tests.Shared` **170 passed**.
 
+## Known and deliberately not fixed tonight
+
+`ReadTextAsync` attempts an error-envelope deserialization on **every** `data:` frame, including
+ordinary token deltas. It is correct — a candidate frame has no `error` property, so it yields null
+— but it is a parse per token, and **62 D4 put a substring guard in front of exactly this check on
+the OpenAI path for exactly this reason.** The Gemini path should have the same guard, plus 62's
+"guard on the guard" test (a delta whose *content* mentions the word must not become a 502).
+
+Not done here: v3.32.1 is tagged, this is a cost rather than a defect, and a third tag in an evening
+for a micro-optimisation is the kind of churn this project's one-release-per-phase discipline exists
+to avoid. Recorded so it is a decision rather than an oversight; it goes in with 65 or 66.
+
 ## What was not established, said out loud
 
 - **No live Gemini endpoint was called.** Every assertion in this release is against a **recorded
