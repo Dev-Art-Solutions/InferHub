@@ -4,7 +4,10 @@
 two token counts.
 
 Blog post: *(filled in after publishing)*
-Release: <https://github.com/Dev-Art-Solutions/InferHub/releases/tag/v3.32.0>
+Release: <https://github.com/Dev-Art-Solutions/InferHub/releases/tag/v3.32.1> — **point people at
+3.32.1, not 3.32.0.** Running the published 3.32.0 image found a real defect (a streamed response
+that is not SSE finished as an empty answer) and a docs overstatement (Gemini embeddings are
+implemented but the hub does not route to them until 67). Both fixed/corrected the same evening.
 
 ---
 
@@ -41,21 +44,30 @@ number, and there is a `ThinkingBudget` knob to close the gap rather than a sum 
 
 Three more, each found by reading rather than guessing: streaming usage is cumulative (second vendor
 running — so "take a snapshot, never sum" is now the house rule); `?alt=sse` is not optional,
-because without it the endpoint answers with a JSON array and an SSE reader just waits until the
-timeout; and a prompt the safety filters refuse arrives as a **200 with no candidates**, which is
-the third success status in this track that is not one.
+because without it the endpoint answers with a JSON array rather than events at all; and a prompt
+the safety filters refuse arrives as a **200 with no candidates**, which is the third success status
+in this track that is not one.
 
-Gemini also has embeddings, so this is the first provider dialect whose embed path is real rather
-than a refusal.
+Gemini also has embeddings and the dialect speaks them — though the hub does not route anything to a
+provider's embed endpoint yet; that comes with the node-side providers.
+
+Then we pulled the published container and drove it, which is how every release here ends. Three
+checks passed on the artefact: 165 not 305, 7 not 19, 15 not 26. The fourth failed — a refused
+prompt delivered as a plain body on the *streaming* endpoint came back as an empty answer marked
+finished, because our reader skips anything that is not a `data:` line and that body had none. It is
+the same "success that isn't one" the release spends a section refusing, arriving through a door we
+had not checked. Fixed in **3.32.1** the same evening, along with a sentence of ours it proved wrong:
+we had written that a non-SSE body would make the reader hang until the timeout. It did not hang. It
+answered immediately and wrongly, which is worse.
 
 No live provider was called by any test — every payload in the suite is a recorded one. The real
 keys come out on the track's verification day, which is a phase of its own for exactly that reason.
 
-Self-hosted, MIT, zero new dependencies for the twelfth release running.
+Self-hosted, MIT, zero new dependencies for the twelfth release running. Take 3.32.1.
 
 ---
 
-## X / Twitter (4 posts)
+## X / Twitter (5 posts)
 
 **1/**
 InferHub 3.32 adds Gemini's own `:generateContent` dialect.
@@ -85,14 +97,20 @@ total for the other.
 Neither is adjusted.
 
 **4/**
-Three more read rather than guessed:
+Then we ran the published image, as always.
 
-• thinking tokens are billed as output but aren't in the answer, so `eval_count` excludes them and a
-knob closes the gap
-• streaming usage is cumulative (2nd vendor running)
-• a blocked prompt is a **200 with no candidates**
+Three checks passed. The fourth: a refused prompt on the streaming endpoint came back as an *empty
+answer marked finished* — our reader skips non-`data:` lines and that body had none.
 
-Zero new deps, 12 releases running.
+Same bug the release refuses, through a door we hadn't checked. Fixed in 3.32.1.
+
+**5/**
+It also proved one of our own sentences wrong.
+
+We'd written that a non-SSE body would make the reader hang until timeout. It didn't hang — it
+answered instantly and wrongly. Worse.
+
+Corrected everywhere it was written. Take 3.32.1. Zero new deps, 12 releases running.
 
 ---
 
