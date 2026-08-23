@@ -3,7 +3,8 @@
 **Status: unposted.** No connector — posted by hand. No image: the visual would be a screenshot of
 two token counts.
 
-Blog post: *(filled in after publishing)*
+Blog post: <https://blog.devart.solutions/blog/inferhub-3-32-the-same-addition-wrong-in-opposite-directions>
+(ID 6a8b694cce8248a3ce78b515, EN-visible / BG-hidden, one create_post, no connector outage)
 Release: <https://github.com/Dev-Art-Solutions/InferHub/releases/tag/v3.32.1> — **point people at
 3.32.1, not 3.32.0.** Running the published 3.32.0 image found a real defect (a streamed response
 that is not SSE finished as an empty answer) and a docs overstatement (Gemini embeddings are
