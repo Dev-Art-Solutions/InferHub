@@ -202,7 +202,34 @@ unit-tested; the hub does not route to it. 63 D7 already said this about Anthrop
 applies to both — the difference is only that Anthropic has no such API and Gemini does.
 
 Two new tests in `GeminiDialectTests`, and **both were confirmed to fail without the fix** before it
-went in. `tests/InferHub.Tests.Shared` **170 passed**.
+went in. `tests/InferHub.Tests.Shared` **170 passed**, `tests/InferHub.Tests.Coordinator` **690
+passed / 43 skipped**.
+
+### The patched image, checked in turn
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.32.1` (label `3.32.1`, revision `d005a18`), same
+stub, three cases:
+
+```
+block as a PLAIN body on the streaming endpoint  (this is the defect)
+  {"error":"the Gemini upstream refused the prompt before the model saw it
+            (blockReason: PROHIBITED_CONTENT); no answer was generated","done":true}
+
+block as an SSE FRAME                            (must not have regressed)
+  {"error":"the Gemini upstream refused the prompt before the model saw it
+            (blockReason: PROHIBITED_CONTENT); no answer was generated","done":true}
+
+an ordinary stream                               (must not have regressed)
+  {"model":"big",…,"done":true,"prompt_eval_count":165,"eval_count":15,"done_reason":"stop"}
+```
+
+The first is the fix — that exact request returned an empty answer marked `done` on 3.32.0. The
+second and third are the guard on the fix: the framed path and the happy path are unchanged, and
+`eval_count` is still 15 rather than 26.
+
+**Not checked on the image: the JSON-array case** (`alt=sse` stripped in transit). It travels the
+same `NotSse` path and is covered by a unit test, but no stub reproduced it end to end — said out
+loud rather than implied by the other two passing.
 
 ## Known and deliberately not fixed tonight
 
