@@ -116,9 +116,93 @@ throw, each broke exactly one test and nothing else.
 **Zero new `PackageReference`.** `InferHub.Shared.csproj` is still an empty `<Project Sdk="…">`, for
 the third dialect running.
 
-## The published image, checked
+## The published image, checked — and it found a defect
 
-*(Filled in after the tag — see the addendum below.)*
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.32.0`, pulled ~8 minutes after the tag (label
+`3.32.0`, revision `d963451`), run against a local stub answering Gemini's documented shapes. **Two
+of the three checks passed and the third found a real hole**, which is what this step is for.
+
+**What the stub received** — the model is a path segment, `systemInstruction` is lifted, the
+thinking budget travels, and there is no `model` field in the body at all:
+
+```
+POST /v1beta/models/gemini-3-pro:generateContent
+    x-goog-api-key: AIza-stub-key
+    BODY {"contents":[{"role":"user","parts":[{"text":"hi"}]}],
+          "systemInstruction":{"parts":[{"text":"Be terse."}]},
+          "generationConfig":{"thinkingConfig":{"thinkingBudget":0}}}
+```
+
+No `Authorization` header. D2 and D6, observed on the artifact rather than asserted.
+
+**Blocking**, against `promptTokenCount: 165` / `cachedContentTokenCount: 140` /
+`candidatesTokenCount: 7` / `thoughtsTokenCount: 12`:
+
+```
+X-InferHub-Served-By: provider:gemini
+{"model":"big",…,"message":{"content":"Hello from the stub."},"done":true,
+ "prompt_eval_count":165,"eval_count":7,"done_reason":"stop"}
+```
+
+**165, not 305** — the cached tokens were left inside the prompt count. **7, not 19** — the thinking
+tokens were not folded into the answer's. D5 and D6, on the thing that shipped.
+
+**Streaming**, against frames carrying `candidatesTokenCount` of 2, then 9, then 15:
+
+```
+{"message":{"content":"Hello"},"done":false}
+{"message":{"content":" from the stub."},"done":false}
+{"message":{"content":""},"done":true,"prompt_eval_count":165,"eval_count":15,"done_reason":"stop"}
+```
+
+**`eval_count` is 15, not 26.** Taken, not summed — D4 proven on the artifact, and the URL carried
+`:streamGenerateContent?alt=sse`.
+
+**A blocked prompt, blocking:** `502`, carrying
+`the Gemini upstream refused the prompt before the model saw it (blockReason: PROHIBITED_CONTENT)`.
+
+**A blocked prompt, streaming — and this is the defect.** When the stub answered the *streaming*
+endpoint with the block as an ordinary JSON body rather than as an SSE frame, the hub returned:
+
+```
+{"model":"refused",…,"message":{"content":""},"done":true,"done_reason":"stop"}
+```
+
+**An empty answer marked finished.** Every line of a body with no `data:` prefix was skipped, the
+loop ended, and the terminal chunk went out. D7 caught this shape when it arrives *as a frame* — a
+second run with the block wrapped in `data:` produced the correct terminal error chunk — and had
+nothing to say about the identical body unframed. **Fixed in v3.32.1** (see below). This is the
+fourth "200 that looks finished" in this track and the first one that shipped.
+
+**An embedding request** returned `404 no node is advertising embedding model 'embed'`. That is
+correct behaviour and a **documentation error**: `/api/embed` goes to `EmbeddingDispatcher` and the
+fleet, never to `ProviderDispatcher`, so Gemini's real `EmbedAsync` is not reachable from the hub
+until phase 67. The notes above, the README and the site all implied otherwise. Also corrected in
+v3.32.1.
+
+## v3.32.1 — what running the image found
+
+Two things, in one patch, neither of which any unit test was going to catch:
+
+**1. A streaming response that is not SSE at all now throws instead of finishing empty.**
+`GeminiUpstreamClient.NotSse`: if a streamed response contained no `data:` line, the body is kept
+(bounded at 64 KB) and the failure names what actually arrived — a **block delivered before the
+stream started**, with its `blockReason` intact, or a **JSON array**, which is what
+`:streamGenerateContent` returns when `alt=sse` does not reach the vendor. This client always sends
+that query, so reaching the second case means something in between dropped it, and the operator is
+told exactly that.
+
+**This also corrects 64 D3's own sentence.** As shipped it read: without `alt=sse` "a reader written
+for SSE does not fail — it *waits*, until the timeout." It did not wait. It answered immediately and
+wrongly, which is worse than hanging. The sentence is corrected in `src/InferHub.Shared/CLAUDE.md`,
+in the code, in the README and on the site rather than left standing.
+
+**2. The embeddings claim is corrected everywhere.** Gemini's `EmbedAsync` is implemented and
+unit-tested; the hub does not route to it. 63 D7 already said this about Anthropic's 501 and it
+applies to both — the difference is only that Anthropic has no such API and Gemini does.
+
+Two new tests in `GeminiDialectTests`, and **both were confirmed to fail without the fix** before it
+went in. `tests/InferHub.Tests.Shared` **170 passed**.
 
 ## What was not established, said out loud
 

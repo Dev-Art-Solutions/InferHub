@@ -201,8 +201,11 @@ while sitting outside the answer's count**, which is why `ThinkingBudget` exists
 this hub invented. Streaming usage is cumulative, so counts are taken and never summed, for the
 second vendor running; `?alt=sse` is not optional (without it the endpoint answers with a JSON array
 and an SSE reader simply waits); and a prompt the safety filters refuse arrives as a **200 with no
-candidates**, which is the third success status in this track that is not one. Gemini has
-embeddings, so this is the first provider dialect whose `EmbedAsync` is real.
+candidates**, which is the third success status in this track that is not one. **v3.32.1 adds a
+fourth, found by running the published image**: a streaming response that is not SSE at all — a
+block delivered before the stream starts, or the JSON array you get when `alt=sse` does not reach
+the vendor — had every line skipped and produced an empty answer marked `done: true`. It now throws
+and names which of the two it was.
 
 **v3.31 speaks Anthropic's own `/v1/messages`, not their OpenAI-compatibility endpoint.**
 [`Type: "anthropic"`](#anthropic-v331) is the first *real* second dialect behind the seam — hand-rolled
@@ -2268,10 +2271,12 @@ vendor's own.
   and `frequency_penalty` all have counterparts in Gemini's `generationConfig`, alongside
   `temperature`, `top_p`, `top_k` and `stop`. There is **no `MaxTokens`** here — that API does not
   require a ceiling, so none is imposed unless you send `options.num_predict`.
-- **Embeddings work.** Unlike Anthropic, a Gemini provider serves both chat and embeddings
-  (`:batchEmbedContents`). No `taskType` is sent: `RETRIEVAL_DOCUMENT` and `RETRIEVAL_QUERY` produce
-  better vectors than the default, and nothing in an embed request says which one you meant — so the
-  vendor's default applies to ingestion and search alike.
+- **Embeddings are implemented but not yet reachable from the hub.** Unlike Anthropic, Gemini has an
+  embeddings API and the dialect speaks it (`:batchEmbedContents`, no `taskType` sent — the better
+  value depends on whether you are ingesting or searching, and nothing in an embed request says
+  which). **But `/api/embed` still routes to the fleet, never to a provider**, so mapping an
+  embedding model to a Gemini provider today gets you the same 404 as an unknown model. Provider
+  embeddings arrive in v3.35 with the node-side providers.
 
 A prompt the safety filters refuse comes back from Google as a **200 with no candidates**; InferHub
 turns that into an error naming the `blockReason` rather than handing you an empty answer that looks

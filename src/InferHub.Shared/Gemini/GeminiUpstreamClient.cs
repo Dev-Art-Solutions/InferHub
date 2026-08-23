@@ -41,9 +41,13 @@ public sealed class GeminiUpstreamClient(HttpClient http, int? thinkingBudget)
 
     /// <summary>
     /// <b><c>?alt=sse</c> is not optional.</b> Without it <c>:streamGenerateContent</c> answers with
-    /// a chunked JSON array and never emits a <c>data:</c> line, so a reader written for SSE does
-    /// not fail — it waits, until the request times out (64 D3).
+    /// a JSON array and never emits a <c>data:</c> line (64 D3).
     /// </summary>
+    /// <remarks>
+    /// 64 D3 said an SSE reader would <em>wait</em> on that body until the timeout. **That was
+    /// wrong, and v3.32.1 corrects it**: it answered immediately with an empty completed response,
+    /// which is worse than hanging. <see cref="NotSse"/> is the guard.
+    /// </remarks>
     private const string StreamVerb = ":streamGenerateContent?alt=sse";
 
     private const string EmbedVerb = ":batchEmbedContents";
@@ -51,6 +55,12 @@ public sealed class GeminiUpstreamClient(HttpClient http, int? thinkingBudget)
     private const string ModelsPath = "models";
 
     private const string DataPrefix = "data:";
+
+    /// <summary>
+    /// How much of a non-SSE body is kept so the failure can name it (v3.32.1). Bounded because
+    /// the thing being guarded against is a response of unknown shape and unknown size.
+    /// </summary>
+    private const int MaxUnframedBytes = 64 * 1024;
 
     // One page is 1000 at most and the catalogue is short; the loop is bounded so a vendor that
     // never stops handing back a nextPageToken cannot hold a console request open forever.
@@ -152,6 +162,14 @@ public sealed class GeminiUpstreamClient(HttpClient http, int? thinkingBudget)
     /// whether the caller is ingesting or searching, and nothing in Ollama's <c>/api/embed</c> says
     /// which.
     /// </summary>
+    /// <remarks>
+    /// <b>Nothing on the coordinator reaches this yet</b>, and v3.32's docs briefly said otherwise.
+    /// An embedding request goes to <c>EmbeddingDispatcher</c> and the fleet, never to
+    /// <c>ProviderDispatcher</c> — so mapping an embedding model to a Gemini provider today gets
+    /// the fleet's 404, exactly as 63 D7 described for Anthropic's refusal. This implementation is
+    /// written for **67**, where a provider's declared capabilities become the routing mechanism.
+    /// Verified on the published v3.32.0 image, which is how the overstatement was caught.
+    /// </remarks>
     public async Task<string> EmbedAsync(string ollamaJson, CancellationToken cancellationToken)
     {
         var ollama = Deserialize<EmbedRequest>(ollamaJson);
@@ -253,6 +271,12 @@ public sealed class GeminiUpstreamClient(HttpClient http, int? thinkingBudget)
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var reader = new StreamReader(stream);
 
+        // v3.32.1. Everything that is not a `data:` line is kept, bounded, so that a response
+        // which turns out not to be SSE at all can be reported rather than silently skipped —
+        // see NotSse below for what that failure looked like on the published image.
+        var sawFrame = false;
+        var unframed = new System.Text.StringBuilder();
+
         while (await reader.ReadLineAsync(cancellationToken) is { } line)
         {
             // ReadLineAsync only observes the token when it has to hit the socket; a line already
@@ -263,6 +287,11 @@ public sealed class GeminiUpstreamClient(HttpClient http, int? thinkingBudget)
 
             if (!line.StartsWith(DataPrefix, StringComparison.Ordinal))
             {
+                if (unframed.Length < MaxUnframedBytes)
+                {
+                    unframed.Append(line);
+                }
+
                 continue;
             }
 
@@ -272,6 +301,8 @@ public sealed class GeminiUpstreamClient(HttpClient http, int? thinkingBudget)
             {
                 continue;
             }
+
+            sawFrame = true;
 
             // An error arrives on this same channel, as a data frame whose body is the envelope
             // rather than a response. Checked before the response parse, because the two shapes
@@ -312,6 +343,71 @@ public sealed class GeminiUpstreamClient(HttpClient http, int? thinkingBudget)
                 yield return text;
             }
         }
+
+        if (!sawFrame)
+        {
+            throw NotSse(unframed.ToString());
+        }
+    }
+
+    /// <summary>
+    /// The streaming endpoint answered with something that is not server-sent events — not one
+    /// <c>data:</c> line in the whole body. <b>v3.32.1, found by running the published image.</b>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Before this, every line of such a body was skipped, the loop ended, and the caller received
+    /// the ordinary terminal chunk: an <em>empty answer marked <c>done: true</c></em>. That is the
+    /// fourth "200 that looks finished" this track has met and the first one it shipped — 64 D7
+    /// caught the shape when it arrives <em>as a frame</em> and had nothing to say when the same
+    /// body arrives unframed.
+    /// </para>
+    /// <para>
+    /// Two real bodies land here. A <b>blocked prompt</b> answered before the stream begins, which
+    /// still carries its <c>blockReason</c> and must reach the caller as the refusal it is. And the
+    /// <b>JSON array</b> <c>:streamGenerateContent</c> returns when <c>alt=sse</c> does not reach
+    /// the vendor — this client always sends it, so that means something in between dropped the
+    /// query string, and the operator needs to be told exactly that. *64 D3 said an SSE reader
+    /// would wait for the timeout on that body; it does not, it answers immediately and wrongly,
+    /// which is worse and is why the sentence is corrected wherever it was written.*
+    /// </para>
+    /// </remarks>
+    private static GeminiUpstreamException NotSse(string body)
+    {
+        var trimmed = body.Trim();
+
+        // The reason survives the discovery that the framing was wrong: a caller whose prompt was
+        // refused needs to know that, not merely that the transport surprised us.
+        if (trimmed.StartsWith('{'))
+        {
+            if (ErrorFrame(trimmed) is { } failure)
+            {
+                return failure;
+            }
+
+            try
+            {
+                if (JsonSerializer.Deserialize<GeminiGenerateResponse>(trimmed, JsonOptions) is { } single
+                    && GeminiTranslator.BlockReason(single) is { } reason)
+                {
+                    return Blocked(reason);
+                }
+            }
+            catch (JsonException)
+            {
+                // Fall through to the generic refusal, which still says what arrived.
+            }
+        }
+
+        var shape = trimmed.StartsWith('[')
+            ? "a JSON array, which is what that endpoint returns when 'alt=sse' does not reach it — "
+              + "this client always sends it, so something between here and the vendor dropped the query string"
+            : "no server-sent events at all";
+
+        return new GeminiUpstreamException(
+            (int)HttpStatusCode.BadGateway,
+            $"the Gemini upstream answered the streaming endpoint with {shape}; "
+            + "no answer was read, and an empty one is not reported as though it finished");
     }
 
     /// <summary>

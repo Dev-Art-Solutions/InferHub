@@ -342,6 +342,54 @@ public class GeminiDialectTests
         Assert.Contains("SAFETY", failure.Message);
     }
 
+    [Fact]
+    public async Task AStreamingResponseThatIsNotSseAtAllThrowsRatherThanYieldingAnEmptyAnswer()
+    {
+        // v3.32.1, and it was found by running the published image rather than by reasoning.
+        // A body with no `data:` lines used to have every line skipped, the loop end, and the
+        // ordinary done chunk emitted — an empty answer marked done:true, which is the fourth
+        // time this track has met a success that is not one and the first time we shipped it.
+        //
+        // Two real bodies land here: a block delivered as a plain response on the streaming
+        // endpoint, and the JSON array the endpoint returns when `alt=sse` does not reach it
+        // (through a proxy that drops the query, say). 64 D3 claimed the second case would hang
+        // until the timeout. It does not — it answers immediately, wrongly, which is worse.
+        var client = Client(Records(
+            HttpStatusCode.OK,
+            """{"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"},"usageMetadata":{"promptTokenCount":8}}"""));
+
+        var failure = await Assert.ThrowsAsync<GeminiUpstreamException>(async () =>
+        {
+            await foreach (var _ in client.StreamAsync("chat", ChatRequest, CancellationToken.None))
+            {
+            }
+        });
+
+        // The reason survives the discovery that the transport was wrong: a caller needs to know
+        // their prompt was refused, not merely that the framing surprised us.
+        Assert.Contains("PROHIBITED_CONTENT", failure.Message);
+    }
+
+    [Fact]
+    public async Task AStreamThatArrivesAsAJsonArrayIsRefusedAndNamesTheMissingAltSse()
+    {
+        // What `:streamGenerateContent` returns without `alt=sse`. The client always sends it, so
+        // reaching this means something between here and the vendor dropped the query string —
+        // and the operator needs to be told that, not handed an empty answer.
+        var client = Client(Records(
+            HttpStatusCode.OK,
+            """[{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello"}]}}]},{"candidates":[{"content":{"parts":[]},"finishReason":"STOP"}]}]"""));
+
+        var failure = await Assert.ThrowsAsync<GeminiUpstreamException>(async () =>
+        {
+            await foreach (var _ in client.StreamAsync("chat", ChatRequest, CancellationToken.None))
+            {
+            }
+        });
+
+        Assert.Contains("alt=sse", failure.Message);
+    }
+
     // ---- errors ------------------------------------------------------------------------------
 
     [Fact]

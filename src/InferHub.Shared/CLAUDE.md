@@ -892,9 +892,20 @@ id is structural, and getting it wrong is a 404 naming `models/models/gemini-3-p
 typed). **Considered and rejected: a `gemini-` prefix check** — 48 D1, as 63 D8 argued it.
 
 **D3 — `?alt=sse` is part of the streaming path, because without it the endpoint is not SSE.**
-`:streamGenerateContent` with no `alt=sse` answers with a chunked **JSON array** and never emits a
-`data:` line, so a reader written for SSE does not fail — it *waits*, until the timeout. The query
-is a constant beside the verb. There is no `[DONE]` either: the stream ends when the body does.
+`:streamGenerateContent` with no `alt=sse` answers with a **JSON array** and never emits a `data:`
+line. The query is a constant beside the verb. There is no `[DONE]` either: the stream ends when the
+body does.
+
+> **v3.32.1 corrects this decision's own sentence.** D3 as shipped said an SSE reader "does not
+> fail — it *waits*, until the timeout". **It did not wait.** Every line was skipped, the loop
+> ended, and the terminal chunk went out: **an empty answer marked `done: true`** — the fourth "200
+> that looks finished" this track has met and the first one it shipped. Found by running the
+> published image, not by reasoning. `GeminiUpstreamClient.NotSse` now throws when a streaming
+> response contained no `data:` line at all, and it keeps the body (bounded at 64 KB) so the two
+> real cases arrive with their reasons: a **block delivered before the stream starts** still reports
+> its `blockReason`, and a **JSON array** says that something between here and the vendor dropped
+> the query string. D7 caught this shape as a *frame* and had nothing to say about the same body
+> unframed.
 Three upstreams, three end-of-stream conventions, and still no shared frame reader — 63 D6's reason
 unchanged. **Considered and rejected: exposing `alt` as configuration**, which has one legal value
 and one that hangs.
@@ -946,6 +957,13 @@ to `RETRIEVAL_DOCUMENT`**, which silently degrades every query embedding. **Also
 knob** — one value per provider is wrong for half the traffic of any deployment that both ingests
 and searches. 63 D7's refusal and this are the same seam answered by two vendors, which is 40 D1's
 point a fifth time.
+
+> **Nothing on the coordinator reaches it yet, and v3.32.0's docs briefly implied otherwise.** An
+> embedding request goes to `EmbeddingDispatcher` and the fleet, never to `ProviderDispatcher`, so
+> mapping an embedding model to a Gemini provider today earns the fleet's 404 — *exactly* what 63 D7
+> said about Anthropic's 501, which should have been read as applying to both. The implementation is
+> written for **67**. Corrected in v3.32.1, in the README, on the site and here; caught by running
+> the published image.
 
 **D9 — `error.code` is a number here, and `status` plus a `RetryInfo` delay are carried through.**
 The envelope is `{"error":{"code":429,"message":…,"status":"RESOURCE_EXHAUSTED","details":[…]}}`.
