@@ -930,3 +930,41 @@ type until this phase made it real; the example moved to `bedrock` and the asser
 three names.
 
 **Rule 5 survived again.** Phase 63 added **zero** new dependencies.
+
+### Phase 64 (Gemini) — the config half; the dialect itself is 64 D1–D5, D7–D9 in `src/InferHub.Shared/CLAUDE.md`
+
+**D6 — `ThinkingBudget` is declared per provider, optional, and is the lever that makes the bill
+legible rather than an arithmetic that hides it.** Gemini models think by default; the thinking
+tokens are **billed as output** and reported separately from the answer's, so `eval_count` (which
+carries `candidatesTokenCount` alone, because a client reading that field means "tokens in the
+answer I received") is smaller than the output on the invoice. The knob is the honest fix: absent
+leaves the vendor's dynamic default, `0` disables thinking on the models that allow it, and the
+validator refuses a negative one at boot rather than on the first prompt. **Rejected: defaulting it
+to `0`** — turning off a model's reasoning is a quality decision, and making it silently for an
+operator who never asked is a worse surprise than the bill. **Rejected: folding the thinking count
+into `eval_count`** to make the two agree, which is 64 D6 in the shared file.
+
+*No `MaxTokens` for `gemini`, deliberately.* 63 D2 exists because Anthropic **requires**
+`max_tokens` and Ollama has no equivalent; Gemini requires nothing, so imposing a declared ceiling
+would truncate answers that would otherwise finish. `maxOutputTokens` travels only when a caller
+sends `options.num_predict`. Two vendors, one field, opposite answers — which is the argument for
+per-provider config rather than a hub-wide one.
+
+**D2 (the config side) — there is no id-shape check here either, and for a third distinct reason.**
+62 D5 validates a shape, 63 D8 validates nothing, and **64 normalizes in the translator**: the
+Gemini model id is a URL path segment, so `gemini-3-pro`, `models/gemini-3-pro` and a Vertex
+`publishers/google/models/…` are all legal and the difference is structural rather than a matter of
+taste. The rule the three phases add up to: *check where the vendor's namespace is evidence,
+normalize where the id is structural, and never check where a `BaseUrl` override can legitimately
+change it.* What still runs is 61's — the type is known, the URL is absolute, the timeout is
+positive, and no model is claimed twice.
+
+*The credential is part of the dialect* for the third time: `CreateHttpClient` hands a `gemini`
+route to `GeminiUpstreamClient.Configure`, which sets `x-goog-api-key` and **never an
+`Authorization` header** — a Bearer token here is the same 401-that-reads-like-a-bad-key 63 D1
+named at Anthropic. `AnUnknownTypeFailsStartupNamingTheTypesThatExist` now checks all four names.
+Gemini is also the first provider whose request body carries **no `model` field at all**, which the
+dispatch test asserts: `RewriteModel` rewrites nothing on the way out, and the answer is still
+relabelled with the name the caller used.
+
+**Rule 5 survived again.** Phase 64 added **zero** new dependencies.

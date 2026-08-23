@@ -34,6 +34,12 @@ public class ProviderTests
      "model":"claude-opus-5","stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}
     """;
 
+    private const string GeminiAnswer = """
+    {"candidates":[{"content":{"role":"model","parts":[{"text":"Hello."}]},"finishReason":"STOP"}],
+     "usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5},
+     "modelVersion":"gemini-3-pro"}
+    """;
+
     // ---- two providers, two vendors ----------------------------------------------------
 
     [Fact]
@@ -182,6 +188,7 @@ public class ProviderTests
         Assert.Contains(ProviderDefinition.TypeOpenAiCompatible, failure);
         Assert.Contains(ProviderDefinition.TypeOpenRouter, failure);
         Assert.Contains(ProviderDefinition.TypeAnthropic, failure);
+        Assert.Contains(ProviderDefinition.TypeGemini, failure);
     }
 
     [Fact]
@@ -498,6 +505,72 @@ public class ProviderTests
 
         Assert.True(result.Failed);
         Assert.Contains("MaxTokens", Assert.Single(result.Failures));
+    }
+
+    // ---- gemini: the third dialect, and the one whose model is not in the body (phase 64) ----
+
+    [Fact]
+    public async Task AGeminiProviderReachesGenerateContentWithTheModelInThePathAndItsOwnCredential()
+    {
+        // Two things at once, and both are 64 D2: the credential is `x-goog-api-key` (a Bearer
+        // token here is the same 401-that-reads-like-a-bad-key 63 D1 named), and the model travels
+        // as a *path segment* — so unlike every other provider the body carries no `model` at all.
+        var upstream = new RecordingUpstream(GeminiAnswer);
+        var gemini = Provider(baseUrl: null, "AIza-key", ("big-code", "gemini-3-pro"));
+        gemini.Type = ProviderDefinition.TypeGemini;
+
+        await Dispatcher(Registry(("gemini", gemini)), upstream)
+            .DispatchAsync("chat", ChatJob, "big-code", stream: false, CancellationToken.None);
+
+        var sent = upstream.Requests[0];
+
+        Assert.Equal(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro:generateContent",
+            sent.Url);
+        Assert.Null(sent.Authorization);
+        Assert.Equal("AIza-key", sent.Headers["x-goog-api-key"]);
+        Assert.Null(sent.Model);
+    }
+
+    [Theory]
+    [InlineData("gemini-3-pro")]
+    [InlineData("models/gemini-3-pro")]
+    [InlineData("publishers/google/models/gemini-3-pro")]
+    public void AGeminiModelIdIsNormalizedRatherThanChecked(string upstreamModel)
+    {
+        // 64 D2. The three legal forms are the bare id, the one `GET /v1beta/models` hands back,
+        // and the Vertex path a BaseUrl override needs. A `gemini-` prefix check would refuse two
+        // of them — 63 D8's argument, arriving at a normalization instead of a refusal because the
+        // id here is structural.
+        var provider = Provider(baseUrl: null, "k", ("fast", upstreamModel));
+        provider.Type = ProviderDefinition.TypeGemini;
+
+        Assert.False(Validate(Configured(("gemini", provider))).Failed);
+    }
+
+    [Fact]
+    public void AGeminiProviderWithANegativeThinkingBudgetFailsStartup()
+    {
+        // Zero is the meaningful value — it turns thinking off — so the check is "not negative"
+        // rather than "positive", and leaving the key out entirely is the third, default state.
+        var provider = Provider(baseUrl: null, "k", ("fast", "gemini-3-pro"));
+        provider.Type = ProviderDefinition.TypeGemini;
+        provider.ThinkingBudget = -1;
+
+        var result = Validate(Configured(("gemini", provider)));
+
+        Assert.True(result.Failed);
+        Assert.Contains("ThinkingBudget", Assert.Single(result.Failures));
+    }
+
+    [Fact]
+    public void AGeminiProviderThatDisablesThinkingWithZeroStarts()
+    {
+        var provider = Provider(baseUrl: null, "k", ("fast", "gemini-3-pro"));
+        provider.Type = ProviderDefinition.TypeGemini;
+        provider.ThinkingBudget = 0;
+
+        Assert.False(Validate(Configured(("gemini", provider))).Failed);
     }
 
     // ---- harness -----------------------------------------------------------------------

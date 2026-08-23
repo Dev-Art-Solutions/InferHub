@@ -4,6 +4,7 @@ using System.Threading.Channels;
 using InferHub.Coordinator.Observability;
 using InferHub.Shared.Anthropic;
 using InferHub.Shared.Contracts;
+using InferHub.Shared.Gemini;
 using InferHub.Shared.OpenAi;
 using InferHub.Shared.Upstream;
 
@@ -38,9 +39,9 @@ public sealed record ProviderResult(ChannelReader<InferenceChunk>? Stream, strin
 /// and the coordinator retains neither (rule 7, 22 D4).
 ///
 /// The wire work is an <see cref="IUpstreamDialect"/> — <see cref="OpenAiUpstreamClient"/> for the
-/// OpenAI-shaped upstreams and <see cref="AnthropicUpstreamClient"/> since phase 63 — so the
-/// translation exists once per dialect and this file gains one arm per vendor, not a branch per
-/// request.
+/// OpenAI-shaped upstreams, <see cref="AnthropicUpstreamClient"/> since phase 63 and
+/// <see cref="GeminiUpstreamClient"/> since 64 — so the translation exists once per dialect and this
+/// file gains one arm per vendor, not a branch per request.
 /// </summary>
 public sealed class ProviderDispatcher(
     IHttpClientFactory httpClientFactory,
@@ -191,6 +192,11 @@ public sealed class ProviderDispatcher(
             ProviderDefinition.TypeAnthropic
                 => new AnthropicUpstreamClient(http, route.Definition.MaxTokens),
 
+            // Phase 64. The third dialect, and the one whose model id does not travel in the body
+            // at all — it is a path segment, which is why nothing here rewrites a URL.
+            ProviderDefinition.TypeGemini
+                => new GeminiUpstreamClient(http, route.Definition.ThinkingBudget),
+
             var type => throw new InvalidOperationException($"provider type '{type}' has no dialect")
         };
 
@@ -210,6 +216,17 @@ public sealed class ProviderDispatcher(
                 route.Definition.ApiKey,
                 route.Definition.TimeoutSeconds,
                 route.Definition.ResolvedAnthropicVersion());
+        }
+
+        if (route.Definition.NormalizedType() == ProviderDefinition.TypeGemini)
+        {
+            // A third credential header, and the third time a Bearer token would be a 401 that
+            // reads like a bad key (63 D1's reason, Google's spelling).
+            return GeminiUpstreamClient.Configure(
+                pooled,
+                route.Definition.ResolvedBaseUrl()!,
+                route.Definition.ApiKey,
+                route.Definition.TimeoutSeconds);
         }
 
         var http = OpenAiUpstreamClient.Configure(

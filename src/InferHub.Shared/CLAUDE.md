@@ -855,3 +855,109 @@ alternative was four signatures in two dialects, diverging the first time a fift
 **Not translated, deliberately:** tool calls, thinking blocks, `cache_control`, PDFs and citations
 (track-level deferrals). **No live provider was called by any test** — every payload in
 `AnthropicDialectTests` is a recorded one (track D6); the first real key is phase 68's.
+
+### Phase 64 (Gemini's own dialect) — the third `IUpstreamDialect`, and the day the native surface turned out to be the legacy one
+
+`src/InferHub.Shared/Gemini/` — the DTOs, the translator and `GeminiUpstreamClient`. The provider
+*configuration* half (the type, `ThinkingBudget`) is the coordinator's (64 D6). **Zero new
+`PackageReference`**, for the third dialect running.
+
+**D1 — `:generateContent` is the dialect, and it is now the vendor's *legacy* surface. Reading the
+docs on the day found that, and it is written down rather than quietly worked around.** Google's
+current documentation calls the **Interactions API** generally available and recommended for new
+projects, says all new models and agentic features launch there, and says of the older surface:
+*"While it is now considered legacy, the original `generateContent` API remains fully supported"* —
+**no removal date published**. The track was written believing `:generateContent` *was* the native
+API; it is the previous one, and the phase went ahead with it on three grounds. **(1)** It is the
+surface more than one platform shares — the same verbs are Vertex AI's, and a `BaseUrl` override
+reaching those is the configuration 63 D8 refused to break; Interactions is first-party-only today.
+**(2)** What Interactions adds is exactly what this track defers: `steps[]` of thoughts, function
+calls and tool results collapses to one text output for an Ollama-shaped mesh (rule 6), and
+server-side `previous_interaction_id` is conversation state a hub that retains nothing (rule 7) must
+not own — we would pay for the richer surface and discard what makes it rich. **(3)** It changed its
+own schema three months ago (`outputs[]` → `steps[]` under an `Api-Revision` date header, old schema
+removed 2026-06-08); a dialect whose stability depends on pinning a date, tested only against
+recorded payloads (track D6), goes stale in silence. **Said out loud:** the day this hub wants
+Gemini's agentic surface, *this* client is not the one that gets extended — that is a
+`Type: "gemini-interactions"` and a phase of its own.
+
+**D2 — The model is a URL path segment, so it is normalized rather than checked, and that completes
+a three-way contrast.** `GeminiTranslator.ToModelPath`: **an id containing a `/` is a path and is
+used as written; a bare id gets the `models/` prefix.** One rule accepts `gemini-3-pro`, the
+`models/gemini-3-pro` the listing returns and a Vertex `publishers/google/models/…`, and
+`ListModelIdsAsync` hands back the vendor's own `name` so a console row is pasteable into a
+`ModelMap`. The contrast worth keeping: **62 D5 checks a shape** (419-of-419 evidence for one
+namespace), **63 D8 checks nothing** (one model, three legitimate spellings), **64 normalizes** (the
+id is structural, and getting it wrong is a 404 naming `models/models/gemini-3-pro`, which nobody
+typed). **Considered and rejected: a `gemini-` prefix check** — 48 D1, as 63 D8 argued it.
+
+**D3 — `?alt=sse` is part of the streaming path, because without it the endpoint is not SSE.**
+`:streamGenerateContent` with no `alt=sse` answers with a chunked **JSON array** and never emits a
+`data:` line, so a reader written for SSE does not fail — it *waits*, until the timeout. The query
+is a constant beside the verb. There is no `[DONE]` either: the stream ends when the body does.
+Three upstreams, three end-of-stream conventions, and still no shared frame reader — 63 D6's reason
+unchanged. **Considered and rejected: exposing `alt` as configuration**, which has one legal value
+and one that hangs.
+
+**D4 — Streaming usage is cumulative, so counts are taken and never summed — the second vendor in a
+row, which makes it a rule.** Every chunk carries the whole `usageMetadata` as it stands. OpenAI
+sends one terminal usage chunk; Anthropic and Gemini both publish cumulative. The house rule is now
+**read a provider's usage as a snapshot unless it documents an increment**, and never sum without
+evidence. A stream with no usage yields no counts, not zeros (v3.13.1).
+
+**D5 — `promptTokenCount` already contains the cached tokens and is passed through whole — the
+exact opposite of 63 D5, which is why both are written down.** Gemini documents the prompt count as
+*including* cached content, with `cachedContentTokenCount` as a **breakdown** of it; Anthropic's
+`cache_read_input_tokens` is a **sibling** of `input_tokens`. So the identical-looking arithmetic is
+wrong in opposite directions: adding Gemini's double-counts, adding Anthropic's invents a total.
+**Both dialects report what the vendor calls the prompt and neither composes it** — that is the
+durable rule, and these two cache fields are the evidence that "just add them up" is not one.
+**Considered and rejected: subtracting `cachedContentTokenCount` so the vendors look comparable** —
+a hub that adjusts one vendor's count to resemble another's has stopped reporting (25 D3).
+
+**D6 — Thinking tokens are counted, billed as output, and still not folded into `eval_count`; the
+lever is configuration, not arithmetic.** Gemini thinks by default. `candidatesTokenCount` is the
+answer's tokens, `thoughtsTokenCount` is separate and priced as output, `totalTokenCount` is
+prompt + thoughts + candidates. `eval_count` carries `candidatesTokenCount` alone, because a client
+reading that field reads *"tokens in the answer I received"* and thinking tokens are not in the
+answer. The gap is documented rather than hidden, and `ThinkingBudget` is the operator's lever
+(absent = the vendor's dynamic default, `0` = off where allowed). **Considered and rejected:
+`candidates + thoughts`** — it matches the invoice and breaks every reader of the field, including
+tokens-per-second. **Also rejected: dropping the number silently**, which is how a bill becomes a
+mystery. *Related restraint:* 63 D2's `MaxTokens` is **not** reused — Gemini does not require
+`maxOutputTokens`, so a declared default would be a ceiling nobody asked for; it travels only when a
+caller sets `num_predict`.
+
+**D7 — A blocked prompt is a 200 with no candidates, and it becomes an error.**
+`promptFeedback.blockReason` with an empty `candidates` array. **The third "200 that looks finished"
+this track has found** — 62 D4's mid-stream `error` frame, 63's `overloaded_error`, now this — and
+the third time the answer is the same: throw, name the reason, let the hub write a terminal error
+chunk. An empty string with `done: true` is a wrong answer shaped like a right one. A *candidate*
+that stops on `SAFETY` after producing text is a different thing and keeps its text: `MAX_TOKENS`
+becomes Ollama's `length`, everything else `stop`, and no vocabulary is invented for a client that
+has none.
+
+**D8 — Gemini has embeddings, so this is the first dialect whose `EmbedAsync` is real — and it sends
+no `taskType`.** `:batchEmbedContents` for one input as well as forty (one code path beats a saved
+field). Google's guidance is that `RETRIEVAL_DOCUMENT` and `RETRIEVAL_QUERY` beat the default, and
+**this hub cannot tell which it is looking at**: Ollama's `/api/embed` has no such field and phase
+44's pipeline calls one model for both ingestion and search. **Considered and rejected: defaulting
+to `RETRIEVAL_DOCUMENT`**, which silently degrades every query embedding. **Also rejected: a config
+knob** — one value per provider is wrong for half the traffic of any deployment that both ingests
+and searches. 63 D7's refusal and this are the same seam answered by two vendors, which is 40 D1's
+point a fifth time.
+
+**D9 — `error.code` is a number here, and `status` plus a `RetryInfo` delay are carried through.**
+The envelope is `{"error":{"code":429,"message":…,"status":"RESOURCE_EXHAUSTED","details":[…]}}`.
+The numeric `code` is the shape that broke the OpenAI dialect for eight releases until 62 D3 found
+it, so it is typed as a number from the first line rather than discovered twice. `status` is the
+half an HTTP number does not give you and `details[].RetryInfo.retryDelay` is the half a human
+needs — Gemini's equivalent of the `request_id` 63 carried, and the same treatment.
+
+*The base64 magic-byte sniff has a third caller* (`inlineData.mimeType`), which is what 63's move to
+`Upstream/Base64MediaType.cs` was for. **Nothing is dropped from the sampling options**, unlike 63
+D4 — Gemini's `generationConfig` has `seed`, `presencePenalty` and `frequencyPenalty`, so that drop
+was a fact about Anthropic rather than a policy here. **Not translated, deliberately:** tools,
+`responseSchema`, thought summaries (`includeThoughts` is never sent — a thought part arriving is
+skipped anyway), caching and the file APIs. **No live provider was called by any test** — every
+payload in `GeminiDialectTests` is recorded (track D6); the first real key is phase 68's.

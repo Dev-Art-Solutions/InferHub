@@ -52,6 +52,16 @@ public sealed class ProviderDefinition
     public const string AnthropicBaseUrl = "https://api.anthropic.com/v1";
 
     /// <summary>
+    /// Gemini's own <c>:generateContent</c> (phase 64) — the fourth type and the third dialect. The
+    /// credential is <c>x-goog-api-key</c>, the model is a <b>path segment</b> rather than a body
+    /// field, and streaming needs <c>?alt=sse</c> or the endpoint answers with a JSON array.
+    /// </summary>
+    public const string TypeGemini = "gemini";
+
+    /// <summary>Used when a <c>Type: gemini</c> provider names no <see cref="BaseUrl"/>.</summary>
+    public const string GeminiBaseUrl = "https://generativelanguage.googleapis.com/v1beta";
+
+    /// <summary>
     /// Off is off: a disabled provider maps nothing, so its models are simply not eligible. It is
     /// here so an operator can park a provider without deleting the map they spent time on.
     /// </summary>
@@ -107,6 +117,21 @@ public sealed class ProviderDefinition
     /// </remarks>
     public int MaxTokens { get; set; } = 4096;
 
+    /// <summary>
+    /// <c>generationConfig.thinkingConfig.thinkingBudget</c>, sent only when set.
+    /// <see cref="TypeGemini"/> only (64 D6).
+    /// </summary>
+    /// <remarks>
+    /// Gemini models think by default and the thinking tokens are <b>billed as output</b> while
+    /// being reported separately from the answer's — so `eval_count` carries
+    /// <c>candidatesTokenCount</c> alone and the invoice is larger than it. This is the lever that
+    /// closes the gap rather than an arithmetic that hides it: <c>0</c> disables thinking on the
+    /// models that allow it, absent leaves the vendor's dynamic default. It is deliberately not
+    /// defaulted to <c>0</c> — turning off a model's reasoning is a quality decision, and making it
+    /// for an operator who never asked would be a worse surprise than the bill.
+    /// </remarks>
+    public int? ThinkingBudget { get; set; }
+
     /// <summary>Local model name → this provider's name for it. The map is the consent.</summary>
     public Dictionary<string, string> ModelMap { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
@@ -137,6 +162,7 @@ public sealed class ProviderDefinition
         {
             TypeOpenRouter => OpenRouterBaseUrl,
             TypeAnthropic => AnthropicBaseUrl,
+            TypeGemini => GeminiBaseUrl,
             _ => null
         };
     }

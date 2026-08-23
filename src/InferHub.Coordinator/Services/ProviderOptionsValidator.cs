@@ -54,12 +54,14 @@ public sealed partial class ProviderOptionsValidator(IOptions<FallbackOptions> f
 
             if (type is not (ProviderDefinition.TypeOpenAiCompatible
                 or ProviderDefinition.TypeOpenRouter
-                or ProviderDefinition.TypeAnthropic))
+                or ProviderDefinition.TypeAnthropic
+                or ProviderDefinition.TypeGemini))
             {
                 failures.Add($"Providers:{id}:Type is '{provider.Type}'. The types this release knows "
                              + $"are: {ProviderDefinition.TypeOpenAiCompatible}, "
                              + $"{ProviderDefinition.TypeOpenRouter}, "
-                             + $"{ProviderDefinition.TypeAnthropic}.");
+                             + $"{ProviderDefinition.TypeAnthropic}, "
+                             + $"{ProviderDefinition.TypeGemini}.");
             }
 
             // Anthropic requires max_tokens on every request and Ollama never sends one, so a
@@ -72,7 +74,17 @@ public sealed partial class ProviderOptionsValidator(IOptions<FallbackOptions> f
                              + "names no options.num_predict.");
             }
 
-            // openrouter and anthropic supply their own, so a BaseUrl there is an override rather
+            // Gemini's thinking budget is "how many tokens the model may reason for", and 0 is the
+            // meaningful value that turns thinking off (64 D6). A negative one is a typo that the
+            // vendor would answer with a 400 on the first prompt instead of at boot.
+            if (type == ProviderDefinition.TypeGemini && provider.ThinkingBudget is < 0)
+            {
+                failures.Add($"Providers:{id}:ThinkingBudget is {provider.ThinkingBudget}. It must be "
+                             + "zero or greater: 0 disables thinking on the models that allow it, and "
+                             + "leaving the key out entirely keeps the model's own dynamic default.");
+            }
+
+            // openrouter, anthropic and gemini supply their own, so a BaseUrl there is an override rather
             // than a requirement — but a *malformed* one is still refused, in every type.
             if (provider.ResolvedBaseUrl() is not { } baseUrl
                 || !Uri.TryCreate(baseUrl, UriKind.Absolute, out _))
@@ -95,12 +107,15 @@ public sealed partial class ProviderOptionsValidator(IOptions<FallbackOptions> f
                     continue;
                 }
 
-                // There is deliberately no equivalent shape check for `anthropic` (63 D8).
-                // OpenRouter's is one namespace with 419-of-419 evidence behind it; Anthropic's ids
-                // are `claude-…` on the first-party API, `anthropic.claude-…` on Bedrock and
-                // `claude-…@2025…` on Vertex — and a BaseUrl override is exactly how somebody
-                // reaches those. A `claude-` prefix check would refuse a valid configuration for a
-                // proxy this project encourages, which is 48 D1's "usually right".
+                // There is deliberately no equivalent shape check for `anthropic` (63 D8) or for
+                // `gemini` (64 D2). OpenRouter's is one namespace with 419-of-419 evidence behind
+                // it; Anthropic's ids are `claude-…` on the first-party API, `anthropic.claude-…`
+                // on Bedrock and `claude-…@2025…` on Vertex — and a BaseUrl override is exactly how
+                // somebody reaches those. A `claude-` prefix check would refuse a valid
+                // configuration for a proxy this project encourages, which is 48 D1's "usually
+                // right". Gemini's id is *normalized* rather than checked, in the translator, for
+                // the reason 64 D2 gives: it is a URL path segment, and `gemini-3-pro`,
+                // `models/gemini-3-pro` and a Vertex `publishers/google/models/…` are all legal.
                 if (type == ProviderDefinition.TypeOpenRouter && !OpenRouterModelId().IsMatch(upstream.Trim()))
                 {
                     failures.Add($"Providers:{id}:ModelMap:{model} is '{upstream}', which is not an "

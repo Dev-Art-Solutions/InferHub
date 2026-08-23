@@ -188,6 +188,22 @@ could not test: `fps` is now required and its old fallback of 16 is gone, becaus
 CogVideoX's 49 frames at twice their rate is not an error — it is a clip that plays at double speed.
 The 14B entry is also the first recipe this project ships that **does not fit a 24 GB card**, which
 is the VRAM gate working: such a node never declares it, so nobody meets the ceiling mid-render.
+**v3.32 speaks Gemini's own `:generateContent`, and reading the docs on the day found it is now the
+*legacy* one.** [`Type: "gemini"`](#gemini-v332) is the third dialect behind the seam — still
+hand-rolled, still zero new packages. Google's current documentation recommends their newer
+Interactions API for new work and says `generateContent` "remains fully supported" with no removal
+date; this release targets it deliberately, because Interactions' value is the agentic, stateful
+surface InferHub is not, and `:generateContent` is what Vertex AI and every gateway in between also
+speak. What the native dialect buys is the numbers: **`promptTokenCount` already contains the cached
+tokens** here, where Anthropic reports them beside the input count — the same arithmetic would be
+wrong in opposite directions, so neither is adjusted — and **thinking tokens are billed as output
+while sitting outside the answer's count**, which is why `ThinkingBudget` exists rather than a sum
+this hub invented. Streaming usage is cumulative, so counts are taken and never summed, for the
+second vendor running; `?alt=sse` is not optional (without it the endpoint answers with a JSON array
+and an SSE reader simply waits); and a prompt the safety filters refuse arrives as a **200 with no
+candidates**, which is the third success status in this track that is not one. Gemini has
+embeddings, so this is the first provider dialect whose `EmbedAsync` is real.
+
 **v3.31 speaks Anthropic's own `/v1/messages`, not their OpenAI-compatibility endpoint.**
 [`Type: "anthropic"`](#anthropic-v331) is the first *real* second dialect behind the seam — hand-rolled
 over `HttpClient`, still zero new packages — and the reason to write one is the number you get back:
@@ -2147,7 +2163,8 @@ still holds, and two rules are new:
   most consequential choice here — whose servers see a prompt — depend on the order your JSON keys
   happened to bind in.
 - **`Type` must be one this release knows** — `openai-compatible` (OpenAI, vLLM, LM Studio, TGI),
-  `openrouter` or `anthropic`. A typo fails startup rather than silently disabling a provider.
+  `openrouter`, `anthropic` or `gemini`. A typo fails startup rather than silently disabling a
+  provider.
 
 #### OpenRouter (v3.30+)
 
@@ -2216,6 +2233,55 @@ field, in order, because that API has exactly two message roles. Model ids are *
 the same model is `claude-opus-5` on the first-party API, `anthropic.claude-opus-5` on Bedrock and
 `claude-…@2025…` on Vertex, and `BaseUrl` is how you reach the latter two. Tool calls, thinking blocks
 and prompt caching are not translated yet.
+
+#### Gemini (v3.32+)
+
+`Type: "gemini"` speaks Google's own `POST /v1beta/models/{model}:generateContent` — `x-goog-api-key`,
+`contents`/`parts`, `usageMetadata` — rather than their OpenAI-compatibility endpoint, for the reason
+the Anthropic section gives: the counts, the finish reasons and the error bodies should be the
+vendor's own.
+
+```jsonc
+"gemini": {
+  "Type": "gemini",             // BaseUrl defaulted to https://generativelanguage.googleapis.com/v1beta
+  "ThinkingBudget": 0,          // optional; leave it out to keep the model's own dynamic default
+  "ModelMap": { "big": "gemini-3-pro", "embed": "models/gemini-embedding-001" }
+}
+```
+
+`Providers__gemini__ApiKey` in the environment. Five things are worth knowing before you map a model:
+
+- **Thinking is on by default and you pay for it, but it is not in `eval_count`.** Gemini reports the
+  answer's tokens (`candidatesTokenCount`) and its thinking tokens (`thoughtsTokenCount`) as two
+  numbers, and bills both as output. InferHub puts the **answer's** count in `eval_count`, because
+  that is what a client reading the field means, so your invoice's output figure is the larger of the
+  two. Set `ThinkingBudget: 0` to turn thinking off on the models that allow it and make them agree.
+- **Cached tokens are already inside `prompt_eval_count`, and are left there.** Google counts cached
+  content *within* `promptTokenCount` and reports `cachedContentTokenCount` as a breakdown of it —
+  the opposite of Anthropic, where the cache numbers sit beside the input count. Neither is adjusted:
+  each dialect reports what its vendor calls the prompt.
+- **The model id goes in the URL, and all three forms work.** `gemini-3-pro`, the
+  `models/gemini-3-pro` that `GET /v1beta/models` hands back, and a Vertex-style
+  `publishers/google/models/…` behind a `BaseUrl` override. Nothing is shape-checked; a bare id gets
+  the `models/` prefix and anything containing a `/` is used as written.
+- **Every sampling option survives**, including the three Anthropic drops: `seed`, `presence_penalty`
+  and `frequency_penalty` all have counterparts in Gemini's `generationConfig`, alongside
+  `temperature`, `top_p`, `top_k` and `stop`. There is **no `MaxTokens`** here — that API does not
+  require a ceiling, so none is imposed unless you send `options.num_predict`.
+- **Embeddings work.** Unlike Anthropic, a Gemini provider serves both chat and embeddings
+  (`:batchEmbedContents`). No `taskType` is sent: `RETRIEVAL_DOCUMENT` and `RETRIEVAL_QUERY` produce
+  better vectors than the default, and nothing in an embed request says which one you meant — so the
+  vendor's default applies to ingestion and search alike.
+
+A prompt the safety filters refuse comes back from Google as a **200 with no candidates**; InferHub
+turns that into an error naming the `blockReason` rather than handing you an empty answer that looks
+finished. Tools, `responseSchema`, thought summaries and context caching are not translated yet.
+
+> This targets `:generateContent`, which Google now labels **legacy** — fully supported, with no
+> removal date, and the surface Vertex AI and every gateway in between also speak. Their newer
+> Interactions API is a stateful, agentic surface whose value is exactly the tool-calling and
+> server-side conversation state InferHub deliberately does not do; if that changes it will arrive as
+> its own provider type rather than as a change here.
 
 Responses served by a named provider carry `X-InferHub-Served-By: provider:<id>`; a deployment
 configured through `Fallback:` still gets `fallback`, unchanged. `/api/status` grows a `providers`
@@ -2460,8 +2526,8 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Fallback:AllowedModels` | `[]` | Narrower allowlist within the map. Empty = every mapped model. |
 | `Fallback:TimeoutSeconds` | `300` | Per-request timeout against the upstream. |
 | `Providers:<id>:Enabled` | `true` | Named cloud providers (v3.29). Set `false` to park one without deleting its map. |
-| `Providers:<id>:Type` | `openai-compatible` | Or `openrouter` (v3.30) or `anthropic` (v3.31). An unknown one fails startup, naming the ones that exist. |
-| `Providers:<id>:BaseUrl` | _(empty)_ | Required and absolute when the provider is enabled — except under `openrouter` and `anthropic`, which supply their own and still accept an override. |
+| `Providers:<id>:Type` | `openai-compatible` | Or `openrouter` (v3.30), `anthropic` (v3.31) or `gemini` (v3.32). An unknown one fails startup, naming the ones that exist. |
+| `Providers:<id>:BaseUrl` | _(empty)_ | Required and absolute when the provider is enabled — except under `openrouter`, `anthropic` and `gemini`, which supply their own and still accept an override. |
 | `Providers:<id>:Referer` | _(empty)_ | `openrouter` only (v3.30). Sent as `HTTP-Referer`. It lists you on OpenRouter's public rankings, so it is never defaulted. |
 | `Providers:<id>:Title` | _(empty)_ | `openrouter` only (v3.30). Sent as `X-OpenRouter-Title`. Same reasoning as `Referer`. |
 | `Providers:<id>:ApiKey` | _(empty)_ | Env (`Providers__<id>__ApiKey`) / user-secrets only. |
@@ -2471,6 +2537,7 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Providers:<id>:TimeoutSeconds` | `300` | Per-request timeout against that provider. |
 | `Providers:<id>:MaxTokens` | `4096` | `anthropic` only (v3.31). That API requires `max_tokens` on every request; a caller's `options.num_predict` overrides this. |
 | `Providers:<id>:AnthropicVersion` | `2023-06-01` | `anthropic` only (v3.31). The `anthropic-version` header. Pin it if you need to. |
+| `Providers:<id>:ThinkingBudget` | _(unset)_ | `gemini` only (v3.32). Unset keeps the model's own dynamic thinking; `0` turns thinking off where the model allows it. Thinking tokens are billed as output and are **not** in `eval_count`. |
 | `Metrics:OpenScrape` | `false` | Whether `GET /metrics` is reachable without an admin key. See [Prometheus `/metrics`](#prometheus-metrics-v210). |
 | `Cluster:Enabled` | `false` | Warm-standby HA (v3.0). Off = byte-identical to v2.13. Requires `VectorStore:Provider=postgres`. See [High availability](#high-availability-v30). |
 | `Cluster:InstanceId` | _(machine name)_ | Names this hub in the lease row, the logs, `/api/status` and `/metrics`. |
