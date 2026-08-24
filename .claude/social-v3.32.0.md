@@ -79,13 +79,13 @@ Their Interactions API is the recommended one.
 We targeted the legacy one anyway. On purpose. 🧵
 
 **2/**
-Why: Interactions is a stateful, agentic surface — `steps[]` of thoughts and tool calls, server-side
-conversation state.
+Why: Interactions is stateful and agentic — steps[] of thoughts and tool calls, conversation state
+held server-side.
 
-That is exactly what a hub that retains nothing does not do. We'd pay for the richer API and discard
-what makes it rich.
+Exactly what a hub retaining nothing doesn't do. We'd pay for the richer API and discard what makes
+it rich.
 
-`:generateContent` is also what Vertex speaks.
+:generateContent is also what Vertex speaks.
 
 **3/**
 The fact that made the phase worth it:
@@ -100,10 +100,12 @@ Neither is adjusted.
 **4/**
 Then we ran the published image, as always.
 
-Three checks passed. The fourth: a refused prompt on the streaming endpoint came back as an *empty
-answer marked finished* — our reader skips non-`data:` lines and that body had none.
+3 checks passed. The 4th: a refused prompt on the streaming endpoint came back as an empty answer
+marked finished.
 
-Same bug the release refuses, through a door we hadn't checked. Fixed in 3.32.1.
+Our reader skips non-data: lines. That body had none.
+
+The exact bug this release refuses. Fixed in 3.32.1.
 
 **5/**
 It also proved one of our own sentences wrong.
@@ -117,9 +119,8 @@ Corrected everywhere it was written. Take 3.32.1. Zero new deps, 12 releases run
 
 ## Single-post X variant
 
-InferHub 3.32 speaks Gemini's own `:generateContent` — and reading Google's docs found it is now
-their *legacy* endpoint. Targeted deliberately: Interactions is the agentic, stateful surface a hub
-that retains nothing doesn't do.
+InferHub 3.32 speaks Gemini's own :generateContent — and reading Google's docs found it's now their
+legacy endpoint. On purpose.
 
-Best fact: cached tokens live *inside* Gemini's prompt count and *beside* Anthropic's. Same addition,
-wrong in opposite directions. So neither is adjusted.
+Best bit: cached tokens sit inside Gemini's prompt count, beside Anthropic's. Same addition, wrong
+in opposite directions. Neither is adjusted.
