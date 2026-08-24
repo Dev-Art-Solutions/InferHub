@@ -130,3 +130,44 @@ is measuring the policy rather than the fixture.
   cost rather than a defect; it did not go in here either, and it is now v3.34's.
 
 Zero new `PackageReference`s. `InferHub.Shared.csproj` is still an empty `<Project Sdk="…">`.
+
+---
+
+## Addendum — the published image, checked the same evening
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.33.0`, pulled and driven by hand. The image's own
+label reports `version=3.33.0`, `revision=675451a` — the phase commit, asked of the artefact rather
+than of a dashboard. A stub vendor ran on the host and recorded every request that reached it.
+
+A hub with one `openai-compatible` provider at `Policy: prefer`, mapping `smart` and `cloud-only`,
+**and no node at all**:
+
+1. **`/api/tags`** — `[{"name":"cloud-only","digest":null,"size":null},{"name":"smart",…}]`. Both
+   provider-claimed models listed, both with a genuine `null` rather than a constructed zero.
+2. **`/v1/models`** — the same two, `owned_by: inferhub`, `capabilities: ["chat"]` on each. No vendor
+   named on either surface.
+3. **A plain chat for `smart`** — `200`, `X-InferHub-Served-By: provider:vendor`, *From the vendor.*,
+   and the stub recorded `Bearer vendor-key` with `"model":"remote-smart"`. Asked by the vendor's
+   name for it, answered in the caller's.
+4. **`X-InferHub-Provider: node`** — `404 model 'smart' not found`, which is the fleet's own answer.
+   The provider was refused for that request.
+5. **`X-InferHub-Provider: not-configured`** — `400`, and the sentence names the pair the caller typed
+   and **nothing else**. The word `vendor` does not appear in it.
+6. **The stub's hit counter stayed at 1** across 4 and 5. Both refusals happened before anything left
+   the hub — the assertion the response codes alone cannot make.
+7. **`/api/status`** — `"policy":"prefer"`, `"modelPolicies":null`, and **no `trigger` key** in the
+   providers block. The `fallback` block still carries its own `trigger`, untouched.
+8. **`Policy: prefer` + `Trigger: no-node-or-saturated`** — the container refuses to start:
+   *"Providers:vendor sets Policy 'prefer' and Trigger 'no-node-or-saturated'…"*
+9. **`ModelPolicy:typo` with no such mapping**, and **`Policy: always`** — both refuse to start, each
+   naming what it wanted. The second lists all four policies.
+10. **A `Fallback:`-only hub on the same image** — `/api/tags` is `{"models":[]}` (the legacy
+    section's mapped model is deliberately **not** discoverable), `/api/status` has **no `providers`
+    key at all**, and a chat still answers `X-InferHub-Served-By: fallback`. The invariant this phase
+    was likeliest to break, checked on the artefact rather than argued.
+
+**What this run did not establish, and could not:** that `prefer` beats a *live* node. Every check
+above ran on a hub with an empty fleet, where `prefer` and `no-node` are indistinguishable by
+observation — the distinction is made in `ProviderRoutingTests`, over a real socket, against a hub
+whose router always returns a node. Proving it on a published image needs a registered node holding
+the model, which is the shape of phase 68's day rather than of an evening's check.
