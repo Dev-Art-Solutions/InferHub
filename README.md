@@ -2295,9 +2295,65 @@ array — reported whether or not anything has been dispatched, with `credential
 `inferhub_provider_dispatched_total{provider}` beside the existing total, which still counts every
 request the fleet did not serve.
 
-> **A provider is still consulted only when the fleet cannot serve.** Routing a model to a provider
-> *by preference*, while the fleet is up, is v3.33. What v3.29 changed is who "the upstream" is, not
-> when it is asked.
+### A provider as a routing target (v3.33+)
+
+Up to v3.32 a provider was only ever consulted **after** routing failed, so "serve `smart` from
+Anthropic while my own boxes stay busy with local models" was not a sentence the config could say.
+`Policy` is that sentence. It is the same field `Trigger` was, with two more values:
+
+| `Policy` | When the provider is asked |
+|---|---|
+| `no-node` | Default, and what every earlier release did: only when no node holds the model. |
+| `no-node-or-saturated` | Also when every node holding it is at its declared `MaxConcurrency`. |
+| `prefer` | **First.** The fleet is the backstop if the call fails. |
+| `only` | **Always**, and a node holding that name never serves it. |
+
+```jsonc
+{
+  "Providers": {
+    "claude": {
+      "Type": "anthropic",
+      "Policy": "prefer",                        // the vendor first, the fleet as backstop
+      "ModelPolicy": { "cheap": "no-node" },     // …except for this one
+      "ModelMap": { "smart": "claude-opus-5", "cheap": "claude-haiku-4-5" }
+    }
+  }
+}
+```
+
+`Trigger` still binds and still means what it meant, so no existing configuration changes behaviour.
+Writing **both** and making them disagree fails startup naming both — precedence is not how this hub
+decides whose servers see a prompt. A `ModelPolicy` naming a model the `ModelMap` does not carry
+fails startup too: a policy without a mapping is a route that does not exist.
+
+**One request can steer itself**, with `X-InferHub-Provider`:
+
+```bash
+curl -H 'X-InferHub-Provider: claude' -d '{"model":"smart", ...}' localhost:5080/api/chat
+curl -H 'X-InferHub-Provider: node'   -d '{"model":"smart", ...}' localhost:5080/api/chat
+```
+
+A provider id serves from that provider **if it already claims the model** — otherwise it is a `400`
+and nothing leaves the hub, because a header can never create a route your configuration does not
+already contain. `node` refuses every provider for that one request, including an `only` one: it is
+how somebody keeps a single prompt off a vendor's servers without anybody editing config. A wrong
+steer gets the same sentence whether the id is unknown, parked or simply mapping something else, so a
+client holding a key cannot enumerate your vendors by probing.
+
+Neither policy nor steer weakens the consent model: **a model that is not in a `ModelMap` is still
+never sent anywhere.**
+
+#### One discovery surface
+
+A model any enabled provider maps now appears in `/api/tags` and `/v1/models` — with **no** `digest`
+and **no** `size`, because those are facts about a file on a node, and with `chat` as its only
+capability, because that is what a provider-served request actually is. Before v3.33 a mapped model
+no node held was a model a client could not discover and *could* call.
+
+The listing never says which vendor serves what: `owned_by` stays `inferhub`, and
+`X-InferHub-Served-By` still answers "who served *this*" after the fact. Models mapped by the legacy
+`Fallback:` section are deliberately **not** listed — a hub carrying only that section keeps the
+exact surface it had.
 
 ## Authentication & configuration
 
@@ -2536,7 +2592,9 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Providers:<id>:Referer` | _(empty)_ | `openrouter` only (v3.30). Sent as `HTTP-Referer`. It lists you on OpenRouter's public rankings, so it is never defaulted. |
 | `Providers:<id>:Title` | _(empty)_ | `openrouter` only (v3.30). Sent as `X-OpenRouter-Title`. Same reasoning as `Referer`. |
 | `Providers:<id>:ApiKey` | _(empty)_ | Env (`Providers__<id>__ApiKey`) / user-secrets only. |
-| `Providers:<id>:Trigger` | `no-node` | Per provider, not per hub. Same two values as `Fallback:Trigger`. |
+| `Providers:<id>:Trigger` | `no-node` | Per provider, not per hub. Same two values as `Fallback:Trigger`. Superseded by `Policy` in v3.33; it still binds, and setting both to different things fails startup. |
+| `Providers:<id>:Policy` | _(unset → `Trigger`)_ | v3.33. `no-node`, `no-node-or-saturated`, `prefer` (asked first, fleet as backstop) or `only` (asked always; a node holding that name never serves it). |
+| `Providers:<id>:ModelPolicy` | `{}` | v3.33. Local model → its own policy, overriding `Policy`. A key the `ModelMap` does not carry fails startup. |
 | `Providers:<id>:ModelMap` | `{}` | Local → upstream model name. **One model may be mapped by exactly one enabled provider; a second mapping fails startup.** |
 | `Providers:<id>:AllowedModels` | `[]` | Narrower allowlist within that provider's map. |
 | `Providers:<id>:TimeoutSeconds` | `300` | Per-request timeout against that provider. |

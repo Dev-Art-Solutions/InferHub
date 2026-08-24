@@ -13,10 +13,11 @@ namespace InferHub.Coordinator.Services;
 public interface IProviderDispatcher
 {
     /// <summary>
-    /// Whether this request may go to a provider. False for every request unless some enabled
-    /// provider maps the model and that provider's trigger condition actually holds.
+    /// Whether this request goes to a provider, whether the fleet may still catch it if that call
+    /// fails, and whether the request is refused outright. <see cref="ProviderDecision.No"/> for
+    /// every request unless some enabled provider maps the model and its policy holds (phase 65).
     /// </summary>
-    bool ShouldServe(string model, bool hasCapableNode);
+    ProviderDecision Decide(string model, bool hasCapableNode, ProviderSteer steer);
 
     Task<ProviderResult> DispatchAsync(
         string kind,
@@ -32,6 +33,32 @@ public interface IProviderDispatcher
 /// <c>provider:&lt;id&gt;</c> for a named one (61 D4).
 /// </param>
 public sealed record ProviderResult(ChannelReader<InferenceChunk>? Stream, string? ResponseJson, string ServedBy);
+
+/// <summary>
+/// The routing answer for one request (phase 65): serve it from a provider, leave it to the fleet,
+/// or refuse it before anything leaves the hub.
+/// </summary>
+/// <param name="NodeIsBackstop">
+/// Whether a capable node may still answer if the provider call fails. True for the overflow
+/// policies and for <c>prefer</c>; <b>false</b> for <c>only</c> and for a request that named a
+/// provider by header — answering those from the fleet would be the hub overruling an instruction it
+/// had already accepted (65 D3).
+/// </param>
+public readonly record struct ProviderDecision(
+    bool Serve,
+    bool NodeIsBackstop,
+    int? ErrorStatus,
+    string? ErrorMessage)
+{
+    /// <summary>The fleet's, as it is for every model on a hub that configured no provider.</summary>
+    public static readonly ProviderDecision No = new(false, false, null, null);
+
+    public static ProviderDecision Yes(bool nodeIsBackstop) => new(true, nodeIsBackstop, null, null);
+
+    public static ProviderDecision Refuse(int status, string message) => new(false, false, status, message);
+
+    public bool IsRefusal => ErrorStatus is not null;
+}
 
 /// <summary>
 /// Forwards a request the fleet cannot serve to the provider that claimed the model. It is a proxy
@@ -52,21 +79,71 @@ public sealed class ProviderDispatcher(
 {
     public const string HttpClientName = "inferhub-provider";
 
-    public bool ShouldServe(string model, bool hasCapableNode)
+    /// <summary>
+    /// One place decides, because the two client dialects and the two failure paths must agree
+    /// (phase 65). The order is: a <c>node</c> steer wins over any policy, then the map is
+    /// consulted, then a named steer is checked against what the map already permits, and only then
+    /// does the policy get a say.
+    /// </summary>
+    public ProviderDecision Decide(string model, bool hasCapableNode, ProviderSteer steer)
     {
+        // The privacy direction, and it is answered before anything else is looked up: a caller who
+        // said "keep this one local" gets that on a hub with four providers and on a hub with none.
+        if (steer.NodeOnly)
+        {
+            return ProviderDecision.No;
+        }
+
         if (providers.Resolve(model) is not { } route)
         {
-            return false;
+            // A steer can never create a route the configuration does not contain (65 D4, track D4).
+            return steer.ProviderId is { } wanted
+                ? ProviderDecision.Refuse(StatusCodes.Status400BadRequest, Unserved(wanted, model))
+                : ProviderDecision.No;
         }
 
-        if (!hasCapableNode)
+        if (steer.ProviderId is { } named)
         {
-            return true;
+            // Deliberately the same sentence for an unknown id, a disabled one and a real one that
+            // maps a different model: a client with a key must not be able to enumerate the
+            // operator's vendors by probing. /api/status answers that, and is admin-gated.
+            if (!string.Equals(named, route.Id, StringComparison.OrdinalIgnoreCase) || route.Legacy)
+            {
+                return ProviderDecision.Refuse(StatusCodes.Status400BadRequest, Unserved(named, model));
+            }
+
+            return ProviderDecision.Yes(nodeIsBackstop: false);
         }
 
-        return route.Definition.NormalizedTrigger() == FallbackOptions.TriggerNoNodeOrSaturated
-            && IsSaturated(model);
+        return route.PolicyFor(model) switch
+        {
+            // Asked always. A node holding the same name never serves it, which is the whole point:
+            // it is the answer to a collision between a local model and a provider's, not a louder
+            // `prefer`.
+            ProviderPolicy.Only => ProviderDecision.Yes(nodeIsBackstop: false),
+
+            // Asked first, fleet as the backstop. Falling back to a local node is not a second
+            // disclosure, so this one may do it quietly (65 D3).
+            ProviderPolicy.Prefer => ProviderDecision.Yes(nodeIsBackstop: true),
+
+            _ when !hasCapableNode => ProviderDecision.Yes(nodeIsBackstop: false),
+
+            // Saturation burst is an optimisation, not a promise — hence the backstop.
+            ProviderPolicy.NoNodeOrSaturated when IsSaturated(model)
+                => ProviderDecision.Yes(nodeIsBackstop: true),
+
+            _ => ProviderDecision.No
+        };
     }
+
+    /// <summary>
+    /// The one refusal sentence a steered request can get. It names the pair the caller typed and
+    /// nothing else (65 D4).
+    /// </summary>
+    private static string Unserved(string providerId, string model)
+        => $"no provider '{providerId}' serves model '{model}' on this hub. The "
+           + $"{ProviderSteer.HeaderName} header can only choose among the providers already "
+           + $"configured for a model; '{ProviderSteer.NodeValue}' keeps the request on the fleet.";
 
     public async Task<ProviderResult> DispatchAsync(
         string kind,

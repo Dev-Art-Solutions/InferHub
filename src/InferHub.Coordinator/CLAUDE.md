@@ -968,3 +968,55 @@ dispatch test asserts: `RewriteModel` rewrites nothing on the way out, and the a
 relabelled with the name the caller used.
 
 **Rule 5 survived again.** Phase 64 added **zero** new dependencies.
+
+### Phase 65 (providers become routable) — load-bearing; this is where "fallback" stops being the mechanism
+
+**D1 — `Policy` is the one word for *when* a provider serves, and it subsumes `Trigger`.**
+`no-node` (default), `no-node-or-saturated`, `prefer` (asked first, fleet as backstop) and `only`
+(asked always; a node holding that name never serves it). `Trigger:` keeps binding and is read as the
+policy when `Policy:` is absent, so v3.29–v3.32 config is untouched — and `ProviderDefinition.Trigger`
+became **nullable** so the validator can tell a value somebody wrote from a default nobody chose.
+**Both present and disagreeing fails startup naming both** (61 D1's posture). **Rejected: a
+`Preferred: true` boolean beside `Trigger`** — four combinations of two knobs, two of them nonsense.
+**Rejected: new values under the name `Trigger`** — a field called *trigger* whose value is "always,
+first" is a lie in a config file.
+
+**D2 — `ModelPolicy` overrides it per model, and a policy for an unmapped model fails startup.** One
+credential serves models an operator feels differently about; the alternative is declaring the vendor
+twice and copying the key, and a credential written down twice is a credential rotated once.
+
+**D3 — The backstop is the policy's answer, not the error's.** `prefer` and a saturation burst may
+fall back to a node when the upstream fails (falling back to the local fleet is not a second
+disclosure); `only` and a steered request may not, and get a **502** naming the situation. Answering
+from different weights than the caller asked for, silently, is the one failure that looks like a
+success.
+
+**D4 — `X-InferHub-Provider` steers one request and can only narrow.** `<id>` serves from that
+provider **iff it already claims the model**, else `400` before anything leaves the hub — a steer can
+never create a route the config does not contain (track D4). `node` refuses every provider for this
+request, including an `only` one, and is the direction that matters: one prompt kept off somebody's
+servers without an operator editing config. **The refusal is one sentence for an unknown id, a
+disabled provider and a real-but-wrong one**, so a client with a key cannot enumerate the operator's
+vendors by probing; `/api/status` answers that and is admin-gated. `fallback` is a header *value*
+(61 D4), not a steerable id. **Rejected: a body field** — the body is forwarded to the upstream, and
+a routing directive inside a payload is a field a vendor will one day interpret.
+
+**D5 — `/api/tags` and `/v1/models` list what a client may call, and never who will serve it.**
+[ModelDiscovery](src/InferHub.Coordinator/Endpoints/ModelDiscovery.cs) merges the fleet's models with
+`IProviderRegistry.ClaimedModels`; a name both hold appears once and **the node's entry wins**,
+because `digest` and `size` are facts about a file on a box. A provider-only entry carries **null**
+for both (v3.13.1's lesson) and `["chat"]` for capabilities — `EmbeddingDispatcher` has no provider
+arm, so listing `embed` would be a promise answered with a 404. `owned_by` stays `inferhub`.
+**The projected `Fallback:` provider is deliberately absent**, exactly as it is from `/api/status`'s
+array, which is what keeps a v3.28-configured hub byte-identical. **Rejected: a `Discoverable` flag**
+— a model a client can call and cannot see is the defect this phase removes.
+
+**D7 — `/api/status` reports `policy` and no longer reports `trigger`.** Two spellings of one thing
+on a status payload is how a dashboard ends up believing whichever key it read first; the array is
+`null` for every deployment that never wrote the block and has no console panel until 66, so this is
+the cheapest the rename will ever be. `modelPolicies` appears only where there are overrides.
+
+*Threaded through `InferenceCore` as one `ProviderDecision` rather than three booleans*, so both
+client dialects and both failure paths read the same answer — `ShouldServe` is gone.
+
+**Rule 5 survived again.** Phase 65 added **zero** new dependencies.

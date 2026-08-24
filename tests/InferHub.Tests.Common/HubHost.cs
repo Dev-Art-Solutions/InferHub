@@ -41,7 +41,8 @@ internal sealed class HubHost : IAsyncDisposable
         string[]? streamChunks = null,
         string? failure = null,
         IReadOnlyList<ModelInfo>? models = null,
-        bool retrieval = false)
+        bool retrieval = false,
+        ProviderOptions? providers = null)
     {
         var host = new HubHost();
         host.Dispatcher.BlockingResponse = blockingResponse;
@@ -66,7 +67,20 @@ internal sealed class HubHost : IAsyncDisposable
         builder.Services.AddSingleton<INodeRegistry>(registry);
         builder.Services.AddSingleton<IRouter>(new AlwaysRoutes());
         builder.Services.AddSingleton<IDispatcher>(host.Dispatcher);
-        builder.Services.AddSingleton<IProviderDispatcher>(new NoProvider());
+        if (providers is null)
+        {
+            builder.Services.AddSingleton<IProviderDispatcher>(new NoProvider());
+        }
+        else
+        {
+            // Phase 65: the real registry, the real dispatcher and a real HttpClient, so a routing
+            // test crosses a socket to a vendor rather than asking a stub what it believes.
+            builder.Services.AddSingleton(Microsoft.Extensions.Options.Options.Create(providers));
+            builder.Services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new FallbackOptions()));
+            builder.Services.AddSingleton<IProviderRegistry, ProviderRegistry>();
+            builder.Services.AddHttpClient(ProviderDispatcher.HttpClientName);
+            builder.Services.AddSingleton<IProviderDispatcher, ProviderDispatcher>();
+        }
         builder.Services.AddSingleton<IEmbeddingDispatcher>(new ScriptedEmbeddings(retrieval));
         builder.Services.AddSingleton<Metrics>();
         builder.Services.AddSingleton<AdmissionControl>();
@@ -298,7 +312,7 @@ internal sealed class HubHost : IAsyncDisposable
 
     private sealed class NoProvider : IProviderDispatcher
     {
-        public bool ShouldServe(string model, bool hasCapableNode) => false;
+        public ProviderDecision Decide(string model, bool hasCapableNode, ProviderSteer steer) => ProviderDecision.No;
 
         public Task<ProviderResult> DispatchAsync(
             string kind,

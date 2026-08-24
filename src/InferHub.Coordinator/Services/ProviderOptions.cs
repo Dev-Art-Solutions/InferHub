@@ -79,7 +79,42 @@ public sealed class ProviderDefinition
     /// merely busy is a question about that upstream's price and latency, and a single global answer
     /// forces the expensive vendor and the cheap one into one policy.
     /// </summary>
-    public string Trigger { get; set; } = FallbackOptions.TriggerNoNode;
+    /// <remarks>
+    /// <b>Superseded by <see cref="Policy"/> in phase 65</b>, which is the same field with two more
+    /// values. It keeps binding, and unaccompanied it still means exactly what it meant in v3.29 —
+    /// a configuration written against any of the four provider releases is untouched.
+    /// </remarks>
+    /// <remarks>
+    /// <b>Nullable since phase 65</b> — not a behaviour change (absent has always meant
+    /// <c>no-node</c>, and <see cref="NormalizedTrigger"/> still says so) but the only way to tell a
+    /// value an operator wrote from a default nobody chose, which is what the <see cref="Policy"/>
+    /// conflict check needs in order to be exact rather than nearly right.
+    /// </remarks>
+    public string? Trigger { get; set; }
+
+    /// <summary>
+    /// When this provider serves (65 D1): <c>no-node</c>, <c>no-node-or-saturated</c>,
+    /// <c>prefer</c> or <c>only</c>. Absent means <see cref="Trigger"/>, which defaults to
+    /// <c>no-node</c>.
+    /// </summary>
+    /// <remarks>
+    /// Writing both and making them disagree is a startup failure naming both
+    /// (<see cref="ProviderOptionsValidator"/>): which upstream receives a prompt is not decided by
+    /// which of two keys a binder happened to apply last.
+    /// </remarks>
+    public string? Policy { get; set; }
+
+    /// <summary>
+    /// Local model name → the policy for <em>that</em> model, overriding <see cref="Policy"/>
+    /// (65 D2). A key that <see cref="ModelMap"/> does not carry fails startup.
+    /// </summary>
+    /// <remarks>
+    /// It exists because one credential serves models an operator feels differently about — the
+    /// expensive reasoning model preferred, the cheap one kept as overflow. The alternative is
+    /// declaring the same vendor twice with two copies of the key, and a credential written down
+    /// twice is a credential rotated once.
+    /// </remarks>
+    public Dictionary<string, string> ModelPolicy { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     public int TimeoutSeconds { get; set; } = 300;
 
@@ -143,6 +178,20 @@ public sealed class ProviderDefinition
             ? FallbackOptions.TriggerNoNodeOrSaturated
             : FallbackOptions.TriggerNoNode;
 
+    /// <summary>
+    /// This provider's own policy: <see cref="Policy"/> when it is set and understood, and
+    /// <see cref="Trigger"/> otherwise. The validator has already refused an unknown value, so a
+    /// bad one can never reach a request.
+    /// </summary>
+    public string NormalizedPolicy()
+        => ProviderPolicy.Normalize(Policy) ?? NormalizedTrigger();
+
+    /// <summary>The policy for one model: its own override (65 D2), or the provider's.</summary>
+    public string PolicyFor(string model)
+        => ModelPolicy.TryGetValue(model, out var overridden) && ProviderPolicy.Normalize(overridden) is { } policy
+            ? policy
+            : NormalizedPolicy();
+
     public string NormalizedType()
         => string.IsNullOrWhiteSpace(Type) ? TypeOpenAiCompatible : Type.Trim().ToLowerInvariant();
 
@@ -191,4 +240,10 @@ public sealed record ProviderRoute(
 {
     /// <summary>The <c>X-InferHub-Served-By</c> value for a response this provider served.</summary>
     public string ServedBy => Legacy ? "fallback" : $"provider:{Id}";
+
+    /// <summary>
+    /// The policy for the model this route was resolved for (65 D1/D2). Resolved here rather than at
+    /// the call site so a per-model override cannot be honoured on one path and forgotten on another.
+    /// </summary>
+    public string PolicyFor(string model) => Definition.PolicyFor(model);
 }

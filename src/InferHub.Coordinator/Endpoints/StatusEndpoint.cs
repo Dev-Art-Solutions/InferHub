@@ -173,7 +173,11 @@ public static class StatusEndpoint
                 return new ProviderStatusBlock(
                     route.Id,
                     route.Definition.NormalizedType(),
-                    route.Definition.NormalizedTrigger(),
+                    // Phase 65 D7: `policy` replaces `trigger` rather than joining it. Two spellings
+                    // of one thing on a status payload is how a dashboard ends up believing
+                    // whichever key it read first, and this block has no console panel until 66.
+                    route.Definition.NormalizedPolicy(),
+                    ModelPolicies(route.Definition),
                     string.IsNullOrWhiteSpace(route.Definition.ApiKey) ? "absent" : "configured",
                     route.Definition.ModelMap.Keys.OrderBy(model => model, StringComparer.OrdinalIgnoreCase).ToArray(),
                     counter?.Dispatched ?? 0,
@@ -325,10 +329,28 @@ public static class StatusEndpoint
     /// page that renders four characters of somebody's API key has published four characters of
     /// somebody's API key.
     /// </param>
+    /// <summary>
+    /// The per-model overrides (65 D2), or null where there are none — a deployment that sets one
+    /// policy for a provider sees no key rather than an empty object.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string>? ModelPolicies(ProviderDefinition definition)
+    {
+        var overrides = definition.ModelPolicy
+            .Where(entry => ProviderPolicy.Normalize(entry.Value) is not null)
+            .OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                entry => entry.Key,
+                entry => ProviderPolicy.Normalize(entry.Value)!,
+                StringComparer.OrdinalIgnoreCase);
+
+        return overrides.Count == 0 ? null : overrides;
+    }
+
     internal sealed record ProviderStatusBlock(
         string Id,
         string Type,
-        string Trigger,
+        string Policy,
+        IReadOnlyDictionary<string, string>? ModelPolicies,
         string Credential,
         IReadOnlyList<string> MappedModels,
         long Dispatched,

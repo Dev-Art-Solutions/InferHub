@@ -23,6 +23,13 @@ public static class InferenceEndpoints
     public const string RerankHeader = "X-InferHub-Rerank";
     public const string SourcesHeader = "X-InferHub-Sources";
 
+    /// <summary>
+    /// Phase 65: <c>X-InferHub-Provider: &lt;id&gt;</c> or <c>node</c>. Parsed by
+    /// <see cref="ProviderSteer"/>, which both client dialects share — two parsers that disagreed
+    /// about what this means would be two answers to "whose servers saw my prompt".
+    /// </summary>
+    public const string ProviderHeader = ProviderSteer.HeaderName;
+
     private const string GenerateKind = "generate";
     private const string ChatKind = "chat";
 
@@ -44,10 +51,11 @@ public static class InferenceEndpoints
     /// the <em>real</em> hub handler against the node's, which it cannot do for a route that only
     /// exists inside the composition root.
     /// </remarks>
-    private static IResult HandleTags(INodeRegistry registry, ILoggerFactory loggerFactory)
+    private static IResult HandleTags(INodeRegistry registry, IServiceProvider services, ILoggerFactory loggerFactory)
     {
         loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Tags").LogInformation("Model tags requested");
-        return Results.Ok(new OllamaTagsResponse(registry.DistinctModels().ToArray()));
+        return Results.Ok(new OllamaTagsResponse(
+            ModelDiscovery.Merge(registry, services.GetService<IProviderRegistry>()).ToArray()));
     }
 
     private static async Task<IResult> HandleEmbedAsync(
@@ -399,7 +407,10 @@ public static class InferenceEndpoints
             providers,
             metrics,
             logger,
-            cancellationToken);
+            cancellationToken,
+            // Phase 65: the caller's own say in where this one goes. Absent on every request that
+            // does not carry the header, which is every request written before v3.33.
+            ProviderSteer.From(httpContext.Request));
 
         if (outcome.IsError)
         {

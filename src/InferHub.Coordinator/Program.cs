@@ -163,7 +163,7 @@ else
 
 // Cloud providers (phase 61). Registered always and inert unless something is configured: with no
 // `Providers:` section and no `Fallback:Enabled`, ProviderRegistry.Resolve is a null for every model
-// and ShouldServe is a single `false` — byte-for-byte the pre-v3.29 behaviour.
+// and Decide is a single `No` for every request — byte-for-byte the pre-v3.29 behaviour.
 builder.Services.Configure<FallbackOptions>(builder.Configuration.GetSection(FallbackOptions.SectionName));
 builder.Services.AddOptions<ProviderOptions>()
     .Configure<IConfiguration>((options, configuration) =>

@@ -224,7 +224,7 @@ public class QueueTests
 
     private sealed class NeverFallback : IProviderDispatcher
     {
-        public bool ShouldServe(string model, bool hasCapableNode) => false;
+        public ProviderDecision Decide(string model, bool hasCapableNode, ProviderSteer steer) => ProviderDecision.No;
 
         public Task<ProviderResult> DispatchAsync(string kind, string rawJson, string model, bool stream, CancellationToken cancellationToken)
             => throw new InvalidOperationException("must not be called");
@@ -234,7 +234,7 @@ public class QueueTests
     {
         public string? LastModel { get; private set; }
 
-        public bool ShouldServe(string model, bool hasCapableNode) => true;
+        public ProviderDecision Decide(string model, bool hasCapableNode, ProviderSteer steer) => ProviderDecision.Yes(nodeIsBackstop: hasCapableNode);
 
         public Task<ProviderResult> DispatchAsync(string kind, string rawJson, string model, bool stream, CancellationToken cancellationToken)
         {

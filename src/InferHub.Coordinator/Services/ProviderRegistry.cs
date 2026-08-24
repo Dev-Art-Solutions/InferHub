@@ -17,6 +17,19 @@ public interface IProviderRegistry
     /// in v3.28.
     /// </summary>
     IReadOnlyList<ProviderRoute> Configured { get; }
+
+    /// <summary>
+    /// Every local model name a <b>named</b>, enabled provider claims — the discovery half of phase
+    /// 65 (D5). <c>/api/tags</c> and <c>/v1/models</c> merge these with the fleet's, so a model a
+    /// client can call is a model it can see.
+    /// </summary>
+    /// <remarks>
+    /// <b>The projected legacy provider is deliberately absent</b>, exactly as it is from
+    /// <see cref="Configured"/> and for the same reason: a hub carrying the v3.28 <c>Fallback:</c>
+    /// section and no <c>Providers:</c> block must keep the discovery surface it had, byte for byte.
+    /// Writing the block is the upgrade that makes those names visible.
+    /// </remarks>
+    IReadOnlyCollection<string> ClaimedModels { get; }
 }
 
 /// <summary>
@@ -50,6 +63,16 @@ public sealed class ProviderRegistry(
         .Select(entry => new ProviderRoute(entry.Key, entry.Value, UpstreamModel: string.Empty, Legacy: false))
         .ToArray();
 
+    public IReadOnlyCollection<string> ClaimedModels => providers.Value.Entries
+        .Where(entry => entry.Value.Enabled)
+        .SelectMany(entry => entry.Value.ModelMap
+            .Where(mapping => !string.IsNullOrWhiteSpace(mapping.Value))
+            .Select(mapping => mapping.Key)
+            .Where(model => Maps(entry.Value, model) is not null))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .OrderBy(model => model, StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
     public ProviderRoute? Resolve(string model)
     {
         foreach (var (id, definition) in providers.Value.Entries)
@@ -67,6 +90,10 @@ public sealed class ProviderRegistry(
             return null;
         }
 
+        // No Policy is projected, and that is 65 D6 rather than an omission: the legacy section's
+        // whole vocabulary is Trigger, so `prefer` and `only` are reachable only by writing a
+        // Providers: block. A section named *fallback* whose policy says "first choice" is the
+        // sentence 61 D2 refused to leave for the next reader.
         var projected = new ProviderDefinition
         {
             Type = ProviderDefinition.TypeOpenAiCompatible,

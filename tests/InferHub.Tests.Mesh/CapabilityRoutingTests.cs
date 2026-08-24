@@ -345,7 +345,7 @@ public class CapabilityRoutingTests
 
     private sealed class DisabledFallback : IProviderDispatcher
     {
-        public bool ShouldServe(string model, bool hasCapableNode) => false;
+        public ProviderDecision Decide(string model, bool hasCapableNode, ProviderSteer steer) => ProviderDecision.No;
 
         public Task<ProviderResult> DispatchAsync(
             string kind,

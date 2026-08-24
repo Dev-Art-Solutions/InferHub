@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Http;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -92,8 +93,8 @@ public class ProviderTests
 
         var dispatcher = Dispatcher(Registry(("openrouter", parked)), new RecordingUpstream(UpstreamAnswer));
 
-        Assert.False(dispatcher.ShouldServe("big-code", hasCapableNode: false));
-        Assert.False(dispatcher.ShouldServe("mistral", hasCapableNode: false));
+        Assert.False(dispatcher.Decide("big-code", hasCapableNode: false, ProviderSteer.None).Serve);
+        Assert.False(dispatcher.Decide("mistral", hasCapableNode: false, ProviderSteer.None).Serve);
     }
 
     [Fact]
@@ -120,8 +121,8 @@ public class ProviderTests
             registry);
 
         // Same fleet, same saturation, two answers — because the operator gave two answers.
-        Assert.True(dispatcher.ShouldServe("big-code", hasCapableNode: true));
-        Assert.False(dispatcher.ShouldServe("llama3", hasCapableNode: true));
+        Assert.True(dispatcher.Decide("big-code", hasCapableNode: true, ProviderSteer.None).Serve);
+        Assert.False(dispatcher.Decide("llama3", hasCapableNode: true, ProviderSteer.None).Serve);
     }
 
     // ---- what startup refuses ----------------------------------------------------------
@@ -573,7 +574,380 @@ public class ProviderTests
         Assert.False(Validate(Configured(("gemini", provider))).Failed);
     }
 
+    // ---- phase 65: the policy ----------------------------------------------------------
+
+    [Fact]
+    public void APreferredProviderIsAskedWhileTheFleetIsIdle()
+    {
+        // The sentence the whole track exists for: an operator wanting a vendor's model served from
+        // the vendor *while* their own boxes are free had no way to say so in v3.32.
+        var claude = Provider(baseUrl: null, "k", ("smart", "claude-opus-5"));
+        claude.Type = ProviderDefinition.TypeAnthropic;
+        claude.Policy = ProviderPolicy.Prefer;
+
+        var decision = Dispatcher(Registry(("claude", claude)), new RecordingUpstream(AnthropicAnswer))
+            .Decide("smart", hasCapableNode: true, ProviderSteer.None);
+
+        Assert.True(decision.Serve);
+
+        // …and the fleet is still allowed to catch it, because falling back to a local node is not
+        // a second disclosure (65 D3).
+        Assert.True(decision.NodeIsBackstop);
+    }
+
+    [Fact]
+    public void AnOnlyProviderTakesTheNameFromTheFleetAndKeepsItEvenWhenItFails()
+    {
+        var claude = Provider(baseUrl: null, "k", ("smart", "claude-opus-5"));
+        claude.Type = ProviderDefinition.TypeAnthropic;
+        claude.Policy = ProviderPolicy.Only;
+
+        var decision = Dispatcher(Registry(("claude", claude)), new RecordingUpstream(AnthropicAnswer))
+            .Decide("smart", hasCapableNode: true, ProviderSteer.None);
+
+        Assert.True(decision.Serve);
+
+        // No backstop, and that is the point rather than a strictness: a node holding a model of the
+        // same name holds *different weights*, and answering from them silently is the one failure
+        // that looks like a success.
+        Assert.False(decision.NodeIsBackstop);
+    }
+
+    [Fact]
+    public void AnOverflowPolicyStillWaitsForTheFleetToFail()
+    {
+        // The default, unchanged since v2.4, and what every deployment that writes no Policy gets.
+        var dispatcher = Dispatcher(
+            Registry(("openai", Provider("https://api.openai.com/v1", "k", ("llama3", "gpt-4o-mini")))),
+            new RecordingUpstream(UpstreamAnswer));
+
+        Assert.False(dispatcher.Decide("llama3", hasCapableNode: true, ProviderSteer.None).Serve);
+        Assert.True(dispatcher.Decide("llama3", hasCapableNode: false, ProviderSteer.None).Serve);
+    }
+
+    [Fact]
+    public void TriggerKeepsBindingAndMeansExactlyWhatItMeant()
+    {
+        // v3.29–v3.32 config, read by v3.33 code. `Policy` is the same field with two more values,
+        // so an unaccompanied `Trigger` has to survive verbatim or every existing hub changes
+        // behaviour on upgrade.
+        var provider = Provider("https://api.openai.com/v1", "k", ("llama3", "gpt-4o-mini"));
+        provider.Trigger = FallbackOptions.TriggerNoNodeOrSaturated;
+
+        Assert.Equal(FallbackOptions.TriggerNoNodeOrSaturated, provider.NormalizedPolicy());
+        Assert.Equal(FallbackOptions.TriggerNoNodeOrSaturated, provider.PolicyFor("llama3"));
+
+        var untouched = Provider("https://api.openai.com/v1", "k", ("llama3", "gpt-4o-mini"));
+        Assert.Equal(ProviderPolicy.NoNode, untouched.NormalizedPolicy());
+    }
+
+    [Fact]
+    public void APerModelPolicyOverridesTheProvidersOwnAndLeavesTheRestAlone()
+    {
+        // One credential, two models an operator feels differently about (65 D2) — the alternative
+        // is declaring the vendor twice and copying the key.
+        var claude = Provider(baseUrl: null, "k", ("smart", "claude-opus-5"), ("big-code", "claude-sonnet-5"));
+        claude.Type = ProviderDefinition.TypeAnthropic;
+        claude.Policy = ProviderPolicy.Prefer;
+        claude.ModelPolicy["big-code"] = ProviderPolicy.NoNode;
+
+        var dispatcher = Dispatcher(Registry(("claude", claude)), new RecordingUpstream(AnthropicAnswer));
+
+        Assert.True(dispatcher.Decide("smart", hasCapableNode: true, ProviderSteer.None).Serve);
+        Assert.False(dispatcher.Decide("big-code", hasCapableNode: true, ProviderSteer.None).Serve);
+    }
+
+    [Fact]
+    public void TheProjectedFallbackProviderCanNeverBePreferred()
+    {
+        // 65 D6. The legacy section's whole vocabulary is Trigger: a section named *fallback* whose
+        // policy says "first choice" is the sentence 61 D2 refused to leave for the next reader.
+        var legacy = new FallbackOptions
+        {
+            Enabled = true,
+            BaseUrl = "https://api.openai.com/v1",
+            ModelMap = { ["llama3"] = "gpt-4o-mini" }
+        };
+
+        var route = Registry(legacy).Resolve("llama3");
+
+        Assert.NotNull(route);
+        Assert.True(route!.Legacy);
+        Assert.Equal(ProviderPolicy.NoNode, route.PolicyFor("llama3"));
+    }
+
+    // ---- phase 65: the steer -----------------------------------------------------------
+
+    [Fact]
+    public void TheSteerChoosesAProviderThatAlreadyClaimsTheModelAndGetsNoBackstop()
+    {
+        var dispatcher = Dispatcher(
+            Registry(("openrouter", Provider("https://openrouter.ai/api/v1", "k", ("big-code", "qwen/qwen3-coder")))),
+            new RecordingUpstream(UpstreamAnswer));
+
+        var decision = dispatcher.Decide("big-code", hasCapableNode: true, Steer("openrouter"));
+
+        // A free node and an overflow policy, and it still goes to the vendor — because the caller
+        // said so, and the map already permitted it.
+        Assert.True(decision.Serve);
+        Assert.False(decision.NodeIsBackstop);
+    }
+
+    [Theory]
+    [InlineData("does-not-exist")]
+    [InlineData("parked")]
+    [InlineData("openai")]
+    public void EveryWrongSteerGetsOneSentenceThatNamesNobodyElse(string steered)
+    {
+        // 65 D4. An unknown id, a disabled provider and a real provider that maps a different model
+        // are three different mistakes and one answer, so a client holding a key cannot enumerate
+        // the operator's vendors by probing. /api/status answers that, and is admin-gated.
+        var parked = Provider("https://api.openai.com/v1", "k", ("mistral", "gpt-4o-mini"));
+        parked.Enabled = false;
+
+        var dispatcher = Dispatcher(
+            Registry(
+                ("openrouter", Provider("https://openrouter.ai/api/v1", "k", ("big-code", "qwen/qwen3-coder"))),
+                ("openai", Provider("https://api.openai.com/v1", "k", ("llama3", "gpt-4o-mini"))),
+                ("parked", parked)),
+            new RecordingUpstream(UpstreamAnswer));
+
+        var decision = dispatcher.Decide("big-code", hasCapableNode: false, Steer(steered));
+
+        Assert.False(decision.Serve);
+        Assert.True(decision.IsRefusal);
+        Assert.Equal(400, decision.ErrorStatus);
+        Assert.Contains(steered, decision.ErrorMessage!);
+        Assert.Contains("big-code", decision.ErrorMessage!);
+        Assert.DoesNotContain("openrouter", decision.ErrorMessage!);
+    }
+
+    [Fact]
+    public void TheNodeSteerRefusesEveryProviderIncludingAnOnlyOne()
+    {
+        // The direction that matters most: one prompt kept off somebody's servers without an
+        // operator editing config.
+        var claude = Provider(baseUrl: null, "k", ("smart", "claude-opus-5"));
+        claude.Type = ProviderDefinition.TypeAnthropic;
+        claude.Policy = ProviderPolicy.Only;
+
+        var decision = Dispatcher(Registry(("claude", claude)), new RecordingUpstream(AnthropicAnswer))
+            .Decide("smart", hasCapableNode: true, ProviderSteer.From(Request(ProviderSteer.NodeValue)));
+
+        Assert.False(decision.Serve);
+        Assert.False(decision.IsRefusal);
+    }
+
+    [Fact]
+    public void ASteerIsRefusedOnAHubThatHasNoProvidersAtAllAndNodeIsStillHonoured()
+    {
+        var dispatcher = Dispatcher(Registry(), new RecordingUpstream(UpstreamAnswer));
+
+        Assert.True(dispatcher.Decide("llama3", hasCapableNode: true, Steer("openai")).IsRefusal);
+
+        // …and the one steer a provider-less hub can honour costs nothing, because it is what
+        // already happens.
+        var local = dispatcher.Decide("llama3", hasCapableNode: true, ProviderSteer.From(Request("node")));
+        Assert.False(local.Serve);
+        Assert.False(local.IsRefusal);
+    }
+
+    [Fact]
+    public void TheLegacyFallbackProviderIsNotAddressableByName()
+    {
+        // `fallback` is a header *value* (61 D4), not a provider id somebody can steer to. Letting
+        // it be one would make the legacy section a routable target, which is 65 D6 the other way.
+        var legacy = new FallbackOptions
+        {
+            Enabled = true,
+            BaseUrl = "https://api.openai.com/v1",
+            ModelMap = { ["llama3"] = "gpt-4o-mini" }
+        };
+
+        var dispatcher = Dispatcher(Registry(legacy), new RecordingUpstream(UpstreamAnswer));
+
+        Assert.True(dispatcher.Decide("llama3", hasCapableNode: false, Steer("fallback")).IsRefusal);
+    }
+
+    [Fact]
+    public void AnAbsentOrBlankHeaderIsNotASteer()
+    {
+        Assert.False(ProviderSteer.From(Request(null)).IsSet);
+        Assert.False(ProviderSteer.From(Request("   ")).IsSet);
+        Assert.Equal("claude", ProviderSteer.From(Request(" claude ")).ProviderId);
+        Assert.True(ProviderSteer.From(Request("NODE")).NodeOnly);
+    }
+
+    // ---- phase 65: what startup refuses ------------------------------------------------
+
+    [Fact]
+    public void AnUnknownPolicyFailsStartupNamingTheOnesThatExist()
+    {
+        var provider = Provider("https://api.openai.com/v1", "k", ("llama3", "gpt-4o-mini"));
+        provider.Policy = "always";
+
+        var result = Validate(Configured(("openai", provider)));
+
+        Assert.True(result.Failed);
+        var failure = Assert.Single(result.Failures);
+        Assert.Contains("always", failure);
+        Assert.Contains(ProviderPolicy.Prefer, failure);
+        Assert.Contains(ProviderPolicy.Only, failure);
+    }
+
+    [Fact]
+    public void APolicyAndATriggerThatDisagreeFailStartupNamingBoth()
+    {
+        // Precedence is not a thing this hub uses to decide whose servers see a prompt (61 D1).
+        var provider = Provider("https://api.openai.com/v1", "k", ("llama3", "gpt-4o-mini"));
+        provider.Policy = ProviderPolicy.Prefer;
+        provider.Trigger = FallbackOptions.TriggerNoNodeOrSaturated;
+
+        var result = Validate(Configured(("openai", provider)));
+
+        Assert.True(result.Failed);
+        var failure = Assert.Single(result.Failures);
+        Assert.Contains(ProviderPolicy.Prefer, failure);
+        Assert.Contains(FallbackOptions.TriggerNoNodeOrSaturated, failure);
+    }
+
+    [Fact]
+    public void APolicyOnItsOwnStartsAndSoDoesATriggerOnItsOwn()
+    {
+        var preferred = Provider("https://api.openai.com/v1", "k", ("llama3", "gpt-4o-mini"));
+        preferred.Policy = ProviderPolicy.Prefer;
+
+        var triggered = Provider("https://api.openai.com/v1", "k", ("mistral", "gpt-4o-mini"));
+        triggered.Trigger = FallbackOptions.TriggerNoNodeOrSaturated;
+
+        Assert.False(Validate(Configured(("a", preferred), ("b", triggered))).Failed);
+    }
+
+    [Fact]
+    public void APerModelPolicyForAModelNobodyMapsFailsStartup()
+    {
+        // A policy without a mapping is a route that does not exist — a typo that would otherwise
+        // sit in a config file forever, quietly doing nothing.
+        var provider = Provider("https://api.openai.com/v1", "k", ("llama3", "gpt-4o-mini"));
+        provider.ModelPolicy["llama4"] = ProviderPolicy.Prefer;
+
+        var result = Validate(Configured(("openai", provider)));
+
+        Assert.True(result.Failed);
+        Assert.Contains("llama4", Assert.Single(result.Failures));
+    }
+
+    [Fact]
+    public void AnUnknownPerModelPolicyFailsStartupToo()
+    {
+        var provider = Provider("https://api.openai.com/v1", "k", ("llama3", "gpt-4o-mini"));
+        provider.ModelPolicy["llama3"] = "sometimes";
+
+        var result = Validate(Configured(("openai", provider)));
+
+        Assert.True(result.Failed);
+        Assert.Contains("sometimes", Assert.Single(result.Failures));
+    }
+
+    // ---- phase 65: discovery -----------------------------------------------------------
+
+    [Fact]
+    public void AProviderOnlyModelIsListedAndCarriesNoDigestAndNoSize()
+    {
+        // The defect this half of the phase removes: until v3.33 a mapped model no node held was a
+        // model a client could not discover and *could* call.
+        var fleet = FleetHolding(("llama3", "sha256:abc", 4661211808L));
+        var providers = Registry(("claude", Provider(baseUrl: null, "k", ("smart", "claude-opus-5"))));
+
+        var listed = InferHub.Coordinator.Endpoints.ModelDiscovery.Merge(fleet, providers);
+
+        Assert.Equal(["llama3", "smart"], listed.Select(model => model.Name));
+
+        var claimed = listed.Single(model => model.Name == "smart");
+
+        // A zero you constructed to fill a field is not a measurement (v3.13.1).
+        Assert.Null(claimed.Digest);
+        Assert.Null(claimed.SizeBytes);
+    }
+
+    [Fact]
+    public void AModelBothAProviderAndANodeHoldIsListedOnceAndTheNodesEntryWins()
+    {
+        // `digest` and `size` are facts about a file on a box, and only one of the two has them.
+        var fleet = FleetHolding(("smart", "sha256:local", 42L));
+        var providers = Registry(("claude", Provider(baseUrl: null, "k", ("smart", "claude-opus-5"))));
+
+        var listed = InferHub.Coordinator.Endpoints.ModelDiscovery.Merge(fleet, providers);
+
+        var single = Assert.Single(listed);
+        Assert.Equal("smart", single.Name);
+        Assert.Equal("sha256:local", single.Digest);
+    }
+
+    [Fact]
+    public void AFallbackOnlyHubDiscoversExactlyWhatItDiscoveredBefore()
+    {
+        // The invariant this phase was likeliest to break: a hub carrying the v3.28 section and no
+        // Providers: block keeps the listing it had, byte for byte (65 D5, 61's /api/status
+        // precedent).
+        var fleet = FleetHolding(("llama3", "sha256:abc", 1L));
+        var legacy = new FallbackOptions
+        {
+            Enabled = true,
+            BaseUrl = "https://api.openai.com/v1",
+            ModelMap = { ["gpt-4o-mini-local"] = "gpt-4o-mini" }
+        };
+
+        var providers = Registry(legacy);
+
+        Assert.Empty(providers.ClaimedModels);
+        Assert.Equal(
+            fleet.DistinctModels(),
+            InferHub.Coordinator.Endpoints.ModelDiscovery.Merge(fleet, providers));
+    }
+
+    [Fact]
+    public void ADisabledProvidersModelsAreNotDiscoverableEither()
+    {
+        var parked = Provider(baseUrl: null, "k", ("smart", "claude-opus-5"));
+        parked.Enabled = false;
+
+        Assert.Empty(Registry(("claude", parked)).ClaimedModels);
+    }
+
     // ---- harness -----------------------------------------------------------------------
+
+    private static ProviderSteer Steer(string providerId) => ProviderSteer.From(Request(providerId));
+
+    /// <summary>An <c>HttpRequest</c> carrying the steer header, so the shipped parser is what runs.</summary>
+    private static HttpRequest Request(string? headerValue)
+    {
+        var context = new DefaultHttpContext();
+
+        if (headerValue is not null)
+        {
+            context.Request.Headers[ProviderSteer.HeaderName] = headerValue;
+        }
+
+        return context.Request;
+    }
+
+    private static NodeRegistry FleetHolding(params (string Name, string? Digest, long? Size)[] models)
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+
+        registry.Upsert("conn-a", Registration("node-a", maxConcurrency: null), now);
+        registry.ReportModels(
+            "conn-a",
+            new Shared.Contracts.NodeModels(
+                "node-a",
+                models.Select(model => new Shared.Contracts.ModelInfo(model.Name, model.Digest, model.Size)).ToArray(),
+                now),
+            now);
+
+        return registry;
+    }
 
     private static ProviderDefinition Provider(string? baseUrl, string? apiKey, params (string Local, string Upstream)[] map)
     {

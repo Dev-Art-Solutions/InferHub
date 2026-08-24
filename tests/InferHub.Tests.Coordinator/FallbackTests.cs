@@ -36,7 +36,7 @@ public class FallbackTests
             ModelMap = { ["llama3"] = "gpt-4o-mini" }
         });
 
-        Assert.False(fallback.ShouldServe("llama3", hasCapableNode: false));
+        Assert.False(fallback.Decide("llama3", hasCapableNode: false, ProviderSteer.None).Serve);
     }
 
     [Fact]
@@ -45,8 +45,8 @@ public class FallbackTests
         // The map is the consent. A model nobody mapped never leaves the fleet.
         var fallback = Dispatcher(Enabled(map: ("llama3", "gpt-4o-mini")));
 
-        Assert.False(fallback.ShouldServe("mistral", hasCapableNode: false));
-        Assert.True(fallback.ShouldServe("llama3", hasCapableNode: false));
+        Assert.False(fallback.Decide("mistral", hasCapableNode: false, ProviderSteer.None).Serve);
+        Assert.True(fallback.Decide("llama3", hasCapableNode: false, ProviderSteer.None).Serve);
     }
 
     [Fact]
@@ -58,8 +58,8 @@ public class FallbackTests
 
         var fallback = Dispatcher(options);
 
-        Assert.True(fallback.ShouldServe("llama3", hasCapableNode: false));
-        Assert.False(fallback.ShouldServe("mistral", hasCapableNode: false));
+        Assert.True(fallback.Decide("llama3", hasCapableNode: false, ProviderSteer.None).Serve);
+        Assert.False(fallback.Decide("mistral", hasCapableNode: false, ProviderSteer.None).Serve);
     }
 
     [Fact]
@@ -68,7 +68,7 @@ public class FallbackTests
         var options = Enabled(map: ("llama3", "gpt-4o-mini"));
         options.BaseUrl = null;
 
-        Assert.False(Dispatcher(options).ShouldServe("llama3", hasCapableNode: false));
+        Assert.False(Dispatcher(options).Decide("llama3", hasCapableNode: false, ProviderSteer.None).Serve);
     }
 
     [Fact]
@@ -78,7 +78,7 @@ public class FallbackTests
         // not diversion.
         var fallback = Dispatcher(Enabled(map: ("llama3", "gpt-4o-mini")));
 
-        Assert.False(fallback.ShouldServe("llama3", hasCapableNode: true));
+        Assert.False(fallback.Decide("llama3", hasCapableNode: true, ProviderSteer.None).Serve);
     }
 
     // ---- saturation trigger ------------------------------------------------------------
@@ -98,11 +98,11 @@ public class FallbackTests
 
         var fallback = Dispatcher(options, registry);
 
-        Assert.False(fallback.ShouldServe("llama3", hasCapableNode: true));
+        Assert.False(fallback.Decide("llama3", hasCapableNode: true, ProviderSteer.None).Serve);
 
         registry.IncrementInFlight("conn-a");
 
-        Assert.True(fallback.ShouldServe("llama3", hasCapableNode: true));
+        Assert.True(fallback.Decide("llama3", hasCapableNode: true, ProviderSteer.None).Serve);
     }
 
     [Fact]
@@ -125,7 +125,7 @@ public class FallbackTests
         var options = Enabled(map: ("llama3", "gpt-4o-mini"));
         options.Trigger = FallbackOptions.TriggerNoNodeOrSaturated;
 
-        Assert.False(Dispatcher(options, registry).ShouldServe("llama3", hasCapableNode: true));
+        Assert.False(Dispatcher(options, registry).Decide("llama3", hasCapableNode: true, ProviderSteer.None).Serve);
     }
 
     [Fact]
@@ -142,7 +142,7 @@ public class FallbackTests
 
         var fallback = Dispatcher(Enabled(map: ("llama3", "gpt-4o-mini")), registry);
 
-        Assert.False(fallback.ShouldServe("llama3", hasCapableNode: true));
+        Assert.False(fallback.Decide("llama3", hasCapableNode: true, ProviderSteer.None).Serve);
     }
 
     // ---- dispatching -------------------------------------------------------------------
@@ -400,7 +400,7 @@ public class FallbackTests
 
     private sealed class NeverFallback : IProviderDispatcher
     {
-        public bool ShouldServe(string model, bool hasCapableNode) => false;
+        public ProviderDecision Decide(string model, bool hasCapableNode, ProviderSteer steer) => ProviderDecision.No;
 
         public Task<ProviderResult> DispatchAsync(string kind, string rawJson, string model, bool stream, CancellationToken cancellationToken)
             => throw new InvalidOperationException("fallback must not be dispatched when it is off");
@@ -410,7 +410,7 @@ public class FallbackTests
     {
         public string? LastModel { get; private set; }
 
-        public bool ShouldServe(string model, bool hasCapableNode) => serves;
+        public ProviderDecision Decide(string model, bool hasCapableNode, ProviderSteer steer) => serves ? ProviderDecision.Yes(nodeIsBackstop: hasCapableNode) : ProviderDecision.No;
 
         public Task<ProviderResult> DispatchAsync(string kind, string rawJson, string model, bool stream, CancellationToken cancellationToken)
         {
@@ -421,7 +421,7 @@ public class FallbackTests
 
     private sealed class ThrowingFallback : IProviderDispatcher
     {
-        public bool ShouldServe(string model, bool hasCapableNode) => true;
+        public ProviderDecision Decide(string model, bool hasCapableNode, ProviderSteer steer) => ProviderDecision.Yes(nodeIsBackstop: hasCapableNode);
 
         public Task<ProviderResult> DispatchAsync(string kind, string rawJson, string model, bool stream, CancellationToken cancellationToken)
             => throw new HttpRequestException("upstream unreachable");

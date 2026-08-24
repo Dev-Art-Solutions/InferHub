@@ -102,7 +102,8 @@ internal static class InferenceCore
         IProviderDispatcher providers,
         Metrics metrics,
         ILogger logger,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ProviderSteer steer = default)
     {
         if (string.IsNullOrWhiteSpace(model))
         {
@@ -136,12 +137,23 @@ internal static class InferenceCore
         {
             var node = router.Route(model, conversationKey, capability: capability);
 
-            // Cloud burst. Off by default, and when off this is a single false — the 404 below is
-            // byte-for-byte what every release since 1.0 has returned. With Trigger=no-node-or-saturated
-            // a saturated fleet overflows to the upstream INSTEAD of queueing — the upstream answers
-            // in seconds, the queue in tens of seconds, and a client who opted into burst asked for
-            // the former (precedence recorded in CLAUDE.md, covered by QueueTests).
-            if (providers.ShouldServe(model, hasCapableNode: node is not null))
+            // Where a provider gets a say (phase 65). Off by default, and when off this is a single
+            // `No` — the 404 below is byte-for-byte what every release since 1.0 has returned. With
+            // Policy=no-node-or-saturated a saturated fleet overflows to the upstream INSTEAD of
+            // queueing (the upstream answers in seconds, the queue in tens of seconds); with
+            // `prefer` or `only` the provider is asked before the fleet is consulted at all, and
+            // with an X-InferHub-Provider header the caller has named one of the two directions.
+            var decision = providers.Decide(model, hasCapableNode: node is not null, steer);
+
+            if (decision.IsRefusal)
+            {
+                // A steer nobody can honour. Refused here, before anything leaves the hub, rather
+                // than quietly served by whoever the config happened to pick.
+                logger.LogInformation("Refused {Kind} for {Model}: {Message}", kind, model, decision.ErrorMessage);
+                return DispatchOutcome.Failure(decision.ErrorStatus!.Value, decision.ErrorMessage!);
+            }
+
+            if (decision.Serve)
             {
                 try
                 {
@@ -166,7 +178,7 @@ internal static class InferenceCore
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    logger.LogWarning(ex, "Cloud burst failed for model {Model}", model);
+                    logger.LogWarning(ex, "Provider dispatch failed for model {Model}", model);
 
                     if (node is null)
                     {
@@ -175,7 +187,18 @@ internal static class InferenceCore
                             $"no node holds model '{model}' and the fallback upstream failed: {ex.Message}");
                     }
 
-                    // Saturation burst is an optimisation, not a promise — fall through to the node.
+                    // A node exists, and whether it may catch this is the policy's answer, not the
+                    // error's (65 D3). `prefer` and a saturation burst say yes — falling back to a
+                    // local node is not a second disclosure. `only` and a steered request say no:
+                    // answering from different weights than the caller asked for, silently, is the
+                    // one failure that looks like a success.
+                    if (!decision.NodeIsBackstop)
+                    {
+                        return DispatchOutcome.Failure(
+                            StatusCodes.Status502BadGateway,
+                            $"the provider serving model '{model}' failed and no other route was "
+                            + $"permitted for this request: {ex.Message}");
+                    }
                 }
             }
 

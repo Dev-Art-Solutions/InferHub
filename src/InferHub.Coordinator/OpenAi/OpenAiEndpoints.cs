@@ -112,7 +112,9 @@ public static class OpenAiEndpoints
             providers,
             metrics,
             logger,
-            cancellationToken);
+            cancellationToken,
+            // Phase 65: the same steer the Ollama surface honours, read by the same parser.
+            ProviderSteer.From(httpContext.Request));
 
         if (outcome.IsError)
         {
@@ -189,7 +191,9 @@ public static class OpenAiEndpoints
             providers,
             metrics,
             logger,
-            cancellationToken);
+            cancellationToken,
+            // Phase 65: the same steer the Ollama surface honours, read by the same parser.
+            ProviderSteer.From(httpContext.Request));
 
         if (outcome.IsError)
         {
@@ -293,24 +297,30 @@ public static class OpenAiEndpoints
         }
     }
 
-    private static IResult HandleListModels(INodeRegistry registry, Metrics metrics)
+    private static IResult HandleListModels(INodeRegistry registry, IServiceProvider services, Metrics metrics)
     {
         metrics.RecordOpenAiRequest();
 
+        var providers = services.GetService<IProviderRegistry>();
         var created = ResponseTranslator.UnixNow();
         var capabilities = CapabilitiesByModel(registry);
-        var models = registry.DistinctModels()
-            .Select(model => new OpenAiModel(model.Name, created, "inferhub", Capabilities(capabilities, model.Name)))
+        var models = ModelDiscovery.Merge(registry, providers)
+            .Select(model => new OpenAiModel(
+                model.Name,
+                created,
+                "inferhub",
+                CapabilitiesOf(registry, providers, capabilities, model.Name)))
             .ToArray();
 
         return Results.Json(new ModelList(models), JsonOptions);
     }
 
-    private static IResult HandleGetModel(string id, INodeRegistry registry, Metrics metrics)
+    private static IResult HandleGetModel(string id, INodeRegistry registry, IServiceProvider services, Metrics metrics)
     {
         metrics.RecordOpenAiRequest();
 
-        var match = registry.DistinctModels()
+        var providers = services.GetService<IProviderRegistry>();
+        var match = ModelDiscovery.Merge(registry, providers)
             .FirstOrDefault(model => string.Equals(model.Name, id, StringComparison.OrdinalIgnoreCase));
 
         if (match is null)
@@ -328,9 +338,23 @@ public static class OpenAiEndpoints
                 match.Name,
                 ResponseTranslator.UnixNow(),
                 "inferhub",
-                Capabilities(CapabilitiesByModel(registry), match.Name)),
+                CapabilitiesOf(registry, providers, CapabilitiesByModel(registry), match.Name)),
             JsonOptions);
     }
+
+    /// <summary>
+    /// The fleet's answer where the fleet holds the model, and <c>["chat"]</c> where only a provider
+    /// does (65 D5) — which is exactly what a provider-served request can be. Listing <c>embed</c>
+    /// there would be a promise the hub answers with a 404.
+    /// </summary>
+    private static IReadOnlyList<string>? CapabilitiesOf(
+        INodeRegistry registry,
+        IProviderRegistry? providers,
+        ILookup<string, string> lookup,
+        string model)
+        => ModelDiscovery.IsProviderOnly(registry, providers, model)
+            ? ModelDiscovery.ProviderCapabilities
+            : Capabilities(lookup, model);
 
     /// <summary>
     /// Model → the kinds of work the fleet will actually do with it (phase 40). The registry

@@ -64,6 +64,44 @@ public sealed partial class ProviderOptionsValidator(IOptions<FallbackOptions> f
                              + $"{ProviderDefinition.TypeGemini}.");
             }
 
+            // Phase 65. `Policy` is `Trigger` with two more values, so the two must not be able to
+            // disagree: a hub that resolved that by precedence would be deciding whose servers see
+            // a prompt with a rule nobody wrote down (61 D1's posture, applied to one provider).
+            if (!string.IsNullOrWhiteSpace(provider.Policy))
+            {
+                if (ProviderPolicy.Normalize(provider.Policy) is not { } policy)
+                {
+                    failures.Add($"Providers:{id}:Policy is '{provider.Policy}'. The policies this "
+                                 + $"release knows are: {string.Join(", ", ProviderPolicy.All)}.");
+                }
+                else if (!string.IsNullOrWhiteSpace(provider.Trigger)
+                         && !string.Equals(policy, provider.NormalizedTrigger(), StringComparison.Ordinal))
+                {
+                    failures.Add($"Providers:{id} sets Policy '{policy}' and Trigger "
+                                 + $"'{provider.Trigger.Trim()}'. Policy supersedes Trigger and the "
+                                 + "two disagree — remove Trigger, which is the same field with two "
+                                 + "fewer values.");
+                }
+            }
+
+            // A policy for a model the map does not carry is a route nobody has: a typo that would
+            // otherwise sit in a config file forever, quietly doing nothing.
+            foreach (var (model, policy) in provider.ModelPolicy)
+            {
+                if (ProviderPolicy.Normalize(policy) is null)
+                {
+                    failures.Add($"Providers:{id}:ModelPolicy:{model} is '{policy}'. The policies "
+                                 + $"this release knows are: {string.Join(", ", ProviderPolicy.All)}.");
+                }
+
+                if (!provider.ModelMap.ContainsKey(model))
+                {
+                    failures.Add($"Providers:{id}:ModelPolicy:{model} names a model this provider "
+                                 + "does not map. A policy without a mapping is a route that does "
+                                 + "not exist — add it to ModelMap or remove the policy.");
+                }
+            }
+
             // Anthropic requires max_tokens on every request and Ollama never sends one, so a
             // provider that declares a nonsensical ceiling would fail on the first prompt instead
             // of at boot (63 D2). Checked only where it is used: the field is inert elsewhere.
