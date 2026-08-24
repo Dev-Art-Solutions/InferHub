@@ -64,6 +64,8 @@ Self-hosted, MIT, zero new dependencies for the thirteenth release running.
 
 ## X / Twitter (5 posts)
 
+*Counted: 185 / 260 / 268 / 251 / 220. No backticks — X does not render them and they cost characters.*
+
 **1/**
 InferHub 3.33 is out.
 
@@ -74,27 +76,24 @@ And not one of those vendors was ever a *routing target*. 🧵
 **2/**
 The bug was an order of operations.
 
-Router asked first, upstream second — so a cloud provider was by construction "the thing that
-happens when your fleet fails".
+Router asked first, upstream second — so a cloud provider was by construction "the thing that happens when your fleet fails".
 
 "Serve this from Anthropic *while* my boxes stay busy" wasn't a sentence the config could say.
 
 **3/**
-`Policy` is that sentence. Same field `Trigger` was, two more values:
+Policy is that sentence. Same field Trigger was, two more values:
 
 • prefer — vendor first, fleet as backstop
-• only — vendor always, and a node holding that name never serves it
+• only — vendor always, node never serves it
 
-Set both and disagree → startup fails naming both. Precedence doesn't decide whose servers see a
-prompt.
+Set both and disagree → startup fails naming both. Precedence can't decide whose servers see a prompt.
 
 **4/**
 The header is the part I like.
 
-`X-InferHub-Provider: <id>` works only if that provider already claims the model. Otherwise 400,
-nothing leaves the hub.
+X-InferHub-Provider: <id> works only if that provider already claims the model. Otherwise 400, nothing leaves the hub.
 
-`X-InferHub-Provider: node` refuses every vendor for that one request.
+X-InferHub-Provider: node refuses every vendor for that one request.
 
 A steer can only ever narrow.
 
@@ -109,8 +108,8 @@ Self-hosted, MIT, zero new deps for 13 releases.
 
 ## Single-post X variant
 
-InferHub 3.33: four cloud providers shipped over four releases and none of them was ever a *choice* —
-the router was asked first and the vendor second.
+*262 characters.*
 
-Now: a policy per model, and a header that can only narrow. `X-InferHub-Provider: node` keeps one
-prompt off a vendor entirely.
+InferHub 3.33: four cloud providers over four releases, and none was ever a *choice* — the router was asked first, the vendor second.
+
+Now: a policy per model, and a header that can only narrow. X-InferHub-Provider: node keeps one prompt off a vendor entirely.
