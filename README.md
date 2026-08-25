@@ -1825,6 +1825,7 @@ its own.
 |---|---|
 | **Needs attention** | Everything that is *not* doing what it was told, with the reason. Above the fold, hidden when there is nothing to say. |
 | **Capabilities** | Node × capability, plus a fleet row: how many boxes serve `chat`, `embed`, `transcribe`, `speak`, and over how many models. |
+| **Cloud providers** (v3.34) | Every place a prompt can go that is not one of your machines — policy, credential, claimed models, dispatched, failed, and the vendor's own words on the last failure. The one panel that stays visible when it is empty, to say nothing leaves your machines. |
 | **Tools** | Per node and manifest: allowed or not, running / suspended / stopped / not-allowed, live workers, requests, and the last error in the worker's own words. |
 | **Node retrieval** | Which node hosts which corpus, on which engine, with how many records — and why it is not running, when it is not. |
 | **Node profiles** | The profile book, an editor, apply and delete — and a table of which boxes took which revision, and what each refused. |
@@ -2354,6 +2355,43 @@ The listing never says which vendor serves what: `owned_by` stays `inferhub`, an
 `X-InferHub-Served-By` still answers "who served *this*" after the fact. Models mapped by the legacy
 `Fallback:` section are deliberately **not** listed — a hub carrying only that section keeps the
 exact surface it had.
+
+### Seeing it: the console panel and the series (v3.34+)
+
+Up to v3.33 the whole feature was legible only from an admin-gated JSON payload, and only *after*
+traffic had already left. The console now has a **Cloud providers** panel — one row per place a
+prompt can go, with the policy, whether a credential is set, the models that provider claims, how
+many requests it has served, how many failed and **the vendor's own sentence about the most recent
+failure**. A wrong key stops being a 502 in front of a user and a log line on a host nobody is
+tailing; it is a row that says *Incorrect API key provided.*
+
+It is the one panel that stays on the page when it is empty: a hub with no provider renders
+**"No cloud provider is configured — nothing leaves your machines."** That is the answer to the
+question the panel exists for, and a panel that disappeared when the answer was reassuring would
+teach you to read absence as "I could not tell". A deployment still using the old `Fallback:` section
+gets a row too, marked `legacy` — the status payload deliberately does not list it as a provider, so
+the console draws it from the `fallback` block instead.
+
+Three states also reach the **Needs attention** strip above the fold: a provider that is enabled and
+mapping models with **no credential** (never a startup failure — an OpenAI-compatible endpoint on
+your own network legitimately has none), a provider whose last dispatch **failed**, and a failing
+`only` provider, which is called out separately because its models have no fleet backstop by design.
+
+| Series | Labels | Present |
+|---|---|---|
+| `inferhub_provider_info` | `provider`, `type`, `policy`, `credential` | per configured provider — **before any traffic** |
+| `inferhub_provider_dispatched_total` | `provider` | once that provider has served something |
+| `inferhub_provider_failed_total` | `provider` | once that provider has failed something |
+| `inferhub_provider_last_model` | `provider`, `model` | ditto |
+| `inferhub_provider_refused_total` | — | always, at zero |
+
+`inferhub_provider_info` is the one to build a dashboard on: it is configuration rather than traffic,
+so "no vendor is configured" and "a vendor is configured and has served nothing" stop being the same
+silence. `inferhub_provider_refused_total` counts requests that named a provider in
+`X-InferHub-Provider` and were refused before anything left the hub — it carries **no label**, because
+the id a caller asks for is text they chose and a label would let anybody with a key mint unbounded
+series. No API key, no base URL and no model name appears in any of these labels, and the vendor's
+error text never leaves the admin-gated `/api/status`.
 
 ## Authentication & configuration
 

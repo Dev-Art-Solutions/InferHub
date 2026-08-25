@@ -482,6 +482,89 @@
     host.innerHTML = `<table><thead>${head}</thead><tbody>${body}${totals}</tbody></table>`;
   };
 
+  // ------------------------------------------------------ cloud providers (phases 61–66)
+  //
+  // Phase 66, D1/D2. Everything here comes off /api/status, and the legacy `Fallback:` upstream is
+  // synthesized into a row rather than added to the payload: the payload leaves it out so a hub
+  // that never wrote a `Providers:` block keeps the v3.28 shape byte for byte (61 D2, 65 D5), while
+  // a human asking "who can my prompts reach" is owed both halves of the answer.
+  const legacyProviderRow = (fallback) => {
+    if (!fallback?.enabled) return null;
+    return {
+      id: "fallback",
+      type: "openai-compatible",
+      policy: fallback.trigger ?? "no-node",
+      // The legacy block has never reported one and is not gaining a key for this panel — a new
+      // field on `fallback` would land in the payload of every deployment that changed nothing,
+      // which is the invariant this whole track has kept. The dash says so in its tooltip.
+      credential: null,
+      mappedModels: fallback.mappedModels ?? [],
+      dispatched: fallback.dispatched ?? 0,
+      failed: null,
+      lastModel: fallback.lastModel,
+      lastAtUtc: fallback.lastAtUtc,
+      lastError: null,
+      lastErrorAtUtc: null,
+      legacy: true
+    };
+  };
+
+  // `prefer` and `only` mean prompts leave before the fleet is asked at all, so they are the two
+  // that read as a state rather than a setting.
+  const policyPill = (policy) => {
+    const cls = policy === "only" || policy === "prefer" ? "pill-warn" : "pill-muted";
+    return `<span class="pill ${cls}">${escapeHtml(policy ?? "no-node")}</span>`;
+  };
+
+  const renderProviders = (status) => {
+    const tbody = document.getElementById("providers");
+    if (!tbody) return;
+
+    const legacy = legacyProviderRow(status?.fallback);
+    const rows = [...(status?.providers ?? []), ...(legacy ? [legacy] : [])];
+
+    if (rows.length === 0) {
+      // D1. The sentence is the feature: this is the only panel on the page that stays visible to
+      // say nothing is configured.
+      emptyRow("providers", 8, "No cloud provider is configured — nothing leaves your machines.");
+      return;
+    }
+
+    tbody.innerHTML = rows.map(p => {
+      const overrides = Object.entries(p.modelPolicies ?? {})
+        .map(([model, policy]) => `<span class="label-chip" title="${escapeHtml(model)} overrides this provider's policy">${escapeHtml(model)} · ${escapeHtml(policy)}</span>`)
+        .join("");
+      const models = (p.mappedModels ?? []).length
+        ? `<div class="replica-list">${(p.mappedModels ?? []).map(m =>
+            `<span class="replica-chip">${escapeHtml(m)}</span>`).join("")}</div>`
+        : `<span class="matrix-no">—</span>`;
+      const credential = p.credential === null || p.credential === undefined
+        ? `<span class="matrix-no" title="the Fallback: section does not report this — write a Providers: block to see it">—</span>`
+        : p.credential === "absent"
+          ? `<span class="pill pill-warn">absent</span>`
+          : `<span class="matrix-yes">configured</span>`;
+      // The vendor's own sentence, which is the whole reason to open this panel: a 401 that says
+      // "incorrect API key" ends the investigation the 502 in front of a user started.
+      const last = p.lastError
+        ? `<span class="why">${escapeHtml(p.lastError)}</span> <span class="meta">${escapeHtml(fmtRelativeAge(p.lastErrorAtUtc))}</span>`
+        : p.lastModel
+          ? `<code>${escapeHtml(p.lastModel)}</code> <span class="meta">${escapeHtml(fmtRelativeAge(p.lastAtUtc))}</span>`
+          : `<span class="matrix-no">—</span>`;
+
+      return `
+        <tr class="${p.failed ? "row-error" : ""}">
+          <td><code>${escapeHtml(p.id)}</code>${p.legacy ? ` <span class="pill pill-muted" title="projected from the Fallback: section — it still works, and Policy, per-model policies and discovery need a Providers: block">legacy</span>` : ""}</td>
+          <td>${escapeHtml(p.type ?? "—")}</td>
+          <td>${policyPill(p.policy)}${overrides}</td>
+          <td>${credential}</td>
+          <td>${models}</td>
+          <td>${fmtInt(p.dispatched ?? 0)}</td>
+          <td>${p.failed === null || p.failed === undefined ? `<span class="matrix-no">—</span>` : p.failed ? `<span class="pill pill-err">${fmtInt(p.failed)}</span>` : "0"}</td>
+          <td>${last}</td>
+        </tr>`;
+    }).join("");
+  };
+
   // A pool inside its restart budget is still "running" — it has not given up, and saying it had
   // would be wrong. But it holds no worker and the most recent thing that happened to it was a
   // failure, so it will fail every request it is declared for: a green pill there is the lie this
@@ -581,6 +664,29 @@
 
     const items = [];
 
+    // Phase 66, D4. A provider is not a node, so these rows name the provider in the "where"
+    // column. A missing credential is deliberately not a startup refusal — an openai-compatible
+    // endpoint on your own network legitimately has none — which is exactly what makes it the
+    // "I turned it on and nothing happened" this strip exists for.
+    for (const provider of status?.providers ?? []) {
+      if (provider.credential === "absent") {
+        items.push({
+          kind: "provider", where: provider.id, what: "credential",
+          why: "the provider is enabled and maps models, and no ApiKey is set — a vendor will answer the first prompt with a 401"
+        });
+      }
+      if (provider.failed > 0 && provider.lastError) {
+        items.push({
+          kind: "provider", where: provider.id, what: provider.lastModel ?? "dispatch",
+          why: provider.policy === "only"
+            // `only` means a node holding that name never serves it (65 D3), so this failure has
+            // no backstop by construction — the request 502s even on a fleet that could answer.
+            ? `${provider.lastError} — Policy is 'only', so the fleet does not catch these`
+            : provider.lastError
+        });
+      }
+    }
+
     for (const node of status?.nodes ?? []) {
       const label = `${node.name} (${node.nodeId})`;
 
@@ -651,7 +757,9 @@
     }
 
     section.style.display = "";
-    host.innerHTML = `<table><thead><tr><th>What</th><th>Node</th><th>Item</th><th>Why</th></tr></thead><tbody>` +
+    // "Where" rather than "Node" since phase 66: a provider row names a vendor the operator
+    // configured, and calling that column Node would make the strip lie about half its rows.
+    host.innerHTML = `<table><thead><tr><th>What</th><th>Where</th><th>Item</th><th>Why</th></tr></thead><tbody>` +
       items.map(i => `
         <tr class="refusal-row">
           <td><span class="pill pill-warn">${escapeHtml(i.kind)}</span></td>
@@ -713,6 +821,7 @@
       renderCollections(latestStatus.vector);
       syncDocumentCollections(latestStatus.vector);
       renderCapabilityMatrix(latestStatus);
+      renderProviders(latestStatus);
       renderTools(latestStatus);
       renderCorpora(latestStatus);
       renderProfileNodes(latestStatus);

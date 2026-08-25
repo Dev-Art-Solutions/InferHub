@@ -334,6 +334,94 @@ public class ProviderTests
         Assert.Empty(scrape.PerProvider!);
     }
 
+    // ---- the console's numbers (phase 66) -----------------------------------------------
+
+    [Fact]
+    public async Task AFailedDispatchIsCountedAgainstItsProviderAndKeepsTheVendorsOwnSentence()
+    {
+        // 66 D3. Before this, a wrong key was a LogWarning on a host nobody is tailing and a 502 in
+        // front of a user; the console could not say which vendor, how often, or what it said.
+        var metrics = new Metrics();
+        var dispatcher = Dispatcher(
+            Registry(("openrouter", Provider("https://openrouter.ai/api/v1", "wrong", ("big-code", "qwen/qwen3-coder")))),
+            new RecordingUpstream(UpstreamAnswer),
+            metrics: metrics,
+            failure: (HttpStatusCode.Unauthorized, """{"error":{"message":"Incorrect API key provided.","type":"invalid_request_error","code":401}}"""));
+
+        await Assert.ThrowsAnyAsync<Exception>(
+            () => dispatcher.DispatchAsync("chat", ChatJob, "big-code", stream: false, CancellationToken.None));
+
+        var snapshot = metrics.Snapshot(DateTimeOffset.UtcNow);
+        var provider = Assert.Single(snapshot.PerProvider!);
+
+        Assert.Equal(1, provider.Failed);
+        Assert.Contains("Incorrect API key provided.", provider.LastError!);
+        Assert.NotNull(provider.LastErrorAtUtc);
+
+        // The dispatch itself still counted — the request did leave the machine, which is the
+        // question `dispatched` answers — and the fleet's own failure counter did not move: a
+        // `prefer` provider that fails is usually followed by a node answering successfully, and
+        // one request must not be able to fail twice in one number.
+        Assert.Equal(1, provider.Dispatched);
+        Assert.Equal(0, snapshot.RequestsFailed);
+    }
+
+    [Fact]
+    public void ARefusedSteerIsCountedOnceAndMintsNoPerVendorSeries()
+    {
+        // 66 D6. The id a caller steers at is text they chose, so the counter carries no label at
+        // all — and a refusal must not create a provider entry either, or probing would populate
+        // the very table 65 D4 refuses to expose.
+        var metrics = new Metrics();
+        var dispatcher = Dispatcher(
+            Registry(("openrouter", Provider("https://openrouter.ai/api/v1", "k", ("big-code", "qwen/qwen3-coder")))),
+            new RecordingUpstream(UpstreamAnswer),
+            metrics: metrics);
+
+        Assert.True(dispatcher.Decide("big-code", hasCapableNode: false, Steer("does-not-exist")).IsRefusal);
+        Assert.True(dispatcher.Decide("nothing-maps-this", hasCapableNode: true, Steer("openrouter")).IsRefusal);
+
+        var snapshot = metrics.Snapshot(DateTimeOffset.UtcNow);
+
+        Assert.Equal(2, snapshot.ProviderRefused);
+        Assert.Empty(snapshot.PerProvider!);
+    }
+
+    [Fact]
+    public void StatusReportsTheFailureCountAndTheLastErrorForTheConsolePanel()
+    {
+        var metrics = new Metrics();
+        metrics.RecordProviderFailed("openrouter", "big-code", "Incorrect API key provided.");
+
+        var block = Assert.Single(StatusEndpoint.BuildProviderBlocks(
+            Registry(("openrouter", Provider("https://openrouter.ai/api/v1", "k", ("big-code", "qwen/qwen3-coder")))),
+            metrics.Snapshot(DateTimeOffset.UtcNow))!);
+
+        Assert.Equal(1, block.Failed);
+        Assert.Equal("Incorrect API key provided.", block.LastError);
+        Assert.NotNull(block.LastErrorAtUtc);
+
+        // A dispatch never happened, and the panel must not imply one did.
+        Assert.Equal(0, block.Dispatched);
+        Assert.Null(block.LastModel);
+    }
+
+    [Fact]
+    public void AProviderWithNoCredentialIsReportedRatherThanRefusedAtStartup()
+    {
+        // 66 D4. An openai-compatible endpoint on your own network legitimately has no key, so this
+        // may not be a boot failure — which is precisely what makes it the console's business.
+        var keyless = Provider("https://vllm.internal/v1", apiKey: null, ("draft", "qwen2.5-7b"));
+
+        Assert.True(Validate(Configured(("local-vm", keyless))).Succeeded);
+
+        var block = Assert.Single(StatusEndpoint.BuildProviderBlocks(
+            Registry(("local-vm", keyless)),
+            new Metrics().Snapshot(DateTimeOffset.UtcNow))!);
+
+        Assert.Equal("absent", block.Credential);
+    }
+
     // ---- OpenRouter (phase 62) ---------------------------------------------------------
 
     [Fact]
@@ -985,13 +1073,19 @@ public class ProviderTests
         => new ProviderOptionsValidator(Options.Create(legacy ?? new FallbackOptions()))
             .Validate(null, options);
 
+    /// <param name="failure">
+    /// Phase 66. When set, the vendor answers with that status and body instead of
+    /// <paramref name="upstream"/>'s — the shape a wrong key, a dead endpoint or a rate limit
+    /// actually arrives in, and the only way to assert on what the console will show.
+    /// </param>
     private static ProviderDispatcher Dispatcher(
         ProviderRegistry providers,
         RecordingUpstream upstream,
         INodeRegistry? registry = null,
-        Metrics? metrics = null)
+        Metrics? metrics = null,
+        (HttpStatusCode Status, string Body)? failure = null)
         => new(
-            new StubFactory(upstream),
+            new StubFactory(failure is { } refusal ? new FailingUpstream(refusal.Status, refusal.Body) : upstream),
             registry ?? new NodeRegistry(),
             providers,
             metrics ?? new Metrics(),
@@ -1000,9 +1094,21 @@ public class ProviderTests
     private static Shared.Contracts.NodeRegistration Registration(string nodeId, int? maxConcurrency)
         => new(nodeId, nodeId, "http://localhost:11434/", "3.29.0", null, maxConcurrency);
 
-    private sealed class StubFactory(RecordingUpstream upstream) : IHttpClientFactory
+    private sealed class StubFactory(HttpMessageHandler upstream) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new(upstream, disposeHandler: false);
+    }
+
+    /// <summary>A vendor that refuses, in its own envelope (phase 66).</summary>
+    private sealed class FailingUpstream(HttpStatusCode status, string body) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+            => Task.FromResult(new HttpResponseMessage(status)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            });
     }
 
     /// <summary>

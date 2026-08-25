@@ -245,6 +245,33 @@
   </section>
 
   <!--
+    Phase 66, D1. Where prompts can go that is not one of your own machines. This panel is the one
+    that stays on the page when it is empty: "no cloud provider is configured" is the answer to the
+    question 22 D5 put on the status page, and a panel that disappears when the answer is the
+    reassuring one teaches an operator to read absence as "I could not tell".
+  -->
+  <section>
+    <h2>Cloud providers</h2>
+    <div class="table-wrap">
+      <table id="providers-table">
+        <thead>
+          <tr>
+            <th>Provider</th>
+            <th>Type</th>
+            <th>Policy</th>
+            <th>Credential</th>
+            <th>Mapped models</th>
+            <th>Dispatched</th>
+            <th>Failed</th>
+            <th>Last</th>
+          </tr>
+        </thead>
+        <tbody id="providers"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!--
     Phase 41/45. Desired vs effective for the tool runtime: what the operator allowed, what the box
     loaded, what is actually running and what went wrong last. A manifest that is present but not in
     Tools:Allowed is the commonest "nothing happened", and it is a row here rather than a log line

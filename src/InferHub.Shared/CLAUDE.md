@@ -966,6 +966,10 @@ point a fifth time.
 > the published image.
 
 **D9 — `error.code` is a number here, and `status` plus a `RetryInfo` delay are carried through.**
+*Amended in phase 66 (66 D7): `ErrorFrame` is now behind the same `"error"` substring test 62 put in
+front of the OpenAI dialect, so an ordinary delta is no longer deserialized into an error envelope to
+learn that it is not one. Recorded as a cost in v3.32, paid in v3.34; the check itself is unweakened,
+and `AFrameWhoseTextMentionsAnErrorIsStillAnAnswer` is the guard on the guard.*
 The envelope is `{"error":{"code":429,"message":…,"status":"RESOURCE_EXHAUSTED","details":[…]}}`.
 The numeric `code` is the shape that broke the OpenAI dialect for eight releases until 62 D3 found
 it, so it is typed as a number from the first line rather than discovered twice. `status` is the

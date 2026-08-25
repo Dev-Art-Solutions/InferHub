@@ -1020,3 +1020,46 @@ the cheapest the rename will ever be. `modelPolicies` appears only where there a
 client dialects and both failure paths read the same answer — `ShouldServe` is gone.
 
 **Rule 5 survived again.** Phase 65 added **zero** new dependencies.
+
+### Phase 66 (console, metrics and docs for the provider track) — load-bearing
+
+**D1 — The Cloud providers panel is fed by `/api/status` alone, and it is the one panel that stays on
+the page when it is empty.** Every other panel hides; this one renders *No cloud provider is
+configured — nothing leaves your machines.* That sentence is the feature (22 D5's question, answered
+where somebody is already looking), and a panel that vanishes when the answer is the reassuring one
+teaches an operator to read absence as "I could not tell". **Rejected: a new admin route** — the data
+is in the poll already, and a second surface is a second thing to keep in step.
+
+**D2 — The console draws the projected `Fallback:` upstream as a row; the payload still does not
+carry it.** 61 D2 and 65 D5 keep it out of `providers[]` so a v3.28-configured hub is byte-identical,
+and that is unchanged — `console.js` synthesizes the row from the `fallback` block it already reads
+and marks it `legacy`. Its `credential` cell is a dash on purpose: **the legacy block gains no key
+for this panel**, because a new field there would land in the payload of every deployment that
+changed nothing. `TheLegacyUpstreamIsNotAProviderInThePayloadEvenThoughTheConsoleDrawsItAsARow` is
+the guard against somebody tidying the projection into the array.
+
+**D3 — A failed dispatch is counted per provider and the vendor's own sentence is kept — one, in
+memory, admin-gated.** `inferhub_provider_failed_total{provider}` plus `failed` / `lastError` /
+`lastErrorAtUtc` on the status block. **`inferhub_requests_failed_total` is deliberately not
+incremented**: a `prefer` provider that fails is usually followed by a node answering successfully,
+and one request must not fail twice in one number. **Rule 7, argued rather than assumed:** an error
+message is a vendor's sentence *about* a request, but nothing stops a vendor quoting a prompt inside
+one — so it is treated as content, held once per provider, never persisted, never a metric label, and
+reachable only through the admin-gated payload. **Rejected: a ring of recent errors**, which is a log.
+
+**D4 — A provider with no credential is a needs-attention row, not a startup refusal.** The validator
+has never demanded an `ApiKey` and must not: an `openai-compatible` endpoint on your own network
+legitimately has none. Enabled, mapping models and keyless against a vendor is the purest "I turned
+it on and nothing happened" (45 D1), so the strip carries it, alongside a failing provider and — named
+separately — a failing `only` one, whose models have no backstop by construction. The strip's second
+column is **Where** rather than Node since this phase, because half its rows now name a vendor.
+
+**D5/D6 — `inferhub_provider_info` describes; `inferhub_provider_refused_total` counts and carries no
+label.** An info series with a constant 1 measures nothing, so 28 D5 does not reach it — and it is
+what makes the absence of `inferhub_provider_dispatched_total` legible, since without it *no vendor
+configured* and *a vendor that has served nothing* are the same silence. No key, no base URL (they
+carry tokens in query strings in the wild) and no model names (cardinality) in its labels. The
+refusal counter has **no label at all**: the id a caller steers at is text they chose, so labelling it
+lets anyone with an inference key mint unbounded series, and labelling it with the provider that
+*does* claim the model rebuilds by scrape the enumeration 65 D4 refused to expose by probing. It is
+emitted at zero like the other hub-wide counters — a hub with no provider can still refuse a steer.

@@ -309,6 +309,24 @@ public class GeminiDialectTests
         Assert.Single(delivered);
     }
 
+    /// <summary>
+    /// 66 D7. The per-frame envelope parse is now guarded by a substring check, the way
+    /// <c>OpenAiUpstreamClient.ThrowIfErrorFrame</c> has been since 62 — a saving on every ordinary
+    /// delta, and it must not become a way for a real failure to slip past. The test above proves
+    /// the failure still raises; this one proves the cheap path still delivers an answer that
+    /// merely <em>talks</em> about errors.
+    /// </summary>
+    [Fact]
+    public async Task AFrameWhoseTextMentionsAnErrorIsStillAnAnswer()
+    {
+        var chunks = await Collect(Client(RespondsWithStream(
+            Frame("""{"candidates":[{"content":{"role":"model","parts":[{"text":"The log said \"error\" twice"}]}}]}"""),
+            Frame("""{"candidates":[{"content":{"role":"model","parts":[{"text":"."}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":7,"totalTokenCount":11}}"""))));
+
+        Assert.Equal("The log said \"error\" twice", Text(chunks[0]));
+        Assert.True(JsonDocument.Parse(chunks[^1]).RootElement.GetProperty("done").GetBoolean());
+    }
+
     // ---- 64 D7: the third "200 that looks finished" this track has found ---------------------
 
     [Fact]

@@ -481,6 +481,16 @@ public sealed class GeminiUpstreamClient(HttpClient http, int? thinkingBudget)
     /// </summary>
     private static GeminiUpstreamException? ErrorFrame(string payload)
     {
+        // Phase 66 (66 D7), and it is 62 D4's guard rather than a new idea: every ordinary frame
+        // carries `candidates` and no `error`, so without this line each one is deserialized into
+        // an envelope whose only field comes back null — a whole parse of a growing response body,
+        // per frame, to learn nothing. Recorded as a cost in v3.32 and paid here. It cannot weaken
+        // the check: a frame carrying the envelope contains the key, so it still reaches the parse.
+        if (!payload.Contains("\"error\"", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
         try
         {
             var envelope = JsonSerializer.Deserialize<GeminiErrorEnvelope>(payload, JsonOptions);

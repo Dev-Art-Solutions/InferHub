@@ -98,7 +98,7 @@ public sealed class ProviderDispatcher(
         {
             // A steer can never create a route the configuration does not contain (65 D4, track D4).
             return steer.ProviderId is { } wanted
-                ? ProviderDecision.Refuse(StatusCodes.Status400BadRequest, Unserved(wanted, model))
+                ? Refused(wanted, model)
                 : ProviderDecision.No;
         }
 
@@ -109,7 +109,7 @@ public sealed class ProviderDispatcher(
             // operator's vendors by probing. /api/status answers that, and is admin-gated.
             if (!string.Equals(named, route.Id, StringComparison.OrdinalIgnoreCase) || route.Legacy)
             {
-                return ProviderDecision.Refuse(StatusCodes.Status400BadRequest, Unserved(named, model));
+                return Refused(named, model);
             }
 
             return ProviderDecision.Yes(nodeIsBackstop: false);
@@ -140,6 +140,17 @@ public sealed class ProviderDispatcher(
     /// The one refusal sentence a steered request can get. It names the pair the caller typed and
     /// nothing else (65 D4).
     /// </summary>
+    /// <summary>
+    /// The refusal, counted on the way out (phase 66). Counting it here rather than at the two
+    /// endpoints is what keeps the number honest: <see cref="Decide"/> is the one place that can
+    /// refuse, and a second call site would eventually refuse without counting.
+    /// </summary>
+    private ProviderDecision Refused(string providerId, string model)
+    {
+        metrics.RecordProviderRefused();
+        return ProviderDecision.Refuse(StatusCodes.Status400BadRequest, Unserved(providerId, model));
+    }
+
     private static string Unserved(string providerId, string model)
         => $"no provider '{providerId}' serves model '{model}' on this hub. The "
            + $"{ProviderSteer.HeaderName} header can only choose among the providers already "
@@ -174,9 +185,22 @@ public sealed class ProviderDispatcher(
             using var http = CreateHttpClient(route);
             var client = Dialect(route, http);
 
-            var responseJson = kind == "chat"
-                ? await client.ChatAsync(upstreamJson, cancellationToken)
-                : await client.GenerateAsync(upstreamJson, cancellationToken);
+            string responseJson;
+
+            try
+            {
+                responseJson = kind == "chat"
+                    ? await client.ChatAsync(upstreamJson, cancellationToken)
+                    : await client.GenerateAsync(upstreamJson, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Phase 66. The caller still gets the exception — InferenceCore decides whether a
+                // node may catch this request — but the vendor's own sentence stops here, on the
+                // console, instead of only in a log line nobody is tailing.
+                metrics.RecordProviderFailed(route.Id, model, ex.Message);
+                throw;
+            }
 
             // Answer in the model the caller asked for; they never named the upstream one.
             return new ProviderResult(null, RewriteModel(responseJson, model), route.ServedBy);
@@ -231,6 +255,10 @@ public sealed class ProviderDispatcher(
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "Provider '{Provider}' stream for {Model} failed", route.Id, model);
+
+                // A mid-stream failure is the one the fleet cannot catch — the headers are already
+                // out and the caller is reading chunks — so it is the failure most worth counting.
+                metrics.RecordProviderFailed(route.Id, model, ex.Message);
 
                 // Same contract the node path honours: a terminal error chunk beats a hung stream.
                 await channel.Writer.WriteAsync(

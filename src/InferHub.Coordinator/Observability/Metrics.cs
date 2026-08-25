@@ -15,6 +15,7 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
     private long nodesEvicted;
     private long openAiRequestsTotal;
     private long fallbackDispatched;
+    private long providerRefused;
     private long vectorReplicasHealed;
     private long vectorRebuildsFromRaw;
     private long vectorUnderReplicated;
@@ -107,6 +108,33 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
         counter.LastModel = model;
         Interlocked.Exchange(ref counter.LastAtTicks, DateTimeOffset.UtcNow.UtcTicks);
     }
+
+    /// <summary>
+    /// A request reached a provider and the provider did not answer (phase 66). The global
+    /// <c>requestsFailed</c> counter is deliberately <b>not</b> touched: it counts work the fleet
+    /// failed, and a `prefer` provider whose call fails is usually followed by a node answering
+    /// successfully — one request must not be able to fail twice in one number.
+    /// </summary>
+    /// <param name="error">
+    /// The upstream's own sentence, kept once and only in memory. See
+    /// <see cref="ProviderDispatchSnapshot.LastError"/> for why it goes no further.
+    /// </param>
+    public void RecordProviderFailed(string providerId, string model, string error)
+    {
+        var counter = perProvider.GetOrAdd(providerId, _ => new ProviderCounter());
+        Interlocked.Increment(ref counter.Failed);
+        counter.LastError = string.IsNullOrWhiteSpace(error) ? $"the provider failed serving '{model}'" : error;
+        Interlocked.Exchange(ref counter.LastErrorAtTicks, DateTimeOffset.UtcNow.UtcTicks);
+    }
+
+    /// <summary>
+    /// A request named a provider by header and was refused before anything left the hub (65 D4).
+    /// <b>One number, no labels</b>: the id the caller asked for is caller-supplied text, and a
+    /// label carrying it is an unbounded series count anyone with an inference key can mint; the id
+    /// that <em>does</em> claim the model would rebuild by scrape the enumeration 65 D4 refused to
+    /// expose by probing (66 D6).
+    /// </summary>
+    public void RecordProviderRefused() => Interlocked.Increment(ref providerRefused);
 
     /// <summary>
     /// Tool work that succeeded, in the unit it is actually in (phase-42 D7): seconds for a
@@ -282,7 +310,8 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
             perProvider
                 .Select(pair => pair.Value.Read(pair.Key))
                 .OrderBy(snapshot => snapshot.Provider, StringComparer.Ordinal)
-                .ToArray());
+                .ToArray(),
+            Interlocked.Read(ref providerRefused));
     }
 
     private static VectorCollectionMetricsSnapshot SnapshotOf(string collection, VectorCollectionCounter counter)
@@ -333,15 +362,25 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
         public long LastAtTicks;
         public volatile string? LastModel;
 
+        // Phase 66. One error, not a ring of them: a ring is a log, and this hub's answer to logs
+        // is that it does not keep them (66 D3).
+        public long Failed;
+        public long LastErrorAtTicks;
+        public volatile string? LastError;
+
         public ProviderDispatchSnapshot Read(string provider)
         {
             var ticks = Interlocked.Read(ref LastAtTicks);
+            var errorTicks = Interlocked.Read(ref LastErrorAtTicks);
 
             return new ProviderDispatchSnapshot(
                 provider,
                 Interlocked.Read(ref Dispatched),
                 LastModel,
-                ticks == 0 ? null : new DateTimeOffset(ticks, TimeSpan.Zero));
+                ticks == 0 ? null : new DateTimeOffset(ticks, TimeSpan.Zero),
+                Interlocked.Read(ref Failed),
+                LastError,
+                errorTicks == 0 ? null : new DateTimeOffset(errorTicks, TimeSpan.Zero));
         }
     }
 
@@ -482,7 +521,10 @@ public sealed record MetricsSnapshot(
     IReadOnlyList<ImageJobSnapshot>? PerImageRecipe = null,
     // Appended in phase 61, same reason again. Null on a snapshot built by hand, and an empty list
     // on a hub where no provider has served anything — including one with providers configured.
-    IReadOnlyList<ProviderDispatchSnapshot>? PerProvider = null);
+    IReadOnlyList<ProviderDispatchSnapshot>? PerProvider = null,
+    // Phase 66. Steered requests refused before anything left the hub. One number for the whole
+    // hub, and 66 D6 is the reason it carries no label.
+    long ProviderRefused = 0);
 
 /// <summary>
 /// One provider's dispatches (phase 61): how many, and the model of the most recent one.
@@ -492,11 +534,22 @@ public sealed record MetricsSnapshot(
 /// usage block, and a zero sitting where a measurement belongs is worse than a column that is not
 /// there yet. The track's D5 gives it a home in phase 65.
 /// </remarks>
+/// <param name="LastError">
+/// The upstream's own sentence about the most recent failure, unwrapped and uninterpreted (29 D6) —
+/// phase 66. Held once, in memory, never persisted and never a metric label: a vendor is free to
+/// quote a prompt back inside an error message, so this is treated as content and reaches nowhere a
+/// prompt could not (66 D3, rule 7).
+/// </param>
 public sealed record ProviderDispatchSnapshot(
     string Provider,
     long Dispatched,
     string? LastModel,
-    DateTimeOffset? LastAtUtc);
+    DateTimeOffset? LastAtUtc,
+    // Appended in phase 66 with defaults, the way PerAudio was appended in 45: a snapshot built by
+    // hand in a test keeps compiling and keeps meaning what it meant.
+    long Failed = 0,
+    string? LastError = null,
+    DateTimeOffset? LastErrorAtUtc = null);
 
 /// <summary>
 /// One recipe's image jobs (phase 51): how they ended, and how long they took.

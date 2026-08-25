@@ -26,7 +26,23 @@ public sealed record PrometheusScrape(
     IReadOnlyList<ProfileScrapeSample>? Profiles = null,
     IReadOnlyList<NodeCorpusState>? Corpora = null,
     // Phase 51, appended with a default like every block before it.
-    ImageQueueScrapeSample? ImageQueue = null);
+    ImageQueueScrapeSample? ImageQueue = null,
+    // Phase 66. What the operator configured, as opposed to what has happened — the two questions
+    // the dispatch counter alone cannot tell apart (66 D5). Empty on a hub with no `Providers:`
+    // block, which is exactly the v3.33 scrape.
+    IReadOnlyList<ProviderScrapeSample>? Providers = null);
+
+/// <summary>
+/// One configured provider, described rather than measured (phase 66, D5).
+/// </summary>
+/// <remarks>
+/// <b>No key, no base URL and no model names.</b> The first is rule 7's flat prohibition; the second
+/// carries a token in a query string often enough that it cannot be volunteered to a scrape; the
+/// third is unbounded cardinality for a fact <c>/api/status</c> already carries.
+/// <c>Credential</c> is <c>configured</c> or <c>absent</c> — the same two words the status payload
+/// uses, and never a prefix, a length or a hash.
+/// </remarks>
+public sealed record ProviderScrapeSample(string Provider, string Type, string Policy, string Credential);
 
 /// <summary>
 /// The image job queue, as a scrape sees it (phase 51, D2).
@@ -127,6 +143,44 @@ public static class PrometheusFormatter
             {
                 Info(builder, "inferhub_provider_last_model", "Model of the most recent dispatch to this provider.",
                     [("provider", provider.Provider), ("model", provider.LastModel!)]);
+            }
+
+            // Phase 66. Emitted beside the dispatches, on the same terms: a provider that has never
+            // failed has no series here rather than a zero. `inferhub_requests_failed_total` is
+            // deliberately not incremented for these — a preferred provider that fails is usually
+            // followed by a node answering successfully, and one request must not fail twice.
+            if (providers.Any(provider => provider.Failed > 0))
+            {
+                Header(builder, "inferhub_provider_failed_total", "counter", "Requests that reached a provider and were not answered by it.");
+                foreach (var provider in providers.Where(p => p.Failed > 0))
+                {
+                    Sample(builder, "inferhub_provider_failed_total", [("provider", provider.Provider)], provider.Failed);
+                }
+            }
+        }
+
+        // Phase 66, and 66 D6 is why there is no label: the id a caller steers at is text they
+        // chose, so a label would be an unbounded series count anyone with a key could mint. A hub
+        // that has refused nothing still emits the zero — it is a hub-wide counter like the others
+        // above, not a per-vendor one.
+        Counter(builder, "inferhub_provider_refused_total",
+            "Requests that named a provider by header and were refused before anything left the hub.",
+            m.ProviderRefused);
+
+        // Phase 66, D5. Configuration, not traffic: value 1 per configured provider, so a dashboard
+        // can tell "no vendor is configured" from "a vendor is configured and has served nothing" —
+        // which the dispatch counter's absence cannot say on its own.
+        if (scrape.Providers is { Count: > 0 } configured)
+        {
+            foreach (var provider in configured.OrderBy(p => p.Provider, StringComparer.Ordinal))
+            {
+                Info(builder, "inferhub_provider_info", "A cloud provider this hub is configured to use.",
+                    [
+                        ("provider", provider.Provider),
+                        ("type", provider.Type),
+                        ("policy", provider.Policy),
+                        ("credential", provider.Credential)
+                    ]);
             }
         }
 

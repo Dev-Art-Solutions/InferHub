@@ -65,13 +65,34 @@ public static class MetricsEndpoint
                         images.Store.Queued().Count,
                         images.Store.ActiveCount(),
                         images.Store.RetainedBytes())
-                    : null);
+                    : null,
+
+                // Phase 66. Resolved the same way, for the same reason: a host that maps /metrics
+                // without the provider seam — every fixture that predates phase 61 — keeps working
+                // and simply describes no vendor.
+                ProviderSamples(services.GetService(typeof(IProviderRegistry)) as IProviderRegistry));
 
             return Results.Text(PrometheusFormatter.Format(scrape), PrometheusFormatter.ContentType);
         });
 
         return app;
     }
+
+    /// <summary>
+    /// The configured providers, described for the scrape (phase 66, D5). <b>The projected
+    /// <c>Fallback:</c> upstream is not among them</b> — <c>Configured</c> has never carried it,
+    /// and `inferhub_fallback_dispatched_total` is already that deployment's series.
+    /// </summary>
+    private static IReadOnlyList<ProviderScrapeSample> ProviderSamples(IProviderRegistry? providers)
+        => providers is null
+            ? []
+            : providers.Configured
+                .Select(route => new ProviderScrapeSample(
+                    route.Id,
+                    route.Definition.NormalizedType(),
+                    route.Definition.NormalizedPolicy(),
+                    string.IsNullOrWhiteSpace(route.Definition.ApiKey) ? "absent" : "configured"))
+                .ToArray();
 
     /// <summary>
     /// Nodes per (profile, state), counted the same way <c>/api/status</c> and the console count

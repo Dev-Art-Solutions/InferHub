@@ -182,7 +182,12 @@ public static class StatusEndpoint
                     route.Definition.ModelMap.Keys.OrderBy(model => model, StringComparer.OrdinalIgnoreCase).ToArray(),
                     counter?.Dispatched ?? 0,
                     counter?.LastModel,
-                    counter?.LastAtUtc);
+                    counter?.LastAtUtc,
+                    // Phase 66. Zero and null on a provider that has never failed — the panel reads
+                    // a dash there, exactly as the tools panel does for a tool that has not.
+                    counter?.Failed ?? 0,
+                    counter?.LastError,
+                    counter?.LastErrorAtUtc);
             })
             .ToArray();
     }
@@ -346,6 +351,11 @@ public static class StatusEndpoint
         return overrides.Count == 0 ? null : overrides;
     }
 
+    /// <param name="LastError">
+    /// The upstream's own sentence about the most recent failure (phase 66). It is here and nowhere
+    /// else: not in the ledger, not in a metric label, not on disk — a vendor may quote a prompt
+    /// back inside an error, so it is treated as content and this payload is admin-gated (66 D3).
+    /// </param>
     internal sealed record ProviderStatusBlock(
         string Id,
         string Type,
@@ -355,7 +365,10 @@ public static class StatusEndpoint
         IReadOnlyList<string> MappedModels,
         long Dispatched,
         string? LastModel,
-        DateTimeOffset? LastAtUtc);
+        DateTimeOffset? LastAtUtc,
+        long Failed,
+        string? LastError,
+        DateTimeOffset? LastErrorAtUtc);
 
     private sealed record StatusNode(
         string NodeId,

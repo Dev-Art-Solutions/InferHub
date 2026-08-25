@@ -52,6 +52,26 @@ public class ConsoleContractTests
         "fallback.enabled",
         "fallback.dispatched",
 
+        // Phase 66 — the Cloud providers panel, and the legacy row it synthesizes from the block
+        // above rather than from the payload (66 D2: `providers[]` still does not carry the
+        // projected `Fallback:` upstream, and must not start).
+        "fallback.trigger",
+        "fallback.mappedModels",
+        "fallback.lastModel",
+        "fallback.lastAtUtc",
+        "providers[].id",
+        "providers[].type",
+        "providers[].policy",
+        "providers[].credential",
+        "providers[].mappedModels",
+        "providers[].dispatched",
+        "providers[].lastModel",
+        "providers[].lastAtUtc",
+        "providers[].failed",
+        "providers[].lastError",
+        "providers[].lastErrorAtUtc",
+        "providers[].modelPolicies",
+
         // Phase 40 — the capability matrix and the fleet row under it.
         "capabilities[].capability",
         "capabilities[].nodes",
@@ -355,6 +375,37 @@ public class ConsoleContractTests
     }
 
     /// <summary>
+    /// 66 D2 in one assertion. The panel shows a row per place a prompt can go, and the two rows
+    /// come from two different keys: the named vendor from <c>providers[]</c>, the legacy upstream
+    /// from the <c>fallback</c> block. The payload must keep them apart — a hub that only ever wrote
+    /// a <c>Fallback:</c> section has to stay byte-identical to v3.28, and that is exactly what
+    /// breaks if somebody "tidies" the projection into the array the console reads.
+    /// </summary>
+    [Fact]
+    public async Task TheLegacyUpstreamIsNotAProviderInThePayloadEvenThoughTheConsoleDrawsItAsARow()
+    {
+        await using var hub = await ConsoleFixture.StartAsync();
+
+        var status = await hub.JsonAsync("/api/status");
+
+        var provider = Assert.Single(status.GetProperty("providers").EnumerateArray());
+        Assert.Equal("claude", provider.GetProperty("id").GetString());
+        Assert.Equal("prefer", provider.GetProperty("policy").GetString());
+        Assert.Equal("configured", provider.GetProperty("credential").GetString());
+
+        // Never a character of a key, on either half of the payload.
+        Assert.DoesNotContain("vendor-key", status.ToString());
+        Assert.DoesNotContain("legacy-key", status.ToString());
+
+        // The legacy upstream is reported, once, in the field it has always been reported in.
+        Assert.True(status.GetProperty("fallback").GetProperty("enabled").GetBoolean());
+        Assert.Contains("legacy-x", status.GetProperty("fallback").GetProperty("mappedModels").ToString());
+
+        var console = string.Concat(ConsoleFixture.StaticFiles().Select(File.ReadAllText));
+        Assert.Contains("legacyProviderRow", console);
+    }
+
+    /// <summary>
     /// A fleet that uses none of phases 40–45 must produce the payload v3.12 produced: no
     /// <c>tools</c> key on a node that has never reported one. Absence is a fact (D2), and a node
     /// running an older build reporting nothing must not read as "this box has no tools".
@@ -580,7 +631,40 @@ internal sealed class ConsoleFixture : IAsyncDisposable
             new ConversationAffinity(Microsoft.Extensions.Options.Options.Create(new RouterOptions())));
         builder.Services.AddSingleton<IClusterMembership>(new SingleCoordinatorMembership());
         builder.Services.AddSingleton(services => TestUsage.Queue(services.GetRequiredService<INodeRegistry>()));
-        builder.Services.Configure<FallbackOptions>(_ => { });
+        // Phase 66. A hub that reaches a vendor *and* still carries the pre-v3.29 section, because
+        // the console panel draws a row from each and they come from two different places: the
+        // named one from `providers[]`, the legacy one synthesized from the `fallback` block, which
+        // the payload deliberately never lists as a provider (66 D2).
+        builder.Services.Configure<FallbackOptions>(options =>
+        {
+            options.Enabled = true;
+            options.BaseUrl = "https://api.openai.com/v1";
+            options.ApiKey = "legacy-key";
+            options.ModelMap["legacy-x"] = "gpt-4o-mini";
+        });
+
+        var vendor = new ProviderDefinition
+        {
+            Type = ProviderDefinition.TypeAnthropic,
+            ApiKey = "vendor-key",
+            Policy = ProviderPolicy.Prefer
+        };
+        vendor.ModelMap["smart"] = "claude-opus-5";
+        vendor.ModelMap["cheap"] = "claude-haiku-4-5";
+        vendor.ModelPolicy["cheap"] = ProviderPolicy.NoNode;
+
+        var providerOptions = new ProviderOptions();
+        providerOptions.Entries["claude"] = vendor;
+
+        builder.Services.AddSingleton<IProviderRegistry>(new ProviderRegistry(
+            Microsoft.Extensions.Options.Options.Create(providerOptions),
+            Microsoft.Extensions.Options.Options.Create(new FallbackOptions
+            {
+                Enabled = true,
+                BaseUrl = "https://api.openai.com/v1",
+                ApiKey = "legacy-key"
+            })));
+
         builder.Services.Configure<ApiKeyOptions>(_ => { });
 
         fixture.app = builder.Build();

@@ -287,6 +287,75 @@ public class PrometheusMetricsTests
             s => s.Name == "inferhub_image_jobs_total" && s.Labels["outcome"] == "failed").Value);
     }
 
+    // ---- phase 66 -------------------------------------------------------------------------------
+
+    /// <summary>
+    /// 66 D5. An info series with a constant 1 describes configuration rather than measuring
+    /// traffic, which is why it may exist where phase-28 D5 refuses a zero counter — and it is what
+    /// makes the absence of <c>inferhub_provider_dispatched_total</c> readable: without it, "no
+    /// vendor configured" and "a vendor configured that has served nothing" are the same silence.
+    /// </summary>
+    [Fact]
+    public void AConfiguredProviderIsDescribedBeforeItHasServedAnything()
+    {
+        var scrape = SampleScrape() with
+        {
+            Providers = [new ProviderScrapeSample("claude", "anthropic", "prefer", "configured")]
+        };
+
+        var parsed = Exposition.Parse(PrometheusFormatter.Format(scrape));
+        var info = Assert.Single(parsed.Samples, s => s.Name == "inferhub_provider_info");
+
+        Assert.Equal(1, info.Value);
+        Assert.Equal("claude", info.Labels["provider"]);
+        Assert.Equal("anthropic", info.Labels["type"]);
+        Assert.Equal("prefer", info.Labels["policy"]);
+        Assert.Equal("configured", info.Labels["credential"]);
+
+        // Described, not measured: nothing has been dispatched, so there is no counter for it.
+        Assert.DoesNotContain(parsed.Samples, s => s.Name == "inferhub_provider_dispatched_total");
+    }
+
+    [Fact]
+    public void AProvidersFailuresAreTheirOwnSeriesAndAppearOnlyOnceThereAreSome()
+    {
+        var metrics = new Metrics();
+        metrics.RecordProviderDispatched("claude", "smart");
+        metrics.RecordProviderDispatched("gemini", "cheap");
+        metrics.RecordProviderFailed("claude", "smart", "Incorrect API key provided.");
+
+        var parsed = Exposition.Parse(PrometheusFormatter.Format(
+            SampleScrape() with { Metrics = metrics.Snapshot(DateTimeOffset.UtcNow) }));
+
+        Assert.Equal(1, parsed.Value("inferhub_provider_failed_total", ("provider", "claude")));
+
+        // The provider that has not failed has no row: the absence rule this file has followed
+        // since phase 28, applied to the newest counter rather than exempted from it.
+        Assert.DoesNotContain(
+            parsed.Samples,
+            s => s.Name == "inferhub_provider_failed_total" && s.Labels["provider"] == "gemini");
+
+        // And nothing leaks the vendor's sentence into the scrape — it is content-shaped, and it
+        // lives only on the admin-gated status payload (66 D3).
+        Assert.DoesNotContain("Incorrect API key", PrometheusFormatter.Format(
+            SampleScrape() with { Metrics = metrics.Snapshot(DateTimeOffset.UtcNow) }));
+    }
+
+    /// <summary>
+    /// 66 D6. The refusal counter is hub-wide and unlabelled — the id a caller steers at is text
+    /// they chose, so a label would be an unbounded series count anyone with a key could mint — and
+    /// it is present at zero, because a hub with no provider at all can still refuse a steer.
+    /// </summary>
+    [Fact]
+    public void TheSteerRefusalCounterIsOneUnlabelledSeriesPresentAtZero()
+    {
+        var parsed = Exposition.Parse(PrometheusFormatter.Format(SampleScrape()));
+
+        Assert.Equal(0, parsed.Value("inferhub_provider_refused_total"));
+        Assert.Empty(Assert.Single(parsed.Samples, s => s.Name == "inferhub_provider_refused_total").Labels);
+        Assert.DoesNotContain(parsed.Samples, s => s.Name == "inferhub_provider_info");
+    }
+
     /// <summary>
     /// A recipe a node holds and will not offer is invisible in every other series — it is simply
     /// absent from the capability list. This is the one that can be alerted on (phase 51, D1).
