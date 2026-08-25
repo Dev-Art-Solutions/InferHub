@@ -119,3 +119,44 @@ URL nothing listens on:
    (127.0.0.1:9)"* — the transport's own sentence, not an invented one.
 4. `X-InferHub-Provider: nope` → `400`, the sentence names the pair the caller typed and nobody else,
    and `inferhub_provider_refused_total` is 1.
+
+---
+
+## Addendum — the published image, checked the same evening
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.34.0`, pulled and driven by hand. The image's own
+label reports `version=3.34.0`, `revision=6ac1ded` — the phase commit, asked of the artefact rather
+than of a dashboard.
+
+A hub with one **keyless** `openai-compatible` provider at `Policy: prefer`, mapping `smart` to a
+base URL nothing listens on, and no node at all:
+
+1. **`/api/status` before any traffic** — `"policy":"prefer"`, `"credential":"absent"`,
+   `"failed":0`, `"lastError":null`. Reported because it is configured, not because it was used.
+2. **`/metrics` before any traffic** — `inferhub_provider_info{provider="vendor",type="openai-compatible",policy="prefer",credential="absent"} 1`
+   and `inferhub_provider_refused_total 0`, with **no** `inferhub_provider_dispatched_total` and no
+   `inferhub_provider_failed_total`. The description exists; the measurements do not. That pair is
+   the whole of D5, on the artefact.
+3. **One chat for `smart`** — the dispatch is attempted and fails. `dispatched: 1`, `failed: 1`,
+   `lastError: "Connection refused (127.0.0.1:9)"`, and `lastErrorAtUtc` 66 ms after `lastAtUtc`.
+   The transport's own sentence, not one this hub composed.
+4. **`inferhub_provider_failed_total{provider="vendor"} 1`** appears only now, beside the dispatch
+   counter — and the error text is **absent from the whole scrape**.
+5. **`X-InferHub-Provider: nope`** — `400`, and the sentence names the pair the caller typed and
+   nobody else; the word `vendor` does not appear in it. `inferhub_provider_refused_total` goes to 1
+   with no label on it.
+6. **No key anywhere in `/api/status`** — neither the admin key nor the client key appears in the
+   payload, and the provider has none to leak in the first place.
+7. **The console assets on the image carry the panel** — `console.html` has the *Cloud providers*
+   section and `console.js` carries *"No cloud provider is configured — nothing leaves your
+   machines."*, so the empty state ships rather than being a local edit.
+8. **A `Fallback:`-only hub on the same image** — `/api/status` has **no `providers` key at all**,
+   the `fallback` block is byte-shaped exactly as it was (`enabled`, `trigger`, `mappedModels`,
+   `dispatched`, `lastModel`, `lastAtUtc`), and the scrape carries **no** `inferhub_provider_info`,
+   **no** dispatch and **no** failure series — only `inferhub_provider_refused_total 0`. That is the
+   invariant this phase was likeliest to break, and the one addition, checked rather than argued.
+
+**What this run did not establish, and could not:** that the panel *renders* correctly. Every check
+above is against the payload, the scrape and the asset bytes; nobody opened a browser at it, and no
+live vendor was called — the failure driven here is a refused TCP connection rather than a real
+vendor's 401. Both are phase 68's day.
