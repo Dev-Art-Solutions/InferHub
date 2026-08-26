@@ -5,7 +5,7 @@
 — and this is the day that pays for it. Every row says what was run, on what, and what came back.
 A claim that could not be checked is a row too, with the reason in it.
 
-**Status: in progress.** Sections 1–5 are the checks that need no vendor credential and they are
+**Status: in progress.** Sections 1–5 (with 5a/5b) are the checks that need no vendor credential and they are
 done. Sections 6–9 need one real key per vendor and are **not started** — every row in them says so
 rather than being absent, so this file cannot be mistaken for a finished day.
 
@@ -173,6 +173,42 @@ the verification release; the maintainer's call on the day was that a `/metrics`
 rejects should not wait on four vendor keys that are not available yet, and a patch tag says what it
 fixed more clearly than a verification-day release does. The day itself stays open at `3.36.0`. See
 `.claude/release-notes-v3.35.1.md`.
+
+### 5a. The fix, checked on its own published image
+
+`inferhub-coordinator:3.35.1` →
+`sha256:6394f6dba4e3ce561a43dfe0c6d036f7bb8de18e201b176cb3675066db815755`, published ~5 minutes after
+the tag, pulled and run. Two providers, **both dispatching**, which is the configuration
+`inferhub_provider_last_model` had never been in since v3.29.0:
+
+| Family | `# HELP` | `# TYPE` | Samples |
+|---|---|---|---|
+| `inferhub_provider_info` | 1 | 1 | 2 |
+| `inferhub_provider_last_model` | 1 | 1 | 2 |
+| `inferhub_provider_dispatched_total` | 1 | 1 | 2 |
+
+And the fleet-wide form of the same question, which is the one worth keeping: **no metric name in the
+whole scrape carries a second `# HELP`.** Not the two that were broken — any of them.
+
+### 5b. A real dispatch through a provider, on a real upstream that is not a vendor
+
+The local Ollama's OpenAI-compatible `/v1` stood in as the upstream for two `openai-compatible`
+providers (`up1` with a credential, `up2` without). **This is not a vendor row and does not belong in
+sections 6–9** — no cloud endpoint was called and nothing was billed. What it establishes is the
+plumbing those sections will measure, end to end on the published image:
+
+| Claim | Result |
+|---|---|
+| `X-InferHub-Served-By` | `provider:up1` / `provider:up2` ✓ (61 D4) |
+| The answer is relabelled with the caller's name | `"model":"alpha"` / `"beta"`, not `qwen3.8:latest` ✓ |
+| A truncation reads back as Ollama's own | `done_reason: "length"` from `num_predict: 4` ✓ |
+| Upstream `usage` → ledger | `12` prompt / `4` completion, **identical** in the response and in `/api/admin/usage`, per model ✓ (D5 — read from the upstream, never estimated) |
+| The legacy total still counts a provider dispatch | `fallbackRequests: 1` each ✓ (61 D4 — it always meant "requests the fleet did not serve") |
+| `/api/status` per provider | `dispatched: 1`, `lastModel`, `lastAtUtc`, `failed: 0`, `lastError: null` ✓ |
+
+**What this does not establish, and it is the whole of §6–9:** that a *vendor's* number matches the
+one on a vendor's invoice. Ollama's `usage` block is one we can read directly and one nobody bills
+for — which makes it a rehearsal of the measurement, not the measurement.
 
 ## 6–9. The vendor sections — NOT STARTED
 
