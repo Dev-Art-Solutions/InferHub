@@ -90,12 +90,33 @@ public sealed class NodeRegistry : INodeRegistry
             .Select(model => model with { Name = model.Name.Trim() })
             .ToArray();
 
+        // Phase 69, found by running the published 3.36.0 image rather than by any test. A node
+        // whose backend is down reports **zero models** (36 D7), and until v3.36 that emptiness was
+        // the only thing unrouting it. It still arrives — so the model left the registry one
+        // refresh interval after the backend died, and the refusal went straight back to the
+        // `404 model not found` this phase exists to remove. Measured: the 503 held for six
+        // seconds and the 404 returned for good.
+        //
+        // The health field is what unroutes a sick node now, so an empty report from one that has
+        // declared an unhealthy backend is **held** rather than applied: the fleet still will not
+        // dispatch there, and the hub can still name the model it is refusing and say why. The
+        // decision lives entirely here, so a node older than v3.36 — which never declares health —
+        // behaves exactly as it always did.
+        var holdStaleInventory =
+            normalizedModels.Length == 0
+            && existing.Models.Count > 0
+            && existing.Backend is not null and not BackendHealth.Healthy;
+
         nodes[connectionId] = Resolved(existing with
         {
             LastSeenUtc = now,
-            Models = normalizedModels,
-            ModelsRefreshedAt = models.RefreshedAt,
-            DeclaredCapabilities = models.Capabilities ?? existing.DeclaredCapabilities,
+            Models = holdStaleInventory ? existing.Models : normalizedModels,
+            // The timestamp is deliberately not advanced while holding: it says when that list was
+            // last true, which is the question somebody reading a stale inventory is asking.
+            ModelsRefreshedAt = holdStaleInventory ? existing.ModelsRefreshedAt : models.RefreshedAt,
+            DeclaredCapabilities = holdStaleInventory
+                ? existing.DeclaredCapabilities
+                : models.Capabilities ?? existing.DeclaredCapabilities,
             StreamedAttachments = models.SupportsStreamedAttachments ?? existing.StreamedAttachments
         });
 

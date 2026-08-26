@@ -1036,6 +1036,17 @@ a node that said nothing has not made. The console shows it beside `online` rath
 it (the connection genuinely *is* up) and puts the node on the **Needs attention** strip with the
 sentence, not the status word.
 
+> **The empty model report was still arriving, and it undid D3 sixty seconds later — found by
+> running the published 3.36.0 image, not by any test.** A node whose backend is down reports zero
+> models (36 D7), which used to be the only thing unrouting it; that report kept landing, so the
+> model left the registry one refresh interval after the backend died and the refusal reverted to
+> the `404 model not found` this phase exists to remove. **Measured: the 503 held for six
+> seconds.** Fixed in **v3.36.1** — `ReportModels` **holds** an empty list from a node that has
+> declared an unhealthy backend, keeping the inventory the refusal needs in order to name the model
+> and the reason, while the health field goes on doing the unrouting. The decision is entirely
+> hub-side, so a node older than v3.36 never reaches it and behaves exactly as it always did. The
+> stale list is replaced wholesale on recovery, never merged.
+
 **D8 — This file was at 1076 of 1100, so phase 32 moved whole into
 `src/InferHub.Coordinator/Cluster/CLAUDE.md`.** 62 D6 and 67 D6, a third time, with the same
 arithmetic: a phase cannot land its decisions in a file with twenty-four lines of headroom. The

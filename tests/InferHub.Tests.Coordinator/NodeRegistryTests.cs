@@ -557,6 +557,61 @@ public class NodeRegistryTests
         Assert.Equal(2, count);
     }
 
+    /// <summary>
+    /// 69, and the reason v3.36.1 exists. The node reports zero models when its backend is down
+    /// (36 D7) and that report still arrives — so without this, the model left the registry one
+    /// refresh interval after the backend died and the refusal reverted to the `404 model not
+    /// found` the whole phase exists to remove. Measured on the published 3.36.0 image: the 503
+    /// held for six seconds.
+    /// </summary>
+    [Fact]
+    public void AnEmptyReportFromASickNodeDoesNotEraseTheModelsTheRefusalNeedsToNameThem()
+    {
+        var registry = WithModel(out var now);
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 0, Backend: BackendHealth.Unreachable), now);
+        registry.ReportModels("connection-1", new NodeModels("node-1", [], now.AddSeconds(20)), now.AddSeconds(20));
+
+        // Held, so the hub can still say *which* model it is refusing and why...
+        Assert.Single(registry.FindNodesWithModel("llama3", includeUnserviceable: true));
+        Assert.Single(registry.DistinctModels());
+
+        // ...and still refuses to route there, which is what the health field is for.
+        Assert.Empty(registry.FindNodesWithModel("llama3"));
+    }
+
+    [Fact]
+    public void AHealthyNodeThatReportsNoModelsIsStillEmptiedExactlyAsBefore()
+    {
+        var registry = WithModel(out var now);
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 0, Backend: BackendHealth.Healthy), now);
+        registry.ReportModels("connection-1", new NodeModels("node-1", [], now.AddSeconds(20)), now.AddSeconds(20));
+
+        // A box whose models were genuinely deleted says so, and a node that never declares health
+        // — anything older than v3.36 — takes this same path.
+        Assert.Empty(registry.DistinctModels());
+    }
+
+    [Fact]
+    public void RecoveryReplacesTheHeldInventoryWithWhatTheNodeActuallyHasNow()
+    {
+        var registry = WithModel(out var now);
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 0, Backend: BackendHealth.Wedged), now);
+        registry.ReportModels("connection-1", new NodeModels("node-1", [], now.AddSeconds(20)), now.AddSeconds(20));
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 0, Backend: BackendHealth.Healthy), now.AddSeconds(30));
+        registry.ReportModels(
+            "connection-1",
+            new NodeModels("node-1", [new ModelInfo("mistral", "digest-2", 456)], now.AddSeconds(40)),
+            now.AddSeconds(40));
+
+        // The stale list is not merged with the live one — it is replaced, which is what makes
+        // holding it safe in the first place.
+        Assert.Equal("mistral", Assert.Single(registry.DistinctModels()).Name);
+    }
+
     private static NodeRegistry WithModel(out DateTimeOffset now)
     {
         var registry = new NodeRegistry();
