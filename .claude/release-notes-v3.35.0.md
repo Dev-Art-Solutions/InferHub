@@ -119,11 +119,10 @@ still binding, the conflict failing startup naming both paths, the missing-allow
   written — the track's D6, which is why a test that needs somebody's API key does not exist in this
   repository. **A real key against a real node is phase 68**, and until then "the node speaks
   Anthropic" is a claim about translation, not about a conversation anybody has had.
-- **Nothing here has been driven on a published image yet.** The release checklist's fourth item is
-  outstanding at the time of writing: pull `ghcr.io/dev-art-solutions/inferhub-node:3.35.0`, set
-  `Backend__Type=anthropic` with a stub upstream on the host, and confirm the wire — `x-api-key`
-  present, `Authorization` absent, `max_tokens` supplied — plus a solo `/api/embed` answering 501.
-  Five of the last seven releases found something only the artefact could show.
+- ~~**Nothing here has been driven on a published image yet.**~~ **Discharged the same evening — see
+  the addendum below.** It was written as outstanding, then done: eleven checks on
+  `ghcr.io/dev-art-solutions/inferhub-node:3.35.0`, all passing. The sentence is kept struck through
+  rather than deleted, because what it said was true when the release was cut.
 - **The `Upstream:`/`OpenAi:` conflict check compares literal configuration values**, so two spellings
   of the same thing (`http://host:8000/v1` and `http://host:8000/v1/`) are reported as a conflict.
   That is the safe direction and it is not free of false positives; nothing measured how often it
@@ -132,3 +131,44 @@ still binding, the conflict failing startup naming both paths, the missing-allow
   else's datacentre still occupies a `MaxConcurrency` slot and is still counted by the saturation
   check as though it were local. Whether that is the right accounting is a question this phase did
   not ask.
+
+---
+
+## Addendum, same evening: the published image was pulled and driven, and it passed
+
+`ghcr.io/dev-art-solutions/inferhub-node:3.35.0` was present on GHCR ~5 minutes after the tag —
+anonymously pullable, no manual flip, **Gotcha 1 for the fourteenth time**. It was run as a solo node
+against a stub Anthropic upstream on the host (`--add-host=host.docker.internal:host-gateway`, since
+host→container is not loopback — 21 D5), with a second run for the legacy configuration. Eleven
+checks:
+
+1. **Startup line says the type**: `backend=anthropic, endpoint=http://host.docker.internal:8899/v1`.
+2. **`/api/status`** reports `backend.name: "anthropic"` and `capabilities: ["chat"]` — **no `embed`,
+   on the artefact**.
+3. **The allowlist narrowed the catalogue**: the stub offered `claude-sonnet-5` and `claude-opus-5`,
+   the node reports one. `digest` and `size` are `null`.
+4. **`/api/tags` and `/v1/models`** agree with it; `/v1/models` carries `capabilities: ["chat"]`.
+5. **The wire is Anthropic's**: `POST /v1/messages`, `x-api-key: stub-ant-key`,
+   `anthropic-version: 2023-06-01`, and **`Authorization` absent** — 63 D1 holding on a host that
+   does not go through `ProviderDispatcher`.
+6. **`max_tokens: 4096` supplied** and **`system` lifted to the top level**, from a request whose
+   `messages` array carried a `{"role":"system"}` turn.
+7. **The answer comes back Ollama-shaped**, and `prompt_eval_count` is **25, not 165** — the stub's
+   `cache_read_input_tokens: 140` is a sibling of `input_tokens` at Anthropic and is kept out of the
+   prompt count (64 D5's pair, the Anthropic half).
+8. **`/api/embed` is a 501** naming the upstream and the kind; **`/v1/embeddings` is a 501** in the
+   OpenAI envelope with `code: "capability_not_supported"`.
+9. **The stub saw exactly one `/v1/messages`** across the whole session — three model listings and
+   the one chat, and **nothing after it**. Both embed refusals were decided on the node; neither
+   request left it.
+10. **Two startup refusals fire with their own sentences**: a `gemini` node with no allowlist names
+    `Upstream:Models:Include (or Node:Models:Include)`, and `OpenAi__BaseUrl` + `Upstream__BaseUrl`
+    disagreeing names **both paths**.
+11. **A v3.34-shaped node is unchanged**: `Backend__Type=openai` with only the legacy `OpenAi:`
+    section reports `backend.name: "openai"`, `capabilities: ["chat","embed"]`, requires no
+    allowlist, and sends `Authorization: Bearer legacy-key` with **no `x-api-key`** — the OpenAI
+    dialect, credentialed the OpenAI way.
+
+**What this still does not establish** is unchanged and is the first bullet above: the upstream was a
+stub of ours, not Anthropic. What it proves is that the node composes the dialect, credentials it,
+and refuses what it cannot serve — on the artefact rather than in a test host. **A real key is 68.**
