@@ -139,10 +139,19 @@ public static class PrometheusFormatter
             Header(builder, "inferhub_provider_dispatched_total", "counter", "Requests served by a configured cloud provider instead of a node.");
             foreach (var provider in providers) Sample(builder, "inferhub_provider_dispatched_total", [("provider", provider.Provider)], provider.Dispatched);
 
-            foreach (var provider in providers.Where(p => !string.IsNullOrWhiteSpace(p.LastModel)))
+            // One header for the family, then a sample per provider. `Info` writes its own header,
+            // so calling it in a loop emits a second `# HELP` for a name Prometheus has already
+            // seen — and that does not drop the series, it **rejects the whole scrape**. Two
+            // providers is the first configuration that can reach it, which is why it survived
+            // from 61 to here (68 F1).
+            if (providers.Any(provider => !string.IsNullOrWhiteSpace(provider.LastModel)))
             {
-                Info(builder, "inferhub_provider_last_model", "Model of the most recent dispatch to this provider.",
-                    [("provider", provider.Provider), ("model", provider.LastModel!)]);
+                Header(builder, "inferhub_provider_last_model", "gauge", "Model of the most recent dispatch to this provider.");
+                foreach (var provider in providers.Where(p => !string.IsNullOrWhiteSpace(p.LastModel)))
+                {
+                    Sample(builder, "inferhub_provider_last_model",
+                        [("provider", provider.Provider), ("model", provider.LastModel!)], 1);
+                }
             }
 
             // Phase 66. Emitted beside the dispatches, on the same terms: a provider that has never
@@ -172,15 +181,16 @@ public static class PrometheusFormatter
         // which the dispatch counter's absence cannot say on its own.
         if (scrape.Providers is { Count: > 0 } configured)
         {
+            Header(builder, "inferhub_provider_info", "gauge", "A cloud provider this hub is configured to use.");
             foreach (var provider in configured.OrderBy(p => p.Provider, StringComparer.Ordinal))
             {
-                Info(builder, "inferhub_provider_info", "A cloud provider this hub is configured to use.",
+                Sample(builder, "inferhub_provider_info",
                     [
                         ("provider", provider.Provider),
                         ("type", provider.Type),
                         ("policy", provider.Policy),
                         ("credential", provider.Credential)
-                    ]);
+                    ], 1);
             }
         }
 

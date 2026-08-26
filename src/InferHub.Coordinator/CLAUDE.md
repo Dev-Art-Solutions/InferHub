@@ -1063,3 +1063,14 @@ refusal counter has **no label at all**: the id a caller steers at is text they 
 lets anyone with an inference key mint unbounded series, and labelling it with the provider that
 *does* claim the model rebuilds by scrape the enumeration 65 D4 refused to expose by probing. It is
 emitted at zero like the other hub-wide counters — a hub with no provider can still refuse a steer.
+
+> **A `# HELP` belongs to the metric *family*, not to the row — and the second one rejects the whole
+> scrape.** `Info` writes its own header, so calling it in a loop emitted a duplicate header for
+> `inferhub_provider_info` (since v3.34.0) and `inferhub_provider_last_model` (since **v3.29.0**);
+> Prometheus refuses the entire endpoint, so every InferHub series left the dashboard the moment an
+> operator configured a **second** provider — the configuration this whole track exists to make
+> possible. Fixed in **v3.35.1**: one `Header` per family, `Sample` per row, as the
+> `inferhub_node_vram_*` families have done since 48. Every provider test declared one provider, and
+> the in-test reader overwrote a duplicate silently; **`Exposition.Parse` now fails on a repeated
+> header for any name**, which is the half that guards the families nobody has written yet. Found by
+> scraping a published image with two providers on it (phase 68), not by a suite.

@@ -316,6 +316,44 @@ public class PrometheusMetricsTests
         Assert.DoesNotContain(parsed.Samples, s => s.Name == "inferhub_provider_dispatched_total");
     }
 
+    /// <summary>
+    /// 68 F1. The header belongs to the metric *family*, not to the row — and a second
+    /// <c># HELP</c> for one name makes Prometheus reject the whole scrape rather than skip a
+    /// series. Two providers is the smallest configuration that reaches it, which is precisely the
+    /// configuration this track exists to make possible, so it shipped from v3.29 to v3.35 behind
+    /// suites that only ever declared one.
+    /// </summary>
+    [Fact]
+    public void TwoProvidersShareOneHeaderPerFamilyRatherThanRepeatingIt()
+    {
+        var metrics = new Metrics();
+        metrics.RecordProviderDispatched("claude", "smart");
+        metrics.RecordProviderDispatched("gemini", "cheap");
+
+        var scrape = SampleScrape() with
+        {
+            Metrics = metrics.Snapshot(DateTimeOffset.UtcNow),
+            Providers =
+            [
+                new ProviderScrapeSample("claude", "anthropic", "prefer", "configured"),
+                new ProviderScrapeSample("gemini", "gemini", "no-node", "absent")
+            ]
+        };
+
+        // Parse alone is the assertion — the reader refuses a repeated header exactly as Prometheus
+        // does — but the counts say what the shape should be rather than only what it must not be.
+        var parsed = Exposition.Parse(PrometheusFormatter.Format(scrape));
+
+        Assert.Equal(2, parsed.Samples.Count(s => s.Name == "inferhub_provider_info"));
+        Assert.Equal(2, parsed.Samples.Count(s => s.Name == "inferhub_provider_last_model"));
+        Assert.True(parsed.Help.ContainsKey("inferhub_provider_info"));
+        Assert.Equal("gauge", parsed.Types["inferhub_provider_last_model"]);
+
+        // The credential column still distinguishes them, and still never carries a key.
+        Assert.Equal("absent", Assert.Single(parsed.Samples,
+            s => s.Name == "inferhub_provider_info" && s.Labels["provider"] == "gemini").Labels["credential"]);
+    }
+
     [Fact]
     public void AProvidersFailuresAreTheirOwnSeriesAndAppearOnlyOnceThereAreSome()
     {
@@ -700,12 +738,20 @@ public class PrometheusMetricsTests
                 var line = raw.TrimEnd('\r');
                 if (line.Length == 0) continue;
 
+                // A second HELP or TYPE line for a name Prometheus has already seen is not a
+                // cosmetic repeat: its parser rejects the **entire scrape**, so one careless
+                // header inside a loop takes every series on this endpoint off the dashboard.
+                // The reader used to overwrite the entry silently, which is how the duplicate
+                // in `inferhub_provider_info` and `inferhub_provider_last_model` reached a
+                // published image (68 F1) — it only appears with two providers configured.
                 if (line.StartsWith("# HELP ", StringComparison.Ordinal))
                 {
                     var rest = line["# HELP ".Length..];
                     var space = rest.IndexOf(' ');
                     Assert.True(space > 0, $"malformed HELP line: {line}");
-                    help[rest[..space]] = rest[(space + 1)..];
+                    var family = rest[..space];
+                    Assert.False(help.ContainsKey(family), $"second HELP line for metric name: {family}");
+                    help[family] = rest[(space + 1)..];
                     continue;
                 }
 
@@ -713,6 +759,7 @@ public class PrometheusMetricsTests
                 {
                     var parts = line["# TYPE ".Length..].Split(' ');
                     Assert.Equal(2, parts.Length);
+                    Assert.False(types.ContainsKey(parts[0]), $"second TYPE line for metric name: {parts[0]}");
                     types[parts[0]] = parts[1];
                     continue;
                 }
