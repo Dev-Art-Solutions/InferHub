@@ -731,3 +731,25 @@ fifteen seconds about a server it was configured not to have.
 plain enum, so rule 2 is untouched. The node sends `IBackendSupervisor.Health` verbatim on the
 heartbeat — including `null`, which is what it says before the threshold has been crossed and what
 `NoBackendSupervisor` always says.
+
+> **"Could not ask" is not "has none", and shipping them as the same message is what made v3.36
+> only half work (v3.36.2).** `ListModelsAsync` caught a failed listing and returned an **empty
+> list** — so a node whose backend was unreachable reported a *failure to the coordinator as data*,
+> and the hub cannot tell that from a box whose weights were deleted. It emptied the registry, the
+> model stopped existing, and 69 D3's `503` naming the backend reverted to the `404 model not
+> found` the phase exists to remove. **Measured on the published 3.36.0 image: the 503 held for six
+> seconds** — and on defaults it would usually never appear at all, because the model refresh
+> normally lands before the probe threshold is crossed, which is the race v3.36.1's hub-side hold
+> could not close.
+>
+> `IInferenceBackend.ListModelsAsync` now returns **`null` when the backend could not be asked**,
+> and `ReportModelsAsync` **sends nothing** in that case, leaving the hub's inventory alone while
+> the heartbeat carries the verdict. This is **phase-23 D1's rule**, one project over: *"not
+> fetched" must not be confusable with "not there"* — the same reason `VectorEntry` exists. The
+> five solo callers that only render a list say `?? []`; the compiler found every one of them,
+> which is the argument for a nullable return over a sentinel.
+>
+> **The cost, stated:** a v3.36.2 node against a pre-v3.36 hub no longer unroutes itself via the
+> empty report, so that hub keeps dispatching — a fast `502` naming the connection failure for
+> `unreachable`, and the timeouts 36 D7 feared for `wedged`. That is the unusual upgrade direction
+> (hubs go first), and it is the trade for the 404 going away everywhere else.

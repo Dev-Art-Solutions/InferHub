@@ -376,7 +376,7 @@ public class UpstreamBackendTests
 
         var models = await Backend(upstream).ListModelsAsync(CancellationToken.None);
 
-        var model = Assert.Single(models);
+        var model = Assert.Single(models!);
         Assert.Equal("meta-llama/Llama-3.1-8B-Instruct", model.Name);
         Assert.Null(model.Digest);
         Assert.Null(model.SizeBytes);
@@ -403,15 +403,20 @@ public class UpstreamBackendTests
 
         var models = await Backend(upstream, options).ListModelsAsync(CancellationToken.None);
 
-        Assert.Equal("gpt-4o-mini", Assert.Single(models).Name);
+        Assert.Equal("gpt-4o-mini", Assert.Single(models!).Name);
     }
 
+    /// <summary>
+    /// <b>Amended in v3.36.2.</b> Still no crash — but the answer is <c>null</c> ("could not ask")
+    /// rather than an empty list ("has none"), so the node does not hand the coordinator a failure
+    /// dressed as an inventory. See <c>IInferenceBackend.ListModelsAsync</c>.
+    /// </summary>
     [Fact]
-    public async Task AnUnreachableUpstreamReportsNoModelsRatherThanCrashingTheNode()
+    public async Task AnUnreachableUpstreamAnswersNullRatherThanAnEmptyInventory()
     {
         var upstream = StubUpstream.Status(HttpStatusCode.ServiceUnavailable, "down");
 
-        Assert.Empty(await Backend(upstream).ListModelsAsync(CancellationToken.None));
+        Assert.Null(await Backend(upstream).ListModelsAsync(CancellationToken.None));
     }
 
     // ---- upstream errors -------------------------------------------------------------
@@ -700,7 +705,7 @@ public class UpstreamBackendTests
             new UpstreamBackendOptions { Models = { Include = { "openai/gpt-5" } } },
             BackendOptions.OpenRouter).ListModelsAsync(CancellationToken.None);
 
-        Assert.Equal(["openai/gpt-5"], models.Select(model => model.Name));
+        Assert.Equal(["openai/gpt-5"], models!.Select(model => model.Name));
 
         // Digest and size have no upstream equivalent; null is the honest answer.
         Assert.Null(models[0].Digest);

@@ -62,7 +62,7 @@ internal static class LocalStatusEndpoints
         var services = httpContext.RequestServices;
         var gate = services.GetService<LocalConcurrencyGate>();
         var models = LocalApiEndpoints.VisibleModels(
-            await backend.ListModelsAsync(cancellationToken),
+            await backend.ListModelsAsync(cancellationToken) ?? [],
             node);
 
         return Results.Json(

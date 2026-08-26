@@ -932,6 +932,26 @@ public sealed class CoordinatorConnection(
         }
 
         var models = await backend.ListModelsAsync(cancellationToken);
+
+        // Phase 69, v3.36.2, and the reason the release before it only half worked. **"Could not
+        // ask" is not "has none."** Reporting an empty list here sends the coordinator a *failure*
+        // dressed as a measurement, and it cannot be told from a box whose weights were deleted —
+        // so the model left the registry and v3.36's `503` naming the backend reverted to the
+        // `404 model not found` the phase exists to remove. Measured on the published image: the
+        // 503 held for six seconds, and on defaults it would usually not appear at all, because a
+        // refresh normally lands before the probe threshold is crossed.
+        //
+        // So the inventory is left exactly as the hub already has it, and the heartbeat — which
+        // carries the health verdict within a probe or two — is what unroutes this node.
+        if (models is null)
+        {
+            logger.LogWarning(
+                "Could not list models from the {Backend} backend; leaving the coordinator's inventory alone rather than reporting zero. The heartbeat carries this backend's health.",
+                backend.Name);
+
+            return;
+        }
+
         var filtered = ModelFilter.Apply(models, node.Models);
 
         if (activeConnection.State is not HubConnectionState.Connected)

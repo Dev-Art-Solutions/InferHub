@@ -36,7 +36,7 @@ public sealed class OllamaBackend(
     /// </summary>
     public IReadOnlyList<string> Kinds { get; } = [CapabilityKinds.Chat, CapabilityKinds.Embed];
 
-    public async Task<IReadOnlyList<ModelInfo>> ListModelsAsync(CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<ModelInfo>?> ListModelsAsync(CancellationToken cancellationToken)
     {
         try
         {
@@ -53,7 +53,9 @@ public sealed class OllamaBackend(
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Could not list models from Ollama");
-            return Array.Empty<ModelInfo>();
+
+            // Null, not empty: "could not ask" is not "has none" (see IInferenceBackend).
+            return null;
         }
     }
 

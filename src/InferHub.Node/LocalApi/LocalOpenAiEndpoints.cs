@@ -289,7 +289,7 @@ internal static class LocalOpenAiEndpoints
     {
         var created = ResponseTranslator.UnixNow();
         var models = LocalApiEndpoints.VisibleModels(
-            await backend.ListModelsAsync(cancellationToken),
+            await backend.ListModelsAsync(cancellationToken) ?? [],
             nodeOptions.Value);
 
         // Phase 40, and the parity that matters: a client pointed at a solo node sees the same
@@ -308,7 +308,7 @@ internal static class LocalOpenAiEndpoints
         CancellationToken cancellationToken)
     {
         var models = LocalApiEndpoints.VisibleModels(
-            await backend.ListModelsAsync(cancellationToken),
+            await backend.ListModelsAsync(cancellationToken) ?? [],
             nodeOptions.Value);
 
         var match = models.FirstOrDefault(model => string.Equals(model.Name, id, StringComparison.OrdinalIgnoreCase));

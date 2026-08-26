@@ -70,7 +70,7 @@ public sealed class UpstreamBackend(
 
     private string Type => backend.Value.Normalized();
 
-    public async Task<IReadOnlyList<ModelInfo>> ListModelsAsync(CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<ModelInfo>?> ListModelsAsync(CancellationToken cancellationToken)
     {
         try
         {
@@ -94,7 +94,9 @@ public sealed class UpstreamBackend(
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Could not list models from the {Type} upstream at {BaseUrl}", Type, Endpoint);
-            return [];
+
+            // Null, not empty: "could not ask" is not "has none" (see IInferenceBackend).
+            return null;
         }
     }
 

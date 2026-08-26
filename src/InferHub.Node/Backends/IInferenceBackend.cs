@@ -27,7 +27,19 @@ public interface IInferenceBackend
     /// </remarks>
     IReadOnlyList<string> Kinds { get; }
 
-    Task<IReadOnlyList<ModelInfo>> ListModelsAsync(CancellationToken cancellationToken);
+    /// <summary>
+    /// What this backend holds, or <b>null when it could not be asked</b> (phase 69, v3.36.2).
+    /// </summary>
+    /// <remarks>
+    /// The distinction is phase-23 D1's, one project over: <em>"not fetched" must not be confusable
+    /// with "not there"</em>. Both used to come back as an empty list, so the node reported a
+    /// failure to the coordinator <b>as data</b> — and a hub cannot tell an unreachable server from
+    /// a box whose weights were deleted. That is what turned v3.36's <c>503</c> naming the backend
+    /// back into a <c>404 model not found</c> one refresh interval later.
+    /// Callers that only want to render a list say <c>?? []</c>; the one caller that is *reporting*
+    /// must not.
+    /// </remarks>
+    Task<IReadOnlyList<ModelInfo>?> ListModelsAsync(CancellationToken cancellationToken);
 
     Task<string> GenerateAsync(string requestJson, CancellationToken cancellationToken);
 

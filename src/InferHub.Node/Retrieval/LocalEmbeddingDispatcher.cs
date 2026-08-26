@@ -96,7 +96,7 @@ public sealed class LocalEmbeddingDispatcher(
         IReadOnlyList<ModelInfo> models;
         try
         {
-            models = await backend.ListModelsAsync(cancellationToken);
+            models = await backend.ListModelsAsync(cancellationToken) ?? [];
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

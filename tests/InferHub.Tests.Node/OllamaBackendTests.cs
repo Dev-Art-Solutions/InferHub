@@ -29,22 +29,44 @@ public class OllamaBackendTests
 
         var models = await backend.ListModelsAsync(CancellationToken.None);
 
-        var model = Assert.Single(models);
+        var model = Assert.Single(models!);
         Assert.Equal("llama3", model.Name);
         Assert.Equal("digest-1", model.Digest);
         Assert.Equal(123, model.SizeBytes);
     }
 
+    /// <summary>
+    /// <b>Amended in v3.36.2, and the amendment is the point.</b> This used to assert an empty
+    /// list, which meant the node reported a <em>failure</em> to the coordinator <em>as data</em>:
+    /// "could not ask" and "has none" arrived as the same message, and a hub cannot tell an
+    /// unreachable server from a box whose weights were deleted. That is what turned v3.36's
+    /// <c>503</c> naming the backend back into a <c>404 model not found</c> one refresh later.
+    /// Phase-23 D1's rule, one project over: <em>"not fetched" must not be confusable with "not
+    /// there"</em>.
+    /// </summary>
     [Fact]
-    public async Task ListModelsAsyncReturnsEmptyWhenOllamaFails()
+    public async Task ListModelsAsyncReturnsNullWhenOllamaCannotBeAskedRatherThanAnEmptyList()
     {
         var backend = new OllamaBackend(
             new FakeOllamaHttpClient(new InvalidOperationException("offline")),
             Options.Create(new OllamaOptions()),
             NullLogger<OllamaBackend>.Instance);
 
+        Assert.Null(await backend.ListModelsAsync(CancellationToken.None));
+    }
+
+    /// <summary>And a server that genuinely holds nothing still says so, distinctly.</summary>
+    [Fact]
+    public async Task AnOllamaThatHoldsNoModelsStillReportsAnEmptyListRatherThanNull()
+    {
+        var backend = new OllamaBackend(
+            new FakeOllamaHttpClient(new GetModelsResponse { Models = [] }),
+            Options.Create(new OllamaOptions()),
+            NullLogger<OllamaBackend>.Instance);
+
         var models = await backend.ListModelsAsync(CancellationToken.None);
 
+        Assert.NotNull(models);
         Assert.Empty(models);
     }
 

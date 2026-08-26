@@ -201,7 +201,9 @@ internal static class LocalInferenceEndpoints
         IOptions<NodeOptions> nodeOptions,
         CancellationToken cancellationToken)
     {
-        var models = await backend.ListModelsAsync(cancellationToken);
+        // Solo renders a list, so "could not ask" and "has none" look the same to a reader here;
+        // the distinction matters to the one caller that *reports* an inventory (v3.36.2).
+        var models = await backend.ListModelsAsync(cancellationToken) ?? [];
         var visible = LocalApiEndpoints.VisibleModels(models, nodeOptions.Value);
 
         // Node:Models:Include/Exclude is what this node advertises to a hub, so honouring it here
