@@ -56,10 +56,28 @@ unreachable, and the timeouts phase 36 feared when it is wedged. That is the unu
 direction — hubs are normally updated first — and it is the trade for the `404` going away
 everywhere else.
 
-## What was not established
+## The artefact check — done, on both 3.36.2 images
 
-- **The re-check on the 3.36.2 image is this release's own artefact check**, and it is the third
-  time this week that step has found something. It is named here rather than assumed.
+Coordinator `sha256:a031ec49…`, node `sha256:4856c1fd…`, pulled and driven. This run sets the model
+refresh **faster than the probe threshold** on purpose — 10s against 10s — which is the worst case
+for the race and the configuration that reproduced the defect twice:
+
+```
+T+6    health=healthy      models=1  tags=1   502  Name or service not known
+T+12   health=unreachable  models=1  tags=1   503  every node holding model 'llama3:latest'
+                                                    reports an unhealthy inference backend
+T+20 … T+90   health=unreachable  models=1  tags=1   503  (unchanged)
+```
+
+Ninety seconds where v3.36.0 gave six. The inventory is held, `/api/tags` never loses the model,
+and the refusal keeps naming the backend for as long as the backend stays down.
+
+Recovery, with the backend brought back: `health=healthy` within one probe and the node is routed to
+again. (The request then answers `502` because the stub in this harness serves `/api/version` and
+`/api/tags` and nothing else — routing resumed is the signal being read here, not a successful
+completion.)
+
+## What was not established
 - **`wedged` still has not been driven end to end on an image.** The stub is *stopped*, which is
   `unreachable`; the wedge path has a real accept-and-never-answer listener in the node suite and
   nothing more.
