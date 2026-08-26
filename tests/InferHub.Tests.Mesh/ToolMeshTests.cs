@@ -549,6 +549,8 @@ public class ToolMeshTests
 
             public string Endpoint => "http://127.0.0.1:0/";
 
+            public IReadOnlyList<string> Kinds { get; } = [CapabilityKinds.Chat, CapabilityKinds.Embed];
+
             public bool SupportsModelManagement => false;
 
             public Task<IReadOnlyList<ModelInfo>> ListModelsAsync(CancellationToken cancellationToken)

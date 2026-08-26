@@ -38,7 +38,7 @@ public sealed class ProviderDefinition
     public const string TypeOpenRouter = "openrouter";
 
     /// <summary>Used when a <c>Type: openrouter</c> provider names no <see cref="BaseUrl"/>.</summary>
-    public const string OpenRouterBaseUrl = "https://openrouter.ai/api/v1";
+    public const string OpenRouterBaseUrl = InferHub.Shared.Upstream.UpstreamDefaults.OpenRouterBaseUrl;
 
     /// <summary>
     /// Anthropic's own <c>/v1/messages</c> (phase 63) — a real second dialect, unlike
@@ -49,7 +49,7 @@ public sealed class ProviderDefinition
     public const string TypeAnthropic = "anthropic";
 
     /// <summary>Used when a <c>Type: anthropic</c> provider names no <see cref="BaseUrl"/>.</summary>
-    public const string AnthropicBaseUrl = "https://api.anthropic.com/v1";
+    public const string AnthropicBaseUrl = InferHub.Shared.Upstream.UpstreamDefaults.AnthropicBaseUrl;
 
     /// <summary>
     /// Gemini's own <c>:generateContent</c> (phase 64) — the fourth type and the third dialect. The
@@ -59,7 +59,7 @@ public sealed class ProviderDefinition
     public const string TypeGemini = "gemini";
 
     /// <summary>Used when a <c>Type: gemini</c> provider names no <see cref="BaseUrl"/>.</summary>
-    public const string GeminiBaseUrl = "https://generativelanguage.googleapis.com/v1beta";
+    public const string GeminiBaseUrl = InferHub.Shared.Upstream.UpstreamDefaults.GeminiBaseUrl;
 
     /// <summary>
     /// Off is off: a disabled provider maps nothing, so its models are simply not eligible. It is

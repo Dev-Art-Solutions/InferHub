@@ -350,6 +350,8 @@ public class ProfileClampTests
 
         public string Endpoint => "http://127.0.0.1:0/";
 
+        public IReadOnlyList<string> Kinds { get; } = [CapabilityKinds.Chat, CapabilityKinds.Embed];
+
         public bool SupportsModelManagement => true;
 
         public Task<IReadOnlyList<ModelInfo>> ListModelsAsync(CancellationToken cancellationToken)

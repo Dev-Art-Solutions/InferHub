@@ -123,6 +123,8 @@ public class InferenceExecutorTests : IDisposable
 
         public string Endpoint => "http://localhost/recording";
 
+        public IReadOnlyList<string> Kinds { get; } = [CapabilityKinds.Chat, CapabilityKinds.Embed];
+
         public string? LastEmbedRequest { get; private set; }
 
         public Task<IReadOnlyList<ModelInfo>> ListModelsAsync(CancellationToken cancellationToken)
@@ -152,6 +154,8 @@ public class InferenceExecutorTests : IDisposable
         public string Name => "fake";
 
         public string Endpoint => "http://localhost/fake";
+
+        public IReadOnlyList<string> Kinds { get; } = [CapabilityKinds.Chat, CapabilityKinds.Embed];
 
         public Task<IReadOnlyList<ModelInfo>> ListModelsAsync(CancellationToken cancellationToken)
         {

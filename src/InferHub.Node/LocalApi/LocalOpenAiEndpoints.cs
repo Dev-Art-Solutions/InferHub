@@ -294,7 +294,7 @@ internal static class LocalOpenAiEndpoints
 
         // Phase 40, and the parity that matters: a client pointed at a solo node sees the same
         // `capabilities` field it sees on the hub, meaning the same thing.
-        var capabilities = SoloCapabilities(models, nodeOptions.Value);
+        var capabilities = SoloCapabilities(models, backend.Kinds, nodeOptions.Value);
 
         return Results.Json(
             new ModelList([.. models.Select(model => new OpenAiModel(model.Name, created, "inferhub", capabilities))]),
@@ -328,7 +328,7 @@ internal static class LocalOpenAiEndpoints
                 match.Name,
                 ResponseTranslator.UnixNow(),
                 "inferhub",
-                SoloCapabilities(models, nodeOptions.Value)),
+                SoloCapabilities(models, backend.Kinds, nodeOptions.Value)),
             LocalApiEndpoints.JsonOptions);
     }
 
@@ -339,10 +339,11 @@ internal static class LocalOpenAiEndpoints
     /// </summary>
     private static IReadOnlyList<string>? SoloCapabilities(
         IReadOnlyList<ModelInfo> models,
+        IReadOnlyList<string> backendKinds,
         NodeOptions node)
     {
         var kinds = Capabilities.BackendCapabilities
-            .Declare(models, node.Capabilities)
+            .Declare(models, backendKinds, node.Capabilities)
             .Select(capability => capability.Kind)
             .ToArray();
 
@@ -375,13 +376,26 @@ internal static class LocalOpenAiEndpoints
     /// the Ollama surface's, because it is the same fact about the node.
     /// </summary>
     private static IResult? CapabilityRefusal(HttpContext httpContext, string capability)
-        => LocalApiEndpoints.CapabilityDisabled(httpContext, capability, out var refusal)
+    {
+        // Phase 67, and it is asked first: "this upstream has no such API" is a fact, where
+        // "the operator switched it off" is a choice — and only the second one is worth retrying.
+        if (LocalApiEndpoints.BackendCannot(httpContext, capability, out var unsupported))
+        {
+            return Error(new OpenAiRequestException(
+                unsupported,
+                StatusCodes.Status501NotImplemented,
+                OpenAiErrorTypes.ApiError,
+                code: "capability_not_supported"));
+        }
+
+        return LocalApiEndpoints.CapabilityDisabled(httpContext, capability, out var refusal)
             ? Error(new OpenAiRequestException(
                 refusal,
                 StatusCodes.Status503ServiceUnavailable,
                 OpenAiErrorTypes.ApiError,
                 code: "capability_not_served"))
             : null;
+    }
 
     private static IResult Saturated(int retryAfterSeconds)
         => Error(new OpenAiRequestException(

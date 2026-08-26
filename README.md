@@ -2073,17 +2073,26 @@ response back, whatever ran it.
 |---|---|---|
 | `ollama` (default) | Ollama | One machine, one model at a time, minimal ceremony. |
 | `openai` | **vLLM**, **llama.cpp server**, **LM Studio**, **TGI**, hosted providers | Anything speaking the OpenAI wire format. |
+| `openrouter` (v3.35) | **OpenRouter** | The OpenAI dialect with its own base URL and optional attribution headers. |
+| `anthropic` (v3.35) | **Anthropic** `/v1/messages` | The vendor's own dialect. Declares `chat` and **not** `embed`. |
+| `gemini` (v3.35) | **Gemini** `:generateContent` | The vendor's own dialect. The model is a path segment. |
 
-`openai` is one implementation covering all of them, because they all converged on the same
-dialect. For anyone serving more than a couple of users off one GPU, vLLM's continuous
-batching is the reason this exists.
+`openai` is one implementation covering all the self-hosted servers, because they all converged
+on the same dialect. For anyone serving more than a couple of users off one GPU, vLLM's
+continuous batching is the reason this exists.
+
+**v3.35 gave a node the same three cloud dialects the coordinator got in v3.30–v3.32** — the
+same code in `InferHub.Shared`, composed on the node instead of behind the hub's `Providers:`
+map. A GPU-less box becomes a private, authenticated, RAG-capable front end to a vendor, meshed
+or in solo mode. **One node is one upstream**: a deployment that wants two vendors configures
+them on the hub, where the router lives, or runs two nodes. The node never grows a router.
 
 ```jsonc
 // src/InferHub.Node/appsettings.json
 {
   "Backend": { "Type": "openai" },
-  "OpenAi": {
-    "BaseUrl": "http://localhost:8000/v1",     // required; the node refuses to start without it
+  "Upstream": {
+    "BaseUrl": "http://localhost:8000/v1",     // required for `openai`; the node refuses to start without it
     "TimeoutSeconds": 300,
     "Models": {
       "Include": [ "meta-llama/Llama-3.1-8B-Instruct" ]
@@ -2092,8 +2101,33 @@ batching is the reason this exists.
 }
 ```
 
-Set `OpenAi:ApiKey` through the environment (`OpenAi__ApiKey`) or user-secrets — never in
+```jsonc
+// a node backed by Claude — no BaseUrl needed, and the allowlist is required
+{
+  "Backend": { "Type": "anthropic" },
+  "Upstream": {
+    "MaxTokens": 4096,
+    "Models": { "Include": [ "claude-sonnet-5" ] }
+  }
+}
+```
+
+Set `Upstream:ApiKey` through the environment (`Upstream__ApiKey`) or user-secrets — never in
 `appsettings.json`.
+
+> **The section was called `OpenAi:` before v3.35 and still binds.** It is projected onto
+> `Upstream:` at startup, so a node configured against any earlier release is unchanged. Writing
+> the **same key in both sections with different values fails startup naming both** — which
+> upstream receives a prompt is not decided by which section a binder applied last.
+
+> **For the three vendor types `Models:Include` is required and enforced at startup.** OpenRouter
+> lists 419 model ids and Gemini around fifty, embed-only and image ones among them; a node that
+> reported the catalogue would be telling the coordinator it can chat with an image model.
+> `Node:Models:Include` satisfies it too. `openai` is deliberately not held to this.
+
+> **An Anthropic-backed node declares `chat` and not `embed`**, because Anthropic publishes no
+> embeddings API. An embedding request against such a fleet is a `503` naming the capability at
+> the coordinator — before the hop — and a `501` naming the reason on a solo node's `/api/embed`.
 
 > **Against a hosted provider, `Models:Include` is effectively mandatory.** A hosted catalogue
 > is hundreds of models the node cannot actually serve; report them all and the coordinator
@@ -2708,11 +2742,16 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `LocalApi:Retrieval:DefaultEmbeddingModel` | `nomic-embed-text` | Resolved against this node's own backend. |
 | `LocalApi:Retrieval:Retrieval:*` | — | The phase-24 retrieval keys (`DefaultK`, `MaxRecords`, `OnMissing`, `Mode`, `CandidatesPerBranch`, `Rerank`, `RerankModel`, `RerankCandidates`, `RerankTimeoutSeconds`, `Template`), same names, meanings and defaults as the hub's `VectorStore:Retrieval:*`. |
 | `LocalApi:Retrieval:Ingestion:*` | — | The phase-23 ingestion keys (`MaxChars`, `OverlapChars`, `MaxDocumentBytes`, `EmbeddingBatchSize`, `EmbeddingModel`, `MaxRetriesPerBatch`), same as the hub's `Ingestion:*`. |
-| `OpenAi:BaseUrl` | _(empty)_ | Upstream OpenAI-compatible server, e.g. `http://localhost:8000/v1`. **Required when `Backend:Type=openai`** — the node refuses to start without it rather than booting and 500ing on every job. |
-| `OpenAi:ApiKey` | _(empty)_ | Bearer token for the upstream. Env (`OpenAi__ApiKey`) or user-secrets only. |
-| `OpenAi:TimeoutSeconds` | `300` | Timeout for a single upstream call. Same reasoning as `Ollama:RequestTimeout`. |
-| `OpenAi:Models:Include` | `[]` | Allowlist of upstream models to advertise. Effectively mandatory against a hosted provider. |
-| `OpenAi:Models:Exclude` | `[]` | Names dropped before reporting. |
+| `Upstream:BaseUrl` | _(empty)_ | v3.35, was `OpenAi:BaseUrl`. The upstream, e.g. `http://localhost:8000/v1`. **Required when `Backend:Type=openai`** — the node refuses to start without it rather than booting and 500ing on every job. Optional for the three vendor types, which each have a published one; still overridable, for a proxy in front of a vendor. |
+| `Upstream:ApiKey` | _(empty)_ | Credential for the upstream, sent the way that vendor's dialect requires (`Authorization: Bearer`, `x-api-key`, `x-goog-api-key`). Env (`Upstream__ApiKey`) or user-secrets only. |
+| `Upstream:TimeoutSeconds` | `300` | Timeout for a single upstream call. Same reasoning as `Ollama:RequestTimeout`. |
+| `Upstream:Models:Include` | `[]` | Allowlist of upstream models to advertise. **Required** for `openrouter`, `anthropic` and `gemini` (`Node:Models:Include` also satisfies it); optional for `openai`. |
+| `Upstream:Models:Exclude` | `[]` | Names dropped before reporting. |
+| `Upstream:MaxTokens` | `4096` | v3.35. Anthropic's required `max_tokens` when the caller named none. A ceiling, not a target — a caller's `options.num_predict` always wins. `anthropic` only. |
+| `Upstream:AnthropicVersion` | `2023-06-01` | v3.35. Pins the `anthropic-version` header. `anthropic` only. |
+| `Upstream:ThinkingBudget` | _(unset)_ | v3.35. `generationConfig.thinkingConfig.thinkingBudget`, sent only when set; `0` disables thinking on the models that allow it. Thinking tokens are billed as output and are **not** in `eval_count`. `gemini` only. |
+| `Upstream:Referer` / `Upstream:Title` | _(empty)_ | v3.35. `HTTP-Referer` / `X-OpenRouter-Title`. **Absent unless set** — they list a deployment on OpenRouter's *public* rankings. `openrouter` only. |
+| `OpenAi:*` | — | The pre-v3.35 spelling of `Upstream:*`. Still binds and is projected onto it; the same key in both sections with **different** values fails startup naming both. |
 | `Tools:Enabled` | `false` | v3.9. Consents to the tool runtime existing. See [Tools on a node](#tools-on-a-node-v39). |
 | `Tools:Allowed` | `[]` | v3.9. Manifest ids that may actually run — the second consent, and the ceiling a coordinator can never raise. A manifest not named here is loaded, logged and never started. Naming tools while `Tools:Enabled` is false **fails startup**. |
 | `Tools:ManifestDirectory` | `tools` | Where `*.json` manifests are read from. A manifest that fails to load is logged and skipped, never fatal. |

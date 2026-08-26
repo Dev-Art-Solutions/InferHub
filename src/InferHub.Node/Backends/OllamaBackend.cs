@@ -29,6 +29,13 @@ public sealed class OllamaBackend(
 
     public string Endpoint => options.Value.Endpoint;
 
+    /// <summary>
+    /// Ollama serves both, and always has: <c>/api/chat</c> and <c>/api/embed</c> are the same
+    /// server. Phase 67 made this a declaration rather than a constant inside
+    /// <c>BackendCapabilities</c>, because a cloud upstream may serve only one of them.
+    /// </summary>
+    public IReadOnlyList<string> Kinds { get; } = [CapabilityKinds.Chat, CapabilityKinds.Embed];
+
     public async Task<IReadOnlyList<ModelInfo>> ListModelsAsync(CancellationToken cancellationToken)
     {
         try

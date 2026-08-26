@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using InferHub.Coordinator.Services;
 using InferHub.Node.Backends;
 using InferHub.Node.Configuration;
@@ -117,29 +118,29 @@ public class NodeOptionsValidationTests
     {
         // A node that boots and then 500s on every job is worse than one that refuses to boot
         // and names the missing key.
-        var result = OpenAiValidator(BackendOptions.OpenAi).Validate(null, new OpenAiBackendOptions());
+        var result = UpstreamValidator(BackendOptions.OpenAi).Validate(null, new UpstreamBackendOptions());
 
         Assert.True(result.Failed);
-        Assert.Contains(result.Failures!, message => message.Contains(nameof(OpenAiBackendOptions.BaseUrl)));
+        Assert.Contains(result.Failures!, message => message.Contains(nameof(UpstreamBackendOptions.BaseUrl)));
     }
 
     [Fact]
     public void OpenAiBackendRejectsARelativeBaseUrl()
     {
-        var options = new OpenAiBackendOptions { BaseUrl = "/v1" };
+        var options = new UpstreamBackendOptions { BaseUrl = "/v1" };
 
-        var result = OpenAiValidator(BackendOptions.OpenAi).Validate(null, options);
+        var result = UpstreamValidator(BackendOptions.OpenAi).Validate(null, options);
 
         Assert.True(result.Failed);
-        Assert.Contains(result.Failures!, message => message.Contains(nameof(OpenAiBackendOptions.BaseUrl)));
+        Assert.Contains(result.Failures!, message => message.Contains(nameof(UpstreamBackendOptions.BaseUrl)));
     }
 
     [Fact]
     public void OpenAiBackendAcceptsAnAbsoluteBaseUrl()
     {
-        var options = new OpenAiBackendOptions { BaseUrl = "http://localhost:8000/v1" };
+        var options = new UpstreamBackendOptions { BaseUrl = "http://localhost:8000/v1" };
 
-        Assert.True(OpenAiValidator(BackendOptions.OpenAi).Validate(null, options).Succeeded);
+        Assert.True(UpstreamValidator(BackendOptions.OpenAi).Validate(null, options).Succeeded);
     }
 
     [Fact]
@@ -147,7 +148,7 @@ public class NodeOptionsValidationTests
     {
         // The OpenAi section is irrelevant unless Backend:Type says otherwise. Validating it
         // unconditionally would break every existing node's startup.
-        var result = OpenAiValidator(BackendOptions.Ollama).Validate(null, new OpenAiBackendOptions());
+        var result = UpstreamValidator(BackendOptions.Ollama).Validate(null, new UpstreamBackendOptions());
 
         Assert.True(result.Succeeded);
     }
@@ -160,11 +161,17 @@ public class NodeOptionsValidationTests
         var defaultDispatcherTimeout = TimeSpan.FromSeconds(new DispatcherOptions().TimeoutSeconds);
 
         Assert.True(
-            TimeSpan.FromSeconds(new OpenAiBackendOptions().TimeoutSeconds) >= defaultDispatcherTimeout);
+            TimeSpan.FromSeconds(new UpstreamBackendOptions().TimeoutSeconds) >= defaultDispatcherTimeout);
     }
 
-    private static OpenAiBackendOptionsValidator OpenAiValidator(string backendType)
-        => new(Options.Create(new BackendOptions { Type = backendType }));
+    private static UpstreamBackendOptionsValidator UpstreamValidator(
+        string backendType,
+        NodeOptions? node = null,
+        IConfiguration? configuration = null)
+        => new(
+            Options.Create(new BackendOptions { Type = backendType }),
+            Options.Create(node ?? new NodeOptions()),
+            configuration ?? new ConfigurationBuilder().Build());
 
     [Fact]
     public void OllamaOptionsValidatorPassesForDefaults()

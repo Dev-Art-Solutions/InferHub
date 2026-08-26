@@ -280,6 +280,9 @@ internal sealed class AudioMesh : IAsyncDisposable
     {
         public string Name => "none";
 
+        /// <summary>Phase 67. A box with no backend still answers the question; the list is empty.</summary>
+        public IReadOnlyList<string> Kinds { get; } = [];
+
         public string Endpoint => "http://127.0.0.1:0/";
 
         public bool SupportsModelManagement => false;

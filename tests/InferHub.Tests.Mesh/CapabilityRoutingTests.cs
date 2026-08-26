@@ -198,21 +198,24 @@ public class CapabilityRoutingTests
         Assert.Equal("dance", Assert.Single(registry.CapabilitySummary()).Capability);
     }
 
+    /// <summary>Phase 67: what an Ollama-backed node declares. See `IInferenceBackend.Kinds`.</summary>
+    private static readonly string[] ChatAndEmbed = [CapabilityKinds.Chat, CapabilityKinds.Embed];
+
     [Fact]
     public void TheNodeDeclaresWhatItHoldsAndTheOperatorCanSubtract()
     {
         IReadOnlyList<ModelInfo> models = [Model("llama3"), Model("nomic-embed-text")];
 
-        var both = BackendCapabilities.Declare(models, new CapabilityOptions());
+        var both = BackendCapabilities.Declare(models, ChatAndEmbed, new CapabilityOptions());
         Assert.Equal([CapabilityKinds.Chat, CapabilityKinds.Embed], both.Select(c => c.Kind));
         Assert.All(both, capability => Assert.Equal(["llama3", "nomic-embed-text"], capability.Models));
 
-        var embedOnly = BackendCapabilities.Declare(models, new CapabilityOptions { Disabled = ["chat"] });
+        var embedOnly = BackendCapabilities.Declare(models, ChatAndEmbed, new CapabilityOptions { Disabled = ["chat"] });
         Assert.Equal(CapabilityKinds.Embed, Assert.Single(embedOnly).Kind);
 
         // No models is already how a node is unrouted (phase-36 D7); it does not also need to
         // declare capabilities over nothing.
-        Assert.Empty(BackendCapabilities.Declare([], new CapabilityOptions()));
+        Assert.Empty(BackendCapabilities.Declare([], ChatAndEmbed, new CapabilityOptions()));
     }
 
     [Fact]

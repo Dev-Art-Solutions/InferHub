@@ -350,7 +350,7 @@ in-flight commands like everything else on the hub.
 **D3 — Not every backend can manage models, and it declares so rather than throwing.**
 `IInferenceBackend.SupportsModelManagement` is reported at registration (on `NodeRegistration`), so the
 coordinator gates the endpoints and the console greys out controls a node cannot honour. `OllamaBackend`
-returns `true` (pull/delete via `OllamaClient`, warm via an empty-prompt generate); `OpenAiBackend`
+returns `true` (pull/delete via `OllamaClient`, warm via an empty-prompt generate); `UpstreamBackend`
 returns `false` — a vLLM/hosted upstream's model is fixed at launch. A backend asked to do the
 impossible **refuses with a clean terminal error frame, never a 500** — `ModelCommandExecutor` turns an
 unsupported backend or a thrown backend call into a `Done` frame with `Error` set. `ModelCommandTests`

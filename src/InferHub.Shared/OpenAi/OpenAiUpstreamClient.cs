@@ -12,7 +12,7 @@ namespace InferHub.Shared.OpenAi;
 /// Speaks the OpenAI wire format to an upstream server — vLLM, llama.cpp's server, LM Studio,
 /// TGI, or a hosted provider — while presenting an Ollama-shaped surface to its caller.
 ///
-/// Both ends of the mesh use it: the node's <c>OpenAiBackend</c> to run a job on an upstream
+/// Both ends of the mesh use it: the node's <c>UpstreamBackend</c> to run a job on an upstream
 /// engine, and the coordinator's <c>FallbackDispatcher</c> to answer when the fleet holds no
 /// node for a model. Two callers, one dialect, one implementation. Nothing here touches ASP.NET
 /// or persists anything.
@@ -277,7 +277,7 @@ public sealed class OpenAiUpstreamClient(HttpClient http) : InferHub.Shared.Upst
     /// <remarks>
     /// Both callers already know what to do with an exception from mid-iteration — the coordinator's
     /// provider dispatcher writes a terminal error chunk ("a terminal error chunk beats a hung
-    /// stream") and the node's <c>OpenAiBackend</c> carries it back as a failed job. So this reuses
+    /// stream") and the node's <c>UpstreamBackend</c> carries it back as a failed job. So this reuses
     /// two contracts and adds none. <b>Considered and rejected: yielding an Ollama error chunk from
     /// here</b> — it reaches the same place, and it makes this interface's contract "an error is a
     /// value here and an exception there", which the next implementer has to discover.

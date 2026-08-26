@@ -8,7 +8,7 @@ namespace InferHub.Shared.Upstream;
 /// <para>
 /// The shape is not invented here — it is the shape
 /// <see cref="InferHub.Shared.OpenAi.OpenAiUpstreamClient"/> already had, because the node's
-/// <c>OpenAiBackend</c> and the coordinator's provider dispatcher have both driven it since phase 22
+/// <c>UpstreamBackend</c> and the coordinator's provider dispatcher have both driven it since phase 22
 /// (22 D1). Naming it is what lets phases 63 and 64 add Anthropic's <c>/v1/messages</c> and Gemini's
 /// <c>:generateContent</c> without either of them touching a dispatcher, a router or an endpoint.
 /// </para>

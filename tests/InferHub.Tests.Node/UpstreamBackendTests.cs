@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using InferHub.Node.Backends;
@@ -13,7 +14,7 @@ namespace InferHub.Tests;
 /// translations: Ollama-shaped job in → OpenAI on the wire → Ollama-shaped response out. The
 /// coordinator must never be able to tell which backend answered.
 /// </summary>
-public class OpenAiBackendTests
+public class UpstreamBackendTests
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -394,7 +395,7 @@ public class OpenAiBackendTests
         ]}
         """);
 
-        var options = new OpenAiBackendOptions
+        var options = new UpstreamBackendOptions
         {
             BaseUrl = "http://upstream/v1",
             Models = new ModelFilterOptions { Include = ["gpt-4o-mini"] }
@@ -448,13 +449,275 @@ public class OpenAiBackendTests
         Assert.Equal("http://upstream/v1", Backend(StubUpstream.Json("{}")).Endpoint);
     }
 
+    // ---- phase 67: the three vendor types --------------------------------------------
+
+    /// <summary>
+    /// Recorded payloads only (track D6) — the shapes are the ones `Tests.Shared`'s dialect suites
+    /// carry, captured from the vendors' documentation when 63 and 64 were written. Nothing here
+    /// calls an endpoint; the first real key is phase 68's.
+    /// </summary>
+    private const string AnthropicMessage = """
+    {"id":"msg_01","type":"message","role":"assistant","content":[{"type":"text","text":"Hello!"}],
+     "model":"claude-opus-5","stop_reason":"end_turn","stop_sequence":null,
+     "usage":{"input_tokens":25,"output_tokens":7,"cache_creation_input_tokens":0,"cache_read_input_tokens":140}}
+    """;
+
+    private const string GeminiCandidate = """
+    {"candidates":[{"content":{"role":"model","parts":[{"text":"Hello!"}]},"finishReason":"STOP","index":0}],
+     "usageMetadata":{"promptTokenCount":165,"cachedContentTokenCount":140,"candidatesTokenCount":7,
+                      "thoughtsTokenCount":12,"totalTokenCount":184},
+     "modelVersion":"gemini-3-pro","responseId":"rid_01"}
+    """;
+
+    [Fact]
+    public async Task AnAnthropicNodeSpeaksMessagesAndHandsBackOllama()
+    {
+        var upstream = StubUpstream.Json(AnthropicMessage);
+
+        var responseJson = await Backend(
+            upstream,
+            new UpstreamBackendOptions(),
+            BackendOptions.Anthropic).ChatAsync("""
+            {"model":"claude-opus-5","messages":[{"role":"system","content":"Be terse."},{"role":"user","content":"hi"}]}
+            """, CancellationToken.None);
+
+        // The vendor's own surface, reached at the vendor's own default base URL (67 D3).
+        Assert.Equal("/v1/messages", upstream.LastRequestPath);
+
+        var sent = upstream.LastRequestBody();
+        Assert.Equal("Be terse.", sent.GetProperty("system").GetString());
+        Assert.Equal(4096, sent.GetProperty("max_tokens").GetInt32());
+
+        // Ollama-shaped coming back, exactly as from an Ollama node (rule 6, 22 D1).
+        var ollama = Parse(responseJson);
+        Assert.Equal("Hello!", ollama.GetProperty("message").GetProperty("content").GetString());
+        Assert.True(ollama.GetProperty("done").GetBoolean());
+        Assert.Equal(7, ollama.GetProperty("eval_count").GetInt32());
+    }
+
+    [Fact]
+    public async Task AnAnthropicNodeSendsXApiKeyAndNeverAnAuthorizationHeader()
+    {
+        // 63 D1: the credential is part of the dialect, and a Bearer token here is a 401 that
+        // reads like a bad key. The node has to get this right on its own — it does not go
+        // through the hub's ProviderDispatcher.
+        var upstream = StubUpstream.Json(AnthropicMessage);
+
+        await Backend(
+            upstream,
+            new UpstreamBackendOptions { ApiKey = "sk-ant-secret" },
+            BackendOptions.Anthropic).ChatAsync(
+                """{"model":"claude-opus-5","messages":[{"role":"user","content":"hi"}]}""",
+                CancellationToken.None);
+
+        Assert.Equal("sk-ant-secret", upstream.Header("x-api-key"));
+        Assert.Equal("2023-06-01", upstream.Header("anthropic-version"));
+        Assert.Null(upstream.Header("Authorization"));
+    }
+
+    [Fact]
+    public async Task AnAnthropicNodeStreamsTypedEventsAsOllamaChunks()
+    {
+        // No [DONE] sentinel: the stream ends at message_stop (63's second wire fact).
+        var upstream = StubUpstream.Sse(
+            "event: message_start",
+            """data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-opus-5","stop_reason":null,"usage":{"input_tokens":25,"output_tokens":1}}}""",
+            "",
+            "event: content_block_delta",
+            """data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}""",
+            "",
+            "event: content_block_delta",
+            """data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}""",
+            "",
+            "event: message_delta",
+            """data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":15}}""",
+            "",
+            "event: message_stop",
+            """data: {"type":"message_stop"}""",
+            "");
+
+        var chunks = await Collect(Backend(
+            upstream,
+            new UpstreamBackendOptions(),
+            BackendOptions.Anthropic).StreamAsync(
+                "chat",
+                """{"model":"claude-opus-5","messages":[{"role":"user","content":"hi"}],"stream":true}""",
+                CancellationToken.None));
+
+        Assert.Equal("Hel", chunks[0].GetProperty("message").GetProperty("content").GetString());
+        Assert.Equal("lo", chunks[1].GetProperty("message").GetProperty("content").GetString());
+
+        var last = chunks[^1];
+        Assert.True(last.GetProperty("done").GetBoolean());
+
+        // Taken, never summed — a stream whose frames say 1/15 reports 15 (63's first wire fact).
+        Assert.Equal(15, last.GetProperty("eval_count").GetInt32());
+    }
+
+    [Fact]
+    public async Task AnAnthropicNodeDeclaresChatAndNotEmbed()
+    {
+        // 67 D4, and 63 D7's deferred half. The declaration is what makes the hub answer an
+        // embedding request with 40 D1's 503 instead of routing it here for a 501.
+        var backend = Backend(StubUpstream.Json("{}"), new UpstreamBackendOptions(), BackendOptions.Anthropic);
+
+        Assert.Equal(["chat"], backend.Kinds);
+        Assert.Equal("anthropic", backend.Name);
+
+        // And the underlying dialect still refuses, which is the backstop rather than the mechanism.
+        await Assert.ThrowsAnyAsync<Exception>(
+            () => backend.EmbedAsync("""{"model":"claude-opus-5","input":"hi"}""", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task AGeminiNodePutsTheModelInThePathAndSendsGooglesOwnKeyHeader()
+    {
+        var upstream = StubUpstream.Json(GeminiCandidate);
+
+        var responseJson = await Backend(
+            upstream,
+            new UpstreamBackendOptions { ApiKey = "AIza-secret" },
+            BackendOptions.Gemini).ChatAsync("""
+            {"model":"gemini-3-pro","messages":[{"role":"user","content":"hi"}]}
+            """, CancellationToken.None);
+
+        // 64 D4: the model is a path segment, and a bare id is normalized to models/…
+        Assert.Equal("/v1beta/models/gemini-3-pro:generateContent", upstream.LastRequestPath);
+        Assert.Equal("AIza-secret", upstream.Header("x-goog-api-key"));
+        Assert.Null(upstream.Header("Authorization"));
+
+        var ollama = Parse(responseJson);
+        Assert.Equal("Hello!", ollama.GetProperty("message").GetProperty("content").GetString());
+
+        // 64 D5: thoughts are billed as output and are deliberately not in eval_count.
+        Assert.Equal(7, ollama.GetProperty("eval_count").GetInt32());
+        Assert.Equal(165, ollama.GetProperty("prompt_eval_count").GetInt32());
+    }
+
+    [Fact]
+    public async Task AGeminiNodeStreamsSseAsOllamaChunks()
+    {
+        var upstream = StubUpstream.Sse(
+            """data: {"candidates":[{"content":{"role":"model","parts":[{"text":"Hel"}]},"index":0}]}""",
+            "",
+            """data: {"candidates":[{"content":{"role":"model","parts":[{"text":"lo"}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}""",
+            "");
+
+        var chunks = await Collect(Backend(
+            upstream,
+            new UpstreamBackendOptions(),
+            BackendOptions.Gemini).StreamAsync(
+                "chat",
+                """{"model":"gemini-3-pro","messages":[{"role":"user","content":"hi"}],"stream":true}""",
+                CancellationToken.None));
+
+        Assert.Equal("/v1beta/models/gemini-3-pro:streamGenerateContent", upstream.LastRequestPath);
+        Assert.Equal("Hel", chunks[0].GetProperty("message").GetProperty("content").GetString());
+        Assert.True(chunks[^1].GetProperty("done").GetBoolean());
+        Assert.Equal(2, chunks[^1].GetProperty("eval_count").GetInt32());
+    }
+
+    [Fact]
+    public async Task AnOpenRouterNodeIsTheOpenAiDialectAndVolunteersNoAttribution()
+    {
+        // 62 D1: the identity is the claim. 62 D2: Referer and Title put a deployment on
+        // OpenRouter's *public* rankings, so neither is sent unless an operator wrote one down.
+        var upstream = StubUpstream.Json("""
+        {"id":"c","created":0,"model":"anthropic/claude-opus-5","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}
+        """);
+
+        await Backend(
+            upstream,
+            new UpstreamBackendOptions { ApiKey = "sk-or-secret" },
+            BackendOptions.OpenRouter).ChatAsync(
+                """{"model":"anthropic/claude-opus-5","messages":[{"role":"user","content":"hi"}]}""",
+                CancellationToken.None);
+
+        Assert.Equal("/api/v1/chat/completions", upstream.LastRequestPath);
+        Assert.Equal("Bearer sk-or-secret", upstream.Header("Authorization"));
+        Assert.Null(upstream.Header("HTTP-Referer"));
+        Assert.Null(upstream.Header("X-OpenRouter-Title"));
+    }
+
+    [Fact]
+    public async Task AnOpenRouterNodeSendsTheAttributionHeadersOnlyWhenTheyAreConfigured()
+    {
+        var upstream = StubUpstream.Json("""
+        {"id":"c","created":0,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}
+        """);
+
+        await Backend(
+            upstream,
+            new UpstreamBackendOptions { Referer = "https://example.invalid", Title = "Our Box" },
+            BackendOptions.OpenRouter).ChatAsync(
+                """{"model":"anthropic/claude-opus-5","messages":[{"role":"user","content":"hi"}]}""",
+                CancellationToken.None);
+
+        Assert.Equal("https://example.invalid", upstream.Header("HTTP-Referer"));
+        Assert.Equal("Our Box", upstream.Header("X-OpenRouter-Title"));
+    }
+
+    [Theory]
+    [InlineData(BackendOptions.OpenRouter, "https://openrouter.ai/api/v1")]
+    [InlineData(BackendOptions.Anthropic, "https://api.anthropic.com/v1")]
+    [InlineData(BackendOptions.Gemini, "https://generativelanguage.googleapis.com/v1beta")]
+    public void AVendorTypeNeedsNoBaseUrlAndStillReportsWhereItIsGoing(string type, string expected)
+    {
+        // The Endpoint is what the fleet list and the status page show. "unset" would be a node
+        // that cannot say where it is sending prompts, which is the one question 22 D5 exists for.
+        var backend = Backend(StubUpstream.Json("{}"), new UpstreamBackendOptions(), type);
+
+        Assert.Equal(expected, backend.Endpoint);
+        Assert.Equal(type, backend.Name);
+        Assert.False(backend.SupportsModelManagement);
+    }
+
+    [Theory]
+    [InlineData(BackendOptions.OpenAi)]
+    [InlineData(BackendOptions.OpenRouter)]
+    [InlineData(BackendOptions.Gemini)]
+    public void EveryTypeButAnthropicServesBothKinds(string type)
+    {
+        var backend = Backend(
+            StubUpstream.Json("{}"),
+            new UpstreamBackendOptions { BaseUrl = "http://upstream/v1" },
+            type);
+
+        Assert.Equal(["chat", "embed"], backend.Kinds);
+    }
+
+    [Fact]
+    public async Task AVendorNodeReportsOnlyWhatItsAllowlistNames()
+    {
+        // 67 D5. The catalogue is not the consent — the allowlist is, and it is what stops the
+        // hub routing a chat request at an embedding-only or image model.
+        var upstream = StubUpstream.Json("""
+        {"data":[{"id":"anthropic/claude-opus-5"},{"id":"openai/gpt-5"},{"id":"google/gemini-3-pro"}]}
+        """);
+
+        var models = await Backend(
+            upstream,
+            new UpstreamBackendOptions { Models = { Include = { "openai/gpt-5" } } },
+            BackendOptions.OpenRouter).ListModelsAsync(CancellationToken.None);
+
+        Assert.Equal(["openai/gpt-5"], models.Select(model => model.Name));
+
+        // Digest and size have no upstream equivalent; null is the honest answer.
+        Assert.Null(models[0].Digest);
+        Assert.Null(models[0].SizeBytes);
+    }
+
     // ---- harness ---------------------------------------------------------------------
 
-    private static OpenAiBackend Backend(StubUpstream upstream, OpenAiBackendOptions? options = null)
+    private static UpstreamBackend Backend(
+        StubUpstream upstream,
+        UpstreamBackendOptions? options = null,
+        string type = BackendOptions.OpenAi)
         => new(
             new StubHttpClientFactory(upstream),
-            Options.Create(options ?? new OpenAiBackendOptions { BaseUrl = "http://upstream/v1" }),
-            NullLogger<OpenAiBackend>.Instance);
+            Options.Create(new BackendOptions { Type = type }),
+            Options.Create(options ?? new UpstreamBackendOptions { BaseUrl = "http://upstream/v1" }),
+            NullLogger<UpstreamBackend>.Instance);
 
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement.Clone();
 
@@ -485,6 +748,17 @@ public class OpenAiBackendTests
 
         public string? LastRequestPath { get; private set; }
 
+        /// <summary>
+        /// What actually went on the wire. Phase 67 asserts on it: the credential is part of the
+        /// dialect, and a Bearer token sent to Anthropic or Gemini is a 401 that reads like a bad key.
+        /// </summary>
+        public HttpRequestHeaders? LastRequestHeaders { get; private set; }
+
+        public string? Header(string name)
+            => LastRequestHeaders is not null && LastRequestHeaders.TryGetValues(name, out var values)
+                ? string.Join(",", values)
+                : null;
+
         public bool ResponseStreamDisposed => responseStream?.Disposed ?? false;
 
         public static StubUpstream Json(string response)
@@ -508,6 +782,7 @@ public class OpenAiBackendTests
             CancellationToken cancellationToken)
         {
             LastRequestPath = request.RequestUri?.AbsolutePath;
+            LastRequestHeaders = request.Headers;
 
             if (request.Content is not null)
             {

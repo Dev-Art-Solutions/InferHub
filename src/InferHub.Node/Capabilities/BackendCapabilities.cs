@@ -22,12 +22,14 @@ namespace InferHub.Node.Capabilities;
 /// </remarks>
 public static class BackendCapabilities
 {
-    /// <summary>
-    /// The kinds an <see cref="Backends.IInferenceBackend"/> serves. Both endpoints behind them
-    /// are the backend's own, so a backend that can do one can do the other.
-    /// </summary>
-    private static readonly string[] BackendKinds = [CapabilityKinds.Chat, CapabilityKinds.Embed];
-
+    /// <param name="backendKinds">
+    /// What the backend says it serves — <see cref="Backends.IInferenceBackend.Kinds"/> (phase 67).
+    /// It was a constant <c>[chat, embed]</c> here until then, on the reasoning that both endpoints
+    /// behind them are the backend's own so a backend that can do one can do the other. **A cloud
+    /// vendor broke that**: Anthropic publishes no embeddings API, and this file is the last place
+    /// that should be deciding so — the whole point below is that nothing here guesses what a model
+    /// is for (40 D2). So the backend declares it and this narrows it.
+    /// </param>
     /// <param name="narrowed">
     /// Capability kinds a coordinator profile switched off (phase 43). It is applied on top of
     /// <c>Node:Capabilities:Disabled</c> and can only ever be a superset of it, because the clamp
@@ -35,6 +37,7 @@ public static class BackendCapabilities
     /// </param>
     public static IReadOnlyList<NodeCapability> Declare(
         IReadOnlyList<ModelInfo> models,
+        IReadOnlyList<string> backendKinds,
         CapabilityOptions options,
         IReadOnlyList<NodeCapability>? toolCapabilities = null,
         IReadOnlyList<string>? narrowed = null)
@@ -57,7 +60,7 @@ public static class BackendCapabilities
         // transcribes), so the tool half is folded in regardless.
         var backend = names.Length == 0
             ? Array.Empty<NodeCapability>()
-            : BackendKinds
+            : backendKinds
                 .Where(kind => !IsDisabled(kind))
                 .Select(kind => new NodeCapability(kind, names))
                 .ToArray();

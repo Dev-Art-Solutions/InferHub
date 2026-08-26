@@ -738,7 +738,7 @@ made). The rest of phase 59 is the coordinator's and is recorded there.
 
 **D3 — A cloud provider is an [`IUpstreamDialect`](src/InferHub.Shared/Upstream/IUpstreamDialect.cs):
 Ollama JSON in, Ollama JSON out, five members, no ASP.NET.** The shape is not invented — it is what
-`OpenAiUpstreamClient` already had, because the node's `OpenAiBackend` and the hub's provider
+`OpenAiUpstreamClient` already had, because the node's `UpstreamBackend` and the hub's provider
 dispatcher have both driven it since 22 D1. Naming it is what lets phase 63 add Anthropic's
 `/v1/messages` and 64 add Gemini's `:generateContent` without either touching a dispatcher, a router
 or an endpoint — and what lets phase 67 give the node the same four providers by *composing* the
@@ -778,7 +778,7 @@ OpenRouter reports one as an SSE frame carrying a top-level `error` and `finish_
 `ReadFramesAsync` read that as a terminal delta, so a request that died at token 40 returned **200
 and looked finished**. `ThrowIfErrorFrame` raises `OpenAiUpstreamException` mid-iteration, and both
 callers already know what to do with that — the hub's `ProviderDispatcher` writes a terminal error
-chunk ("a terminal error chunk beats a hung stream") and the node's `OpenAiBackend` carries it back
+chunk ("a terminal error chunk beats a hung stream") and the node's `UpstreamBackend` carries it back
 as a failed job. **Considered and rejected: yielding an Ollama error chunk from here** — it reaches
 the same place, and it makes this interface's contract "an error is a value here and an exception
 there", which the next implementer has to discover.

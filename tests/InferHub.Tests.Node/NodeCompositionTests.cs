@@ -62,11 +62,11 @@ public class NodeCompositionTests
     {
         Assert.IsType<OllamaBackend>(ResolveBackend(backendType: null));
         Assert.IsType<OllamaBackend>(ResolveBackend("ollama"));
-        Assert.IsType<OpenAiBackend>(ResolveBackend("openai"));
+        Assert.IsType<UpstreamBackend>(ResolveBackend("openai"));
 
         // The switch is case- and whitespace-tolerant; a config file with "OpenAI" is not a
         // reason to fail to boot.
-        Assert.IsType<OpenAiBackend>(ResolveBackend(" OpenAI "));
+        Assert.IsType<UpstreamBackend>(ResolveBackend(" OpenAI "));
     }
 
     [Fact]
@@ -427,5 +427,162 @@ public class NodeCompositionTests
 
         using var host = builder.Build();
         return host.Services.GetRequiredService<IInferenceBackend>();
+    }
+
+    // ---- phase 67: the Upstream: section, and the vendor types -----------------------
+
+    /// <summary>
+    /// 67 D3. The pre-67 section still binds, and a node that changes no config gets exactly the
+    /// upstream it had — this is what "byte-identical" means for every deployment since v2.4.
+    /// </summary>
+    [Fact]
+    public void TheLegacyOpenAiSectionStillConfiguresTheUpstream()
+    {
+        var options = ResolveUpstreamOptions(new()
+        {
+            ["Backend:Type"] = "openai",
+            ["OpenAi:BaseUrl"] = "http://vllm:8000/v1",
+            ["OpenAi:TimeoutSeconds"] = "120"
+        });
+
+        Assert.Equal("http://vllm:8000/v1", options.BaseUrl);
+        Assert.Equal(120, options.TimeoutSeconds);
+    }
+
+    [Fact]
+    public void TheUpstreamSectionIsWhatANewDeploymentWrites()
+    {
+        var options = ResolveUpstreamOptions(new()
+        {
+            ["Backend:Type"] = "anthropic",
+            ["Upstream:MaxTokens"] = "8192",
+            ["Upstream:Models:Include:0"] = "claude-opus-5"
+        });
+
+        Assert.Equal(8192, options.MaxTokens);
+        Assert.Equal(["claude-opus-5"], options.Models.Include);
+
+        // No BaseUrl written, and the vendor's own is what the client will be pointed at.
+        Assert.Equal("https://api.anthropic.com/v1", options.ResolvedBaseUrl(BackendOptions.Anthropic));
+    }
+
+    [Fact]
+    public void BothSectionsWrittenAndDisagreeingIsAStartupFailureNamingBoth()
+    {
+        // 65 D1's rule, one host over: which upstream receives a prompt is not decided by which
+        // of two sections a binder happened to apply last.
+        var ex = Assert.Throws<OptionsValidationException>(() => Validated(new()
+        {
+            ["Backend:Type"] = "openai",
+            ["OpenAi:BaseUrl"] = "http://old:8000/v1",
+            ["Upstream:BaseUrl"] = "http://new:8000/v1"
+        }));
+
+        Assert.Contains("OpenAi:BaseUrl", ex.Message);
+        Assert.Contains("Upstream:BaseUrl", ex.Message);
+    }
+
+    [Fact]
+    public void BothSectionsWrittenAndAgreeingIsFine()
+    {
+        // Not a conflict — a deployment mid-migration writes both and means one thing.
+        using var host = Build(new()
+        {
+            ["Backend:Type"] = "openai",
+            ["OpenAi:BaseUrl"] = "http://vllm:8000/v1",
+            ["Upstream:BaseUrl"] = "http://vllm:8000/v1"
+        });
+
+        Assert.NotNull(host.Services.GetRequiredService<IOptions<UpstreamBackendOptions>>().Value);
+        Assert.Equal("openai", host.Services.GetRequiredService<IInferenceBackend>().Name);
+    }
+
+    [Theory]
+    [InlineData("openrouter")]
+    [InlineData("anthropic")]
+    [InlineData("gemini")]
+    public void AVendorTypeWithNoAllowlistRefusesToBootAndNamesTheKey(string type)
+    {
+        // 67 D5. OpenRouter lists 419 ids and Gemini around fifty; a node that reported the
+        // catalogue would be telling the hub it can chat with an image model.
+        var ex = Assert.Throws<OptionsValidationException>(() => Validated(new()
+        {
+            ["Backend:Type"] = type
+        }));
+
+        Assert.Contains("Models:Include", ex.Message);
+    }
+
+    [Fact]
+    public void TheNodeWideModelFilterCountsAsTheAllowlist()
+    {
+        // Node:Models is the filter this node has had since phase 9, and naming the models there
+        // is just as explicit as naming them under Upstream:.
+        using var host = Build(new()
+        {
+            ["Backend:Type"] = "gemini",
+            ["Node:Models:Include:0"] = "models/gemini-2.5-flash"
+        });
+
+        Assert.NotNull(host.Services.GetRequiredService<IOptions<UpstreamBackendOptions>>().Value);
+        var backend = host.Services.GetRequiredService<IInferenceBackend>();
+        Assert.Equal("gemini", backend.Name);
+        Assert.Equal(["chat", "embed"], backend.Kinds);
+    }
+
+    [Fact]
+    public void AnOpenAiNodeWithNoAllowlistStillBoots()
+    {
+        // Deliberately not held to D5: it is usually one vLLM serving one model, and every such
+        // deployment since v2.4 has an empty allowlist.
+        using var host = Build(new()
+        {
+            ["Backend:Type"] = "openai",
+            ["OpenAi:BaseUrl"] = "http://vllm:8000/v1"
+        });
+
+        Assert.NotNull(host.Services.GetRequiredService<IOptions<UpstreamBackendOptions>>().Value);
+        Assert.Equal("openai", host.Services.GetRequiredService<IInferenceBackend>().Name);
+    }
+
+    [Fact]
+    public void AnAnthropicNodeDeclaresChatAndNotEmbedThroughTheComposedBackend()
+    {
+        using var host = Build(new()
+        {
+            ["Backend:Type"] = "anthropic",
+            ["Upstream:Models:Include:0"] = "claude-opus-5"
+        });
+
+        Assert.NotNull(host.Services.GetRequiredService<IOptions<UpstreamBackendOptions>>().Value);
+        Assert.Equal(["chat"], host.Services.GetRequiredService<IInferenceBackend>().Kinds);
+    }
+
+
+    /// <summary>
+    /// Builds the host <b>and forces the upstream options to validate</b>. <c>ValidateOnStart</c>
+    /// runs at host start, so a test that only builds asserts nothing — the house pattern is to
+    /// resolve the value.
+    /// </summary>
+    private static UpstreamBackendOptions Validated(Dictionary<string, string?> settings)
+        => Build(settings).Services.GetRequiredService<IOptions<UpstreamBackendOptions>>().Value;
+
+    private static UpstreamBackendOptions ResolveUpstreamOptions(Dictionary<string, string?> settings)
+    {
+        using var host = Build(settings);
+        return host.Services.GetRequiredService<IOptions<UpstreamBackendOptions>>().Value;
+    }
+
+    private static IHost Build(Dictionary<string, string?> settings)
+    {
+        var builder = Host.CreateApplicationBuilder();
+
+        settings["Coordinator:Url"] = "http://localhost:5080/";
+        settings["Ollama:Endpoint"] = "http://localhost:11434/";
+
+        builder.Configuration.AddInMemoryCollection(settings);
+        builder.AddInferHubNode();
+
+        return builder.Build();
     }
 }

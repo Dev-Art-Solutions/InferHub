@@ -133,6 +133,9 @@ internal sealed class ScriptedBackend : IInferenceBackend
 
     public string Endpoint => "http://localhost:11434/";
 
+    /// <summary>Phase 67. A stand-in for an ordinary backend, so it serves both kinds.</summary>
+    public IReadOnlyList<string> Kinds { get; set; } = [CapabilityKinds.Chat, CapabilityKinds.Embed];
+
     public bool SupportsModelManagement => true;
 
     public string BlockingResponse { get; set; } = """

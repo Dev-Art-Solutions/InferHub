@@ -270,6 +270,8 @@ public class ToolModelCommandTests
 
         public string Endpoint => "http://localhost:0";
 
+        public IReadOnlyList<string> Kinds { get; } = [CapabilityKinds.Chat, CapabilityKinds.Embed];
+
         public bool SupportsModelManagement => false;
 
         public Task<IReadOnlyList<ModelInfo>> ListModelsAsync(CancellationToken cancellationToken)

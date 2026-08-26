@@ -943,8 +943,12 @@ public sealed class CoordinatorConnection(
         // Phase 43 narrows it once more, with what a coordinator profile switched off — which can
         // only ever be a superset of Node:Capabilities:Disabled, because the clamp that produced it
         // refuses to remove anything from that list.
+        // Phase 67 adds the backend's own declaration to the inputs: an Anthropic-backed node says
+        // chat and not embed, so the hub answers an embedding request with 40 D1's 503 rather than
+        // routing it here for a 501.
         var capabilities = BackendCapabilities.Declare(
             filtered,
+            backend.Kinds,
             node.Capabilities,
             toolRuntime.Capabilities,
             profiles.Effective.DisabledCapabilities);

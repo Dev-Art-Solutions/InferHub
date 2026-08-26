@@ -283,6 +283,35 @@ public static class LocalApiEndpoints
     }
 
     /// <summary>
+    /// Whether the backend this node runs serves this kind <em>at all</em> (phase 67). Distinct from
+    /// <see cref="CapabilityDisabled"/>, and the two must not be merged: that one is an operator's
+    /// subtraction and answers <b>503 + Retry-After</b> because the node could serve it and was told
+    /// not to; this one is a fact about the upstream and answers <b>501</b>, because retrying will
+    /// never help.
+    /// </summary>
+    /// <remarks>
+    /// Anthropic publishes no embeddings API, so a solo node on it refuses <c>/api/embed</c> here
+    /// rather than proxying to a route that cannot exist and rendering the vendor's 501 as a 502.
+    /// Meshed, the same declaration reaches the hub and 40 D1's router never sends the job at all.
+    /// </remarks>
+    internal static bool BackendCannot(HttpContext httpContext, string capability, out string refusal)
+    {
+        var backend = httpContext.RequestServices.GetRequiredService<Backends.IInferenceBackend>();
+
+        if (backend.Kinds.Any(kind => string.Equals(kind, capability, StringComparison.OrdinalIgnoreCase)))
+        {
+            refusal = string.Empty;
+            return false;
+        }
+
+        refusal = $"the '{backend.Name}' upstream this node runs does not serve '{capability}'. "
+            + $"Point {Backends.BackendOptions.SectionName}:{nameof(Backends.BackendOptions.Type)} at a backend that "
+            + "does, or send this request to one that has it.";
+
+        return true;
+    }
+
+    /// <summary>
     /// Runs the job under the concurrency gate when there is one, rendering the caller's own 503
     /// when the wait expires.
     /// </summary>

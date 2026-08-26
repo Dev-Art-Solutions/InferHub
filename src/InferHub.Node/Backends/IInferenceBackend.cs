@@ -13,6 +13,20 @@ public interface IInferenceBackend
     /// </summary>
     string Endpoint { get; }
 
+    /// <summary>
+    /// The capability kinds this backend serves (phase 67). <b>Declared, not discovered</b> — the
+    /// same argument <see cref="SupportsModelManagement"/> makes one member down, for the same
+    /// reason: Anthropic publishes no embeddings API, and a node that declared <c>embed</c> anyway
+    /// would have the hub route an embedding job to it and the client read a 501 *after* the hop.
+    /// Phase 40's router already has a 503 that names the missing capability, before it.
+    /// </summary>
+    /// <remarks>
+    /// It is not derived from the model list and it is not derived from a vendor name inside
+    /// <c>BackendCapabilities</c> — that file's whole point (40 D2) is that nothing there guesses
+    /// what a model is for. <c>Node:Capabilities:Disabled</c> stays subtractive over the result.
+    /// </remarks>
+    IReadOnlyList<string> Kinds { get; }
+
     Task<IReadOnlyList<ModelInfo>> ListModelsAsync(CancellationToken cancellationToken);
 
     Task<string> GenerateAsync(string requestJson, CancellationToken cancellationToken);

@@ -190,6 +190,8 @@ public class ModelCommandTests
 
         public string Name => "fake";
         public string Endpoint => "http://fake";
+
+        public IReadOnlyList<string> Kinds { get; } = [CapabilityKinds.Chat, CapabilityKinds.Embed];
         public bool SupportsModelManagement => supportsManagement;
 
         public Task<IReadOnlyList<ModelInfo>> ListModelsAsync(CancellationToken ct) =>

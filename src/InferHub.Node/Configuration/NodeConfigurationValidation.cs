@@ -275,43 +275,132 @@ public sealed class ToolOptionsValidator : IValidateOptions<ToolOptions>
 }
 
 /// <summary>
-/// Only bites when <c>Backend:Type=openai</c> — an Ollama node has no upstream to configure.
-/// A node that boots and then 500s on every job it is handed is worse than a node that refuses
-/// to boot and says which key is missing.
+/// Only bites when <c>Backend:Type</c> is one of the four upstream types — an Ollama node has no
+/// upstream to configure. A node that boots and then 500s on every job it is handed is worse than a
+/// node that refuses to boot and says which key is missing.
 /// </summary>
-public sealed class OpenAiBackendOptionsValidator(IOptions<BackendOptions> backend)
-    : IValidateOptions<OpenAiBackendOptions>
+/// <remarks>
+/// <para>
+/// Phase 67 gave it two more jobs. <b>The projection conflict</b> (67 D3): <c>Upstream:</c> and the
+/// pre-67 <c>OpenAi:</c> both bind onto one options object with <c>Upstream:</c> layered second, so
+/// a key written in both with different values would be resolved by binder order — which upstream
+/// receives a prompt is not that kind of decision, so it is a startup failure naming both paths
+/// (65 D1's rule, one host over).
+/// </para>
+/// <para>
+/// <b>The vendor allowlist</b> (67 D5): OpenRouter lists 419 model ids and Gemini around fifty,
+/// embed-only and image ones among them. A node that reported the catalogue would be telling the hub
+/// it can chat with an image model, so <c>openrouter</c>, <c>anthropic</c> and <c>gemini</c> require
+/// one. <c>openai</c> deliberately does not — it is usually one vLLM serving one model, and every
+/// such deployment since v2.4 has an empty allowlist.
+/// </para>
+/// </remarks>
+public sealed class UpstreamBackendOptionsValidator(
+    IOptions<BackendOptions> backend,
+    IOptions<NodeOptions> node,
+    IConfiguration configuration)
+    : IValidateOptions<UpstreamBackendOptions>
 {
-    public ValidateOptionsResult Validate(string? name, OpenAiBackendOptions options)
+    public ValidateOptionsResult Validate(string? name, UpstreamBackendOptions options)
     {
-        if (backend.Value.Normalized() != BackendOptions.OpenAi)
+        var type = backend.Value.Normalized();
+
+        if (type == BackendOptions.Ollama)
         {
             return ValidateOptionsResult.Success;
         }
 
         var failures = new List<string>();
 
-        if (string.IsNullOrWhiteSpace(options.BaseUrl))
+        if (!backend.Value.IsUpstream())
         {
             failures.Add(
-                $"{OpenAiBackendOptions.SectionName}:{nameof(OpenAiBackendOptions.BaseUrl)} must be set when {BackendOptions.SectionName}:{nameof(BackendOptions.Type)}=openai.");
+                $"{BackendOptions.SectionName}:{nameof(BackendOptions.Type)} is '{type}', which is not a backend this "
+                + $"release knows. Supported: {BackendOptions.Ollama}, {string.Join(", ", BackendOptions.UpstreamTypes)}.");
+
+            return ValidateOptionsResult.Fail(failures);
         }
-        else if (!Uri.TryCreate(options.BaseUrl, UriKind.Absolute, out var uri)
+
+        foreach (var key in ConflictingKeys())
+        {
+            failures.Add(
+                $"{UpstreamBackendOptions.LegacySectionName}:{key} and {UpstreamBackendOptions.SectionName}:{key} "
+                + "are both set and disagree. Keep one — the pre-v3.35 section still binds, and "
+                + "which upstream receives a prompt is not decided by which of two sections was written last.");
+        }
+
+        var baseUrl = options.ResolvedBaseUrl(type);
+
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            failures.Add(
+                $"{UpstreamBackendOptions.SectionName}:{nameof(UpstreamBackendOptions.BaseUrl)} must be set when "
+                + $"{BackendOptions.SectionName}:{nameof(BackendOptions.Type)}={type}.");
+        }
+        else if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri)
             || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
             failures.Add(
-                $"{OpenAiBackendOptions.SectionName}:{nameof(OpenAiBackendOptions.BaseUrl)} must be an absolute http(s) URL (got '{options.BaseUrl}').");
+                $"{UpstreamBackendOptions.SectionName}:{nameof(UpstreamBackendOptions.BaseUrl)} must be an absolute http(s) URL (got '{baseUrl}').");
         }
 
         if (options.TimeoutSeconds <= 0)
         {
             failures.Add(
-                $"{OpenAiBackendOptions.SectionName}:{nameof(OpenAiBackendOptions.TimeoutSeconds)} must be greater than zero (got {options.TimeoutSeconds}).");
+                $"{UpstreamBackendOptions.SectionName}:{nameof(UpstreamBackendOptions.TimeoutSeconds)} must be greater than zero (got {options.TimeoutSeconds}).");
+        }
+
+        if (options.MaxTokens <= 0)
+        {
+            failures.Add(
+                $"{UpstreamBackendOptions.SectionName}:{nameof(UpstreamBackendOptions.MaxTokens)} must be greater than zero (got {options.MaxTokens}).");
+        }
+
+        // Either section is the operator's sentence: Node:Models is the fleet-wide filter this node
+        // has had since phase 9, and naming the models there is just as explicit as naming them here.
+        if (backend.Value.IsVendor()
+            && Named(options.Models) == 0
+            && Named(node.Value.Models) == 0)
+        {
+            failures.Add(
+                $"{UpstreamBackendOptions.SectionName}:{nameof(UpstreamBackendOptions.Models)}:Include (or "
+                + $"{NodeOptions.SectionName}:{nameof(NodeOptions.Models)}:Include) must name at least one model when "
+                + $"{BackendOptions.SectionName}:{nameof(BackendOptions.Type)}={type}. A cloud vendor's catalogue is "
+                + "tens or hundreds of models this node cannot serve, and reporting all of them tells the "
+                + "coordinator to route anything here.");
         }
 
         return failures.Count == 0
             ? ValidateOptionsResult.Success
             : ValidateOptionsResult.Fail(failures);
+    }
+
+    private static int Named(ModelFilterOptions filter)
+        => filter.Include.Count(entry => !string.IsNullOrWhiteSpace(entry));
+
+    /// <summary>
+    /// Keys present in both sections with different literal values. Read from configuration rather
+    /// than from the bound object, because by the time it is bound the loser is gone.
+    /// </summary>
+    private IEnumerable<string> ConflictingKeys()
+    {
+        var legacy = configuration.GetSection(UpstreamBackendOptions.LegacySectionName);
+        var current = configuration.GetSection(UpstreamBackendOptions.SectionName);
+
+        foreach (var (key, value) in legacy.AsEnumerable(makePathsRelative: true))
+        {
+            if (value is null)
+            {
+                continue;
+            }
+
+            var other = current[key];
+
+            if (other is not null && !string.Equals(other, value, StringComparison.Ordinal))
+            {
+                yield return key;
+            }
+        }
     }
 }
 

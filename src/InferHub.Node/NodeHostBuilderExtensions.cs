@@ -89,11 +89,16 @@ public static class NodeHostBuilderExtensions
 
         builder.Services.Configure<BackendOptions>(builder.Configuration.GetSection(BackendOptions.SectionName));
 
+        // Phase 67, D3. Two sections, one options object, `Upstream:` layered second so it wins a
+        // key both of them set — and a *disagreement* between them is a startup failure naming both
+        // (UpstreamBackendOptionsValidator), because binder order is not how a prompt's destination
+        // gets decided. The legacy bind is what keeps every node written since v2.4 byte-identical.
         builder.Services
-            .AddOptions<OpenAiBackendOptions>()
-            .Bind(builder.Configuration.GetSection(OpenAiBackendOptions.SectionName))
+            .AddOptions<UpstreamBackendOptions>()
+            .Bind(builder.Configuration.GetSection(UpstreamBackendOptions.LegacySectionName))
+            .Bind(builder.Configuration.GetSection(UpstreamBackendOptions.SectionName))
             .ValidateOnStart();
-        builder.Services.AddSingleton<IValidateOptions<OpenAiBackendOptions>, OpenAiBackendOptionsValidator>();
+        builder.Services.AddSingleton<IValidateOptions<UpstreamBackendOptions>, UpstreamBackendOptionsValidator>();
 
         builder.Services
             .AddOptions<VectorReplicaOptions>()
@@ -118,22 +123,24 @@ public static class NodeHostBuilderExtensions
         });
         // The upstream client's timeout and auth are per-request (they come from options, which
         // can reload); the factory is here only to own the pooled handler.
-        builder.Services.AddHttpClient(OpenAiBackend.HttpClientName);
+        builder.Services.AddHttpClient(UpstreamBackend.HttpClientName);
 
         builder.Services.AddSingleton<INodeIdentity, FileNodeIdentity>();
         builder.Services.AddSingleton<IInferenceBackend>(services =>
         {
             var options = services.GetRequiredService<IOptions<BackendOptions>>().Value;
 
+            // Phase 67. Four of the five types are one class over one seam (D2) — the dialect is
+            // chosen inside it, from the same options, so adding a vendor never adds a branch here.
             return options.Normalized() switch
             {
                 BackendOptions.Ollama => services.GetRequiredService<OllamaBackend>(),
-                BackendOptions.OpenAi => services.GetRequiredService<OpenAiBackend>(),
+                _ when options.IsUpstream() => services.GetRequiredService<UpstreamBackend>(),
                 var type => throw new InvalidOperationException($"Unsupported inference backend '{type}'.")
             };
         });
         builder.Services.AddSingleton<OllamaBackend>();
-        builder.Services.AddSingleton<OpenAiBackend>();
+        builder.Services.AddSingleton<UpstreamBackend>();
         builder.Services.AddSingleton<InferenceExecutor>();
         builder.Services.AddSingleton<ModelCommandExecutor>();
         // Phase 43. Always registered, and inert without a profile: its effective state starts as
@@ -272,7 +279,8 @@ public static class NodeHostBuilderExtensions
     /// <list type="bullet">
     /// <item><c>Ollama:Supervisor:Enabled</c> — restarting a process is a side effect an operator
     /// opts into, not one they discover.</item>
-    /// <item><c>Backend:Type=ollama</c> — a vLLM or hosted upstream is not ours to restart.</item>
+    /// <item><c>Backend:Type=ollama</c> — a vLLM, a hosted server or a cloud vendor is not ours to
+    /// restart, and since phase 67 there are four of those.</item>
     /// <item><c>Ollama:Endpoint</c> is loopback — a shared Ollama serving four nodes, bounced
     /// because <em>one</em> node's link hiccuped past the probe timeout, is a four-node outage
     /// caused by the node with the worst network. A process may only be restarted by something on

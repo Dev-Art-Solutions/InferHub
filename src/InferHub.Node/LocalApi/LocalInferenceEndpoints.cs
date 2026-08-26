@@ -110,6 +110,13 @@ internal static class LocalInferenceEndpoints
         InferenceExecutor executor,
         CancellationToken cancellationToken)
     {
+        // Phase 67: the upstream has no such API at all, which is a 501 rather than the 503 an
+        // operator's own subtraction gets. Asked first, because retrying will never help.
+        if (LocalApiEndpoints.BackendCannot(httpContext, CapabilityKinds.Embed, out var unsupported))
+        {
+            return Error(StatusCodes.Status501NotImplemented, unsupported);
+        }
+
         if (LocalApiEndpoints.CapabilityDisabled(httpContext, CapabilityKinds.Embed, out var refusal))
         {
             return Error(StatusCodes.Status503ServiceUnavailable, refusal);
@@ -130,6 +137,13 @@ internal static class LocalInferenceEndpoints
         InferenceExecutor executor,
         CancellationToken cancellationToken)
     {
+        // Phase 67: the upstream has no such API at all, which is a 501 rather than the 503 an
+        // operator's own subtraction gets. Asked first, because retrying will never help.
+        if (LocalApiEndpoints.BackendCannot(httpContext, CapabilityKinds.Embed, out var unsupported))
+        {
+            return Error(StatusCodes.Status501NotImplemented, unsupported);
+        }
+
         if (LocalApiEndpoints.CapabilityDisabled(httpContext, CapabilityKinds.Embed, out var refusal))
         {
             return Error(StatusCodes.Status503ServiceUnavailable, refusal);
