@@ -1,4 +1,4 @@
-# Social copy — v3.36.0
+# Social copy — v3.36.0 (plus the v3.36.1 / v3.36.2 patches)
 
 Unposted. Iliya posts by hand (no connector).
 
@@ -57,3 +57,12 @@ Unposted. Iliya posts by hand (no connector).
 - **No image.** The honest visual would be a screenshot of a 404, which is the thing being removed.
   A console screenshot with a red "backend wedged" pill would be a fair one if a screenshot is
   wanted — `scratchpad/` has the empty-hub console shot from phase 68, not this.
+
+## The blog post is live
+
+`inferhub-3-36-the-node-was-up-and-could-not-answer` — ID `6a8f6c533d44b417d01c162d`, EN visible,
+BG hidden. It carries the whole day including both patches, so the FB copy above under-sells it:
+consider leading the FB post with the artefact-check story instead, and linking the post for the
+rest.
+
+**Link:** https://blog.devart.solutions/blog/inferhub-3-36-the-node-was-up-and-could-not-answer
