@@ -51,7 +51,8 @@ public static class StatusEndpoint
                     node.MaxConcurrency,
                     BuildProfileBlock(profiles, node),
                     corpora?.Of(node.NodeId),
-                    tools?.Of(node.NodeId))).ToArray(),
+                    tools?.Of(node.NodeId),
+                    node.BackendHealth?.ToString().ToLowerInvariant())).ToArray(),
                 models,
                 registry.CapabilitySummary(),
                 snapshot,
@@ -394,7 +395,11 @@ public static class StatusEndpoint
         NodeCorpusState? Corpus = null,
         // Likewise for the tool runtime (phase 45). Null for a node running v3.12 or earlier, or one
         // that has simply never reported — which is the honest answer and not "no tools".
-        NodeToolState? Tools = null);
+        NodeToolState? Tools = null,
+        // What the node last said about its inference backend (phase 69). Null is no opinion — an
+        // older node, one with Ollama:Supervisor:Watch off, or a vendor-typed one — and a fleet of
+        // those keeps the v3.35 payload exactly.
+        string? BackendHealth = null);
 
     internal sealed record NodeProfileStatusBlock(
         string? Name,

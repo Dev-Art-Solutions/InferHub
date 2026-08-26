@@ -531,7 +531,10 @@ public static class AdminEndpoints
 
         var now = DateTimeOffset.UtcNow;
         var snapshot = registry.Snapshot(now);
-        var holders = registry.FindNodesWithModel(model); // non-cordoned nodes already holding it
+        // Possession, not serviceability (69 D2): a sick node still HAS the model on disk, and
+        // counting it as absent would pull twenty gigabytes onto another box to replace one that
+        // is already there and will be back in a minute.
+        var holders = registry.FindNodesWithModel(model, includeUnserviceable: true);
         var holderConns = holders.Select(h => h.ConnectionId).ToHashSet(StringComparer.Ordinal);
         var byConn = snapshot.ToDictionary(n => n.ConnectionId, StringComparer.Ordinal);
 

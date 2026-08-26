@@ -15,6 +15,20 @@ public sealed class OllamaSupervisorOptions
     /// </summary>
     public bool Enabled { get; set; }
 
+    /// <summary>
+    /// Watch the backend and report its health to the coordinator (phase 69, D4). <b>Default
+    /// true</b>, and deliberately separate from <see cref="Enabled"/>: restarting somebody else's
+    /// inference server needs consent and needs to be local, while <em>asking</em> a server whether
+    /// it is alive is what the next request does anyway.
+    /// </summary>
+    /// <remarks>
+    /// Applies to an <c>ollama</c>-typed node only, loopback or not. A vendor-typed node has no free
+    /// liveness endpoint we may assume across four vendors, and a probe every
+    /// <see cref="ProbeInterval"/> against a cloud vendor is a billed request. Off means the node
+    /// sends no health at all, and the hub routes to it exactly as it did before v3.36.
+    /// </remarks>
+    public bool Watch { get; set; } = true;
+
     public TimeSpan ProbeInterval { get; set; } = TimeSpan.FromSeconds(15);
 
     /// <summary>

@@ -613,7 +613,14 @@ public sealed class CoordinatorConnection(
             return;
         }
 
-        var heartbeat = new Heartbeat(nodeId, DateTimeOffset.UtcNow, Volatile.Read(ref inFlight));
+        // Phase 69. `Health` is null until the supervisor has made up its mind, and null on a node
+        // that watches nothing — both travel as "no opinion", which the hub reads as routable.
+        var heartbeat = new Heartbeat(
+            nodeId,
+            DateTimeOffset.UtcNow,
+            Volatile.Read(ref inFlight),
+            supervisor.Health);
+
         await connection.InvokeAsync("Heartbeat", heartbeat, cancellationToken);
     }
 

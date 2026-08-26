@@ -89,6 +89,9 @@ public class ConsoleContractTests
         "nodes[].maxConcurrency",
         "nodes[].tokensPerSecond",
 
+        // Phase 69 — the state pill and the strip's backend row.
+        "nodes[].backendHealth",
+
         // Phase 43 — the profiles panel and the refusals strip.
         "nodes[].profile.name",
         "nodes[].profile.revision",

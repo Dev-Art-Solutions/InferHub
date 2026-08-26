@@ -47,7 +47,11 @@ public interface INodeRegistry
     IReadOnlyCollection<RoutableNode> FindNodesWithModel(
         string model,
         string? capability = null,
-        bool requireStreamedAttachments = false);
+        bool requireStreamedAttachments = false,
+        /// Phase 69 D2 — include a node whose backend is unhealthy. The default is the *serving*
+        /// question; pass true to ask who <em>holds</em> the model (placement, discovery, or a
+        /// refusal that has to tell them apart).
+        bool includeUnserviceable = false);
 
     /// <summary>Fleet-wide capability roll-up (phase 40), for <c>/api/status</c> and <c>/v1/models</c>.</summary>
     IReadOnlyCollection<CapabilitySummary> CapabilitySummary();

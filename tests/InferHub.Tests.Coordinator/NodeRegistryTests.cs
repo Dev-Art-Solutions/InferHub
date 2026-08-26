@@ -466,6 +466,111 @@ public class NodeRegistryTests
         Assert.Equal(0, count);
     }
 
+    // ---- phase 69 -------------------------------------------------------------------------------
+
+    /// <summary>
+    /// 69 D1/D2. The node that is up and cannot answer: it keeps its registration, keeps its models
+    /// and stops being somewhere the router may send work.
+    /// </summary>
+    [Theory]
+    [InlineData(BackendHealth.Unreachable)]
+    [InlineData(BackendHealth.Wedged)]
+    public void AnUnhealthyBackendTakesTheNodeOutOfTheCandidateSetWithoutTakingItOutOfTheFleet(BackendHealth health)
+    {
+        var registry = WithModel(out var now);
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 0, Backend: health), now);
+
+        Assert.Empty(registry.FindNodesWithModel("llama3"));
+
+        // Still connected, still holding the model, and the console can still see why.
+        var node = Assert.Single(registry.Snapshot(now));
+        Assert.Equal(health, node.BackendHealth);
+        Assert.Equal(1, node.ModelCount);
+        Assert.Single(registry.DistinctModels());
+    }
+
+    /// <summary>
+    /// 69 D2. Possession is a different question from serviceability, and placement, discovery and
+    /// the refusal that has to tell a dead server from a missing model all ask the first one.
+    /// </summary>
+    [Fact]
+    public void ASickNodeStillHoldsItsModelsForAnybodyAskingAboutPossession()
+    {
+        var registry = WithModel(out var now);
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 0, Backend: BackendHealth.Wedged), now);
+
+        Assert.Empty(registry.FindNodesWithModel("llama3"));
+        Assert.Single(registry.FindNodesWithModel("llama3", includeUnserviceable: true));
+    }
+
+    /// <summary>
+    /// 69 D5, and the one that would make the release notorious if it broke: an upgrade must not
+    /// empty a fleet of nodes too old to have the field.
+    /// </summary>
+    [Fact]
+    public void ANodeThatDeclaresNoHealthIsRoutableExactlyAsItWasBefore()
+    {
+        var registry = WithModel(out var now);
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 0), now);
+
+        Assert.Single(registry.FindNodesWithModel("llama3"));
+        Assert.Null(Assert.Single(registry.Snapshot(now)).BackendHealth);
+    }
+
+    /// <summary>69 D1. Recovery needs nothing but the next heartbeat.</summary>
+    [Fact]
+    public void RecoveryPutsTheNodeBackWithNoRestartAndNoReRegistration()
+    {
+        var registry = WithModel(out var now);
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 0, Backend: BackendHealth.Unreachable), now);
+        Assert.Empty(registry.FindNodesWithModel("llama3"));
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 0, Backend: BackendHealth.Healthy), now.AddSeconds(15));
+
+        Assert.Single(registry.FindNodesWithModel("llama3"));
+    }
+
+    /// <summary>
+    /// 69 D6. A heartbeat every few seconds must not re-render the console; the transition is the
+    /// only interesting moment, and it is the one that fires.
+    /// </summary>
+    [Fact]
+    public void OnlyAHealthTransitionRaisesChangedAndARepeatedVerdictDoesNot()
+    {
+        var registry = WithModel(out var now);
+
+        var count = 0;
+        registry.Changed += () => count++;
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 0, Backend: BackendHealth.Healthy), now);
+        Assert.Equal(1, count);
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 1, Backend: BackendHealth.Healthy), now.AddSeconds(15));
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 2, Backend: BackendHealth.Healthy), now.AddSeconds(30));
+        Assert.Equal(1, count);
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 0, Backend: BackendHealth.Wedged), now.AddSeconds(45));
+        Assert.Equal(2, count);
+    }
+
+    private static NodeRegistry WithModel(out DateTimeOffset now)
+    {
+        var registry = new NodeRegistry();
+        now = DateTimeOffset.UtcNow;
+
+        registry.Upsert("connection-1", Registration("node-1"), now);
+        registry.ReportModels(
+            "connection-1",
+            new NodeModels("node-1", [new ModelInfo("llama3", "digest-1", 123)], now),
+            now);
+
+        return registry;
+    }
+
     private static NodeRegistration Registration(string nodeId, string name = "local-node")
     {
         return new NodeRegistration(

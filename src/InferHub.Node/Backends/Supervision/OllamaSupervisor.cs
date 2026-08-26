@@ -1,3 +1,4 @@
+using InferHub.Shared.Contracts;
 using InferHub.Node.Configuration;
 using Microsoft.Extensions.Options;
 
@@ -24,6 +25,7 @@ public sealed class OllamaSupervisor : IHostedService, IBackendSupervisor, IDisp
     private readonly TimeProvider time;
     private readonly ILogger<OllamaSupervisor> logger;
     private readonly string endpoint;
+    private readonly bool mayRestart;
 
     private readonly CancellationTokenSource lifetime = new();
     private readonly Queue<DateTimeOffset> restarts = new();
@@ -42,7 +44,8 @@ public sealed class OllamaSupervisor : IHostedService, IBackendSupervisor, IDisp
         IOllamaProcessControl processControl,
         IOllamaInstaller installer,
         TimeProvider time,
-        ILogger<OllamaSupervisor> logger)
+        ILogger<OllamaSupervisor> logger,
+        BackendSupervisionMode? mode = null)
     {
         options = supervisorOptions.Value;
         endpoint = ollamaOptions.Value.Endpoint;
@@ -51,6 +54,9 @@ public sealed class OllamaSupervisor : IHostedService, IBackendSupervisor, IDisp
         this.installer = installer;
         this.time = time;
         this.logger = logger;
+
+        // Absent means the full thing, which is what every caller before phase 69 meant.
+        mayRestart = mode?.MayRestart ?? true;
     }
 
     public bool IsSupervising => true;
@@ -64,15 +70,28 @@ public sealed class OllamaSupervisor : IHostedService, IBackendSupervisor, IDisp
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        logger.LogInformation(
-            "Supervising the local Ollama at {Endpoint}: probing every {ProbeInterval} with a {ProbeTimeout} deadline, restarting after {Threshold} consecutive failures (at most {MaxRestarts} per {RestartWindow}). AutoInstall={AutoInstall}.",
-            endpoint,
-            options.ProbeInterval,
-            options.ProbeTimeout,
-            options.UnhealthyThreshold,
-            options.MaxRestartAttempts,
-            options.RestartWindow,
-            options.AutoInstall);
+        if (mayRestart)
+        {
+            logger.LogInformation(
+                "Supervising the local Ollama at {Endpoint}: probing every {ProbeInterval} with a {ProbeTimeout} deadline, restarting after {Threshold} consecutive failures (at most {MaxRestarts} per {RestartWindow}). AutoInstall={AutoInstall}.",
+                endpoint,
+                options.ProbeInterval,
+                options.ProbeTimeout,
+                options.UnhealthyThreshold,
+                options.MaxRestartAttempts,
+                options.RestartWindow,
+                options.AutoInstall);
+        }
+        else
+        {
+            logger.LogInformation(
+                "Watching the inference backend at {Endpoint}: probing every {ProbeInterval} with a {ProbeTimeout} deadline and reporting to the coordinator after {Threshold} consecutive failures. Nothing here restarts it — set {Key} to consent to that.",
+                endpoint,
+                options.ProbeInterval,
+                options.ProbeTimeout,
+                options.UnhealthyThreshold,
+                $"{OllamaSupervisorOptions.SectionName}:{nameof(OllamaSupervisorOptions.Enabled)}");
+        }
 
         loop = Task.Run(() => RunAsync(lifetime.Token), CancellationToken.None);
         return Task.CompletedTask;
@@ -168,7 +187,7 @@ public sealed class OllamaSupervisor : IHostedService, IBackendSupervisor, IDisp
         // The first probe is one interval in: a node and its Ollama usually boot together, and
         // reporting a cold start as a fault would be the supervisor's first act. StartAtBoot is
         // the deployment where that reasoning does not hold — see StartAtBootAsync.
-        if (options.StartAtBoot)
+        if (options.StartAtBoot && mayRestart)
         {
             try
             {
@@ -234,7 +253,14 @@ public sealed class OllamaSupervisor : IHostedService, IBackendSupervisor, IDisp
         }
 
         Declare(health);
-        await RemedyAsync(health, cancellationToken);
+
+        // Phase 69 D4. Declaring is the half every node does; remedying is the half that needs
+        // consent and a local process. A watch-only node stops here — the hub has the verdict and
+        // has already stopped routing here, which is the outcome that matters to a caller.
+        if (mayRestart)
+        {
+            await RemedyAsync(health, cancellationToken);
+        }
     }
 
     private async Task RemedyAsync(BackendHealth health, CancellationToken cancellationToken)
@@ -522,13 +548,18 @@ public sealed class OllamaSupervisor : IHostedService, IBackendSupervisor, IDisp
 /// supervisor when the loopback / backend-type guard rejects the configuration, because silence
 /// there reads as "it's on and everything is fine".
 /// </summary>
-public sealed class OllamaSupervisorDisabledNotice(string reason, ILogger<OllamaSupervisorDisabledNotice> logger)
+public sealed class OllamaSupervisorDisabledNotice(
+    string reason,
+    bool stillWatching,
+    ILogger<OllamaSupervisorDisabledNotice> logger)
     : IHostedService
 {
     public Task StartAsync(CancellationToken cancellationToken)
     {
         logger.LogWarning(
-            "{Key} is on, but this node is not supervising anything: {Reason}",
+            stillWatching
+                ? "{Key} is on, but this node will not restart anything: {Reason} It still watches the backend and reports its health to the coordinator."
+                : "{Key} is on, but this node is not supervising anything: {Reason}",
             $"{OllamaSupervisorOptions.SectionName}:{nameof(OllamaSupervisorOptions.Enabled)}",
             reason);
 

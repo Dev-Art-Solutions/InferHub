@@ -265,8 +265,13 @@ public static class ToolEndpoints
     internal const int CapabilityRetryAfterSeconds = 30;
 
     /// <summary>Does any node offer this model, for any kind of work?</summary>
+    /// <remarks>
+    /// Possession, not serviceability (69 D2). This is what separates "no such model" from "the
+    /// fleet knows this one and cannot serve it right now", and a node whose backend is wedged is
+    /// firmly the second — answering `404` for it would name the wrong fault.
+    /// </remarks>
     internal static bool KnownToTheFleet(INodeRegistry registry, string model) =>
-        registry.FindNodesWithModel(model).Count > 0
+        registry.FindNodesWithModel(model, includeUnserviceable: true).Count > 0
         || registry.CapabilitySummary()
             .Any(summary => summary.Models.Contains(model, StringComparer.OrdinalIgnoreCase));
 

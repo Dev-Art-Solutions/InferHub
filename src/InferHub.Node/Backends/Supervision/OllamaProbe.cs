@@ -1,3 +1,4 @@
+using InferHub.Shared.Contracts;
 using System.Net.Sockets;
 
 namespace InferHub.Node.Backends.Supervision;

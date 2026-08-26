@@ -557,6 +557,27 @@ public static class PrometheusFormatter
 
             Header(builder, "inferhub_node_seconds_since_heartbeat", "gauge", "Age of a node's last heartbeat.");
             foreach (var node in nodes) Sample(builder, "inferhub_node_seconds_since_heartbeat", [("node", node.NodeId)], node.AgeSeconds);
+
+            // Phase 69, D7, and phase-28 D5 for the eighth time. A node that reports no opinion —
+            // one older than v3.36, one with the watch off, one whose backend is a vendor — emits
+            // NOTHING here rather than a zero, because `backend_health{state="healthy"} 0` reads as
+            // a measurement that came back bad. The shape is 45 D2's `inferhub_profile_state`: the
+            // state is a label on a constant 1, so a dashboard can alert on the state it cares
+            // about instead of decoding an enum somebody flattened into a number.
+            var declared = nodes.Where(node => node.BackendHealth is not null).ToArray();
+
+            if (declared.Length > 0)
+            {
+                Header(builder, "inferhub_node_backend_health", "gauge", "1 for the state a node's inference backend is in, as the node last reported it.");
+                foreach (var node in declared)
+                {
+                    Sample(
+                        builder,
+                        "inferhub_node_backend_health",
+                        [("node", node.NodeId), ("state", node.BackendHealth!.Value.ToString().ToLowerInvariant())],
+                        1);
+                }
+            }
         }
 
         // Unmeasured (node, model) pairs produce no series at all. An unmeasured node is treated

@@ -1,22 +1,23 @@
+using InferHub.Shared.Contracts;
+
 namespace InferHub.Node.Backends.Supervision;
 
+// BackendHealth moved to InferHub.Shared.Contracts in phase 69: the hub routes on it now, so it
+// is part of the Heartbeat contract rather than a node-local verdict.
+
 /// <summary>
-/// What a probe can conclude about a local inference server. Three states, not two, because
-/// the cure differs: a server that is not running has to be <em>started</em>, and one that is
-/// running but stuck has to be <em>stopped first</em> — <c>start</c> on a wedged process fails
-/// with the port already bound, and the log then blames the wrong thing.
+/// Which half of supervision this node consented to (phase 69, D4). <b>Watching is not
+/// restarting.</b> Bouncing a process needs consent and needs to be local — restarting somebody
+/// else's inference server is not this node's business, which is why
+/// <c>Ollama:Supervisor:Enabled</c> is off by default and loopback-only. <em>Asking</em> a server
+/// whether it is alive needs neither: it is what the next request does anyway.
 /// </summary>
-public enum BackendHealth
-{
-    /// <summary>Answered inside the probe deadline.</summary>
-    Healthy,
-
-    /// <summary>Connection refused, DNS failure, socket error — nothing is listening.</summary>
-    Unreachable,
-
-    /// <summary>The socket connects (or a 5xx comes back) but no usable answer arrives.</summary>
-    Wedged
-}
+/// <param name="MayRestart">
+/// False when the node probes and reports but never touches the process. The supervisor still
+/// declares health on the same threshold, so the hub still stops routing here — the difference is
+/// only whether anybody tries to fix it locally.
+/// </param>
+public sealed record BackendSupervisionMode(bool MayRestart);
 
 /// <summary>
 /// The read side of backend supervision, deliberately named for the <em>node</em> rather than

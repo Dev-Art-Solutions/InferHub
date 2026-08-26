@@ -21,4 +21,7 @@ public sealed record NodeSnapshot(
     /// everything it holds, so a reader never has to know whether the node is an old one. The
     /// registry always fills this; it is nullable only so a hand-built snapshot in a test need
     /// not care.
-    IReadOnlyList<NodeCapability>? Capabilities = null);
+    IReadOnlyList<NodeCapability>? Capabilities = null,
+    /// What the node last said about its inference backend (phase 69). Null is no opinion: an
+    /// older node, one watching nothing, or a vendor-typed one.
+    BackendHealth? BackendHealth = null);

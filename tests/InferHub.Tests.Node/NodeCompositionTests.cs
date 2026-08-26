@@ -105,8 +105,12 @@ public class NodeCompositionTests
         // Phase-39 D10, in DI: mode 3 works precisely because the supervisor is the only thing in
         // the bundled image that would ever start Ollama. If anything else ever acquires that
         // job, this mode silently grows a process it was chosen to avoid.
+        // Phase 69: this mode is the one deployment with an `ollama` backend type and deliberately
+        // no Ollama, so it is where `Watch` is turned off — a box configured to have no inference
+        // server does not need to be told every fifteen seconds that it has none.
         using var host = BuildNode(
             ("Ollama:Supervisor:Enabled", "false"),
+            ("Ollama:Supervisor:Watch", "false"),
             ("LocalApi:Enabled", "true"),
             ("LocalApi:Retrieval:Enabled", "true"),
             ("Coordinator:Enabled", "false"));
@@ -118,15 +122,51 @@ public class NodeCompositionTests
 
     // ---- phase 36: the Ollama supervisor's three-part registration guard -------------------
 
+    /// <summary>
+    /// <b>Amended in phase 69 (D4).</b> This used to assert that the default node had no probe at
+    /// all. Watching and restarting are now two halves: the default node <em>watches</em>, because
+    /// asking a server whether it is alive is what the next request does anyway — and it still
+    /// restarts nothing, which is the half that needs consent and a local process.
+    /// </summary>
     [Fact]
-    public void TheSupervisorIsOffByDefault()
+    public void TheDefaultNodeWatchesItsBackendAndRestartsNothing()
     {
         using var host = BuildNode();
 
-        // The default node must be indistinguishable from one built before the feature existed:
-        // no hosted service, no probe client, nothing.
+        Assert.IsType<OllamaSupervisor>(host.Services.GetRequiredService<IBackendSupervisor>());
+        Assert.False(host.Services.GetRequiredService<BackendSupervisionMode>().MayRestart);
+
+        // The half that touches a process is not even composed.
+        Assert.NotNull(host.Services.GetService<IOllamaProbe>());
+    }
+
+    [Fact]
+    public void WatchingCanBeTurnedOffAndThenTheNodeIsWhatItWasBeforeV336()
+    {
+        using var host = BuildNode(("Ollama:Supervisor:Watch", "false"));
+
         Assert.IsType<NoBackendSupervisor>(host.Services.GetRequiredService<IBackendSupervisor>());
         Assert.DoesNotContain(host.Services.GetServices<IHostedService>(), service => service is OllamaSupervisor);
+        Assert.Null(host.Services.GetService<IOllamaProbe>());
+    }
+
+    /// <summary>
+    /// 69's non-goal, in DI: a probe every fifteen seconds against a cloud vendor is a billed
+    /// request, and there is no free liveness endpoint we may assume across four of them. A
+    /// vendor-typed node reports no health and routes exactly as it did.
+    /// </summary>
+    [Theory]
+    [InlineData("openai")]
+    [InlineData("anthropic")]
+    [InlineData("gemini")]
+    public void AVendorTypedNodeWatchesNothing(string backendType)
+    {
+        using var host = BuildNode(
+            ("Backend:Type", backendType),
+            ("Upstream:BaseUrl", "https://upstream.example/v1"),
+            ("Upstream:Models:Include:0", "some-model"));
+
+        Assert.IsType<NoBackendSupervisor>(host.Services.GetRequiredService<IBackendSupervisor>());
         Assert.Null(host.Services.GetService<IOllamaProbe>());
     }
 
@@ -164,19 +204,22 @@ public class NodeCompositionTests
     [InlineData("http://ollama.internal:11434/")]
     [InlineData("http://host.docker.internal:11434/")]
     [InlineData("http://10.0.0.7:11434/")]
-    public void TheSupervisorIsNotRegisteredForANonLoopbackEndpoint(string endpoint)
+    public void ANonLoopbackEndpointIsWatchedAndNeverRestarted(string endpoint)
     {
         // A shared Ollama serving four nodes, bounced because one node's link hiccuped past the
-        // probe timeout, is a four-node outage caused by the node with the worst network.
+        // probe timeout, is a four-node outage caused by the node with the worst network. **Phase
+        // 69 (D4) split that from watching**: asking a remote Ollama whether it is alive is a cheap
+        // GET to a server this node already sends inference to, and the answer is what keeps the
+        // hub from dispatching here.
         using var host = BuildNode(
             ("Ollama:Supervisor:Enabled", "true"),
             ("Ollama:Endpoint", endpoint));
 
-        Assert.IsType<NoBackendSupervisor>(host.Services.GetRequiredService<IBackendSupervisor>());
-        Assert.DoesNotContain(host.Services.GetServices<IHostedService>(), service => service is OllamaSupervisor);
+        Assert.IsType<OllamaSupervisor>(host.Services.GetRequiredService<IBackendSupervisor>());
+        Assert.False(host.Services.GetRequiredService<BackendSupervisionMode>().MayRestart);
 
-        // But it does not go quiet about it: an operator who asked for supervision is told why
-        // they are not getting it.
+        // And it does not go quiet about it: an operator who asked for supervision is told which
+        // half of it they are getting.
         Assert.Contains(host.Services.GetServices<IHostedService>(), service => service is OllamaSupervisorDisabledNotice);
     }
 

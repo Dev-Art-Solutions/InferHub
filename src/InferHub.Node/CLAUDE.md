@@ -163,6 +163,12 @@ the fleet already stops routing to a broken node through the empty model report.
 omission is a decision rather than an oversight; it is the obvious next phase if the logs turn out
 not to be enough.
 
+> **The logs were not enough, and phase 69 is that phase.** The deferral held for thirty-three
+> releases and what finally broke it was not routing — D7's empty model report does unroute the node
+> — it is that *the empty report and an empty box are the same thing at the hub*, so the client's
+> refusal was **`404 model 'x' not found`** for a fleet that has the model and a dead server three
+> feet from it. See phase 69 below, and `src/InferHub.Coordinator/CLAUDE.md` for the hub's half.
+
 **Rule 5 survived again.** Phase 36 added **zero** new dependencies: `System.Diagnostics.Process`,
 `Socket` and `HttpClient` all ship in the shared framework.
 
@@ -697,3 +703,31 @@ contact is not a limit (52 D5).
 already in `InferHub.Shared`, which is still an empty `<Project Sdk="Microsoft.NET.Sdk">`, and the
 only new file there is [UpstreamDefaults](src/InferHub.Shared/Upstream/UpstreamDefaults.cs), three
 base URLs both hosts now read from one place instead of two.
+
+### Phase 69 (the node declares its backend's health) — the node's half; the hub's is in `src/InferHub.Coordinator/CLAUDE.md`
+
+**D4 — Watching is not restarting, so watching stopped being gated behind consent to restart.**
+`Ollama:Supervisor:Enabled` is still off by default, still loopback-only, and still the only thing
+that will ever touch a process — 36 D1 is untouched, because bouncing a shared Ollama over *one*
+node's bad link is still a four-node outage. What moved is the other half: **`Ollama:Supervisor:Watch`
+defaults to `true`** for any `ollama`-typed node, loopback or not, because *asking* a server whether
+it is alive is what the next request does anyway. `TickAsync` declares on the same threshold either
+way and only `RemedyAsync` is gated, by
+[BackendSupervisionMode](src/InferHub.Node/Backends/Supervision/IBackendSupervisor.cs) — a one-field
+record the composition root fills in, so the supervisor never re-derives a decision made at boot.
+**Considered and rejected: leaving health behind `Enabled`** — the feature would then be off for the
+default deployment, which is the box with a local Ollama and no supervision configured: exactly the
+fleet the phase is about. **Considered and rejected: watching a vendor-typed upstream** — a probe
+every fifteen seconds against a cloud vendor is a **billed request**, and there is no free liveness
+endpoint we may assume across four of them. Those nodes report `null` and route as they always did.
+
+**The cost is stated rather than hidden:** an Ollama-backed node now makes one cheap local call every
+`ProbeInterval` that it did not make before. `Watch: false` turns it off and the node is byte-identical
+to v3.35. **Vector-store-only mode (39 D10) is where you set it** — that deployment has an `ollama`
+backend type and deliberately no Ollama, so it is the one box that would otherwise be told every
+fifteen seconds about a server it was configured not to have.
+
+**`BackendHealth` moved to `InferHub.Shared.Contracts`**, because the hub routes on it now; it is a
+plain enum, so rule 2 is untouched. The node sends `IBackendSupervisor.Health` verbatim on the
+heartbeat — including `null`, which is what it says before the threshold has been crossed and what
+`NoBackendSupervisor` always says.

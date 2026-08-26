@@ -54,6 +54,9 @@ internal static class ModelDiscovery
     /// <summary>True where no node holds the name and a named provider claims it.</summary>
     public static bool IsProviderOnly(INodeRegistry registry, IProviderRegistry? providers, string model)
         => providers is not null
-           && registry.FindNodesWithModel(model).Count == 0
+           // Possession, not serviceability (69 D2): a model must not vanish from /api/tags and
+           // reappear as a provider's because its node's Ollama is wedged. `digest` and `size` are
+           // facts about a file on a box (65 D5), and they are still true while it is down.
+           && registry.FindNodesWithModel(model, includeUnserviceable: true).Count == 0
            && providers.ClaimedModels.Contains(model, StringComparer.OrdinalIgnoreCase);
 }

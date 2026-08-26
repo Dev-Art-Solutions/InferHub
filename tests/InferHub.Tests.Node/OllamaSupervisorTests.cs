@@ -1,3 +1,4 @@
+using InferHub.Shared.Contracts;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -93,6 +94,39 @@ public class OllamaSupervisorTests
 
         Assert.Empty(control.Calls);
         Assert.Null(supervisor.Health);
+    }
+
+    /// <summary>
+    /// Phase 69, D4. A watch-only node crosses the same threshold, declares the same state and
+    /// touches nothing — which is the whole of what the hub needs, because the verdict is what
+    /// stops work being sent here. Restarting is the half that needs consent and a local process.
+    /// </summary>
+    [Theory]
+    [InlineData(BackendHealth.Unreachable)]
+    [InlineData(BackendHealth.Wedged)]
+    public async Task AWatchOnlyNodeDeclaresTheStateAndNeverTouchesTheProcess(BackendHealth health)
+    {
+        var (supervisor, probe, control, installer) = Build(o => o.UnhealthyThreshold = 2, mayRestart: false);
+        probe.Returns(health, health, health, health);
+
+        await Tick(supervisor, 4);
+
+        Assert.Equal(health, supervisor.Health);
+        Assert.Empty(control.Calls);
+        Assert.Equal(0, installer.Calls);
+    }
+
+    /// <summary>The verdict still reverses itself with no process control involved.</summary>
+    [Fact]
+    public async Task AWatchOnlyNodeRecoversOnItsOwnWhenTheServerComesBack()
+    {
+        var (supervisor, probe, control, _) = Build(o => o.UnhealthyThreshold = 2, mayRestart: false);
+        probe.Returns(BackendHealth.Unreachable, BackendHealth.Unreachable, BackendHealth.Healthy);
+
+        await Tick(supervisor, 3);
+
+        Assert.Equal(BackendHealth.Healthy, supervisor.Health);
+        Assert.Empty(control.Calls);
     }
 
     [Fact]
@@ -429,7 +463,7 @@ public class OllamaSupervisorTests
     }
 
     private static (OllamaSupervisor Supervisor, FakeProbe Probe, FakeControl Control, FakeInstaller Installer)
-        Build(Action<OllamaSupervisorOptions>? configure = null, TimeProvider? time = null)
+        Build(Action<OllamaSupervisorOptions>? configure = null, TimeProvider? time = null, bool mayRestart = true)
     {
         var options = new OllamaSupervisorOptions
         {
@@ -453,7 +487,8 @@ public class OllamaSupervisorTests
             control,
             installer,
             time ?? TimeProvider.System,
-            NullLogger<OllamaSupervisor>.Instance);
+            NullLogger<OllamaSupervisor>.Instance,
+            new BackendSupervisionMode(mayRestart));
 
         return (supervisor, probe, control, installer);
     }

@@ -289,6 +289,71 @@ public class PrometheusMetricsTests
 
     // ---- phase 66 -------------------------------------------------------------------------------
 
+    // ---- phase 69 -------------------------------------------------------------------------------
+
+    /// <summary>
+    /// 69 D7, and phase-28 D5 for the eighth time. The state is a label on a constant 1 (45 D2's
+    /// <c>inferhub_profile_state</c> shape), and a node with no opinion emits <b>nothing</b> —
+    /// <c>backend_health{state="healthy"} 0</c> would read as a measurement that came back bad,
+    /// which is exactly what an old node or one with the watch off has not said.
+    /// </summary>
+    [Fact]
+    public void ANodeWithNoOpinionAboutItsBackendEmitsNoHealthSeriesAtAll()
+    {
+        var now = DateTimeOffset.UtcNow;
+
+        var scrape = SampleScrape() with
+        {
+            Nodes =
+            [
+                Node("gpu-1", now, BackendHealth.Wedged),
+                Node("gpu-2", now, health: null)
+            ]
+        };
+
+        var parsed = Exposition.Parse(PrometheusFormatter.Format(scrape));
+
+        var sample = Assert.Single(parsed.Samples, s => s.Name == "inferhub_node_backend_health");
+        Assert.Equal(1, sample.Value);
+        Assert.Equal("gpu-1", sample.Labels["node"]);
+        Assert.Equal("wedged", sample.Labels["state"]);
+
+        // The node that said nothing is still a node: it keeps every series that is about the
+        // connection rather than about the backend.
+        Assert.Equal(2, parsed.Samples.Count(s => s.Name == "inferhub_node_up"));
+    }
+
+    [Fact]
+    public void AFleetThatSaysNothingAboutItsBackendsHasNoSuchFamilyOnTheScrape()
+    {
+        var now = DateTimeOffset.UtcNow;
+
+        var scrape = SampleScrape() with { Nodes = [Node("gpu-1", now, health: null)] };
+        var parsed = Exposition.Parse(PrometheusFormatter.Format(scrape));
+
+        Assert.DoesNotContain(parsed.Samples, s => s.Name == "inferhub_node_backend_health");
+        Assert.False(parsed.Help.ContainsKey("inferhub_node_backend_health"));
+    }
+
+    private static NodeSnapshot Node(string nodeId, DateTimeOffset now, BackendHealth? health)
+        => new(
+            $"conn-{nodeId}",
+            nodeId,
+            nodeId,
+            "http://localhost:11434/",
+            "3.36.0",
+            now,
+            AgeSeconds: 1,
+            InFlight: 0,
+            LocalInFlight: 0,
+            ModelCount: 1,
+            Labels: new Dictionary<string, string>(),
+            MaxConcurrency: null,
+            Cordoned: false,
+            SupportsModelManagement: true,
+            Capabilities: [],
+            BackendHealth: health);
+
     /// <summary>
     /// 66 D5. An info series with a constant 1 describes configuration rather than measuring
     /// traffic, which is why it may exist where phase-28 D5 refuses a zero counter — and it is what

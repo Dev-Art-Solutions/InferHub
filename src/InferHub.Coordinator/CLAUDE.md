@@ -464,94 +464,12 @@ touches a disk-writing path, pull the image and run it (D7), don't trust the uni
 
 **Rule 5 survived again.** Phase 30 added **zero** new dependencies.
 
-### Phase 32 (multi-coordinator: standby hub & warm failover) — also load-bearing
+### The multi-coordinator decisions moved out in phase 69
 
-**D1 — Standby and active share the *same* Postgres, so rule 4 is untouched.** There is no new
-source of truth: the lease row is a mutual-exclusion token, never state anyone reads to answer a
-request, and the vector store and usage ledger are the same external stores both hubs already
-used. The coordinators are interchangeable readers/writers of one durable store, not two
-authorities. Everything else on a hub (registry, affinity, metrics, audit) is *derived* and
-rebuilds as nodes reconnect — which is exactly why a promoted standby needs no migration step.
-**HA targets `postgres` only.** Under `local` the raw store is per-hub; clustering it is future
-work, and `Cluster:Enabled=true` over a `local` store would be two authorities wearing one name.
-
-**D2 — A lease row, not a PG advisory lock.** The obvious alternative was rejected on purpose: an
-advisory lock is scoped to a *session*, so a pooled connection dropping silently releases
-leadership with nothing to observe, and it carries no expiry and no fence a partitioned holder can
-reason about **locally**. [PostgresClusterLease](src/InferHub.Coordinator/Cluster/PostgresClusterLease.cs)
-is one conditional upsert — `ON CONFLICT DO UPDATE … WHERE holder = me OR expires_at <= now()`,
-`RETURNING` — decided entirely by the database clock, so there is no read-then-write window two
-coordinators can both walk through. The fence counter bumps only on a change of holder, never on a
-renewal: a bumped fence is how an operator knows leadership actually moved.
-
-**D3 — The split-brain guard is local, and the trade is deliberate.** A partitioned active hub
-cannot *be told* it lost the lease — by definition it cannot reach the database that knows. So
-[ClusterLeaseService](src/InferHub.Coordinator/Cluster/ClusterLeaseService.cs) demotes when this
-instance has not **proved** leadership within the TTL, measured on its own clock from the last
-successful renewal. That is the same deadline Postgres uses to hand the lease over, so the two
-windows cannot overlap with both hubs serving. The consequence — an unreachable database demotes a
-healthy primary after one TTL, taking the mesh down — is correct and is not to be softened: a
-request the mesh cannot attribute to a single leader is worse than a `503` a load balancer routes
-elsewhere. `Cluster:RenewIntervalSeconds` is validated at ≤ TTL/3 so ordinary packet loss cannot
-flap leadership. A clustered hub starts **standby** and is promoted only on a real acquisition;
-starting active would give every cold boot a two-primary window.
-
-> **The deadline is checked *before* any I/O, and the attempt is bounded by what is left of it.**
-> Found by pulling the plug on Postgres under the running stack: the round-trip itself burned
-> Npgsql's connect timeout, so demotion landed at **23s on a 15s TTL** — and the row frees at 15s.
-> That 8s gap is a window in which the standby holds the lease and the old primary still believes
-> it leads: precisely the split brain the fence exists to prevent. The loop's sleep is clamped to
-> the remaining time too, so tick granularity cannot add slack either. A fence that can be
-> outrun by its own health check is not a fence, and only running it found that —
-> `SplitBrainTests.TheFenceDoesNotWaitForTheRoundTripToComplete` pins it.
-
-**D4 — Node failover is enforced in the middleware, not in the hub, because a `HubException` from
-`OnConnectedAsync` does not fail the client's `StartAsync`.** Found live: by the time
-`OnConnectedAsync` runs the handshake has completed, so throwing (or `Context.Abort()`-ing) leaves
-the node believing it connected, only to be dropped a beat later with no reason attached — it
-cannot tell "standby, try the next endpoint" from "hub is broken". So `/hubs/node` is in
-[ClusterRoleMiddleware](src/InferHub.Coordinator/Cluster/ClusterRoleMiddleware.cs)'s refusal set and
-a standby answers the *negotiate* with the same `503` clients get. `NodeHub` keeps its own check as
-defence in depth. **Do not "simplify" the middleware entry away** — the hub check alone does not
-work, and `FailoverTests` crosses the real wire precisely so that cannot regress unnoticed.
-
-**D5 — The hub does not become a load balancer; it becomes honest.** Client failover is a TCP/HTTP
-LB or DNS in front of both hubs. What InferHub owes that front is signals: `X-InferHub-Role` on
-every response, `role` on `/health`, and a `503` + `Retry-After` on inference against a standby, in
-the caller's own dialect (OpenAI envelope on `/v1`, per phase 21/29). **`/health` stays `200` on a
-standby** — a standby *is* healthy, it just is not leading, and reporting otherwise has an
-orchestrator restart-loop the instance that is supposed to be waiting quietly. Drain on the role or
-the inference `503`. Unlike phase-25 admission (which lives in `InferenceCore` because it needs the
-model name), the role decision needs nothing from the body, so it belongs in the pipeline before
-routing, deserialization or a queue wait.
-
-**D6 — What a standby refuses is a short, explicit list, and status is not on it.** Inference,
-ingestion, search, the vector data plane and the node hub. `/health`, `/api/status`, `/metrics`,
-`/api/admin/*` and the status page stay served, because "why is nothing being served?" has to be
-answerable *from* the instance that stopped serving. A standby that goes dark is a standby nobody
-can diagnose.
-
-**D7 — `IF NOT EXISTS` is not atomic, and this is the first phase where that is reachable.** The
-existence check and the catalog insert are separate steps, so two coordinators booting at the same
-instant both pass the check and one dies on a unique index in `pg_extension` / `pg_namespace` /
-`pg_class`. Everywhere else in InferHub bootstrap happens once on one hub, so the race never fired;
-here simultaneous startup is the *normal* case, and an HA pair that crashes half of itself on a cold
-boot is not HA. [ConcurrentDdl](src/InferHub.Coordinator/Postgres/ConcurrentDdl.cs) is the one place
-that retries it — the other session winning **is** success — and **all three** Postgres bootstraps
-(the lease, the vector store, the usage ledger) go through it.
-
-> **This shipped broken in v3.0.0, in the two paths that were noted-but-not-fixed.** The lease was
-> hardened during the phase; the note said "if the vector store or the usage ledger ever bootstrap
-> concurrently, they need the same treatment" — and then v3.0.0 tagged without doing it. Pulling the
-> published images and cold-booting two hubs against an empty database, `hub-a` exited 139 on
-> `pg_extension_name_index` while `hub-b` came up fine, and the error text blamed a missing
-> privilege, sending the operator after a DBA for a problem that was a race. Fixed in v3.0.1.
-> `ConcurrentBootstrapTests` races eight of each against a real Postgres and fails without the
-> retry. **A hazard you have written down but not fixed is still shipped** — and D7 exists because
-> that class of thing is only ever found by running the artefact.
-
-**Rule 5 survived again.** Phase 32 added **zero** new dependencies: the lease is `Npgsql`, already
-recorded for the `postgres` vector provider, and the standby refusal is `System.Text.Json`.
+**Phase 32 (standby hub, the lease, the split-brain fence and the standby refusal set) is in
+`src/InferHub.Coordinator/Cluster/CLAUDE.md`**, whole and unchanged. It sits over the code it
+constrains, and this file needed the room for phase 69 without shortening a record to get it
+(62 D6, 67 D6).
 
 ### The retrieval and vector-store decisions moved out in phase 62
 
@@ -1074,3 +992,56 @@ emitted at zero like the other hub-wide counters — a hub with no provider can 
 > the in-test reader overwrote a duplicate silently; **`Exposition.Parse` now fails on a repeated
 > header for any name**, which is the half that guards the families nobody has written yet. Found by
 > scraping a published image with two providers on it (phase 68), not by a suite.
+
+### Phase 69 (the hub routes on backend health) — load-bearing; the node's half is 69 D4 in `src/InferHub.Node/CLAUDE.md`
+
+**D1 — `Heartbeat` carries a typed `BackendHealth?` and an unhealthy node stops being a candidate.**
+The heartbeat *is* the liveness message; health is what liveness had been pretending to be since
+phase 9. **Rejected: the hub probing the node** — that is 26 D1 undone and the whole NAT story with
+it. **Rejected: a second `ReportBackendHealth` mailbox** — deliverable independently of the signal it
+describes, so the two can disagree. Three states, not a boolean: `unreachable` is a server to start
+and `wedged` is one to stop first, and that difference is the only part an operator acts on.
+
+**D2 — "Who holds this model" and "who can serve it" became two questions.**
+`FindNodesWithModel` filters unhealthy nodes by default; three callers ask about **possession** and
+pass `includeUnserviceable: true`. Each has its own reason: **placement** must not pull twenty
+gigabytes onto a second box to replace a model that is already on a sick one; **`ModelDiscovery`**
+must not let a model vanish from `/api/tags` and reappear as a provider's, because `digest` and
+`size` are facts about a file on a box (65 D5) and stay true while it is down; **`KnownToTheFleet`**
+is what separates "no such model" from "cannot serve it right now". `RequestQueue` keeps the default
+— waiting for a slot on a node that cannot answer is a queue that has stopped meaning anything.
+
+**D3 — Every holder unhealthy is a `503` naming the backend, and never the `404` that means "no such
+model".** 40 D5's line, extended, in the order the fixes go in: nobody holds it → `404`; holders
+exist and all are unhealthy → `503` + `Retry-After`; otherwise the capability `503`. **This is the
+defect the phase exists to remove and it was live**: 36 D7 unroutes a broken node by *emptying its
+model report*, which at the hub is indistinguishable from an empty box — so a fleet whose only
+`llama3` node had a dead Ollama told the client the model did not exist, sending an operator to pull
+weights that were already on the disk.
+
+**D5 — `null` is "no opinion" and is never read as unhealthy.** 40 D1's mixed-fleet rule for the
+seventh time, and here it is the one that would make a release notorious: a v3.35 node, a node with
+`Watch: false` and a vendor-typed node all send nothing, and an upgrade that read that as sick would
+empty the fleet. Pinned across the wire, with the real three-field payload, in `Tests.Mesh`.
+
+**D6 — A heartbeat still does not wake the console; a transition does.** `Touch` has never raised
+`Changed` and must not start: it runs every few seconds and would re-render every panel per node per
+interval to deliver a value that changes twice a week. It now raises only when the recorded state
+actually differs.
+
+**D7 — `inferhub_node_backend_health{node,state}` at a constant 1, and a node with no opinion emits
+nothing.** 45 D2's `inferhub_profile_state` shape and 28 D5 for the eighth time —
+`backend_health{state="healthy"} 0` reads as a measurement that came back bad, which is exactly what
+a node that said nothing has not made. The console shows it beside `online` rather than instead of
+it (the connection genuinely *is* up) and puts the node on the **Needs attention** strip with the
+sentence, not the status word.
+
+**D8 — This file was at 1076 of 1100, so phase 32 moved whole into
+`src/InferHub.Coordinator/Cluster/CLAUDE.md`.** 62 D6 and 67 D6, a third time, with the same
+arithmetic: a phase cannot land its decisions in a file with twenty-four lines of headroom. The
+cluster phase is the largest coherent subtree backend health has nothing to do with, and it moved
+**unedited**. **Rejected: raising the budget** — a limit raised on first contact is not a limit
+(52 D5) — and **rejected: compressing phase 32**, which is a record and not a draft.
+
+**Rule 5 survived again.** Phase 69 added **zero** new dependencies, and one plain enum moved into
+`InferHub.Shared`, which is still an empty `<Project Sdk="Microsoft.NET.Sdk">`.

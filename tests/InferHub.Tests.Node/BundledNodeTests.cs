@@ -1,3 +1,4 @@
+using InferHub.Shared.Contracts;
 using InferHub.Node.Backends;
 using InferHub.Node.Backends.Supervision;
 using InferHub.Node.Configuration;

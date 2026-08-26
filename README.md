@@ -1853,6 +1853,7 @@ The [Prometheus endpoint](#prometheus-metrics-v210) grew the series this track n
 | `inferhub_tool_pool` | `node`, `tool`, `state` |
 | `inferhub_audio_seconds_total`, `inferhub_audio_characters_total` | `kind`, `model` |
 | `inferhub_profile_state` | `profile`, `state` |
+| `inferhub_node_backend_health` | `node`, `state` — **v3.36+** |
 | `inferhub_node_corpus_records` | `node`, `collection` |
 
 **Absence stays absence.** A capability nobody serves, a tool nobody loaded, a profile nobody wrote
@@ -1865,6 +1866,12 @@ The two audio counters are deliberately separate: a transcription is metered in 
 synthesis in **characters**, and one summed `units` series would add the two into a number nobody can
 tell is wrong. `inferhub_profile_state{state="refused"}` and `{state="conflict"}` are the two worth
 alerting on — both mean a box is not doing what your fleet configuration says it should.
+
+`inferhub_node_backend_health{state="unreachable"}` and `{state="wedged"}` are the third: a node
+that is *connected* and cannot answer. It follows the same absence rule — a node that reports no
+opinion (one older than v3.36, one with `Ollama:Supervisor:Watch` off, or one whose backend is a
+cloud vendor) emits **nothing**, because `state="healthy" 0` would read as a measurement that came
+back bad rather than a question nobody asked.
 
 ## One box, one card: a picture, a panorama, an edit (v3.19+)
 
@@ -2841,9 +2848,19 @@ coordinator routing inference at it, and it is deliberate: preserving the last k
 would turn a node-local fault into client-visible timeouts. The report now says *why* it is
 empty, so "no models" no longer reads the same as "this box has nothing installed".
 
+> **Since v3.36 the coordinator is told directly, and the difference is what a client hears.**
+> An empty model report unroutes a broken node, but at the hub it is indistinguishable from a box
+> with nothing installed — so a request for a model whose only node had a dead Ollama came back
+> `404 model 'llama3' not found`, which sends you to pull weights that are already on the disk.
+> Now the node declares `healthy` / `unreachable` / `wedged` on its heartbeat: the model stays
+> listed in `/api/tags`, the request is refused with **`503` naming the backend**, `/api/status`
+> and the console show which of the two states it is, and the fix is un-flagged by the next
+> heartbeat. Watching is on by default and restarting is not — see `Ollama:Supervisor:Watch`.
+
 | Key | Default | Purpose |
 |---|---|---|
-| `Ollama:Supervisor:Enabled` | `false` | Turns supervision on. Loopback + `Backend:Type=ollama` only. |
+| `Ollama:Supervisor:Watch` | `true` | **v3.36+** — probe the backend and report its health to the coordinator. Separate from `Enabled` because *asking* a server whether it is alive is what the next request does anyway, while restarting one needs consent and needs to be local. `Backend:Type=ollama` only, loopback or not; a vendor-typed upstream is never probed (a poll every `ProbeInterval` against a cloud vendor is a billed request). Set `false` for a box that deliberately has no inference server, or to get v3.35 behaviour exactly. |
+| `Ollama:Supervisor:Enabled` | `false` | Consents to **restarting** a local Ollama. Loopback + `Backend:Type=ollama` only. |
 | `Ollama:Supervisor:ProbeInterval` | `00:00:15` | How often to probe. |
 | `Ollama:Supervisor:ProbeTimeout` | `00:00:05` | The probe's own deadline. Deliberately **not** `Ollama:RequestTimeout` — that one waits five minutes for a cold 70B load, and probing over it would take a quarter of an hour to notice a wedge. |
 | `Ollama:Supervisor:UnhealthyThreshold` | `3` | Consecutive failures before acting. Any success resets the count. |

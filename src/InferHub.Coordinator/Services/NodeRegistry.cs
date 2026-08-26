@@ -62,8 +62,18 @@ public sealed class NodeRegistry : INodeRegistry
         nodes[connectionId] = existing with
         {
             LastSeenUtc = now,
-            InFlight = Math.Max(0, heartbeat.InFlight)
+            InFlight = Math.Max(0, heartbeat.InFlight),
+            Backend = heartbeat.Backend
         };
+
+        // Phase 69 D6. A heartbeat arrives every few seconds and deliberately does not wake the
+        // console; a *transition* does, because that is the thing somebody wants to see the moment
+        // it happens. Raising on every beat would re-render every panel per node per interval to
+        // deliver a value that changes twice a week.
+        if (existing.Backend != heartbeat.Backend)
+        {
+            RaiseChanged();
+        }
 
         return true;
     }
@@ -254,7 +264,8 @@ public sealed class NodeRegistry : INodeRegistry
     public IReadOnlyCollection<RoutableNode> FindNodesWithModel(
         string model,
         string? capability = null,
-        bool requireStreamedAttachments = false)
+        bool requireStreamedAttachments = false,
+        bool includeUnserviceable = false)
     {
         if (string.IsNullOrWhiteSpace(model))
         {
@@ -263,6 +274,10 @@ public sealed class NodeRegistry : INodeRegistry
 
         return nodes
             .Where(pair => !pair.Value.Cordoned
+                // Phase 69 D2. "Who holds this model" and "who can serve it" were the same question
+                // until a node could be up and unable to answer. This is the serving question; a
+                // caller asking about possession — placement, discovery, a diagnosis — opts back in.
+                && (includeUnserviceable || pair.Value.Backend is null or BackendHealth.Healthy)
                 && (!requireStreamedAttachments || pair.Value.StreamedAttachments is true)
                 && (capability is null
                     ? pair.Value.Models.Any(candidate => ModelNamesMatch(candidate.Name, model))
@@ -358,7 +373,8 @@ public sealed class NodeRegistry : INodeRegistry
             entry.EffectiveMaxConcurrency ?? entry.Registration.MaxConcurrency,
             entry.Cordoned,
             entry.Registration.SupportsModelManagement,
-            entry.Capabilities);
+            entry.Capabilities,
+            entry.Backend);
     }
 
     /// <summary>
@@ -428,5 +444,10 @@ public sealed class NodeRegistry : INodeRegistry
         /// Whether the node can pull a streamed attachment (phase 53). Null is what every node
         /// before v3.21 says, and it is read as "no" — the same null-is-not-a-declaration shape as
         /// <see cref="DeclaredCapabilities"/>, so a message carrying nothing erases nothing.
-        bool? StreamedAttachments = null);
+        bool? StreamedAttachments = null,
+        /// What the node last said about its inference backend (phase 69). Null is **no opinion**
+        /// — an older node, one that watches nothing, or a vendor-typed one — and is never read as
+        /// unhealthy, because an upgrade that emptied a fleet of pre-v3.36 nodes would be the one
+        /// unforgivable way to ship this.
+        BackendHealth? Backend = null);
 }

@@ -209,7 +209,25 @@ internal static class InferenceCore
                 // Retry-After rather than the 404 that means "no such model". Authorization has
                 // already run (admission, above), so this can never be used to probe for a model
                 // a client is not allowed to see: it only ever reflects models it already reaches.
-                if (capability is not null && registry.FindNodesWithModel(model).Count > 0)
+                // Phase 69 D3. Three questions in the order the fixes go in: does anybody hold this
+                // name at all, can the ones that do actually answer, and is it the capability that
+                // is missing. A 404 for a fleet whose only holder has a dead inference server is
+                // the expensive lie — it sends an operator to pull a model already on the box.
+                var holders = registry.FindNodesWithModel(model, includeUnserviceable: true).Count;
+
+                if (holders > 0 && registry.FindNodesWithModel(model).Count == 0)
+                {
+                    logger.LogWarning(
+                        "Model {Model} is held only by nodes whose inference backend is unhealthy",
+                        model);
+
+                    return DispatchOutcome.Failure(
+                        StatusCodes.Status503ServiceUnavailable,
+                        $"every node holding model '{model}' reports an unhealthy inference backend",
+                        CapabilityRetryAfterSeconds);
+                }
+
+                if (capability is not null && holders > 0)
                 {
                     logger.LogInformation(
                         "No node provides capability {Capability} for model {Model}",

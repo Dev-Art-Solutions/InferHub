@@ -78,6 +78,13 @@
     } else if (node.cordoned) {
       pills.push(`<span class="pill pill-warn">cordoned</span>`);
     }
+
+    // Phase 69. Beside `online`, not instead of it: the connection genuinely is up, and saying so
+    // while the backend is down is the whole of what this row has to communicate.
+    if (node.backendHealth && node.backendHealth !== "healthy") {
+      pills.push(`<span class="pill pill-err">backend ${escapeHtml(node.backendHealth)}</span>`);
+    }
+
     return pills.join(" ");
   };
 
@@ -689,6 +696,18 @@
 
     for (const node of status?.nodes ?? []) {
       const label = `${node.name} (${node.nodeId})`;
+
+      // Phase 69. The row this strip was always missing: a node that is connected, green by every
+      // other measure, and cannot answer. The two states get different sentences because they need
+      // different fixes — nothing listening is a server to start, a wedge is one to stop first.
+      if (node.backendHealth && node.backendHealth !== "healthy") {
+        items.push({
+          kind: "backend", where: label, what: node.ollamaEndpoint,
+          why: node.backendHealth === "unreachable"
+            ? "nothing is listening at the node's inference backend — the node is connected and takes no work until it answers"
+            : "the node's inference backend accepts connections and never answers — it is wedged, and takes no work until it is restarted"
+        });
+      }
 
       const profile = node.profile;
       if (profile?.status === "conflict") {

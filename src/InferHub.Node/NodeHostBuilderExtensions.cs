@@ -297,33 +297,41 @@ public static class NodeHostBuilderExtensions
             .GetSection(OllamaSupervisorOptions.SectionName)
             .Get<OllamaSupervisorOptions>() ?? new OllamaSupervisorOptions();
 
-        if (!supervisorOptions.Enabled)
-        {
-            NoSupervision(builder);
-            return;
-        }
-
         var backendType = (builder.Configuration
             .GetSection(BackendOptions.SectionName)
             .Get<BackendOptions>() ?? new BackendOptions()).Normalized();
 
-        var reason = backendType != BackendOptions.Ollama
+        // Phase 69 D4 splits this in two. Restarting keeps every gate phase 36 gave it — consent,
+        // an Ollama backend, and loopback. Watching needs only an Ollama backend: probing a remote
+        // one is a cheap GET to a server this node already sends inference to, while a vendor-typed
+        // upstream has no free liveness endpoint we may assume and would be a billed request.
+        var isOllama = backendType == BackendOptions.Ollama;
+
+        var reason = !isOllama
             ? $"{BackendOptions.SectionName}:{nameof(BackendOptions.Type)} is '{backendType}', and an OpenAI-compatible upstream is somebody else's server to restart"
             : !IsLoopback(ollamaOptions.Endpoint)
                 ? $"{OllamaOptions.SectionName}:{nameof(OllamaOptions.Endpoint)} '{ollamaOptions.Endpoint}' is not loopback, and a remote or shared Ollama is not this node's to restart"
                 : null;
 
-        if (reason is not null)
+        var mayRestart = supervisorOptions.Enabled && reason is null;
+        var watches = isOllama && supervisorOptions.Watch;
+
+        if (supervisorOptions.Enabled && reason is not null)
         {
             builder.Services.AddSingleton<IHostedService>(services =>
                 new OllamaSupervisorDisabledNotice(
                     reason,
+                    watches,
                     services.GetRequiredService<ILogger<OllamaSupervisorDisabledNotice>>()));
+        }
 
+        if (!mayRestart && !watches)
+        {
             NoSupervision(builder);
             return;
         }
 
+        builder.Services.AddSingleton(new BackendSupervisionMode(mayRestart));
         builder.Services.TryAddSingleton(TimeProvider.System);
 
         // The probe's own client. It is NOT redundant with the inference client: that one waits
