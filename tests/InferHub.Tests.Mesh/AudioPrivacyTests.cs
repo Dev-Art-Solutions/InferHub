@@ -76,6 +76,42 @@ public class AudioPrivacyTests
     }
 
     /// <summary>
+    /// Phase 70: the streamed path writes a different log line, at a different moment, from a
+    /// different method — which is exactly the shape of change that reintroduces this bug.
+    /// </summary>
+    [Theory]
+    [InlineData("audio")]
+    [InlineData("sse")]
+    public async Task NoSynthesisedTextAppearsAnywhereWhenTheAnswerIsStreamed(string streamFormat)
+    {
+        await using var mesh = await AudioMesh.StartAsync();
+
+        var response = await mesh.Client.PostAsync(
+            "/v1/audio/speech",
+            JsonContent.Create(new
+            {
+                model = AudioFixture.SpeakModel,
+                input = SpokenText,
+                response_format = "pcm",
+                stream_format = streamFormat
+            }));
+
+        Assert.True(response.IsSuccessStatusCode);
+
+        var log = string.Join("\n", mesh.Logs.Lines);
+        Assert.DoesNotContain(SpokenText, log, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("must not be logged", log, StringComparison.OrdinalIgnoreCase);
+
+        // The line that IS written carries the counts and nothing that could hold a sample.
+        var line = Assert.Single(mesh.Logs.Lines, l => l.Contains("Streamed speech "));
+        Assert.Contains(AudioFixture.SpeakModel, line);
+        Assert.Contains($"{SpokenText.Length} characters", line);
+
+        var row = Assert.Single(await mesh.Ledger.QueryAsync(new UsageQuery()));
+        Assert.Equal(SpokenText.Length, row.Characters);
+    }
+
+    /// <summary>
     /// The log line that <em>is</em> written. It has to carry enough to operate the fleet — which
     /// model, how much work, what happened — and the assertion is here so that a future change
     /// which adds "and the text was…" fails in the file that explains why it must not.

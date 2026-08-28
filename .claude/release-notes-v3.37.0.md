@@ -108,7 +108,11 @@ cannot tell an ending from a failure.
 
 ## Numbers
 
-- `dotnet test InferHub.sln` — **1 542 passed / 48 skipped**.
+- `dotnet test InferHub.sln` — **1 542 passed / 48 skipped** at the tag. Two more landed the same
+  evening (`NoSynthesisedTextAppearsAnywhereWhenTheAnswerIsStreamed`, one per stream shape) — rule 7
+  deserved the streamed path explicitly, since it writes a different log line from a different
+  method at a different moment, which is the shape of change that reintroduces that bug. **Tests
+  only; the tagged artifact is unchanged**, and 1 544 is the number after them.
 - **Zero new `PackageReference`s.** `InferHub.Shared.csproj` is still an empty
   `<Project Sdk="Microsoft.NET.Sdk">`. Rule 5 intact for the twelfth consecutive release.
 - **No new configuration key.** There was a `Tools:Speech:MaxChunkBytes` in an early draft and it was
