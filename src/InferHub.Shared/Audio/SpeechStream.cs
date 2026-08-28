@@ -83,9 +83,14 @@ public static class SpeechStream
 
     /// <summary>
     /// Both length fields of a streaming RIFF header. The length is not knowable when the header
-    /// goes out and this is the sentinel a piped wav has always used; a player accepts it, and
-    /// <c>ffprobe</c> reports a nonsense duration, which the docs say rather than leaving it to be
-    /// found.
+    /// goes out and this is the sentinel a piped wav has always used.
+    ///
+    /// <b>Measured on the published 3.37.0 image, because the first draft of this comment was
+    /// wrong:</b> it claimed <c>ffprobe</c> would report a nonsense duration. It does not — a saved
+    /// file has a byte count, and ffmpeg prefers it, so a 23.9-second stream reports 23.9 seconds.
+    /// What is true is narrower and worth stating that way: <b>a consumer that trusts this field
+    /// alone computes ~4 GB</b>, and every consumer that matters falls back to the bytes it
+    /// actually has.
     /// </summary>
     private const uint UnknownLength = 0xFFFFFFFFu;
 

@@ -42,8 +42,8 @@ The decisions worth knowing:
   fields.** Piper knows its own sample rate only from its own first samples — the worker has refused
   to hand-set one since v3.10, because a rate that disagrees with the model plays at the wrong pitch
   and passes every byte-count assertion anybody writes. The declared length is the streaming
-  sentinel: players accept it, `ffprobe` reports a nonsense duration, and that is said here rather
-  than left to be found.
+  sentinel. *(This bullet's first draft said `ffprobe` would report a nonsense duration. It does
+  not — see the image check below.)*
 - **The measured rate goes out on `X-InferHub-Audio-Sample-Rate`**, which for `pcm` is the only place
   it can be — and it is why the status is not committed until the first chunk arrives. A refusal is
   still a `400` or a `502` with an error envelope.
@@ -125,18 +125,60 @@ cannot tell an ending from a failure.
   its reserved version moved to `v3.38.0` and `.claude/verification-v3.37.0.md` was renamed. A
   version number belongs to the release that ships.
 
-## What was not established
+## The published image, driven the same evening — and it corrected one sentence
 
-Said out loud, in the house habit:
+`ghcr.io/dev-art-solutions/inferhub-node:3.37.0-tools`, solo mode, with a real
+`en_US-amy-medium` voice (63 MB) downloaded onto the volume. **A real Piper voice has now streamed**,
+which is what the three "not established" bullets in this file's first draft were about.
 
-- **No real Piper voice has streamed.** Every test here drives the echo worker, which sends the same
-  quarter-second 440 Hz tone it has always written to a file, split into frames. That the *real*
-  worker's `synthesize()` yields one chunk per sentence is read out of `piper==1.6.0`'s own
-  `voice.py` — `synthesize_wav` is that loop writing into a `wave` file — and not observed. **Nobody
-  has listened to a streamed sentence**, and no time-to-first-audio has been measured. That is the
-  published-image check on the `:tools` image with a voice file, and it is the first thing to run.
-- **No browser has played a `0xFFFFFFFF` wav from this endpoint.** The sentinel is what a piped wav
-  has always used and the header is asserted byte by byte, but "a player accepts it" is a claim about
-  players.
-- **The 16 KiB split has not been felt.** ~0.37 s is arithmetic on the sample rate, not a measured
-  gap between frames on a real card.
+**The number the release exists for**, one 311-character paragraph, warm worker, same box:
+
+| | Time to first byte | Total | Bytes |
+|---|---|---|---|
+| Buffered (v3.36 behaviour) | **1.228 s** | 1.237 s | 1 049 132 |
+| `stream_format: "audio"` | **0.205 s** | 1.263 s | 1 054 252 |
+
+**Six times sooner to the first sample, and the same total** — which is what the non-goal in the
+brief said would happen: nothing gets faster, the first byte just leaves earlier.
+
+What else held on the artifact:
+
+- `X-InferHub-Audio-Sample-Rate: 22050`, **measured**, not declared — the voice's real rate, and the
+  header a `pcm` caller has no other way to learn. `X-InferHub-Speech-Characters: 311`.
+  `Transfer-Encoding: chunked`, `Content-Type: audio/wav`.
+- The streamed wav's header is a real one: `RIFF`/`WAVE`/`fmt `/`data`, PCM, mono, 22 050 Hz, 16-bit,
+  **both length fields `0xFFFFFFFF`** — beside a buffered wav from the same worker carrying real
+  lengths.
+- **The 16 KiB split is real.** The SSE run reassembled to five `speech.audio.delta` frames of
+  **exactly 16 384 bytes** each, then one `speech.audio.done` carrying
+  `{"input_tokens":0,"output_tokens":0,"total_tokens":0}` and no error event.
+- Streamed `pcm` starts with a sample, not with `RIFF`.
+- `mp3` **buffered** still works on this image (7 855 bytes, ffmpeg present); `mp3` **streamed** is
+  the 400 naming `wav, pcm`.
+- On `inferhub-coordinator:3.37.0`: an unknown `stream_format` is a 400 naming `sse, audio`; the same
+  `mp3` without the field is still the ordinary `404`; the route is still behind the bearer guard.
+
+**The sentence this check killed.** Three places in this release claimed a `0xFFFFFFFF` wav would
+make `ffprobe` report a nonsense duration. **It does not.** `ffprobe` on the streamed file reports
+`duration=23.904943` — correct to the sample — because a *saved file has a byte count* and ffmpeg
+prefers it over the header field. The true statement is narrower and is now what the code comment,
+`CLAUDE.md`, the README and the site say: **a consumer that trusts that field alone computes ~4 GB**,
+and every consumer that matters falls back to the bytes it actually has. Corrected everywhere before
+the blog post went out, which is the only reason it could be corrected at all.
+
+**The other thing worth knowing, and it is about the model rather than about us.** Three buffered
+syntheses of one identical sentence came back **289 836 / 286 252 / 284 204 bytes**. Piper's VITS
+sampling is not deterministic, so *the same text is a different length every time* — which is why the
+buffered and streamed byte counts in the table above differ by 5 KB and why that difference is not a
+transport bug. It also means the suite's byte-identity assertion between the two paths works only
+because the echo fixture is deterministic. Anyone diffing real audio between releases should know
+this before they start.
+
+## What is still not established
+
+- **Nobody has *listened* to it.** The bytes are correct, the durations are correct and ffmpeg opens
+  the file; no human ear has been applied, and no browser has played one from this endpoint.
+- **Not driven through a hub.** Every measurement above is a solo node, so the D7 routing narrowing
+  and the 503 that names the version are still only covered by the suite.
+- **The oversized-chunk refusal was not provoked on the artifact.** It needs a worker that
+  misbehaves, and the shipped one splits correctly; the mesh test is what covers it.

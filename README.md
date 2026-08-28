@@ -804,7 +804,9 @@ Six things are worth knowing:
   that do. The others need an encoder running for the length of the request and a chunk boundary
   that is not a codec frame boundary — a naive split clicks every third of a second.
 - **A streamed `wav` has `0xFFFFFFFF` in both length fields.** The length is not knowable when the
-  header goes out. Players accept it; `ffprobe` will report a nonsense duration.
+  header goes out. Measured on the published image: `ffprobe` reports the **correct** duration,
+  because a saved file has a byte count and ffmpeg prefers it over the header. What the sentinel
+  costs is narrower — a consumer that trusts that field alone computes ~4 GB.
 - **The sample rate is on `X-InferHub-Audio-Sample-Rate`**, measured from the audio itself rather
   than declared. For `pcm` it is the only place it can be.
 - **The `usage` in `speech.audio.done` is three zeros, and they are true** — Piper is a phoneme model

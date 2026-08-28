@@ -1012,8 +1012,10 @@ substituted", one level up.
 fields.** Piper knows its sample rate only from its own first samples (`synthesize_wav` sets the
 format off chunk one, and `piper_worker`'s docstring records why a hand-set rate is refused: it plays
 at the wrong pitch and passes every byte-count assertion). So the header is 44 bytes built from the
-audio's own measurement, and the declared length is the streaming sentinel — a player accepts it,
-`ffprobe` reports a nonsense duration, and the docs say so rather than leaving it to be found. The
+audio's own measurement, and the declared length is the streaming sentinel. **The v3.37.0 image
+check corrected this file's own first claim:** `ffprobe` does *not* report a nonsense duration — a
+saved file has a byte count and ffmpeg prefers it, so a 23.9-second stream reports 23.9 seconds. The
+true statement is narrower: a consumer that trusts the header field alone computes ~4 GB. The
 measured rate also goes out as `X-InferHub-Audio-Sample-Rate`, which is the **only** way a `pcm`
 caller can know it, and that is why **the status is not committed until the first chunk arrives**: a
 refusal is still a 400 or a 502 with an envelope. A rate that changes mid-answer is a failure naming
