@@ -3,15 +3,17 @@
 Unposted. Iliya posts by hand (no connector).
 
 **Post link:** https://blog.devart.solutions/blog/inferhub-3-37-speech-that-starts-before-it-is-finished
-(slug `inferhub-3-37-speech-that-starts-before-it-is-finished`, EN-visible / BG-hidden.)
+(slug `inferhub-3-37-speech-that-starts-before-it-is-finished`, ID `6a90d7afbaed2882b3172522`,
+EN-visible / BG-hidden.)
 
-## X — the product angle (238 chars; the link counts as 23)
+## X — the product angle (250 chars; the link counts as 23)
 
 > A paragraph is two minutes of audio. InferHub used to be silent for all of it, then hand you a
 > file.
 >
-> v3.37: OpenAI's stream_format on /v1/audio/speech. First sentence plays while the rest is still
-> being made.
+> v3.37: OpenAI's stream_format on /v1/audio/speech.
+>
+> First byte at 0.205s instead of 1.228s. Same total. You just stop waiting for it.
 >
 > [link]
 
@@ -25,14 +27,14 @@ Unposted. Iliya posts by hand (no connector).
 >
 > Here is what we did about it: [link]
 
-## X — the honest-notes angle (231 chars)
+## X — the honest-notes angle (254 chars), the most distinctive of the three
 
-> Shipped streaming text-to-speech today.
+> Shipped streaming TTS, then pulled the image before writing the post.
 >
-> Nobody has listened to it yet. Every test drives a fixture; no real voice has streamed.
+> It deleted a sentence we'd put in three documents: ffprobe does NOT choke on a streaming wav
+> header. It reports the right duration.
 >
-> That sentence is in the release notes, the docs and the blog post, because a feature list that
-> hides it starts lying.
+> Fixed everywhere. A published post can't be.
 >
 > [link]
 
@@ -93,9 +95,22 @@ Unposted. Iliya posts by hand (no connector).
 > longer exists, and a warm worker hands them to the next caller as their answer. Found in under a
 > minute, because the test asks a second question.
 >
-> **What has not been established, said plainly:** no real Piper voice has streamed and nobody has
-> listened to one. Every test drives the echo fixture. Time to first audio has not been measured.
-> That is the first thing to run on the published image.
+> Then we pulled the published image and ran a real voice through it. One 311-character paragraph:
+> **first byte at 0.205s streamed against 1.228s buffered**, same total — six times sooner to
+> something you can hear. Five SSE frames of exactly 16 384 bytes, and a done event with three
+> zeros in it.
+>
+> It also deleted one of our own sentences. Three of this release's documents claimed ffprobe would
+> report a nonsense duration on a streaming wav header. It does not — a saved file has a byte count
+> and ffmpeg prefers it. Corrected in all four places, and it could only be corrected because the
+> image was pulled *before* the post went out.
+>
+> One more thing worth knowing if you ever diff audio between releases: three syntheses of one
+> identical sentence came back 289 836 / 286 252 / 284 204 bytes. Piper's sampling is not
+> deterministic.
+>
+> **Still not established, said plainly:** nobody has actually listened to it, and every number
+> above is a standalone node rather than a fleet.
 >
 > Zero new dependencies, twelfth release running. No new configuration key.
 >
@@ -103,9 +118,9 @@ Unposted. Iliya posts by hand (no connector).
 
 ## Notes
 
-- **No image.** The honest visual for a streaming release is a waveform arriving, and there is no
-  screenshot of one — nothing has been listened to yet, which the copy says out loud. A spectrogram
-  taken from the echo fixture's 440 Hz tone would be a picture of a test, presented as a feature.
+- **No image.** The honest visual for a streaming release is a waveform arriving. A spectrogram of
+  the real amy voice would now be fair — the audio exists — but nothing has been *listened* to, and
+  a picture of a waveform is a claim about sound.
 - The three X variants are alternatives, not a thread. The honest-notes one is the most distinctive
   and the least flattering; it is here because it is the one this project would actually stand
   behind.
