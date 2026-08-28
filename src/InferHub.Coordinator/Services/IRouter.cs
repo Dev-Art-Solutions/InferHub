@@ -12,10 +12,16 @@ public interface IRouter
     /// the phase-40 D4 shape (503 + Retry-After) rather than falling back to the buffered path,
     /// which would work brilliantly right up to the 25 MB it cannot do.
     /// </param>
+    /// <param name="requireStreamedSpeech">
+    /// Phase 70, D7. Same shape one route over: a node that would answer a streaming synthesis
+    /// with a file is not a candidate for one, and a fleet of them answers with the 503 that names
+    /// the version rather than with a sentence about attachments.
+    /// </param>
     RoutableNode? Route(
         string model,
         string? conversationKey = null,
         string? excludeConnectionId = null,
         string? capability = null,
-        bool requireStreamedAttachments = false);
+        bool requireStreamedAttachments = false,
+        bool requireStreamedSpeech = false);
 }

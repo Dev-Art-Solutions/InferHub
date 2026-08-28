@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Threading.Channels;
 using InferHub.Coordinator.Auth;
 using InferHub.Coordinator.Endpoints;
 using InferHub.Coordinator.Observability;
@@ -382,6 +383,16 @@ public static class AudioEndpoints
 
         using var lease = admission.Lease;
 
+        // The lease is held for the whole stream because the stream is written inside this call
+        // rather than by an IResult executed after it returns — a synthesis that is still arriving
+        // is still in flight, and admission that stopped counting it at dispatch would let a client
+        // hold ten of them against a limit of one.
+        if (request.IsStreaming)
+        {
+            return await StreamSpeechAsync(
+                httpContext, router, registry, tools, metrics, logger, context, request, cancellationToken);
+        }
+
         var node = router.Route(request.Model, capability: CapabilityKinds.Speak);
 
         if (node is null)
@@ -406,6 +417,224 @@ public static class AudioEndpoints
         Meter(context, metrics, outcome, CapabilityKinds.Speak, request.Model);
 
         return Render(httpContext, outcome);
+    }
+
+    /// <summary>
+    /// The same synthesis, written as it is made (phase 70). Everything a caller can observe about
+    /// the bytes is decided by <see cref="SpeechStreamEncoder"/>, which the solo node uses too;
+    /// what is here is a route, a dispatch and a flush.
+    /// </summary>
+    /// <remarks>
+    /// <b>The status is not committed until the first chunk arrives</b> (D4/D5). A refusal — no
+    /// such voice, a worker with no model — is still a 400 or a 502 with an error envelope, because
+    /// nothing has gone out yet. Past the first byte there is no status left, and what an honest
+    /// ending looks like depends on the shape the caller asked for.
+    /// </remarks>
+    private static async Task<IResult> StreamSpeechAsync(
+        HttpContext httpContext,
+        Services.IRouter router,
+        INodeRegistry registry,
+        IToolDispatcher tools,
+        Metrics metrics,
+        ILogger logger,
+        InferenceCore.ClientContext context,
+        SpeechRequest request,
+        CancellationToken cancellationToken)
+    {
+        var node = router.Route(
+            request.Model,
+            capability: CapabilityKinds.Speak,
+            requireStreamedSpeech: true);
+
+        if (node is null)
+        {
+            return NoStreamingSpeechNode(httpContext, registry, request.Model);
+        }
+
+        var job = new ToolJob(Guid.NewGuid(), CapabilityKinds.Speak, request.Model, request.ToToolPayload());
+
+        ChannelReader<ToolChunk> chunks;
+
+        try
+        {
+            chunks = await tools.DispatchToolStreamAsync(node, job, cancellationToken);
+        }
+        catch (NodeDisconnectedException)
+        {
+            return Error(
+                502,
+                "the node handling this request disconnected before it answered",
+                OpenAiErrorTypes.ApiError,
+                code: "node_lost");
+        }
+
+        var encoder = new SpeechStreamEncoder(request);
+        var response = httpContext.Response;
+        var written = 0L;
+
+        async Task EmitAsync(byte[] bytes)
+        {
+            if (!response.HasStarted)
+            {
+                response.ContentType = encoder.ContentType;
+                response.Headers.CacheControl = "no-cache, no-store";
+                response.Headers["X-Accel-Buffering"] = "no";
+                response.Headers[InferenceCore.ServedByHeader] = "node";
+                response.Headers[SpeechStream.SampleRateHeader] = encoder.SampleRate?.ToString();
+                response.Headers[SpeechStream.CharactersHeader] = request.Characters.ToString();
+                httpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpResponseBodyFeature>()?.DisableBuffering();
+            }
+
+            await response.Body.WriteAsync(bytes, cancellationToken);
+            await response.Body.FlushAsync(cancellationToken);
+            written += bytes.Length;
+        }
+
+        try
+        {
+            await foreach (var chunk in chunks.ReadAllAsync(cancellationToken))
+            {
+                if (chunk.Done)
+                {
+                    if (SpeechStream.TryReadFailure(chunk.Payload) is { } failure)
+                    {
+                        return await FailStreamAsync(encoder, EmitAsync, logger, job.JobId, failure);
+                    }
+
+                    break;
+                }
+
+                var parsed = SpeechStream.TryParseChunk(chunk.Payload, out var chunkError);
+
+                if (chunkError is not null)
+                {
+                    return await FailStreamAsync(encoder, EmitAsync, logger, job.JobId, chunkError);
+                }
+
+                if (parsed is null)
+                {
+                    // A progress frame, or a worker's own bookkeeping. Not audio, not a failure.
+                    continue;
+                }
+
+                var encoded = encoder.Encode(parsed, out var encodeError);
+
+                if (encodeError is not null)
+                {
+                    return await FailStreamAsync(encoder, EmitAsync, logger, job.JobId, encodeError);
+                }
+
+                await EmitAsync(encoded!);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // D8: the caller walked away. Nothing is metered, and the line says which it was so
+            // that "the stream stopped" is not filed as a fault of the fleet.
+            logger.LogInformation(
+                "Streamed speech {JobId} ({Model}) was abandoned by the client after {Bytes} bytes",
+                job.JobId,
+                request.Model,
+                written);
+
+            return Results.Empty;
+        }
+
+        if (!encoder.Started)
+        {
+            // The stream ended with no audio in it. That can still be a 502, because nothing has
+            // been written — the worker answered, it just answered with nothing, which is phase
+            // 42's "returned no audio" one shape over.
+            return Error(502, "the speech worker returned no audio", OpenAiErrorTypes.ApiError);
+        }
+
+        if (encoder.Complete() is { } ending)
+        {
+            await EmitAsync(ending);
+        }
+
+        // The character count, never the characters.
+        logger.LogInformation(
+            "Streamed speech {JobId} ({Model}) on node {NodeId}: {Bytes} bytes, {Characters} characters, {Rate} Hz",
+            job.JobId,
+            request.Model,
+            node.NodeId,
+            written,
+            request.Characters,
+            encoder.SampleRate);
+
+        // D8: the terminal frame is what bills, so an abandoned stream costs the caller nothing and
+        // the fleet the work — stated rather than mitigated.
+        Meter(
+            context,
+            metrics,
+            new AudioOutcome
+            {
+                Status = 200,
+                Units = request.Characters,
+                UnitKind = UsageUnitKinds.Characters
+            },
+            CapabilityKinds.Speak,
+            request.Model);
+
+        return Results.Empty;
+    }
+
+    /// <summary>
+    /// A failure, rendered as whatever is still possible: a real status while nothing has gone out,
+    /// a terminal event once something has, and a bare close where the shape has no room for a
+    /// sentence (D5).
+    /// </summary>
+    private static async Task<IResult> FailStreamAsync(
+        SpeechStreamEncoder encoder,
+        Func<byte[], Task> emit,
+        ILogger logger,
+        Guid jobId,
+        string message)
+    {
+        var readable = NodeErrorText.Readable(message);
+
+        if (!encoder.Started)
+        {
+            return Error(502, readable, OpenAiErrorTypes.ApiError);
+        }
+
+        logger.LogWarning("Streamed speech {JobId} failed after audio had been sent: {Error}", jobId, readable);
+
+        if (encoder.Fail(readable, OpenAiErrorTypes.ApiError, code: null) is { } frame)
+        {
+            try
+            {
+                await emit(frame);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        return Results.Empty;
+    }
+
+    /// <summary>
+    /// <see cref="NoStreamingNode"/>'s sibling for a streamed answer (D7). A fleet that synthesises
+    /// perfectly well and has nothing new enough to stream is fleet state, and saying "no node
+    /// provides speak" would send an operator looking at their voices.
+    /// </summary>
+    private static IResult NoStreamingSpeechNode(HttpContext httpContext, INodeRegistry registry, string model)
+    {
+        if (registry.FindNodesWithModel(model, CapabilityKinds.Speak).Count > 0)
+        {
+            httpContext.Response.Headers.RetryAfter = ToolEndpoints.CapabilityRetryAfterSeconds.ToString();
+
+            return Error(
+                503,
+                $"no node currently serving 'speak' for model '{model}' can stream it; " +
+                "streaming speech needs a node running v3.37 or later. Drop stream_format to get the whole file at once.",
+                OpenAiErrorTypes.ApiError,
+                code: "capability_unavailable");
+        }
+
+        return NoNode(httpContext, registry, CapabilityKinds.Speak, model);
     }
 
     /// <summary>A failed job is not billed; a succeeded one is billed in its own unit (D7).</summary>

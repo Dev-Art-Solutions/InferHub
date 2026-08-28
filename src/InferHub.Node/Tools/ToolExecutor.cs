@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using InferHub.Node.Configuration;
 using InferHub.Shared.Contracts;
@@ -333,8 +334,43 @@ public sealed class ToolExecutor(
                     switch (frame!.Type)
                     {
                         case ToolFrameTypes.Chunk:
-                            yield return new ToolChunk(job.JobId, frame.PayloadJson() ?? "{}", false);
+                        {
+                            var payload = frame.PayloadJson() ?? "{}";
+                            var size = Encoding.UTF8.GetByteCount(payload);
+
+                            // Phase 70 D2. The last place that can still answer instead of
+                            // disconnecting: past here the payload is a SignalR message, and a
+                            // message over the receive limit takes the whole connection down
+                            // rather than failing by itself.
+                            //
+                            // The worker IS retired, which is the opposite of what cancel does
+                            // (47 D3) and for a reason cancel does not have: this stream is
+                            // abandoned without the worker being told, so its remaining frames are
+                            // still queued on a pipe addressed to a request that no longer exists.
+                            // A warm worker would hand them to the next caller — somebody else's
+                            // audio, in their answer. A weight load is the cheaper mistake.
+                            if (size > ToolProtocol.MaxChunkPayloadBytes)
+                            {
+                                lease!.MarkUnhealthy();
+
+                                logger.LogWarning(
+                                    "Streaming tool job {JobId} on '{ToolId}' sent a {Size}-byte chunk, over the {Limit}-byte limit",
+                                    job.JobId,
+                                    lease.ToolId,
+                                    size,
+                                    ToolProtocol.MaxChunkPayloadBytes);
+
+                                yield return Terminal(
+                                    job.JobId,
+                                    $"tool '{lease.ToolId}' sent a {size}-byte streaming chunk and the limit is " +
+                                    $"{ToolProtocol.MaxChunkPayloadBytes} bytes; a worker that has more to say sends more chunks");
+
+                                yield break;
+                            }
+
+                            yield return new ToolChunk(job.JobId, payload, false);
                             continue;
+                        }
 
                         // Not a partial answer, so it carries its own shape rather than the
                         // worker's payload — and it must be named here, because the default branch

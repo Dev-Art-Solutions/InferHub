@@ -36,7 +36,8 @@ public sealed class NodeRegistry : INodeRegistry
                 false,
                 normalized.Capabilities,
                 Array.Empty<NodeCapability>(),
-                StreamedAttachments: normalized.SupportsStreamedAttachments)),
+                StreamedAttachments: normalized.SupportsStreamedAttachments,
+                StreamedSpeech: normalized.SupportsStreamedSpeech)),
             (_, existing) => Resolved(existing with
             {
                 Registration = normalized,
@@ -45,7 +46,8 @@ public sealed class NodeRegistry : INodeRegistry
                 // declares on the model report (see NodeRegistration.Capabilities), and a
                 // reconnect re-registers before it re-reports.
                 DeclaredCapabilities = normalized.Capabilities ?? existing.DeclaredCapabilities,
-                StreamedAttachments = normalized.SupportsStreamedAttachments ?? existing.StreamedAttachments
+                StreamedAttachments = normalized.SupportsStreamedAttachments ?? existing.StreamedAttachments,
+                StreamedSpeech = normalized.SupportsStreamedSpeech ?? existing.StreamedSpeech
             }));
 
         localInFlight.GetOrAdd(connectionId, _ => new StrongBox<int>(0));
@@ -117,7 +119,8 @@ public sealed class NodeRegistry : INodeRegistry
             DeclaredCapabilities = holdStaleInventory
                 ? existing.DeclaredCapabilities
                 : models.Capabilities ?? existing.DeclaredCapabilities,
-            StreamedAttachments = models.SupportsStreamedAttachments ?? existing.StreamedAttachments
+            StreamedAttachments = models.SupportsStreamedAttachments ?? existing.StreamedAttachments,
+            StreamedSpeech = models.SupportsStreamedSpeech ?? existing.StreamedSpeech
         });
 
         RaiseChanged();
@@ -286,7 +289,8 @@ public sealed class NodeRegistry : INodeRegistry
         string model,
         string? capability = null,
         bool requireStreamedAttachments = false,
-        bool includeUnserviceable = false)
+        bool includeUnserviceable = false,
+        bool requireStreamedSpeech = false)
     {
         if (string.IsNullOrWhiteSpace(model))
         {
@@ -300,6 +304,9 @@ public sealed class NodeRegistry : INodeRegistry
                 // caller asking about possession — placement, discovery, a diagnosis — opts back in.
                 && (includeUnserviceable || pair.Value.Backend is null or BackendHealth.Healthy)
                 && (!requireStreamedAttachments || pair.Value.StreamedAttachments is true)
+                // Phase 70 D7. A pre-v3.37 node still serves buffered speech to the whole fleet;
+                // it is only a streaming request that cannot see it.
+                && (!requireStreamedSpeech || pair.Value.StreamedSpeech is true)
                 && (capability is null
                     ? pair.Value.Models.Any(candidate => ModelNamesMatch(candidate.Name, model))
                     : NodeCapabilityResolver.Provides(pair.Value.Capabilities, capability, model)))
@@ -470,5 +477,8 @@ public sealed class NodeRegistry : INodeRegistry
         /// — an older node, one that watches nothing, or a vendor-typed one — and is never read as
         /// unhealthy, because an upgrade that emptied a fleet of pre-v3.36 nodes would be the one
         /// unforgivable way to ship this.
-        BackendHealth? Backend = null);
+        BackendHealth? Backend = null,
+        /// Whether the node speaks the streamed-speech contract (phase 70). Same null-is-not-a-
+        /// declaration shape as the field above it, for the same reason.
+        bool? StreamedSpeech = null);
 }

@@ -102,7 +102,7 @@ public class EmbeddingDispatcherTests
     {
         public string? LastModelRouted { get; private set; }
 
-        public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null, string? capability = null, bool requireStreamedAttachments = false)
+        public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null, string? capability = null, bool requireStreamedAttachments = false, bool requireStreamedSpeech = false)
         {
             LastModelRouted = model;
             return route(model);

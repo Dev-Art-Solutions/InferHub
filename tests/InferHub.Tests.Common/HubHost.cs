@@ -306,7 +306,8 @@ internal sealed class HubHost : IAsyncDisposable
             string? conversationKey = null,
             string? excludeConnectionId = null,
             string? capability = null,
-            bool requireStreamedAttachments = false)
+            bool requireStreamedAttachments = false,
+            bool requireStreamedSpeech = false)
             => new("conn-1", "node-1", "parity-node");
     }
 

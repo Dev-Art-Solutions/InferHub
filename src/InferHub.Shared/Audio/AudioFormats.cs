@@ -91,4 +91,23 @@ public static class SpeechFormats
 
     public static string Refusal(string? got) =>
         $"response_format '{got}' is not supported. Use one of: {string.Join(", ", All)}.";
+
+    /// <summary>
+    /// The formats that can be streamed (phase 70, D3). Concatenability is the whole contract:
+    /// <c>pcm</c> is samples end to end, and <c>wav</c> is <c>pcm</c> with one header that the
+    /// first frame carries.
+    /// </summary>
+    public static readonly IReadOnlyList<string> Streamable = [Wav, Pcm];
+
+    public static bool CanStream(string format) => format is Wav or Pcm;
+
+    /// <summary>
+    /// <b>Refused, never quietly buffered.</b> A caller who asked to stream and silently got a
+    /// three-minute wait has a bug with nothing in the response to explain it — 42 D1's "refused,
+    /// never substituted", one level up. The formats left out need an encoder alive for the length
+    /// of the request, and a chunk boundary is not a codec frame boundary.
+    /// </summary>
+    public static string StreamRefusal(string format) =>
+        $"response_format '{format}' cannot be streamed. Use one of: {string.Join(", ", Streamable)}, " +
+        "or drop stream_format to get the whole file at once.";
 }

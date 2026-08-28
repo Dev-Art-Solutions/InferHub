@@ -498,3 +498,29 @@ megabytes**. The clock is the worker's gate, one process down.
 24 000 MiB against a 24 GB card's 22 528 of headroom, so such a node never declares it. It has
 existed since 48 and never fired, so `RecipeCatalogueTests` names the exception rather than
 asserting everything fits.
+
+### Phase 70 (streamed speech) — the node-side half, and the one that could take a connection down
+
+The wire format, the encoder and D1/D3–D6 are in `src/InferHub.Shared/CLAUDE.md`. What is this
+directory's is **D2**, and it is the load-bearing one.
+
+`ToolProtocol.MaxChunkPayloadBytes` is 30 KiB and `ToolExecutor.StreamAsync` enforces it on every
+`chunk` frame it forwards, modality-blind. **The failure it prevents is not a failed request.**
+SignalR's default `MaximumReceiveMessageSize` is 32 KB and exceeding it kills the *connection*, not
+the message — which is how phase 42 found that a 300 KB wav dropped the node and made it re-register
+(see `NodeHubLimits`). A blocking answer crosses the wire once; a streaming one crosses it fifty
+times, so the same mistake is fifty times likelier to be made by somebody's worker. The number is
+deliberately under SignalR's own default rather than derived from `Tools:MaxAttachmentBytes`: the
+node cannot see the hub's configuration, and a limit that is only correct on a generously configured
+hub is a limit that fails where it matters.
+
+**The worker is retired when it happens**, which is the opposite of what cancel does (47 D3) and for
+a reason cancel does not have: the stream is abandoned *without the worker being told*, so its
+remaining frames sit on the pipe against a request that no longer exists — and a warm worker would
+hand them to the next caller, as their answer. A weight load is the cheaper mistake.
+`AnOversizedChunkFailsTheJobAndTheConnectionSurvivesIt` asserts both halves, and the second half is
+the point: it asks the same mesh for something else afterwards, which is the only way to tell a
+failed job from a killed connection.
+
+**Nothing here parses audio.** A speech chunk is a payload string the node measures and forwards;
+what is in it is `SpeechStream`'s business at the edge — 55's deviation, unchanged.

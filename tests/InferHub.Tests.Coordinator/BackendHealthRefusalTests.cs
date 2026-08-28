@@ -119,7 +119,7 @@ public class BackendHealthRefusalTests
     /// <summary>Every case here is one where routing already came back empty.</summary>
     private sealed class NoRouteRouter : IRouter
     {
-        public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null, string? capability = null, bool requireStreamedAttachments = false)
+        public RoutableNode? Route(string model, string? conversationKey = null, string? excludeConnectionId = null, string? capability = null, bool requireStreamedAttachments = false, bool requireStreamedSpeech = false)
             => null;
     }
 

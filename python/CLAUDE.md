@@ -493,3 +493,27 @@ manifest was never told: the worker declared `video: wan-t2v-1.3b`, the node dis
 clip could be generated through any published image**. `BundledNodeTests` now keys on the shipped
 recipes' `media` rather than on a list in the test, so a fourth modality fails on the day its first
 recipe lands.
+
+### Phase 70 (piper streams) — one chunk per sentence, split so it fits
+
+`PiperVoice.synthesize()` yields **one `AudioChunk` per sentence** and `synthesize_wav` is nothing
+more than that loop writing into a `wave` file — so the streaming path is the same synthesis with a
+different sink, not a second engine. Read out of the library rather than the docs, which is the
+phase-57 habit.
+
+Two things are deliberate and both are about somebody else's constraints:
+
+- **The samples go out headerless whatever the caller asked for.** The 44-byte wav header is the
+  edge's, written once from the rate on the first chunk (70 D4), because only the edge knows whether
+  `wav` or `pcm` was asked for and only the first chunk knows the rate. A worker that wrote its own
+  header would produce one per chunk.
+- **The split is `_CHUNK_BYTES` (16 KiB of PCM), not the sentence.** "One sentence" is not a size: a
+  caller may send four hundred words with no full stop in them, and a frame over the node's
+  `ToolProtocol.MaxChunkPayloadBytes` fails the job (70 D2). 16 KiB is ~21.8 KB once base64 and the
+  envelope are on it — under SignalR's own 32 KB default — and ~0.37 s of audio at 22.05 kHz, which
+  is the latency granularity a caller actually feels.
+
+Every frame carries `sampleRate`, `sampleWidth` and `channels`, not only the first, so the edge can
+refuse a worker that changes its mind halfway instead of concatenating two rates. A format that
+cannot be streamed is refused here as well as at the edge — `/api/tools/speak` forwards a payload
+verbatim, and a worker that only works when somebody else validated for it has a hole in it.

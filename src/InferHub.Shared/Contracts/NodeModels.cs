@@ -12,4 +12,7 @@ public sealed record NodeModels(
     /// Re-declared on the model report as well as at registration (phase 53, D5), for the reason
     /// capabilities are: it follows from configuration the node can be given without reconnecting,
     /// and a hub that learned it once would keep believing it after it stopped being true.
-    bool? SupportsStreamedAttachments = null);
+    bool? SupportsStreamedAttachments = null,
+    /// Re-declared here too (phase 70, D7), for the reason above: a hub that learned it once at
+    /// registration would keep believing it across a downgrade that never reconnected.
+    bool? SupportsStreamedSpeech = null);

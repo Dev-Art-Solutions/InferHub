@@ -983,3 +983,52 @@ was a fact about Anthropic rather than a policy here. **Not translated, delibera
 `responseSchema`, thought summaries (`includeThoughts` is never sent — a thought part arriving is
 skipped anyway), caching and the file APIs. **No live provider was called by any test** — every
 payload in `GeminiDialectTests` is recorded (track D6); the first real key is phase 68's.
+
+### Phase 70 (a synthesis you can hear before it is finished) — load-bearing; the node's half is 70 D2 in `src/InferHub.Node/Tools/CLAUDE.md`
+
+`Audio/SpeechStream.cs` is the whole wire format of a streamed `/v1/audio/speech`, and it is here
+rather than in either host for `AudioRenderer`'s reason: a caller who moves from a hub to a solo node
+must not be able to tell. `SpeechStreamEncoder` is the state a stream carries between chunks — pure,
+no ASP.NET (rule 2) — because a streamed answer has more than ten lines of *decision* in it and
+37 D6's line was drawn at ten lines of *writing*.
+
+**D1 — the surface is `stream_format`, OpenAI's own field, with both its values.** Read from the
+published OpenAPI spec on the day: `speech.audio.delta` is `{type, audio}` with `audio` base64 and
+both fields required; `speech.audio.done` is `{type, usage}` with all three token counts required.
+**An absent `stream_format` is not a third value** — it is phase 42's buffered response, byte for
+byte, and `ARequestWithoutStreamFormatIsNotAStreamingRequest` holds the payload to that.
+*Worth knowing:* **OpenAI's own Python SDK models neither event** (`types/audio/` has
+`transcription_text_delta_event.py` and no speech equivalent), so `sse` is documented-but-unmodelled
+and `audio` is the shape an SDK actually consumes. **Rejected: a `stream: true` boolean** — there
+are two answers here and one boolean cannot name them.
+
+**D3 — only `pcm` and `wav` stream.** Concatenability is the contract. `mp3`/`opus`/`flac` need an
+encoder alive for the length of the request and a chunk boundary that is not a codec frame boundary;
+asking to stream one is a **400 naming the two that do**, refused at the edge before anything is
+dispatched. **Rejected: quietly falling back to the buffered response** — 42 D1's "refused, never
+substituted", one level up.
+
+**D4 — the wav header is written once, from the first chunk, with `0xFFFFFFFF` in both length
+fields.** Piper knows its sample rate only from its own first samples (`synthesize_wav` sets the
+format off chunk one, and `piper_worker`'s docstring records why a hand-set rate is refused: it plays
+at the wrong pitch and passes every byte-count assertion). So the header is 44 bytes built from the
+audio's own measurement, and the declared length is the streaming sentinel — a player accepts it,
+`ffprobe` reports a nonsense duration, and the docs say so rather than leaving it to be found. The
+measured rate also goes out as `X-InferHub-Audio-Sample-Rate`, which is the **only** way a `pcm`
+caller can know it, and that is why **the status is not committed until the first chunk arrives**: a
+refusal is still a 400 or a 502 with an envelope. A rate that changes mid-answer is a failure naming
+both numbers, never a resample — two rates concatenated play as one file at the wrong speed for half
+its length.
+
+**D5 — past the first byte the only honest ending is a marked one.** For `audio` there is nowhere in
+a byte stream to put a sentence, so the response closes. For `sse` the stream ends with
+`speech.audio.error` carrying the ordinary OpenAI envelope. **That event is not in OpenAI's schema**,
+which defines only `delta` and `done` — it is an extension and the docs label it one.
+**Rejected: closing silently**, which is `OllamaNdjson.ErrorLine`'s argument verbatim.
+
+**D6 — `usage` on `speech.audio.done` is three zeros, and they are true.** The schema requires the
+object so it is written; Piper is a phoneme model and nothing was tokenized, so zero is the count
+rather than a placeholder. What is metered is unchanged from 42 D7 — input characters, counted at the
+edge — and it rides on `X-InferHub-Speech-Characters` and the ledger. **Rejected: putting the
+character count into `input_tokens`**: roughly a four-to-one error, landing on the invoice
+reconciliation 68 D1 exists to check. A number in the wrong unit is worse than a zero.

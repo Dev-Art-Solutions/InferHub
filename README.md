@@ -778,6 +778,47 @@ author never writes a subtitle timestamp. **A format that cannot be produced is 
 ones that can** — never a silent substitution, because a caller who asked for mp3 and got a wav has
 a corrupted file with a confident content type and finds out in a media player three days later.
 
+### Speech that starts before it is finished (v3.37+)
+
+A paragraph is a couple of minutes of audio, and until v3.37 the socket was silent for all of it.
+Add OpenAI's `stream_format` and the samples arrive as they are made — one piece per sentence, split
+so each one fits the wire:
+
+```bash
+# raw bytes on a chunked body: the shape every SDK already consumes
+curl -N http://localhost:5080/v1/audio/speech \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"en_US-amy-medium","input":"One. Two. Three.","response_format":"wav","stream_format":"audio"}' \
+  --output out.wav
+
+# or framed as events
+  ... "stream_format":"sse"
+#   event: speech.audio.delta   {"type":"speech.audio.delta","audio":"<base64>"}
+#   event: speech.audio.done    {"type":"speech.audio.done","usage":{...}}
+```
+
+Six things are worth knowing:
+
+- **Leaving `stream_format` out changes nothing.** The response is byte for byte what v3.36 returned.
+- **`wav` and `pcm` stream; `mp3`, `opus` and `flac` do not**, and asking is a `400` naming the two
+  that do. The others need an encoder running for the length of the request and a chunk boundary
+  that is not a codec frame boundary — a naive split clicks every third of a second.
+- **A streamed `wav` has `0xFFFFFFFF` in both length fields.** The length is not knowable when the
+  header goes out. Players accept it; `ffprobe` will report a nonsense duration.
+- **The sample rate is on `X-InferHub-Audio-Sample-Rate`**, measured from the audio itself rather
+  than declared. For `pcm` it is the only place it can be.
+- **The `usage` in `speech.audio.done` is three zeros, and they are true** — Piper is a phoneme model
+  and nothing is tokenized. What is billed is unchanged: input characters, also on
+  `X-InferHub-Speech-Characters`. Putting a character count in a field named `tokens` would be a
+  four-to-one error on somebody's invoice.
+- **In a mesh, only nodes running v3.37+ take a streaming request.** Older ones keep serving every
+  buffered one; a fleet with none new enough answers `503` naming the version rather than pretending
+  it cannot synthesise at all.
+
+A solo node serves the identical bytes. `speech.audio.error` — a terminal event carrying the ordinary
+error envelope when a stream dies after the first byte — is **not** in OpenAI's schema; it is ours,
+because closing silently leaves a client unable to tell an ending from a failure.
+
 ### Models and voices
 
 **No weights are baked into the image.** Whisper fetches on first use into `/data/tools/hf`, on the

@@ -18,10 +18,21 @@ FORMATS. ``wav`` and ``pcm`` are native. ``mp3``, ``opus`` and ``flac`` need ``f
 without it this worker **refuses with ``unsupported_format`` naming what it can do** — the edge
 turns that into a 400. Returning a wav labelled ``audio/mpeg`` would be a corrupted file with a
 confident content type, found three days later in a media player.
+
+STREAMING (phase 70). With ``stream_format`` in the payload the answer arrives as ``chunk`` frames
+of base64 **raw PCM** instead of one file: ``PiperVoice.synthesize()`` yields one piece per
+sentence, and this splits those at ``_CHUNK_BYTES`` before sending. Two things are deliberate.
+**The samples go out headerless whatever the caller asked for** — the wav header is 44 bytes the
+edge writes once from the rate reported on the first chunk (D4), because only the edge knows
+whether the caller asked for ``wav`` or ``pcm`` and only the first chunk knows the rate. And
+**the split is ours rather than the sentence's**: a chunk that crosses the node's wire limit does
+not fail the message, it takes the node's connection down (D2), and "one sentence" is not a size —
+a caller may send four hundred words without a full stop in them.
 """
 
 from __future__ import annotations
 
+import base64
 import glob
 import os
 import shutil
@@ -43,6 +54,14 @@ TOOL_ID = "piper"
 
 NATIVE_FORMATS = ("wav", "pcm")
 ENCODED_FORMATS = ("mp3", "opus", "flac")
+STREAMABLE_FORMATS = ("wav", "pcm")
+
+# 16 KiB of PCM: ~0.37 s at 22.05 kHz 16-bit mono, and ~21.8 KB once base64 and the frame are on
+# it — under SignalR's own 32 KB default, so a hub whose operator never raised a limit is safe. The
+# node enforces its own ceiling (ToolProtocol.MaxChunkPayloadBytes) and would fail the job rather
+# than let an oversized frame kill its connection; this is the number that keeps that from
+# happening.
+_CHUNK_BYTES = 16 * 1024
 
 _loaded: dict[str, object] = {}
 
@@ -128,6 +147,58 @@ def encode(wav_path: str, target: str, fmt: str) -> None:
         raise ToolError(f"ffmpeg could not produce {fmt}: {result.stderr.strip()[:400]}")
 
 
+def stream(request: Request, voice, name: str, text: str, speed) -> dict:
+    """
+    Emit the answer as it is made, one ``chunk`` frame per ``_CHUNK_BYTES`` of PCM.
+
+    ``synthesize`` yields one ``AudioChunk`` per sentence and each one carries its own measured
+    rate, width and channel count — the same three numbers ``synthesize_wav`` reads off the first
+    chunk to set a wav's format. They ride on **every** frame rather than only the first, so the
+    edge can refuse a worker that changes its mind mid-answer instead of concatenating two rates
+    into a file that plays at the wrong speed for half its length.
+    """
+    from piper import SynthesisConfig
+
+    config = SynthesisConfig(length_scale=1.0 / speed) if speed else None
+    pending = b""
+    shape: tuple[int, int, int] | None = None
+    total = 0
+
+    def emit(samples: bytes) -> None:
+        nonlocal total
+        request.chunk(
+            {
+                "audio": base64.b64encode(samples).decode("ascii"),
+                "sampleRate": shape[0],
+                "sampleWidth": shape[1],
+                "channels": shape[2],
+            }
+        )
+        total += len(samples)
+
+    for piece in voice.synthesize(text, syn_config=config):
+        # Once per sentence is often enough: the grace is 20s and a sentence is under a second.
+        request.raise_if_cancelled()
+
+        shape = (piece.sample_rate, piece.sample_width, piece.sample_channels)
+        pending += piece.audio_int16_bytes
+
+        while len(pending) >= _CHUNK_BYTES:
+            emit(pending[:_CHUNK_BYTES])
+            pending = pending[_CHUNK_BYTES:]
+
+    if pending:
+        emit(pending)
+
+    if shape is None:
+        # Nothing came back at all. Said here rather than left as an empty stream, which the edge
+        # would have to guess about.
+        raise ToolError(f"voice '{name}' produced no audio for this input")
+
+    log(f"streamed {len(text)} characters with {name} as {total} bytes of pcm at {shape[0]} Hz")
+    return {"format": "pcm", "voice": name, "characters": len(text), "bytes": total, "stream": True}
+
+
 def speak(request: Request):
     payload = request.payload or {}
     text = payload.get("input") or ""
@@ -145,8 +216,22 @@ def speak(request: Request):
             ERROR_UNSUPPORTED_FORMAT,
         )
 
+    streaming = payload.get("stream_format")
+
+    if streaming and fmt not in STREAMABLE_FORMATS:
+        # The edge refuses this too and gets there first on /v1/audio/speech. It is repeated here
+        # because /api/tools/speak forwards a payload verbatim, and a worker that only works when
+        # somebody else validated for it is a worker with a hole in it.
+        raise ToolError(
+            f"'{fmt}' cannot be streamed. This worker streams: {', '.join(STREAMABLE_FORMATS)}",
+            ERROR_UNSUPPORTED_FORMAT,
+        )
+
     name = payload.get("voice") or request.model
     voice = load(name)
+
+    if streaming:
+        return stream(request, voice, name, text, payload.get("speed"))
 
     wav = request.output("speech.wav", "audio/wav")
     synthesise(voice, text, wav.path, payload.get("speed"))

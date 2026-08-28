@@ -15,13 +15,18 @@ public sealed class Router(
         string? conversationKey = null,
         string? excludeConnectionId = null,
         string? capability = null,
-        bool requireStreamedAttachments = false)
+        bool requireStreamedAttachments = false,
+        bool requireStreamedSpeech = false)
     {
         // Phase 40: the capability filter runs first and everything after it — least-busy,
         // throughput, sticky affinity, the cordon skip — is untouched. A node that cannot do this
         // kind of work is not a candidate to be balanced against. Phase 53 narrows the same way and
         // for the same reason: a node that cannot pull a stream cannot serve a streamed job.
-        var candidates = registry.FindNodesWithModel(model, capability, requireStreamedAttachments);
+        var candidates = registry.FindNodesWithModel(
+            model,
+            capability,
+            requireStreamedAttachments,
+            requireStreamedSpeech: requireStreamedSpeech);
 
         if (!string.IsNullOrEmpty(excludeConnectionId))
         {

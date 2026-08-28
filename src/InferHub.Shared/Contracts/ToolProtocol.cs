@@ -37,6 +37,28 @@ public static class ToolProtocol
     /// </summary>
     public const int Version = 1;
 
+    /// <summary>
+    /// How large the payload of one <see cref="ToolFrameTypes.Chunk"/> frame may be, in UTF-8
+    /// bytes, before the node refuses to put it on the wire (phase 70, D2).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This number exists because of what happens when it is exceeded.</b> SignalR's default
+    /// <c>MaximumReceiveMessageSize</c> is 32 KB and going over it does not fail the message — it
+    /// <em>kills the connection</em>, which is how phase 42 discovered that a 300 KB wav made every
+    /// speech request drop a node and re-register it (see <c>NodeHubLimits</c>). A blocking answer
+    /// crosses once; a streaming one crosses fifty times, so the same mistake is fifty times more
+    /// likely to be made by somebody's worker.
+    /// </para>
+    /// <para>
+    /// 30 KiB, deliberately under SignalR's own default rather than derived from
+    /// <c>Tools:MaxAttachmentBytes</c>: the node cannot see the hub's configuration, and a limit
+    /// that is only correct on a generously configured hub is a limit that fails where it matters.
+    /// A worker that needs to send more sends more frames — which is what a stream is.
+    /// </para>
+    /// </remarks>
+    public const int MaxChunkPayloadBytes = 30 * 1024;
+
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,

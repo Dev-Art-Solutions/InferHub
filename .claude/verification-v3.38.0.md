@@ -1,4 +1,9 @@
-# v3.37.0 — the provider verification day
+# v3.38.0 — the provider verification day
+
+> **Renamed from `verification-v3.37.0.md` on 2026-08-28.** Phase 68 has been parked awaiting vendor
+> keys since 2026-08-27 and `v3.37.0` went to phase 70 (streamed speech) rather than sit reserved for
+> a day nobody can run. A version number belongs to the release that ships; this is the second time
+> this file has been renumbered for that reason, and it will be renumbered again if 68 waits longer.
 
 **What this is.** Phase 68's whole deliverable (68 D1): the seven releases of the provider track
 (v3.29.0 → v3.35.0) each shipped with the same sentence in its notes — *no live provider was called*

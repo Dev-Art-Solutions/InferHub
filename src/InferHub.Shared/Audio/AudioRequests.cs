@@ -117,7 +117,11 @@ public sealed record SpeechRequest(
     string Input,
     string? Voice,
     string ResponseFormat,
-    double? Speed)
+    double? Speed,
+    /// OpenAI's own field (phase 70, D1). <b>Null is not a third value</b> — it is the buffered
+    /// response phase 42 shipped, and a request that omits it is answered byte for byte as it was
+    /// in v3.36.
+    string? StreamFormat = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
@@ -191,8 +195,36 @@ public sealed record SpeechRequest(
             }
         }
 
-        return new SpeechRequest(model!.Trim(), input!, String(root, "voice"), format, speed);
+        var streamFormat = String(root, "stream_format");
+
+        if (streamFormat is not null)
+        {
+            streamFormat = streamFormat.Trim().ToLowerInvariant();
+
+            if (!SpeechStreamFormats.IsKnown(streamFormat))
+            {
+                error = SpeechStreamFormats.Refusal(String(root, "stream_format"));
+                return null;
+            }
+
+            // D3, and it is refused here rather than at a node: whether a container can be cut in
+            // half is a fact about the container, and the edge already knows which one was asked
+            // for. A caller finds out before anything is dispatched, spent or synthesised.
+            if (!SpeechFormats.CanStream(format))
+            {
+                error = SpeechFormats.StreamRefusal(format);
+                return null;
+            }
+        }
+
+        return new SpeechRequest(model!.Trim(), input!, String(root, "voice"), format, speed, streamFormat);
     }
+
+    /// <summary>Whether the caller asked for the answer as it is made.</summary>
+    public bool IsStreaming => StreamFormat is not null;
+
+    /// <summary>Whether the framed form was asked for, rather than the raw bytes.</summary>
+    public bool IsSse => StreamFormat == SpeechStreamFormats.Sse;
 
     /// <summary>
     /// What is metered (D7): <b>input characters</b>, counted here rather than reported by the
@@ -208,7 +240,12 @@ public sealed record SpeechRequest(
             input = Input,
             voice = Voice,
             response_format = ResponseFormat,
-            speed = Speed
+            speed = Speed,
+
+            // What the worker changes because of it is only *when* it answers: the same samples in
+            // the same order, emitted per sentence instead of written to a file. A worker that
+            // ignores the field is still correct — it sends one chunk at the end (D7).
+            stream_format = StreamFormat
         },
         Json);
 

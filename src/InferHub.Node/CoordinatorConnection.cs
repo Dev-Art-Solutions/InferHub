@@ -409,7 +409,11 @@ public sealed class CoordinatorConnection(
             // This one *is* declared here, because unlike a capability it does not follow from
             // asking the backend what it holds — it is one key on this box (phase-53 D5), and a
             // hub needs the answer before the first job, not after the first model refresh.
-            SupportsStreamedAttachments: toolOptions.SupportsStreamedAttachments);
+            SupportsStreamedAttachments: toolOptions.SupportsStreamedAttachments,
+            // Constant, and that is the whole content of it (phase-70 D7): this build understands
+            // a streamed synthesis. There is no key to turn it off, because a node that answered
+            // one with a file would be telling the caller about attachments.
+            SupportsStreamedSpeech: true);
 
         await connection.InvokeAsync("Register", registration, cancellationToken);
         await RequestProfileAsync(cancellationToken);
@@ -986,7 +990,8 @@ public sealed class CoordinatorConnection(
             filtered,
             DateTimeOffset.UtcNow,
             capabilities,
-            toolOptions.SupportsStreamedAttachments);
+            toolOptions.SupportsStreamedAttachments,
+            SupportsStreamedSpeech: true);
         await activeConnection.InvokeAsync("ReportModels", report, cancellationToken);
 
         // The empty report is the point, not an accident: the coordinator replaces this node's

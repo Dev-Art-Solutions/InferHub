@@ -8,6 +8,8 @@ using System.Text.Json;
 //   inferhub-echo-worker [--no-ready] [--exit-on-start] [--slow-ready <ms>]
 //                        [--capabilities <kind>:<model>,<model>;<kind>:<model>]
 //                        [--audio-fail <code>] [--audio-no-segments]
+//                        [--speech-chunk-bytes <n>] [--speech-seconds <d>] [--speech-rate-shift]
+//                        [--speech-no-audio]
 //                        [--image-fail <code>] [--image-pad-bytes <n>]
 //                        [--image-projection equirectangular] [--image-seam wrap|break]
 //                        [--image-no-auto-trigger] [--image-repair-worse]
@@ -505,6 +507,63 @@ async Task HandleAudioAsync(string? id, string capability, JsonElement payload, 
         return;
     }
 
+    var characters = payload.TryGetProperty("input", out var text) ? (text.GetString() ?? string.Empty).Length : 0;
+
+    // ---- phase 70: the streamed answer ---------------------------------------------------------
+    //
+    // Raw PCM in `chunk` frames, headerless whatever the caller asked for, because the wav header
+    // is the edge's 44 bytes and it is written from the rate on the first frame (70 D4). The
+    // switches exist to produce the three failures a happy worker cannot: a frame over the wire
+    // limit, a rate that changes halfway, and a stream with nothing in it.
+    if (payload.ValueKind is JsonValueKind.Object
+        && payload.TryGetProperty("stream_format", out var streamFormat)
+        && streamFormat.ValueKind is JsonValueKind.String)
+    {
+        if (arguments.SpeechNoAudio)
+        {
+            Send(new { type = "result", id, payload = new { format = "pcm", characters, stream = true } });
+            return;
+        }
+
+        var pcm = Wav.Pcm(arguments.SpeechSeconds > 0 ? arguments.SpeechSeconds : 0.25);
+        var size = arguments.SpeechChunkBytes > 0 ? arguments.SpeechChunkBytes : 4096;
+        var rate = 16000;
+
+        for (var offset = 0; offset < pcm.Length; offset += size)
+        {
+            var slice = pcm[offset..Math.Min(offset + size, pcm.Length)];
+
+            Send(new
+            {
+                type = "chunk",
+                id,
+                payload = new
+                {
+                    audio = Convert.ToBase64String(slice),
+                    sampleRate = rate,
+                    sampleWidth = 2,
+                    channels = 1
+                }
+            });
+
+            if (arguments.SpeechRateShift)
+            {
+                // Only ever after the first, so the edge has already committed a header built on
+                // the rate this one contradicts — which is the case worth refusing.
+                rate = 24000;
+            }
+        }
+
+        Send(new
+        {
+            type = "result",
+            id,
+            payload = new { format = "pcm", characters, bytes = pcm.Length, stream = true }
+        });
+
+        return;
+    }
+
     var scratch = frame.TryGetProperty("scratch", out var s) ? s.GetString() : null;
 
     if (scratch is null)
@@ -521,7 +580,7 @@ async Task HandleAudioAsync(string? id, string capability, JsonElement payload, 
     {
         type = "result",
         id,
-        payload = new { format, characters = payload.TryGetProperty("input", out var i) ? (i.GetString() ?? "").Length : 0 },
+        payload = new { format, characters },
         files = new[]
         {
             new { name, mediaType = format == "wav" ? "audio/wav" : "audio/pcm", path }
@@ -1775,7 +1834,11 @@ internal sealed record Args(
     bool ImageRepairWorse = false,
     string? VideoFailCode = null,
     int VideoStepMs = 0,
-    int VideoPadBytes = 0)
+    int VideoPadBytes = 0,
+    int SpeechChunkBytes = 0,
+    double SpeechSeconds = 0,
+    bool SpeechRateShift = false,
+    bool SpeechNoAudio = false)
 {
     public static Args Parse(string[] args)
     {
@@ -1798,6 +1861,10 @@ internal sealed record Args(
         string? videoFailCode = null;
         var videoStepMs = 0;
         var videoPadBytes = 0;
+        var speechChunkBytes = 0;
+        var speechSeconds = 0d;
+        var speechRateShift = false;
+        var speechNoAudio = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -1860,6 +1927,18 @@ internal sealed record Args(
                 case "--video-pad-bytes" when i + 1 < args.Length:
                     videoPadBytes = int.Parse(args[++i]);
                     break;
+                case "--speech-chunk-bytes" when i + 1 < args.Length:
+                    speechChunkBytes = int.Parse(args[++i]);
+                    break;
+                case "--speech-seconds" when i + 1 < args.Length:
+                    speechSeconds = double.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture);
+                    break;
+                case "--speech-rate-shift":
+                    speechRateShift = true;
+                    break;
+                case "--speech-no-audio":
+                    speechNoAudio = true;
+                    break;
             }
         }
 
@@ -1882,7 +1961,11 @@ internal sealed record Args(
             imageRepairWorse,
             videoFailCode,
             videoStepMs,
-            videoPadBytes);
+            videoPadBytes,
+            speechChunkBytes,
+            speechSeconds,
+            speechRateShift,
+            speechNoAudio);
     }
 
     /// <summary>"transcribe:a,b;speak:c" → the capability list a ready frame carries.</summary>

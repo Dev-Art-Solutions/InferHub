@@ -220,11 +220,134 @@ internal static class LocalAudioEndpoints
             return NotProvided(httpContext, CapabilityKinds.Speak, request.Model);
         }
 
+        if (request.IsStreaming)
+        {
+            return await StreamSpeechAsync(httpContext, executor, request, cancellationToken);
+        }
+
         var job = new ToolJob(Guid.NewGuid(), CapabilityKinds.Speak, request.Model, request.ToToolPayload());
         var result = await executor.RunAsync(job, cancellationToken);
 
         httpContext.Response.Headers[LocalApiEndpoints.ServedByHeader] = LocalApiEndpoints.ServedBySolo;
         return Render(httpContext, AudioRenderer.Speech(result, request));
+    }
+
+    /// <summary>
+    /// The streamed synthesis, solo (phase 70). No hop and no router — the same
+    /// <see cref="SpeechStreamEncoder"/> decides every byte, which is what makes
+    /// <c>AudioStreamParityTests</c> able to drive both hosts with one set of assertions.
+    /// </summary>
+    /// <remarks>
+    /// There is no <c>SupportsStreamedSpeech</c> question to ask here (D7 is a fleet problem): this
+    /// process is the node and it is this version. A worker that does not chunk is still correct —
+    /// it produces one delta and a done, which is a stream with one piece in it.
+    /// </remarks>
+    private static async Task<IResult> StreamSpeechAsync(
+        HttpContext httpContext,
+        ToolExecutor executor,
+        SpeechRequest request,
+        CancellationToken cancellationToken)
+    {
+        var job = new ToolJob(Guid.NewGuid(), CapabilityKinds.Speak, request.Model, request.ToToolPayload());
+        var encoder = new SpeechStreamEncoder(request);
+        var response = httpContext.Response;
+
+        async Task EmitAsync(byte[] bytes)
+        {
+            if (!response.HasStarted)
+            {
+                response.ContentType = encoder.ContentType;
+                response.Headers.CacheControl = "no-cache, no-store";
+                response.Headers["X-Accel-Buffering"] = "no";
+                response.Headers[LocalApiEndpoints.ServedByHeader] = LocalApiEndpoints.ServedBySolo;
+                response.Headers[SpeechStream.SampleRateHeader] = encoder.SampleRate?.ToString();
+                response.Headers[SpeechStream.CharactersHeader] = request.Characters.ToString();
+                httpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpResponseBodyFeature>()?.DisableBuffering();
+            }
+
+            await response.Body.WriteAsync(bytes, cancellationToken);
+            await response.Body.FlushAsync(cancellationToken);
+        }
+
+        try
+        {
+            await foreach (var chunk in executor.StreamAsync(job, cancellationToken))
+            {
+                if (chunk.Done)
+                {
+                    if (SpeechStream.TryReadFailure(chunk.Payload) is { } failure)
+                    {
+                        return await FailStreamAsync(encoder, EmitAsync, failure);
+                    }
+
+                    break;
+                }
+
+                var parsed = SpeechStream.TryParseChunk(chunk.Payload, out var chunkError);
+
+                if (chunkError is not null)
+                {
+                    return await FailStreamAsync(encoder, EmitAsync, chunkError);
+                }
+
+                if (parsed is null)
+                {
+                    continue;
+                }
+
+                var encoded = encoder.Encode(parsed, out var encodeError);
+
+                if (encodeError is not null)
+                {
+                    return await FailStreamAsync(encoder, EmitAsync, encodeError);
+                }
+
+                await EmitAsync(encoded!);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return Results.Empty;
+        }
+
+        if (!encoder.Started)
+        {
+            return Error(502, "the speech worker returned no audio", OpenAiErrorTypes.ApiError);
+        }
+
+        if (encoder.Complete() is { } ending)
+        {
+            await EmitAsync(ending);
+        }
+
+        return Results.Empty;
+    }
+
+    /// <summary>The hub's <c>FailStreamAsync</c>, in the node's own file (37 D6). Same three cases.</summary>
+    private static async Task<IResult> FailStreamAsync(
+        SpeechStreamEncoder encoder,
+        Func<byte[], Task> emit,
+        string message)
+    {
+        var readable = NodeErrorText.Readable(message);
+
+        if (!encoder.Started)
+        {
+            return Error(502, readable, OpenAiErrorTypes.ApiError);
+        }
+
+        if (encoder.Fail(readable, OpenAiErrorTypes.ApiError, code: null) is { } frame)
+        {
+            try
+            {
+                await emit(frame);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        return Results.Empty;
     }
 
     /// <summary>

@@ -31,7 +31,16 @@ public sealed record NodeRegistration(
     /// `StreamAttachments` to call, so a hub that sent it a streamed job would fail every request
     /// with something unreadable. The router filters on this for streamed jobs only, so buffered
     /// traffic keeps routing to the whole fleet — phase-40 D1's mixed-fleet rule, again.
-    bool? SupportsStreamedAttachments = null);
+    bool? SupportsStreamedAttachments = null,
+    /// Whether this node speaks the streamed-speech contract (phase 70, D7). **Null means "no"**,
+    /// which is every node before v3.37: it would run the job, its worker would hand back a file,
+    /// and the caller would get "tool returned 1 file(s) for a streaming request" — a true
+    /// sentence about the wrong thing. Unlike <see cref="SupportsStreamedAttachments"/> this is
+    /// **constant true on a node that has it**, because there is nothing to configure; it says
+    /// "I speak this contract" and nothing else. Considered and rejected: comparing
+    /// <see cref="Version"/> — a version string is a fact about a build and this is a fact
+    /// about a capability, and the two stop agreeing the first time somebody backports.
+    bool? SupportsStreamedSpeech = null);
 
 /// <summary>
 /// One row of a node's on-disk vector replica inventory, reported at registration so the

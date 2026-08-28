@@ -1056,3 +1056,29 @@ cluster phase is the largest coherent subtree backend health has nothing to do w
 
 **Rule 5 survived again.** Phase 69 added **zero** new dependencies, and one plain enum moved into
 `InferHub.Shared`, which is still an empty `<Project Sdk="Microsoft.NET.Sdk">`.
+
+### Phase 70 (streamed speech) — the routing half; the wire format is 70 D1, D3–D6 in `src/InferHub.Shared/CLAUDE.md`
+
+**D7 — a node that cannot stream a synthesis is not sent one.** `SupportsStreamedSpeech` on the
+registration and the model report, `requireStreamedSpeech` on `FindNodesWithModel` and `Route`:
+53 D5's shape one declaration over, and 40 D1's mixed-fleet rule again — a pre-3.37 node keeps
+serving every buffered request and is simply not a candidate for a streaming one. Where every
+candidate is old the answer is a **503 naming the version**, not "no node provides speak", which
+would send an operator to look at their voices. Without it the caller gets
+`tool returned 1 file(s) for a streaming request`: true, and about the wrong thing.
+
+Unlike `SupportsStreamedAttachments` this flag is **constant `true` on a node that has it** — it says
+"I speak this contract" and there is nothing to configure. **Rejected: reading `Registration.Version`**
+(a version string is a fact about a build; this is a fact about a capability, and they part company
+the first time somebody backports). **Rejected: a `speak-stream` capability kind** — streaming is a
+property of the node's code, not the worker's, so a kind would be declared by the wrong party and
+`Node:Capabilities:Disabled` could subtract it from a caller who never asked about latency.
+
+*Cost, recorded:* `FindNodesWithModel` now takes four booleans and `Route` three. Eight test doubles
+had to grow a parameter for a narrowing seven of them do not care about. The next phase that needs a
+fifth should take the record instead.
+
+**D8 — an abandoned stream is not billed.** Metering is on the terminal frame, so a caller who aborts
+after 90% of the audio pays nothing and the fleet pays for the work. The alternative makes the number
+on a bill depend on when a socket died, and 42 D7 already settled that the unit is a property of the
+request. Stated, not mitigated.

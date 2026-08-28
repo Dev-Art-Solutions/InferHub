@@ -51,7 +51,11 @@ public interface INodeRegistry
         /// Phase 69 D2 — include a node whose backend is unhealthy. The default is the *serving*
         /// question; pass true to ask who <em>holds</em> the model (placement, discovery, or a
         /// refusal that has to tell them apart).
-        bool includeUnserviceable = false);
+        bool includeUnserviceable = false,
+        /// Phase 70, D7 — narrows to nodes that speak the streamed-speech contract. False for
+        /// every request that existed before v3.37, so a buffered synthesis keeps routing to the
+        /// whole fleet and only a streaming one can be starved of candidates.
+        bool requireStreamedSpeech = false);
 
     /// <summary>Fleet-wide capability roll-up (phase 40), for <c>/api/status</c> and <c>/v1/models</c>.</summary>
     IReadOnlyCollection<CapabilitySummary> CapabilitySummary();
