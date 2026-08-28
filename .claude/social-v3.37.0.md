@@ -66,8 +66,8 @@ EN-visible / BG-hidden.)
 >
 > • **The wav header is 44 bytes written once, with 0xFFFFFFFF in both length fields.** Piper knows
 > its own sample rate only from its own first samples, so the header is built from what the audio
-> measured. The declared length is the streaming sentinel — players accept it, ffprobe reports a
-> nonsense duration, and that is in the docs rather than left to be found.
+> measured. The declared length is the streaming sentinel: what it costs is that a consumer trusting
+> that field alone computes ~4 GB, while every consumer that matters falls back to the bytes it has.
 >
 > • **The usage object in `speech.audio.done` is three zeros, and they are true.** The schema
 > requires all three token counts, so all three are written. Piper is a phoneme model; nothing was
