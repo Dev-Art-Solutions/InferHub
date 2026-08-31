@@ -344,9 +344,15 @@ public class ContextContractTests
     private static bool IsLean(string path) =>
         File.ReadLines(path).Take(12).Any(line => line.Contains("`Format: lean`", StringComparison.Ordinal));
 
+    /// <remarks>
+    /// <c>DROPPED</c> is the third token because phase 68 became one, and a phase that is abandoned
+    /// stays in the record rather than being deleted from it (54 D4) — so its brief has to be able
+    /// to say so and its row has to be able to agree. A dropped phase shipped nothing, so it carries
+    /// no version and the version half of the comparison is simply absent for it.
+    /// </remarks>
     private static (string Token, string? Version)? Status(string brief)
     {
-        var match = Regex.Match(brief, @"Status:\s*(TODO|DONE)\b[^`\n]*?(v\d+\.\d+\.\d+)?");
+        var match = Regex.Match(brief, @"Status:\s*(TODO|DONE|DROPPED)\b[^`\n]*?(v\d+\.\d+\.\d+)?");
 
         return match.Success
             ? (match.Groups[1].Value, match.Groups[2].Success ? match.Groups[2].Value : null)

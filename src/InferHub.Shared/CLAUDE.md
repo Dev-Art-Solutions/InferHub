@@ -854,7 +854,7 @@ answer shaped like a right one, in the one place nobody notices for weeks.
 alternative was four signatures in two dialects, diverging the first time a fifth format arrives.
 **Not translated, deliberately:** tool calls, thinking blocks, `cache_control`, PDFs and citations
 (track-level deferrals). **No live provider was called by any test** — every payload in
-`AnthropicDialectTests` is a recorded one (track D6); the first real key is phase 68's.
+`AnthropicDialectTests` is a recorded one (track D6), and **no real key ever was**: 68 was dropped.
 
 ### Phase 64 (Gemini's own dialect) — the third `IUpstreamDialect`, and the day the native surface turned out to be the legacy one
 
@@ -982,7 +982,7 @@ D4 — Gemini's `generationConfig` has `seed`, `presencePenalty` and `frequencyP
 was a fact about Anthropic rather than a policy here. **Not translated, deliberately:** tools,
 `responseSchema`, thought summaries (`includeThoughts` is never sent — a thought part arriving is
 skipped anyway), caching and the file APIs. **No live provider was called by any test** — every
-payload in `GeminiDialectTests` is recorded (track D6); the first real key is phase 68's.
+payload in `GeminiDialectTests` is recorded (track D6), and **no real key ever was**: 68 was dropped.
 
 ### Phase 70 (a synthesis you can hear before it is finished) — load-bearing; the node's half is 70 D2 in `src/InferHub.Node/Tools/CLAUDE.md`
 
@@ -1033,4 +1033,5 @@ object so it is written; Piper is a phoneme model and nothing was tokenized, so 
 rather than a placeholder. What is metered is unchanged from 42 D7 — input characters, counted at the
 edge — and it rides on `X-InferHub-Speech-Characters` and the ledger. **Rejected: putting the
 character count into `input_tokens`**: roughly a four-to-one error, landing on the invoice
-reconciliation 68 D1 exists to check. A number in the wrong unit is worse than a zero.
+reconciliation 68 D1 existed to check — a day since dropped, so nobody checks it. A number in the
+wrong unit is worse than a zero.
