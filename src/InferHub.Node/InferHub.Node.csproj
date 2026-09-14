@@ -15,6 +15,18 @@
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.8" />
   </ItemGroup>
 
+  <!--
+    Phase 71: LocalApi:Retrieval:Provider=postgres. The one deliberate exception to this project's
+    "zero new dependencies" streak (phases 21, 22, 28-70) — call it out by name in the release notes.
+    Same versions as the coordinator's own references (see InferHub.Coordinator.csproj and
+    InferHub.Shared.Postgres.csproj); no connection is opened unless a corpus is actually started
+    with this provider (RetrievalHost.BuildAsync).
+  -->
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="9.0.5" />
+    <PackageReference Include="Pgvector" Version="0.3.2" />
+  </ItemGroup>
+
   <ItemGroup>
     <!--
       Solo mode (phase 37) hosts the coordinator's client-facing API on the node. This is a
@@ -30,6 +42,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\InferHub.Shared\InferHub.Shared.csproj" />
+    <!-- Phase 71: PostgresVectorStore, shared with the coordinator — see that project's csproj. -->
+    <ProjectReference Include="..\InferHub.Shared.Postgres\InferHub.Shared.Postgres.csproj" />
   </ItemGroup>
 
   <ItemGroup>

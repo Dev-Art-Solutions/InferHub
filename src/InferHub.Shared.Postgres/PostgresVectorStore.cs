@@ -1,14 +1,12 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
-using InferHub.Coordinator.Observability;
 using InferHub.Shared.Vector;
 using InferHub.Shared.Vector.Storage;
-using Microsoft.Extensions.Options;
 using Npgsql;
 using NpgsqlTypes;
 using PgVector = Pgvector.Vector;
 
-namespace InferHub.Coordinator.Vector.Postgres;
+namespace InferHub.Shared.Postgres;
 
 /// <summary>
 /// PostgreSQL + pgvector implementation of <see cref="IVectorStore"/>. Table-per-collection
@@ -20,6 +18,15 @@ namespace InferHub.Coordinator.Vector.Postgres;
 /// dead database. In this provider node replication / self-healing are off (Postgres owns
 /// durability), so this store publishes the two lifecycle events itself.
 /// </para>
+/// <para>
+/// <b>Phase 71 moved this class, unchanged in behaviour, from the coordinator into the new
+/// <c>InferHub.Shared.Postgres</c> project (not <c>InferHub.Shared</c> itself — see that project's
+/// csproj comment for why), so a node running <c>LocalApi:Retrieval:Provider=postgres</c> runs the
+/// same store rather than a second one.</b> The two host couplings became the same seams
+/// phase-38 D3 and phase-44 D2 already used: <see cref="IVectorLog"/> instead of <c>ILogger</c>, a
+/// plain <see cref="VectorStoreOptions"/> instead of <c>IOptions&lt;T&gt;</c>, and two plain events
+/// where the coordinator used to be handed its own <c>VectorEvents</c> bus.
+/// </para>
 /// </summary>
 public sealed class PostgresVectorStore : IVectorStore
 {
@@ -30,28 +37,30 @@ public sealed class PostgresVectorStore : IVectorStore
     private readonly DistanceMetric _defaultDistance;
     private readonly bool _indexIsHnsw;
     private readonly int _commandTimeout;
-    private readonly ILogger<PostgresVectorStore> _logger;
-    private readonly VectorEvents? _events;
+    private readonly IVectorLog _log;
     private readonly ConcurrentDictionary<string, CollectionMeta> _cache = new(StringComparer.Ordinal);
+
+    /// <summary>Raised after a collection is created here. The coordinator forwards it to its event bus.</summary>
+    public event Action<CollectionInfo>? CollectionCreated;
+
+    /// <summary>Raised after a collection is dropped here.</summary>
+    public event Action<string>? CollectionDropped;
 
     public PostgresVectorStore(
         NpgsqlDataSource dataSource,
-        IOptions<VectorStoreOptions> options,
-        ILogger<PostgresVectorStore> logger,
-        VectorEvents? events = null)
+        VectorStoreOptions options,
+        IVectorLog? log = null)
     {
         _dataSource = dataSource;
-        var opts = options.Value;
-        _pg = opts.Postgres;
-        if (!DistanceMetricExtensions.TryParse(opts.Distance, out _defaultDistance))
+        _pg = options.Postgres;
+        if (!DistanceMetricExtensions.TryParse(options.Distance, out _defaultDistance))
         {
-            throw new InvalidOperationException($"invalid VectorStore:Distance '{opts.Distance}'");
+            throw new InvalidOperationException($"invalid VectorStore:Distance '{options.Distance}'");
         }
 
         _indexIsHnsw = string.Equals(_pg.Index, "hnsw", StringComparison.OrdinalIgnoreCase);
         _commandTimeout = Math.Max(1, _pg.CommandTimeoutSeconds);
-        _logger = logger;
-        _events = events;
+        _log = log ?? NullVectorLog.Instance;
     }
 
     public async Task<CollectionInfo> CreateCollectionAsync(string name, int dimension, string? distance, CancellationToken cancellationToken = default)
@@ -86,7 +95,8 @@ public sealed class PostgresVectorStore : IVectorStore
                 }
                 else if (!string.Equals(_pg.Index, "none", StringComparison.OrdinalIgnoreCase))
                 {
-                    _logger.LogWarning(
+                    _log.Warn(
+                        null,
                         "Collection '{Collection}' has dimension {Dimension} > {Max}; pgvector cannot build an ANN index, falling back to exact scan.",
                         name, dimension, PostgresSchema.MaxAnnDimension);
                 }
@@ -104,12 +114,9 @@ public sealed class PostgresVectorStore : IVectorStore
         }
 
         _cache[name] = new CollectionMeta(dimension, metric, wire);
-        _events?.Publish("vector.collection.created", name, new Dictionary<string, object?>
-        {
-            ["dimension"] = dimension,
-            ["distance"] = wire
-        });
-        return new CollectionInfo(name, dimension, wire, 0, 0);
+        var created = new CollectionInfo(name, dimension, wire, 0, 0);
+        CollectionCreated?.Invoke(created);
+        return created;
     }
 
     public async Task<bool> DropCollectionAsync(string name, CancellationToken cancellationToken = default)
@@ -141,7 +148,7 @@ public sealed class PostgresVectorStore : IVectorStore
         if (!existed) return false;
 
         _cache.TryRemove(name, out _);
-        _events?.Publish("vector.collection.dropped", name);
+        CollectionDropped?.Invoke(name);
         return true;
     }
 

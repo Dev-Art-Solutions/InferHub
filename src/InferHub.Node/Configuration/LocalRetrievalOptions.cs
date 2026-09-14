@@ -20,12 +20,16 @@ namespace InferHub.Node.Configuration;
 /// store settings.
 /// </para>
 /// <para>
-/// <b>Phase 44 amends this in two places and only two.</b> A node now has a
-/// <see cref="Provider"/> — <c>local</c> or <c>qdrant</c>, never <c>postgres</c>, because
-/// <c>Npgsql</c> is scoped to the coordinator by name (rule 5) — and a
-/// <see cref="Credentials"/> map, because a hub-assigned corpus names a credential and the node
-/// resolves it (phase-44 D4). Everything else means what it did in v3.10, and a node that sets none
-/// of the new keys behaves exactly as it did.
+/// <b>Phase 44 amended this in two places.</b> A node has a <see cref="Provider"/> — at the time,
+/// <c>local</c> or <c>qdrant</c> — and a <see cref="Credentials"/> map, because a hub-assigned
+/// corpus names a credential and the node resolves it (phase-44 D4).
+/// </para>
+/// <para>
+/// <b>Phase 71 adds a third provider: <c>postgres</c>.</b> The reason it was refused before —
+/// <c>Npgsql</c>/<c>Pgvector</c> are packages a plain class library cannot carry — no longer applies
+/// on the node: <c>PostgresVectorStore</c> now lives in <c>InferHub.Shared.Postgres</c>, a sibling
+/// project the node references directly (see that project's csproj for why it is not part of
+/// <c>InferHub.Shared</c> itself). <see cref="Postgres"/> mirrors <see cref="Qdrant"/>'s shape.
 /// </para>
 /// </remarks>
 public sealed class LocalRetrievalOptions
@@ -34,13 +38,16 @@ public sealed class LocalRetrievalOptions
 
     public bool Enabled { get; set; }
 
-    /// <summary>
-    /// <c>local</c> (default) or <c>qdrant</c>. <c>postgres</c> is refused by name — see
-    /// <c>LocalRetrievalOptionsValidator</c>, which says so rather than reporting an unknown value.
-    /// </summary>
+    /// <summary><c>local</c> (default), <c>qdrant</c> or, since phase 71, <c>postgres</c>.</summary>
     public string Provider { get; set; } = VectorStoreProviderExtensions.Local;
 
-    /// <summary>Where the external engine is. Meaningless, and ignored, under <c>local</c>.</summary>
+    /// <summary>
+    /// Where the external engine is. Meaningless, and ignored, under <c>local</c>. Under
+    /// <c>qdrant</c> this is the base URL; under <c>postgres</c> it is unused — the connection
+    /// string is <see cref="Postgres"/>'s own <c>ConnectionString</c>, which (unlike a Qdrant URL)
+    /// already carries a password field of its own and has nowhere clean to graft a
+    /// hub-resolved <see cref="CredentialRef"/> onto.
+    /// </summary>
     public string Url { get; set; } = "";
 
     /// <summary>
@@ -92,6 +99,15 @@ public sealed class LocalRetrievalOptions
     public QdrantStoreOptions Qdrant { get; set; } = new();
 
     /// <summary>
+    /// Postgres+pgvector knobs for a node running the <c>postgres</c> provider (phase 71). The same
+    /// <see cref="PostgresStoreOptions"/> the coordinator uses — same schema/table-prefix/HNSW
+    /// meaning, same <c>PostgresVectorStore</c> class, shared via <c>InferHub.Shared.Postgres</c>.
+    /// Unlike <see cref="Qdrant"/>, this has no hub-assigned-credential path (see <see cref="Url"/>):
+    /// <c>ConnectionString</c> here is the whole answer, read from this node's own configuration.
+    /// </summary>
+    public PostgresStoreOptions Postgres { get; set; } = new();
+
+    /// <summary>
     /// Projects the node's keys onto the shared <see cref="VectorStoreOptions"/> the moved pipelines
     /// take.
     /// </summary>
@@ -116,7 +132,8 @@ public sealed class LocalRetrievalOptions
         SnapshotEveryOps = SnapshotEveryOps,
         DefaultEmbeddingModel = DefaultEmbeddingModel,
         Retrieval = Retrieval,
-        Qdrant = Qdrant.WithConnection(url ?? Url, apiKey)
+        Qdrant = Qdrant.WithConnection(url ?? Url, apiKey),
+        Postgres = Postgres
     };
 
     /// <summary>

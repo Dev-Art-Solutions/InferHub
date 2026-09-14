@@ -23,6 +23,11 @@ src/
                           SparseVector) — free only because phase-33 D2 hand-rolled the connector
                           instead of taking the gRPC client.
                           Still a plain class library with ZERO package references — see rule 2.
+  InferHub.Shared.Postgres/  Phase 71. PostgresVectorStore/PostgresSchema/the bootstrap DDL, shared
+                          between the coordinator and a node running
+                          LocalApi:Retrieval:Provider=postgres. A SEPARATE project from
+                          InferHub.Shared (which stays package-free) because pgvector needs
+                          Npgsql/Pgvector at the class itself.
   InferHub.Coordinator/   ASP.NET Core web app (Sdk.Web). HTTP + SignalR hub + routing. Keeps the
                           external vector providers, replication/healing, endpoints, Metrics and
                           PdfTextExtractor.
@@ -86,6 +91,7 @@ longer pays for the Qdrant connector's UUID mapping and the cluster lease's spli
 | Working in | Also read | Holds |
 |---|---|---|
 | `src/InferHub.Shared/` | `src/InferHub.Shared/CLAUDE.md` | contracts, the OpenAI/Ollama dialects, the retrieval core, the vector stores, the image and video envelopes, the upstream dialects (OpenAI, Anthropic and Gemini) · phases 24, 29, 33, 34, 40, 46, 47, 57, 61, 63, 64, 70 |
+| `src/InferHub.Shared.Postgres/` | `src/InferHub.Shared/CLAUDE.md` (its "Phase 71" note) | the Postgres+pgvector store and bootstrap, shared by the coordinator and a node · phase 71 |
 | `src/InferHub.Coordinator/` | `src/InferHub.Coordinator/CLAUDE.md` | endpoints, routing, admission, cluster, `/metrics`, the console, the cloud providers · phases 21–23, 25, 26, 28, 30, 32, 45, 51, 57, 59–66, 69, 70 |
 | `src/InferHub.Coordinator/Vector/` | `src/InferHub.Coordinator/Vector/CLAUDE.md` | the three vector providers, replication and healing, collection ownership, cross-provider migration · phases 31, 35, 44 (split out in phase 62) |
 | `src/InferHub.Coordinator/Cluster/` | `src/InferHub.Coordinator/Cluster/CLAUDE.md` | the multi-coordinator lease, the split-brain fence, the standby's refusal set · phase 32 (split out in phase 69) |
@@ -194,17 +200,30 @@ as load-bearing:
    *possible* and a profile is only a preference over it. See phase-43 D1/D3. Default is `none`.
 5. **No new heavy dependencies.** The dependency surface is deliberately minimal (ASP.NET Core,
    SignalR, OllamaClient on the node, xunit for tests). There are exactly **two** recorded
-   exceptions, both coordinator-only, both feature-scoped, both inert unless the feature is on:
+   exceptions, feature-scoped and inert unless the feature is on:
    - **`Npgsql` + `Pgvector`** (phase 20) back the `postgres` vector provider. No connection is
-     opened unless `VectorStore:Enabled=true` **and** `VectorStore:Provider=postgres`.
+     opened unless `VectorStore:Enabled=true` **and** `VectorStore:Provider=postgres` (coordinator)
+     or `LocalApi:Retrieval:Enabled=true` **and** `LocalApi:Retrieval:Provider=postgres` (node).
+     **Amended in phase 71:** this pair is no longer coordinator-only. `PostgresVectorStore`,
+     `PostgresSchema` and the bootstrap DDL sequence live in a new, separate project,
+     `InferHub.Shared.Postgres` — referenced by both `InferHub.Coordinator` and `InferHub.Node`,
+     each of which also keeps its own direct `PackageReference` (the coordinator needs
+     `NpgsqlDataSource`/`NpgsqlConnection` at its own composition root; the node needs them to build
+     its own `NpgsqlDataSource` in `RetrievalHost`). This is a **new** project rather than an
+     addition to `InferHub.Shared` on purpose — see that project's csproj comment and
+     `InferHub.Shared/CLAUDE.md`'s "Phase 71" note for why `InferHub.Shared.csproj` itself had to
+     stay untouched.
    - **`PdfPig`** (phase 23) backs PDF text extraction. It lives behind `IPdfTextExtractor`, is
      referenced by exactly one file
      ([PdfTextExtractor.cs](src/InferHub.Coordinator/Ingestion/PdfTextExtractor.cs)), and no code
      path reaches it unless a PDF is actually uploaded. Hand-rolling a PDF text-layer parser is a
      bad use of a week; taking a second-rate dependency into `InferHub.Shared` would be worse.
+     **Still coordinator-only** — a PDF upload to a solo/assigned node is still a 415 (phase-38 D5),
+     unchanged by phase 71.
 
-   Neither is in `InferHub.Shared` or `InferHub.Node`, and the rule still holds for everything
-   else. Add packages reluctantly, and record them here when you do.
+   Neither is in `InferHub.Shared` itself — that project's `.csproj` stays an empty
+   `<Project Sdk=...>` — and the rule still holds for everything else. Add packages reluctantly, and
+   record them here when you do.
 
    **The `qdrant` vector provider (phase 33) added *no* dependency, on purpose.** Qdrant's official
    client is gRPC and would drag `Grpc.Net.Client` + protobuf into the coordinator; its REST API is

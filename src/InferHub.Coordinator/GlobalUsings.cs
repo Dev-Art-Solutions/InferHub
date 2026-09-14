@@ -10,3 +10,8 @@ global using InferHub.Shared.Vector;
 // a Qdrant corpus runs *this* store, not a second one (D2). `QdrantBootstrapper` stayed behind, so
 // `using InferHub.Coordinator.Vector.Qdrant;` still resolves wherever it was already written.
 global using InferHub.Shared.Vector.Qdrant;
+
+// Phase 71 moved PostgresVectorStore/PostgresSchema the same way, into the new
+// InferHub.Shared.Postgres project (a separate project from InferHub.Shared itself — see that
+// project's csproj comment). `PostgresBootstrapper` stayed behind in InferHub.Coordinator.Vector.Postgres.
+global using InferHub.Shared.Postgres;

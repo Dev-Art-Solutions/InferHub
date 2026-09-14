@@ -126,7 +126,7 @@ public class ConcurrentBootstrapTests : IAsyncLifetime
         var dataSource = builder.Build();
         disposables.Add(dataSource);
 
-        var store = new PostgresVectorStore(dataSource, options, NullLogger<PostgresVectorStore>.Instance);
+        var store = new PostgresVectorStore(dataSource, options.Value);
         var bootstrapper = new PostgresBootstrapper(
             dataSource, store, options, NullLogger<PostgresBootstrapper>.Instance);
 

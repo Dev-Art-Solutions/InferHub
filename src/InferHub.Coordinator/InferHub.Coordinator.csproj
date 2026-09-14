@@ -6,13 +6,20 @@
 
   <ItemGroup>
     <ProjectReference Include="..\InferHub.Shared\InferHub.Shared.csproj" />
+    <!-- Phase 71: PostgresVectorStore/PostgresSchema/PostgresBootstrap moved here so a node running
+         LocalApi:Retrieval:Provider=postgres runs the same store — see that project's csproj. -->
+    <ProjectReference Include="..\InferHub.Shared.Postgres\InferHub.Shared.Postgres.csproj" />
   </ItemGroup>
 
   <!--
     Phase 20: PostgreSQL + pgvector vector-store provider. A deliberate, provider-scoped
-    exception to design rule 5 ("no new heavy dependencies") — see CLAUDE.md. Coordinator-only;
-    no connection is opened unless VectorStore:Enabled=true and VectorStore:Provider=postgres.
+    exception to design rule 5 ("no new heavy dependencies") — see CLAUDE.md. Since phase 71 the
+    same exception also applies to InferHub.Node, when LocalApi:Retrieval:Provider=postgres is set.
+    No connection is opened unless VectorStore:Enabled=true and VectorStore:Provider=postgres.
     Pgvector depends on Npgsql, but both are referenced so the versions are pinned and visible.
+    These are also referenced from InferHub.Shared.Postgres, where PostgresVectorStore itself needs
+    them at the class (typed vector columns) — the coordinator keeps its own copy because
+    PostgresBootstrapper and this composition root use NpgsqlDataSource/NpgsqlConnection directly.
   -->
   <ItemGroup>
     <PackageReference Include="Npgsql" Version="9.0.5" />

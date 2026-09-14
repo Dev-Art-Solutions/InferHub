@@ -245,11 +245,21 @@ worse". Retrieval parity is the obvious next phase and is a non-goal here becaus
 > **Superseded in phase 38 — the non-goal is now a feature, and the reasoning above was half
 > right.** A standalone node *does* retrieve, over the same headers, with the same augmented prompt
 > and the same `X-InferHub-Sources`. The pipelines moved to `InferHub.Shared` rather than being
-> copied, and neither `Npgsql` nor `PdfPig` came with them: the postgres/qdrant providers stayed in
-> the coordinator (only `local` runs on a node) and PDF is a clean **415** for exactly that reason.
-> **The 501 is still what you get with the corpus off**, which is the default, so this paragraph
-> describes a real state rather than history. See phase 38 below — and note D1 there: retrieval is
-> refused *at startup* on a node that is also meshed.
+> copied. At the time neither `Npgsql` nor `PdfPig` came with them, so `postgres` stayed
+> coordinator-only and PDF was a clean **415** for the dependency reason. **The 501 is still what you
+> get with the corpus off**, which is the default, so this paragraph describes a real state rather
+> than history. See phase 38 below — and note D1 there: retrieval is refused *at startup* on a node
+> that is also meshed.
+>
+> **Superseded again in phase 44, for Qdrant, and in phase 71, for Postgres.** "The postgres/qdrant
+> providers stayed in the coordinator (only `local` runs on a node)" stopped being true in two steps:
+> phase 44 moved `QdrantVectorStore` into `InferHub.Shared` because the connector was already
+> dependency-free (phase-33 D2), and phase 71 gave Postgres the same treatment via a new sibling
+> project, `InferHub.Shared.Postgres`, specifically so `InferHub.Shared.csproj` itself never has to
+> take the `Npgsql`/`Pgvector` packages. A node today runs `local`, `qdrant` **or** `postgres`. PDF
+> is still the one thing genuinely unavailable on a node — `PdfPig` was never moved anywhere,
+> because it is coordinator-scoped for a different reason (rule 5 names it, not a "can it move"
+> question) and still gets a clean 415 (phase-38 D5, unamended).
 
 **D9 — `Node:MaxConcurrency` is *enforced* in solo mode and advisory everywhere else.** One key with
 two behaviours is normally a smell; it is right here because the key's meaning — "this many at once
@@ -325,11 +335,12 @@ that starts "the model got worse". An explicit opt-in that cannot be honoured mu
 `IVectorStore`, `LocalVectorStore`, `InvertedIndex`, `HybridSearch`, `ChunkText`,
 `RetrievalPipeline` + its contracts, `IEmbeddingDispatcher`, `IReranker`, `IVectorQueryRouter`,
 `IServerSideHybridSearch`, `RerankPrompt`, the options POCOs and all of `Ingestion/` except
-`PdfTextExtractor.cs`. What stayed in the coordinator: the external providers (Postgres, Qdrant),
-`ReplicationCoordinator`/`HealingService`/`ReplicaRegistry`, `VectorQueryRouter`, `LlmReranker` and
-`EmbeddingDispatcher` (both dispatch on the fleet), `Metrics`, every endpoint, every options
-**validator**, and `PdfTextExtractor`. Two `GlobalUsings.cs` files (coordinator, tests, migrate) are
-why the move touched no consuming file.
+`PdfTextExtractor.cs`. What stayed in the coordinator (at the time — see the phase-44/71 amendments
+above D4): the external providers, `ReplicationCoordinator`/`HealingService`/`ReplicaRegistry`,
+`VectorQueryRouter`, `LlmReranker` and `EmbeddingDispatcher` (both dispatch on the fleet), `Metrics`,
+every endpoint, every options **validator**, and `PdfTextExtractor`. Two `GlobalUsings.cs` files
+(coordinator, tests, migrate) are why the move touched no consuming file — a third was added in
+phase 71 for `InferHub.Shared.Postgres`.
 
 Retrieval has a dozen decisions — fusion, k clamping, `OnMissing`, rerank fallback, the context
 template, the stale-chunk sweep, the `partial` verdict, the content-hash short circuit — and every
@@ -344,12 +355,24 @@ hub's structured output is what it was before the code changed projects.
 
 **D4 — `local` is the only provider on a node, and `VectorStore:*` is not the key.** The node reads
 [LocalApi:Retrieval:*](src/InferHub.Node/Configuration/LocalRetrievalOptions.cs), which projects
-onto the shared `VectorStoreOptions` with `Provider` pinned to `local`. Rule 5 scopes `Npgsql` to
-the coordinator by name; a node with an external database *and* no coordinator is a shape nobody
-asked for; and a node reading `VectorStore:*` would silently pick up a coordinator's section on a
-box that has both files. **Same Docker permissions trap for the fourth time** (phase-21 D7,
-phase-30 D3): the default `./data/retrieval` resolves to `/app/data`, so the node image sets
-`ENV LocalApi__Retrieval__DataDirectory=/data/retrieval` under the existing `chown app:app /data`.
+onto the shared `VectorStoreOptions`. Reading `VectorStore:*` directly would silently pick up a
+coordinator's section on a box that has both files, so the node's own `LocalApi:Retrieval:*` key
+prefix stays the rule regardless of which provider runs. **Same Docker permissions trap for the
+fourth time** (phase-21 D7, phase-30 D3): the default `./data/retrieval` resolves to `/app/data`,
+so the node image sets `ENV LocalApi__Retrieval__DataDirectory=/data/retrieval` under the existing
+`chown app:app /data` (still relevant for `local`; irrelevant, and harmless, for `qdrant`/`postgres`).
+
+> **Amended in phase 44 (Qdrant) and phase 71 (Postgres) — "`local` is the only provider" is no
+> longer true, and the part of D4 that survives is narrower than it reads above.** What actually
+> mattered was never "no external database", it was **rule 5**: a node could not carry `Npgsql`
+> without breaking `InferHub.Shared.csproj`'s zero-package invariant, and there was no dependency
+> at all for Qdrant to avoid carrying. Phase 44 moved `QdrantVectorStore` into `InferHub.Shared`
+> (already dependency-free, phase-33 D2) so a node runs it directly. Phase 71 did the same for
+> Postgres via a **new, separate** project, `InferHub.Shared.Postgres` — not `InferHub.Shared`
+> itself, which still cannot take `Npgsql`/`Pgvector` (see that project's csproj comment). A node
+> today runs `local`, `qdrant` or `postgres`; `LocalRetrievalOptions.Provider` says which, and
+> `LocalRetrievalOptionsValidator` validates each shape (a URL for `qdrant`, a connection string for
+> `postgres`, neither for `local`). **`VectorStore:*` is still not the key, on any provider.**
 
 **D5 — No PDF on a node, and the refusal is a 415 that names the limitation.** `PdfPig` is rule 5's
 second recorded exception, scoped to the coordinator *by name*. `TextExtractor` already delegates
@@ -395,7 +418,10 @@ without comparing a *choice*.
 no admin surface (phase-37 D5). Most deployments never call it — the first ingest provisions.
 
 **Rule 5 survived again.** Phase 38 added **zero** new dependencies, and `InferHub.Shared.csproj`
-is unchanged. `Npgsql`, `Pgvector` and `PdfPig` appear nowhere in the node's dependency tree.
+was unchanged. `PdfPig` still appears nowhere in the node's dependency tree, and never will (rule 5
+scopes it to the coordinator by name, not by "could it move"). **`Npgsql`/`Pgvector` do now appear
+there, since phase 71** — the one dependency this file's "zero new dependencies" claims have ever
+needed an asterisk for; see that phase's own note above D4.
 
 ### Phase 39 (the bundled node image) — also load-bearing
 
@@ -753,3 +779,55 @@ heartbeat — including `null`, which is what it says before the threshold has b
 > empty report, so that hub keeps dispatching — a fast `502` naming the connection failure for
 > `unreachable`, and the timeouts 36 D7 feared for `wedged`. That is the unusual upgrade direction
 > (hubs go first), and it is the trade for the 404 going away everywhere else.
+
+### Phase 71 (Postgres on the node) — also load-bearing
+
+**D1 — Postgres moves the same way Qdrant did in phase 44, into a *new* sibling project rather than
+into `InferHub.Shared` itself.** `PostgresVectorStore`/`PostgresSchema`/the bootstrap DDL now live in
+`InferHub.Shared.Postgres`, referenced by both `InferHub.Coordinator` and `InferHub.Node`.
+`InferHub.Shared.csproj` stays an empty `<Project Sdk="Microsoft.NET.Sdk">` — the tripwire rule 5
+checks — because pgvector's typed columns need `Npgsql`/`Pgvector` **at the class**, not only at a
+composition root the way `IOptions<T>`/`ILogger<T>` were kept out with `IVectorLog` and plain
+options objects. A new project is not that file. **Rejected: putting the packages straight into
+`InferHub.Shared`** — it is one line of csproj today and an invariant this file cites by name (D2/D3
+above, phase-38 D3) gone by tomorrow; "the shared library is free" stops being a checkable claim the
+moment any exception is allowed into it.
+
+**D2 — `ConcurrentDdl` is duplicated on purpose, not moved.** The coordinator's copy
+(`InferHub.Coordinator.Postgres.ConcurrentDdl`) also serves `PostgresClusterLease`,
+`PostgresProfileStore` and `PostgresUsageLedger` — coordinator-only concerns with nothing to do with
+vectors. Moving it would mean three unrelated consumers take on the `IVectorLog` seam for no reason.
+The `InferHub.Shared.Postgres` copy is ~20 lines of retry policy around a handful of Postgres error
+codes; the phase-38 D2 / phase-44 D2 argument against duplication (a dozen retrieval decisions
+silently diverging into plausible-but-different answers) is about ranking and fusion, not about
+"retry the DDL statement once more."
+
+**D3 — The bootstrap sequence itself *is* shared, via a new `PostgresBootstrap.RunAsync`.** Extracted
+from the coordinator's `PostgresBootstrapper.StartAsync` almost verbatim: extension, schema, reload,
+version check, registry table, keyword-index backfill, cache warm. It takes an already-open
+`NpgsqlConnection` rather than a data source, because opening the connection is the one step whose
+failure message differs by host (each names its own configuration key — `VectorStore:Postgres:*` on
+the coordinator, `LocalApi:Retrieval:Postgres:*` on the node) and each host keeps that one line
+itself, catching `PostgresBootstrap`'s generic exceptions and rewrapping with its own key-prefixed
+wording so neither host's existing message text changed.
+
+**D4 — On the node, bootstrap doubles as the reachability probe, exactly as Qdrant's
+`LoadRegistryCacheAsync` call does in `RetrievalHost.BuildAsync` (phase 44).** An unreachable
+database, a role that cannot `CREATE EXTENSION`, or a bad connection string all fail the corpus
+**start**, never the first query. The `NpgsqlDataSource` is disposed on that failure path and again
+on `RunningCorpus.DrainAndDisposeAsync` — reusing the existing `IDisposable? disposable` slot the
+`local` case already used, so `RunningCorpus`'s shape did not need to grow a field for a third kind
+of engine.
+
+**D5 — No credential-ref path for Postgres, unlike Qdrant.** A Qdrant URL and a Postgres connection
+string are different shapes: the former has an obvious slot for a resolved secret (the `api-key`
+header), the latter already carries its own password field and has no clean place to graft a
+hub-resolved one onto a string written in the node's own configuration. So
+`LocalRetrievalOptions.CredentialRef` is refused outright when `Provider=postgres` — a profile
+mistake caught at the request, not a feature quietly ignored. `Postgres.ConnectionString` is the
+whole answer, and it comes from this node's own config or environment, never from a profile.
+
+**Rule 5 explicitly amended, not survived.** Phase 71 is the first phase in this file to add a real
+`PackageReference` to the node on purpose — `Npgsql` + `Pgvector`, called out in the release notes as
+the one deliberate exception. `InferHub.Shared.csproj` is unchanged; `InferHub.Node.csproj` is not,
+and that is the point of D1.

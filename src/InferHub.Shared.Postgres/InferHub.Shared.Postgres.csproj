@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\InferHub.Shared\InferHub.Shared.csproj" />
+  </ItemGroup>
+
+  <!--
+    Phase 71. The Postgres + pgvector connector, shared between the coordinator and a node running
+    LocalApi:Retrieval:Provider=postgres. This is deliberately a SEPARATE project from
+    InferHub.Shared rather than an addition to it: rule 5's tripwire is that InferHub.Shared.csproj
+    stays an empty <Project Sdk=...> forever, because a plain Postgres store needs Npgsql/Pgvector at
+    the class itself (typed vector columns), not just at a composition root the way IOptions<T> or
+    ILogger<T> could be avoided with a seam. Putting the packages here instead keeps that tripwire
+    literally true while still giving both hosts one implementation instead of two (phase-38 D2 /
+    phase-44 D2's reasoning, applied a third time).
+
+    Same versions as the coordinator's own references (kept in the two .csproj files, not shared,
+    because that is how every other dependency in this solution is pinned).
+  -->
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="9.0.5" />
+    <PackageReference Include="Pgvector" Version="0.3.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="InferHub.Tests.Common" />
+    <InternalsVisibleTo Include="InferHub.Tests.Shared" />
+    <InternalsVisibleTo Include="InferHub.Tests.Coordinator" />
+    <InternalsVisibleTo Include="InferHub.Tests.Node" />
+    <InternalsVisibleTo Include="InferHub.Tests.Mesh" />
+  </ItemGroup>
+
+</Project>

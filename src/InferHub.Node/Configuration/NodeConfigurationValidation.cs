@@ -585,31 +585,47 @@ public sealed class LocalRetrievalOptionsValidator(IConfiguration? configuration
     }
 
     /// <summary>
-    /// Phase-44 D2. A node runs <c>local</c> or <c>qdrant</c> and never <c>postgres</c>, and the
-    /// refusal says <em>that</em> rather than "unknown value": an operator who typed the name of a
-    /// provider this product genuinely has is owed the reason it is not available on a box, not a
-    /// spelling complaint.
+    /// Phase-44 D2 let a node run <c>local</c> or <c>qdrant</c>. Phase 71 adds <c>postgres</c>: the
+    /// reason it was refused before — <c>Npgsql</c> is a package a plain class library cannot carry
+    /// — no longer applies, because <c>PostgresVectorStore</c> now lives in the sibling
+    /// <c>InferHub.Shared.Postgres</c> project the node references directly. An unrecognised value
+    /// still gets a spelling complaint, not silence.
     /// </summary>
     private static void ValidateProvider(LocalRetrievalOptions options, List<string> failures)
     {
         var prefix = $"{LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.Provider)}";
 
-        if (VectorStoreProviderExtensions.IsPostgres(options.Provider))
+        var isPostgres = VectorStoreProviderExtensions.IsPostgres(options.Provider);
+        var isQdrant = VectorStoreProviderExtensions.IsQdrant(options.Provider);
+        var isLocal = string.Equals(options.Provider?.Trim(), VectorStoreProviderExtensions.Local, StringComparison.OrdinalIgnoreCase);
+
+        if (!isPostgres && !isQdrant && !isLocal)
         {
-            failures.Add(
-                $"{prefix} is 'postgres', which a node cannot run: the Postgres connector needs Npgsql, and that package is scoped to the coordinator by name (design rule 5). Use 'local' for a corpus on this box's disk, or 'qdrant' for an external engine — the Qdrant connector is hand-rolled over HttpClient and costs a node nothing.");
+            failures.Add($"{prefix} must be 'local', 'qdrant' or 'postgres' (got '{options.Provider}').");
+            return;
+        }
+
+        if (isPostgres)
+        {
+            if (string.IsNullOrWhiteSpace(options.Postgres.ConnectionString))
+            {
+                failures.Add(
+                    $"{LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.Postgres)}:{nameof(PostgresStoreOptions.ConnectionString)} must be set when {prefix} is 'postgres'.");
+            }
+
+            // No CredentialRef path for postgres — see LocalRetrievalOptions.Url's remarks: a
+            // connection string already carries its own password, and there is nowhere clean to
+            // graft a hub-resolved secret onto one written in this node's own configuration.
+            if (!string.IsNullOrWhiteSpace(options.CredentialRef))
+            {
+                failures.Add(
+                    $"{LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.CredentialRef)} is set but {prefix} is 'postgres', which has no credential-ref path — put the password in {LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.Postgres)}:{nameof(PostgresStoreOptions.ConnectionString)} directly.");
+            }
 
             return;
         }
 
-        if (!VectorStoreProviderExtensions.IsQdrant(options.Provider)
-            && !string.Equals(options.Provider?.Trim(), VectorStoreProviderExtensions.Local, StringComparison.OrdinalIgnoreCase))
-        {
-            failures.Add($"{prefix} must be 'local' or 'qdrant' (got '{options.Provider}').");
-            return;
-        }
-
-        if (!VectorStoreProviderExtensions.IsQdrant(options.Provider))
+        if (!isQdrant)
         {
             return;
         }

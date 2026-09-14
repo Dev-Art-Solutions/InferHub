@@ -33,6 +33,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InferHub.Tests.Node", "test
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InferHub.Tests.Mesh", "tests\InferHub.Tests.Mesh\InferHub.Tests.Mesh.csproj", "{375A0519-0A13-4D81-8B3B-0C023B2228BB}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InferHub.Shared.Postgres", "src\InferHub.Shared.Postgres\InferHub.Shared.Postgres.csproj", "{F6045F8B-8F12-4E1A-AC16-5A1A4B11E1F8}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -187,6 +189,18 @@ Global
 		{375A0519-0A13-4D81-8B3B-0C023B2228BB}.Release|x64.Build.0 = Release|Any CPU
 		{375A0519-0A13-4D81-8B3B-0C023B2228BB}.Release|x86.ActiveCfg = Release|Any CPU
 		{375A0519-0A13-4D81-8B3B-0C023B2228BB}.Release|x86.Build.0 = Release|Any CPU
+		{F6045F8B-8F12-4E1A-AC16-5A1A4B11E1F8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F6045F8B-8F12-4E1A-AC16-5A1A4B11E1F8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F6045F8B-8F12-4E1A-AC16-5A1A4B11E1F8}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{F6045F8B-8F12-4E1A-AC16-5A1A4B11E1F8}.Debug|x64.Build.0 = Debug|Any CPU
+		{F6045F8B-8F12-4E1A-AC16-5A1A4B11E1F8}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{F6045F8B-8F12-4E1A-AC16-5A1A4B11E1F8}.Debug|x86.Build.0 = Debug|Any CPU
+		{F6045F8B-8F12-4E1A-AC16-5A1A4B11E1F8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F6045F8B-8F12-4E1A-AC16-5A1A4B11E1F8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F6045F8B-8F12-4E1A-AC16-5A1A4B11E1F8}.Release|x64.ActiveCfg = Release|Any CPU
+		{F6045F8B-8F12-4E1A-AC16-5A1A4B11E1F8}.Release|x64.Build.0 = Release|Any CPU
+		{F6045F8B-8F12-4E1A-AC16-5A1A4B11E1F8}.Release|x86.ActiveCfg = Release|Any CPU
+		{F6045F8B-8F12-4E1A-AC16-5A1A4B11E1F8}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -204,5 +218,6 @@ Global
 		{CDDAFCC5-CD36-47DF-BA00-18CA34D18BB3} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{FF275EC0-ECF2-4072-ADDA-850CCD0E1CF0} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{375A0519-0A13-4D81-8B3B-0C023B2228BB} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{F6045F8B-8F12-4E1A-AC16-5A1A4B11E1F8} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal

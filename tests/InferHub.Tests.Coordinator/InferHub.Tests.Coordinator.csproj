@@ -20,6 +20,8 @@
     <Using Include="InferHub.Shared.Ingestion" />
     <Using Include="InferHub.Shared.Vector" />
     <Using Include="InferHub.Shared.Vector.Qdrant" />
+    <!-- Phase 71 moved PostgresVectorStore/PostgresSchema the same way. -->
+    <Using Include="InferHub.Shared.Postgres" />
   </ItemGroup>
 
   <ItemGroup>

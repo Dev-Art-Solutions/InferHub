@@ -1762,10 +1762,11 @@ A profile names `provider` and `credentialRef`. It cannot name a **secret**: `cr
 not have is a refusal naming the key — never a fall back to an unauthenticated connection to your
 Qdrant. There is no field anywhere in a profile for a data directory, either.
 
-`postgres` is refused **by name** on a node, with the reason: the Postgres connector needs `Npgsql`,
-which is coordinator-scoped by design. A node runs `local` (its own disk) or `qdrant` — and the Qdrant
-connector costs a node nothing, because it was hand-rolled over `HttpClient` back in v3.1 rather than
-taking the official gRPC client.
+A node runs `local` (its own disk), `qdrant` or, since v3.38, `postgres` — the same
+`PostgresVectorStore` the coordinator uses, shared via a project the node references directly. The
+one asymmetry with Qdrant: `postgres` has no `credentialRef` path, because a connection string
+already carries its own password and has nowhere clean to graft a hub-resolved secret onto — set
+`LocalApi:Retrieval:Postgres:ConnectionString` on the node itself.
 
 A start that fails — unreachable engine, unresolvable credential, wrong dimension — leaves the node
 with **no corpus and a reported refusal**, visible on `/api/status` and in the console, while the node
@@ -2783,11 +2784,13 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `LocalApi:MaxWaitSeconds` | `30` | How long a request waits for a concurrency slot before `503`. Only bites when `Node:MaxConcurrency` is set. |
 | `LocalApi:Retrieval:Enabled` | `false` | v3.6. RAG configured **on this node, by this node**. **Requires `Coordinator:Enabled=false`; both on fails startup** — that refusal is unchanged in v3.12, which grants a meshed node a corpus only through a profile the hub recorded. See [Retrieval on a standalone node](#retrieval-on-a-standalone-node-v36) and [A corpus on every node](#a-corpus-on-every-node-v312). |
 | `LocalApi:Retrieval:DataDirectory` | `./data/retrieval` | Where the corpus lives, for the `local` provider. `/data/retrieval` in the image — mount a volume or it is ephemeral. **No profile can set this**: where bytes land on a box is the operator's. |
-| `LocalApi:Retrieval:Provider` | `local` | v3.12. `local` (this box's disk) or `qdrant`. `postgres` is refused **by name** with the reason — `Npgsql` is coordinator-scoped (design rule 5). |
-| `LocalApi:Retrieval:Url` | _(empty)_ | v3.12. Where the external engine is. Required for `qdrant` unless a profile supplies one. |
-| `LocalApi:Retrieval:CredentialRef` | _(empty)_ | v3.12. Which entry of `Credentials` to authenticate the engine with. |
-| `LocalApi:Retrieval:Credentials:{name}` | — | v3.12. Credential name → secret, on **this** box (env: `LocalApi__Retrieval__Credentials__sofia-qdrant`). A coordinator profile can *name* one of these; it can never add one, and a name this node does not have is a refusal rather than an unauthenticated connection. |
+| `LocalApi:Retrieval:Provider` | `local` | v3.12. `local` (this box's disk), `qdrant`, or (v3.38+) `postgres`. |
+| `LocalApi:Retrieval:Url` | _(empty)_ | v3.12. Where the external engine is, for `qdrant`. Required unless a profile supplies one. Meaningless for `postgres` — see `Postgres:ConnectionString` below. |
+| `LocalApi:Retrieval:CredentialRef` | _(empty)_ | v3.12. Which entry of `Credentials` to authenticate the `qdrant` engine with. **No such path for `postgres`** — a connection string already carries its own password; setting this alongside `Provider=postgres` is a startup refusal. |
+| `LocalApi:Retrieval:Credentials:{name}` | — | v3.12. Credential name → secret, on **this** box (env: `LocalApi__Retrieval__Credentials__sofia-qdrant`). A coordinator profile can *name* one of these; it can never add one, and a name this node does not have is a refusal rather than an unauthenticated connection. `qdrant` only. |
 | `LocalApi:Retrieval:Qdrant:*` | — | v3.12. The hub's `VectorStore:Qdrant:*` keys (`CollectionPrefix`, `TimeoutSeconds`, `HnswM`, `HnswEfConstruct`, `Quantization`, `OnDisk`, `PayloadIndexKeys`, …), same names and meanings — the node runs the same connector, moved into the shared library rather than rewritten. |
+| `LocalApi:Retrieval:Postgres:ConnectionString` | _(empty)_ | v3.38. **Required** when `Provider=postgres`. Set via env or user-secrets, never `appsettings.json`. Independent of the coordinator's `VectorStore:Postgres:ConnectionString`. |
+| `LocalApi:Retrieval:Postgres:*` | — | v3.38. The hub's `VectorStore:Postgres:*` keys (`Schema`, `TablePrefix`, `AutoCreateExtension`, `AutoCreateSchema`, `Index`, `HnswM`, `HnswEfConstruction`, `EfSearch`, `CommandTimeoutSeconds`), same names and meanings — the node runs the same store, shared via `InferHub.Shared.Postgres` rather than rewritten. |
 | `LocalApi:Retrieval:Distance` | `cosine` | `cosine`, `dot` or `l2`, for collections this node creates. |
 | `LocalApi:Retrieval:DefaultEmbeddingModel` | `nomic-embed-text` | Resolved against this node's own backend. |
 | `LocalApi:Retrieval:Retrieval:*` | — | The phase-24 retrieval keys (`DefaultK`, `MaxRecords`, `OnMissing`, `Mode`, `CandidatesPerBranch`, `Rerank`, `RerankModel`, `RerankCandidates`, `RerankTimeoutSeconds`, `Template`), same names, meanings and defaults as the hub's `VectorStore:Retrieval:*`. |

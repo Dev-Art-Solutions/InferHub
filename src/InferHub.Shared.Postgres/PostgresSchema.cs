@@ -1,7 +1,7 @@
 using System.Text.RegularExpressions;
 using InferHub.Shared.Vector.Storage;
 
-namespace InferHub.Coordinator.Vector.Postgres;
+namespace InferHub.Shared.Postgres;
 
 /// <summary>
 /// Pure, side-effect-free SQL/identifier helpers for the Postgres vector provider. No

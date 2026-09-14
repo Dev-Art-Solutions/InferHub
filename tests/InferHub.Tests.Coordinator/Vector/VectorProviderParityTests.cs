@@ -42,7 +42,7 @@ public class VectorProviderParityTests : IAsyncLifetime
         var dsb = new NpgsqlDataSourceBuilder(ConnString);
         dsb.UseVector();
         _dataSource = dsb.Build();
-        _pg = new PostgresVectorStore(_dataSource, options, NullLogger<PostgresVectorStore>.Instance);
+        _pg = new PostgresVectorStore(_dataSource, options.Value);
         var boot = new PostgresBootstrapper(_dataSource, _pg, options, NullLogger<PostgresBootstrapper>.Instance);
         await boot.StartAsync(CancellationToken.None);
     }

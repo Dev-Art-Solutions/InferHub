@@ -39,7 +39,7 @@ public class PostgresVectorStoreTests : IAsyncLifetime
         var dsb = new NpgsqlDataSourceBuilder(ConnString);
         dsb.UseVector();
         _dataSource = dsb.Build();
-        _store = new PostgresVectorStore(_dataSource, options, NullLogger<PostgresVectorStore>.Instance);
+        _store = new PostgresVectorStore(_dataSource, options.Value);
 
         var boot = new PostgresBootstrapper(_dataSource, _store, options, NullLogger<PostgresBootstrapper>.Instance);
         await boot.StartAsync(CancellationToken.None);

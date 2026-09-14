@@ -18,6 +18,13 @@ output rather than an error.
 - **Phase 22** — the OpenAI DTOs, because the node speaks the dialect upstream too.
 - **Phase 38** — the whole retrieval core, so a solo node runs the same pipelines as a hub.
 - **Phase 44** — the Qdrant store, free only because phase-33 D2 hand-rolled it with no dependency.
+- **Phase 71** — the Postgres store, **not** free, and deliberately *not* moved here for that reason.
+  `PostgresVectorStore` needs `Npgsql`/`Pgvector` at the class (typed vector columns), which this
+  project's zero-package rule (line 8 above) cannot absorb. It lives instead in a new sibling
+  project, `src/InferHub.Shared.Postgres/` — same sharing motive as phases 38/44 (one store, not
+  two, between the coordinator and a node running `LocalApi:Retrieval:Provider=postgres`), same
+  `IVectorLog`/plain-options seams, but its own `.csproj` carries the packages so this one never has
+  to. See that project's csproj comment and `src/InferHub.Node/CLAUDE.md`'s "Phase 71" section.
 
 The seam that made each possible is the same one: `IVectorLog`, `IRetrievalMetrics` and plain
 options objects, so nothing here needs `ILogger` or `IOptions<T>`.

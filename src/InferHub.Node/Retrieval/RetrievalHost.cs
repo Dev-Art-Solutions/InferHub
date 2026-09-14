@@ -2,9 +2,11 @@ using InferHub.Node.Backends;
 using InferHub.Node.Configuration;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.Ingestion;
+using InferHub.Shared.Postgres;
 using InferHub.Shared.Vector;
 using InferHub.Shared.Vector.Qdrant;
 using Microsoft.Extensions.Options;
+using Npgsql;
 
 namespace InferHub.Node.Retrieval;
 
@@ -110,17 +112,19 @@ public sealed class RetrievalHost(
             var configured = options.Value;
             var provider = string.IsNullOrWhiteSpace(request.Provider) ? configured.Provider : request.Provider!;
 
-            if (VectorStoreProviderExtensions.IsPostgres(provider))
+            var qdrant = VectorStoreProviderExtensions.IsQdrant(provider);
+            var postgres = VectorStoreProviderExtensions.IsPostgres(provider);
+
+            if (!qdrant && !postgres && !string.Equals(provider.Trim(), VectorStoreProviderExtensions.Local, StringComparison.OrdinalIgnoreCase))
             {
-                return Failed(
-                    "a node cannot run the 'postgres' vector provider: Npgsql is scoped to the coordinator by name (design rule 5). Use 'local' or 'qdrant'.");
+                return Failed($"unknown vector provider '{provider}'; a node runs 'local', 'qdrant' or 'postgres'.");
             }
 
-            var qdrant = VectorStoreProviderExtensions.IsQdrant(provider);
-
-            if (!qdrant && !string.Equals(provider.Trim(), VectorStoreProviderExtensions.Local, StringComparison.OrdinalIgnoreCase))
+            // Phase 71: postgres has no credential-ref path (LocalRetrievalOptions.Url's remarks say
+            // why) — a ref sent for it is a profile mistake, refused rather than silently ignored.
+            if (postgres && !string.IsNullOrWhiteSpace(request.CredentialRef))
             {
-                return Failed($"unknown vector provider '{provider}'; a node runs 'local' or 'qdrant'.");
+                return Failed("the 'postgres' provider has no credential-ref path; its connection string is read from this node's own configuration.");
             }
 
             string? secret = null;
@@ -143,6 +147,12 @@ public sealed class RetrievalHost(
             if (qdrant && string.IsNullOrWhiteSpace(url) && string.IsNullOrWhiteSpace(configured.Qdrant.Url))
             {
                 return Failed("the 'qdrant' provider needs a url, and neither the profile nor this node's configuration has one.");
+            }
+
+            if (postgres && string.IsNullOrWhiteSpace(configured.Postgres.ConnectionString))
+            {
+                return Failed(
+                    $"the 'postgres' provider needs a connection string; set {LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.Postgres)}:{nameof(PostgresStoreOptions.ConnectionString)} on this node.");
             }
 
             var storeOptions = configured.ToVectorStoreOptions(provider, url, secret);
@@ -185,7 +195,9 @@ public sealed class RetrievalHost(
                 request.Source,
                 provider,
                 storeOptions.DefaultEmbeddingModel,
-                qdrant ? $", qdrant at {storeOptions.Qdrant.Url}" : $", corpus at {Path.GetFullPath(storeOptions.DataDirectory)}",
+                qdrant ? $", qdrant at {storeOptions.Qdrant.Url}"
+                    : postgres ? ", postgres (schema " + storeOptions.Postgres.Schema + ")"
+                    : $", corpus at {Path.GetFullPath(storeOptions.DataDirectory)}",
                 corpus.Collections.Count == 0 ? "the collections it holds" : string.Join(", ", corpus.Collections));
 
             WarnIfRemoteAndUnauthenticated(qdrant, storeOptions, secret);
@@ -298,12 +310,45 @@ public sealed class RetrievalHost(
         CancellationToken cancellationToken)
     {
         var qdrant = VectorStoreProviderExtensions.IsQdrant(provider);
+        var postgres = VectorStoreProviderExtensions.IsPostgres(provider);
 
         IVectorStore store;
         IDisposable? disposable = null;
         HttpClient? http = null;
 
-        if (qdrant)
+        if (postgres)
+        {
+            var dsb = new NpgsqlDataSourceBuilder(storeOptions.Postgres.ConnectionString);
+            dsb.UseVector();
+            var dataSource = dsb.Build();
+
+            var log = new NodeVectorLog<PostgresVectorStore>(services.GetRequiredService<ILogger<PostgresVectorStore>>());
+            var pgStore = new PostgresVectorStore(dataSource, storeOptions, log);
+
+            // Bootstrap (extension/schema/registry/keyword-index) doubles as the reachability probe,
+            // exactly as Qdrant's LoadRegistryCacheAsync does above: an unreachable database, a
+            // missing extension the role can't create, or a bad connection string all fail the
+            // *start*, not the first query.
+            try
+            {
+                await using var conn = await dataSource.OpenConnectionAsync(cancellationToken);
+                await PostgresBootstrap.RunAsync(conn, pgStore, storeOptions.Postgres, log, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                dataSource.Dispose();
+                throw;
+            }
+            catch (Exception ex)
+            {
+                dataSource.Dispose();
+                throw new InvalidOperationException($"could not prepare the Postgres vector store: {ex.Message}", ex);
+            }
+
+            store = pgStore;
+            disposable = dataSource;
+        }
+        else if (qdrant)
         {
             http = QdrantClient.Configure(
                 new HttpClient(),

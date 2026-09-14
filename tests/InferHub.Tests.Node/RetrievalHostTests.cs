@@ -99,17 +99,45 @@ public class RetrievalHostTests : IAsyncLifetime
     {
         var host = Host();
 
-        // Phase-44 D2: postgres is refused by name, with the reason, rather than reported as an
-        // unknown value. An operator who typed the name of a provider this product genuinely has is
-        // owed the reason it is not available on a box.
+        // Phase 71: postgres is a real provider now (InferHub.Shared.Postgres), but this node's
+        // configuration names no connection string, so the request is refused naming the key rather
+        // than reported as an unknown provider or left to fail on the first query.
         var refused = await host.StartCorpusAsync(
             new CorpusRequest("postgres", null, null, null, null, CorpusRequest.Profile),
             CancellationToken.None);
 
         Assert.False(refused.Started);
-        Assert.Contains("Npgsql", refused.Error);
+        Assert.Contains("connection string", refused.Error);
         Assert.Null(host.Current);
         Assert.Equal(refused.Error, host.LastError);
+    }
+
+    [Fact]
+    public async Task AnUnknownProviderIsRefusedByName()
+    {
+        var host = Host();
+
+        var refused = await host.StartCorpusAsync(
+            new CorpusRequest("mongodb", null, null, null, null, CorpusRequest.Profile),
+            CancellationToken.None);
+
+        Assert.False(refused.Started);
+        Assert.Contains("unknown vector provider", refused.Error);
+        Assert.Null(host.Current);
+    }
+
+    [Fact]
+    public async Task PostgresRefusesACredentialRefBecauseItHasNoSuchPath()
+    {
+        var host = Host();
+
+        var refused = await host.StartCorpusAsync(
+            new CorpusRequest("postgres", null, "some-credential", null, null, CorpusRequest.Profile),
+            CancellationToken.None);
+
+        Assert.False(refused.Started);
+        Assert.Contains("no credential-ref path", refused.Error);
+        Assert.Null(host.Current);
     }
 
     [Fact]

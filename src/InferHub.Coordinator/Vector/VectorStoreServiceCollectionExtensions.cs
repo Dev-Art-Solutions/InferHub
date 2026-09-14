@@ -48,7 +48,28 @@ public static class VectorStoreServiceCollectionExtensions
                 dsb.UseVector();
                 return dsb.Build();
             });
-            services.AddSingleton<PostgresVectorStore>();
+            // Constructed by hand for the same reason QdrantVectorStore is below: phase 71 moved this
+            // store into InferHub.Shared.Postgres, which cannot see IOptions<T> or ILogger<T> (that
+            // project's csproj comment says why). The lifecycle events it used to publish through
+            // VectorEvents itself are now plain events the host forwards — same kinds, same data.
+            services.AddSingleton(sp =>
+            {
+                var store = new PostgresVectorStore(
+                    sp.GetRequiredService<NpgsqlDataSource>(),
+                    sp.GetRequiredService<IOptions<VectorStoreOptions>>().Value,
+                    new VectorLog<PostgresVectorStore>(sp.GetRequiredService<ILogger<PostgresVectorStore>>()));
+
+                var events = sp.GetRequiredService<VectorEvents>();
+                store.CollectionCreated += info => events.Publish("vector.collection.created", info.Name,
+                    new Dictionary<string, object?>
+                    {
+                        ["dimension"] = info.Dimension,
+                        ["distance"] = info.Distance
+                    });
+                store.CollectionDropped += name => events.Publish("vector.collection.dropped", name);
+
+                return store;
+            });
             services.AddSingleton<IVectorStore>(sp => sp.GetRequiredService<PostgresVectorStore>());
             services.AddSingleton<IVectorQueryRouter, NullVectorQueryRouter>();
             // Registered under its own seam as well as IHostedService: the coordinator runs it as a

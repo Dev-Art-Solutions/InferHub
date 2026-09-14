@@ -363,7 +363,7 @@ public class MigrateTests : IAsyncLifetime
         var dsb = new NpgsqlDataSourceBuilder(connString);
         dsb.UseVector();
         var dataSource = dsb.Build();
-        var store = new PostgresVectorStore(dataSource, options, NullLogger<PostgresVectorStore>.Instance);
+        var store = new PostgresVectorStore(dataSource, options.Value);
         await new PostgresBootstrapper(dataSource, store, options, NullLogger<PostgresBootstrapper>.Instance)
             .StartAsync(CancellationToken.None);
         return (store, dataSource);
