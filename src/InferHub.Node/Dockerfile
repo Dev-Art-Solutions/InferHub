@@ -35,12 +35,14 @@ ARG TARGETARCH
 WORKDIR /src
 
 COPY Directory.Build.props nuget.config ./
-COPY src/InferHub.Shared/InferHub.Shared.csproj  src/InferHub.Shared/
-COPY src/InferHub.Node/InferHub.Node.csproj      src/InferHub.Node/
+COPY src/InferHub.Shared/InferHub.Shared.csproj           src/InferHub.Shared/
+COPY src/InferHub.Shared.Postgres/InferHub.Shared.Postgres.csproj src/InferHub.Shared.Postgres/
+COPY src/InferHub.Node/InferHub.Node.csproj               src/InferHub.Node/
 RUN dotnet restore src/InferHub.Node/InferHub.Node.csproj -a "$TARGETARCH"
 
-COPY src/InferHub.Shared/ src/InferHub.Shared/
-COPY src/InferHub.Node/   src/InferHub.Node/
+COPY src/InferHub.Shared/          src/InferHub.Shared/
+COPY src/InferHub.Shared.Postgres/ src/InferHub.Shared.Postgres/
+COPY src/InferHub.Node/            src/InferHub.Node/
 RUN dotnet publish src/InferHub.Node/InferHub.Node.csproj \
         -c Release -a "$TARGETARCH" --no-restore -o /app
 

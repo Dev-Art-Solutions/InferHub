@@ -211,7 +211,7 @@ as load-bearing:
      `NpgsqlDataSource`/`NpgsqlConnection` at its own composition root; the node needs them to build
      its own `NpgsqlDataSource` in `RetrievalHost`). This is a **new** project rather than an
      addition to `InferHub.Shared` on purpose — see that project's csproj comment and
-     `InferHub.Shared/CLAUDE.md`'s "Phase 71" note for why `InferHub.Shared.csproj` itself had to
+     `src/InferHub.Shared/CLAUDE.md`'s "Phase 71" note for why `InferHub.Shared.csproj` itself had to
      stay untouched.
    - **`PdfPig`** (phase 23) backs PDF text extraction. It lives behind `IPdfTextExtractor`, is
      referenced by exactly one file

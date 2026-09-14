@@ -9,12 +9,14 @@ WORKDIR /src
 
 # Restore against the manifests alone so editing a .cs file doesn't re-download the world.
 COPY Directory.Build.props nuget.config ./
-COPY src/InferHub.Shared/InferHub.Shared.csproj            src/InferHub.Shared/
-COPY src/InferHub.Coordinator/InferHub.Coordinator.csproj  src/InferHub.Coordinator/
+COPY src/InferHub.Shared/InferHub.Shared.csproj                   src/InferHub.Shared/
+COPY src/InferHub.Shared.Postgres/InferHub.Shared.Postgres.csproj src/InferHub.Shared.Postgres/
+COPY src/InferHub.Coordinator/InferHub.Coordinator.csproj         src/InferHub.Coordinator/
 RUN dotnet restore src/InferHub.Coordinator/InferHub.Coordinator.csproj -a "$TARGETARCH"
 
-COPY src/InferHub.Shared/      src/InferHub.Shared/
-COPY src/InferHub.Coordinator/ src/InferHub.Coordinator/
+COPY src/InferHub.Shared/          src/InferHub.Shared/
+COPY src/InferHub.Shared.Postgres/ src/InferHub.Shared.Postgres/
+COPY src/InferHub.Coordinator/     src/InferHub.Coordinator/
 RUN dotnet publish src/InferHub.Coordinator/InferHub.Coordinator.csproj \
         -c Release -a "$TARGETARCH" --no-restore -o /app
 
