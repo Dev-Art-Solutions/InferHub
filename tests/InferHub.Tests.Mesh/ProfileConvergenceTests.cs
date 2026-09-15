@@ -89,6 +89,30 @@ public class ProfileConvergenceTests
         Assert.Contains("tool 'echo' off", state.Applied);
     }
 
+    /// <summary>
+    /// Phase 74, over the real wire: a profile that disables one model does not need the coordinator
+    /// to change anything about routing — the node itself simply stops declaring that model, exactly
+    /// as it stops declaring a whole capability kind today.
+    /// </summary>
+    [Fact]
+    public async Task ADisabledModelStopsBeingDeclaredWithoutTouchingTheRestOfTheKind()
+    {
+        await using var mesh = await ProfileMesh.StartAsync(profile: TestProfiles.Profile(
+            name: "gpu-boxes",
+            selector: new NodeProfileSelector(Labels: new Dictionary<string, string> { ["tier"] = "gpu" }),
+            models: new NodeProfileModels(Disabled: ["echo"])));
+
+        var state = await mesh.WaitForStateAsync(state => state.ProfileName == "gpu-boxes");
+
+        Assert.Contains("model 'echo' disabled", state.Applied);
+        Assert.Empty(state.Refusals);
+
+        await mesh.WaitForAsync(() =>
+            (mesh.Node()?.Capabilities ?? [])
+                .Where(c => c.Kind == "echo")
+                .All(c => !c.Models.Contains("echo", StringComparer.OrdinalIgnoreCase)));
+    }
+
     [Fact]
     public async Task PartialApplicationReportsPerItemRefusalsAndAppliesTheRest()
     {

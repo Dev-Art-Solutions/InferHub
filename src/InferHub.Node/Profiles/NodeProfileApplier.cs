@@ -43,6 +43,7 @@ public sealed class NodeProfileApplier(
             .ToArray(),
         Array.Empty<string>(),
         nodeOptions.Value.MaxConcurrency,
+        Array.Empty<string>(),
         Array.Empty<string>());
 
     /// <summary>What the node is currently running. Read by the capability declaration and by registration.</summary>
@@ -237,7 +238,8 @@ public sealed class NodeProfileApplier(
         a.MaxConcurrency == b.MaxConcurrency
         && a.DisabledCapabilities.SequenceEqual(b.DisabledCapabilities, StringComparer.OrdinalIgnoreCase)
         && a.DisabledTools.SequenceEqual(b.DisabledTools, StringComparer.OrdinalIgnoreCase)
-        && a.DisabledImageRecipes.SequenceEqual(b.DisabledImageRecipes, StringComparer.OrdinalIgnoreCase);
+        && a.DisabledImageRecipes.SequenceEqual(b.DisabledImageRecipes, StringComparer.OrdinalIgnoreCase)
+        && a.DisabledModels.SequenceEqual(b.DisabledModels, StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>

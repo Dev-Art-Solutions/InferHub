@@ -153,9 +153,20 @@ public sealed record NodeProfileSelector(
 /// <c>ModelCommandExecutor</c> — there is no second pull path — so a backend that cannot manage
 /// models refuses both with the reason it already gives.
 /// </summary>
+/// <remarks>
+/// <see cref="Disabled"/> is a third, independent list: which models this node holds (or is asked
+/// to hold via <see cref="Ensure"/>) should not be <em>routed to</em>. It narrows only — there is no
+/// "true" to widen against, a model is either present/pullable or it is not, so "enabled" is simply
+/// absent from this list. It does not delete weights and does not stop <see cref="Ensure"/> or
+/// <see cref="Remove"/> from running; a model can be pulled and disabled at once (staged but not yet
+/// exposed). The node filters it out of what it declares over its capability report, so the hub's
+/// routing needs no changes at all — a disabled model simply never appears as something the node
+/// provides.
+/// </remarks>
 public sealed record NodeProfileModels(
     [property: JsonPropertyName("ensure")] IReadOnlyList<string>? Ensure = null,
-    [property: JsonPropertyName("remove")] IReadOnlyList<string>? Remove = null);
+    [property: JsonPropertyName("remove")] IReadOnlyList<string>? Remove = null,
+    [property: JsonPropertyName("disabled")] IReadOnlyList<string>? Disabled = null);
 
 /// <summary>
 /// What the hub answers when a node asks for its profile at registration, and what it pushes when an

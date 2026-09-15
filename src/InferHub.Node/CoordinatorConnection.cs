@@ -413,7 +413,14 @@ public sealed class CoordinatorConnection(
             // Constant, and that is the whole content of it (phase-70 D7): this build understands
             // a streamed synthesis. There is no key to turn it off, because a node that answered
             // one with a file would be telling the caller about attachments.
-            SupportsStreamedSpeech: true);
+            SupportsStreamedSpeech: true,
+            // The same Node:Vram figures NodeProfileClamp already gates image-recipe narrowing
+            // against (phase-74), reported so the hub can precheck a model-enable request before
+            // pushing it down. 0 means "no gate" on this box, same as everywhere else Vram.BudgetMiB
+            // is read — reported as-is, not translated to null, so the coordinator sees the same
+            // "not declared" the node itself sees.
+            VramBudgetMiB: node.Vram.BudgetMiB,
+            VramReserveMiB: node.Vram.ReserveMiB);
 
         await connection.InvokeAsync("Register", registration, cancellationToken);
         await RequestProfileAsync(cancellationToken);
@@ -977,12 +984,15 @@ public sealed class CoordinatorConnection(
         // Phase 67 adds the backend's own declaration to the inputs: an Anthropic-backed node says
         // chat and not embed, so the hub answers an embedding request with 40 D1's 503 rather than
         // routing it here for a 501.
+        // Phase 74 narrows it a fourth way, per model rather than per kind: a profile that disabled
+        // 'llama3:70b' on this box means the node still declares 'chat', just not with that name.
         var capabilities = BackendCapabilities.Declare(
             filtered,
             backend.Kinds,
             node.Capabilities,
             toolRuntime.Capabilities,
-            profiles.Effective.DisabledCapabilities);
+            profiles.Effective.DisabledCapabilities,
+            profiles.Effective.DisabledModels);
         // Re-declared on every report as well as at registration (phase-53 D5): a hub that learned
         // it once would keep believing it after an operator turned the key off and restarted.
         var report = new NodeModels(

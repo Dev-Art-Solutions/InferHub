@@ -905,6 +905,42 @@
     }
   };
 
+  // Phase 74. Distinct from postModelCommand: this writes routing state (a profile field) rather
+  // than running a pull/delete/warm command, so it goes through its own enable/disable routes. A
+  // 409 means the VRAM precheck blocked it — offer to retry with force=true rather than silently
+  // failing, since the figure behind the block is an estimate, not a measured fact.
+  const postModelToggle = async (enabling, nodeId, model) => {
+    const enc = encodeURIComponent(model);
+    const nid = encodeURIComponent(nodeId);
+    const url = `/api/admin/nodes/${nid}/models/${enc}/${enabling ? "enable" : "disable"}`;
+    try {
+      const res = await fetch(url, { method: "POST", headers: adminHeaders() });
+      const body = await res.json().catch(() => ({}));
+      if (res.status === 409 && enabling) {
+        const reason = body.error ?? body.precheck?.reason ?? "this node may not have room for it";
+        if (confirm(`Enabling '${model}' on this node was refused:\n\n${reason}\n\nEnable anyway (force)?`)) {
+          const forced = await fetch(`${url}?force=true`, { method: "POST", headers: adminHeaders() });
+          const forcedBody = await forced.json().catch(() => ({}));
+          if (!forced.ok) {
+            pushModelNote(`enable '${model}' failed even with force: ${forcedBody.error ?? ("HTTP " + forced.status)}`, true);
+          } else {
+            pushModelNote(`'${model}' enabled on this node (forced past a VRAM estimate refusal).`, false);
+            queueMatrixRefresh();
+          }
+        }
+        return;
+      }
+      if (!res.ok) {
+        pushModelNote(`${enabling ? "enable" : "disable"} '${model}' failed: ${body.error ?? ("HTTP " + res.status)}`, true);
+        return;
+      }
+      pushModelNote(`'${model}' ${enabling ? "enabled" : "disabled"} on this node.`, false);
+      queueMatrixRefresh();
+    } catch (err) {
+      pushModelNote(`${enabling ? "enable" : "disable"} '${model}' failed: ${err.message}`, true);
+    }
+  };
+
   const pushModelNote = (text, isError) => {
     const note = document.getElementById("mm-note");
     if (note) {
@@ -980,6 +1016,7 @@
       `<th title="${escapeHtml(n.nodeId)}${n.supportsModelManagement ? "" : " — backend cannot manage models"}">${escapeHtml(n.name)}${n.cordoned ? " 🚫" : ""}${n.supportsModelManagement ? "" : " 🔒"}</th>`).join("");
     const rows = m.models.map(model => {
       const held = new Set(model.nodes);
+      const disabledOn = new Set(model.disabledOn ?? []);
       const cells = m.nodes.map(n => {
         const enc = encodeURIComponent(model.name);
         const nid = encodeURIComponent(n.nodeId);
@@ -987,7 +1024,14 @@
           const del = n.supportsModelManagement
             ? ` <button data-mm="delete" data-node="${nid}" data-model="${enc}" title="Delete from this node" style="padding:1px 6px">×</button>`
             : "";
-          return `<td style="text-align:center;color:#4ade80">✓${del}</td>`;
+          // Phase 74: a held model can also be routing-disabled by a profile — shown dimmed with
+          // an enable control, distinct from "not present" (—) and from "present" (✓).
+          if (disabledOn.has(n.nodeId)) {
+            return `<td style="text-align:center;color:var(--muted,#888)" title="Held but disabled for routing by a coordinator profile">✓ (off)
+              <button data-mm="enable" data-node="${nid}" data-model="${enc}" title="Enable routing to this model on this node" style="padding:1px 6px">enable</button>${del}</td>`;
+          }
+          return `<td style="text-align:center;color:#4ade80">✓
+            <button data-mm="disable" data-node="${nid}" data-model="${enc}" title="Disable routing to this model on this node" style="padding:1px 6px">off</button>${del}</td>`;
         }
         if (n.cordoned || !n.supportsModelManagement) return `<td style="text-align:center" class="empty">—</td>`;
         return `<td style="text-align:center"><button data-mm="pull" data-node="${nid}" data-model="${enc}" style="padding:1px 8px">pull</button></td>`;
@@ -1844,8 +1888,48 @@
   document.getElementById("model-matrix")?.addEventListener("click", (event) => {
     const btn = event.target.closest("button[data-mm]");
     if (!btn) return;
-    postModelCommand(btn.dataset.mm, decodeURIComponent(btn.dataset.node), decodeURIComponent(btn.dataset.model));
+    const nodeId = decodeURIComponent(btn.dataset.node);
+    const model = decodeURIComponent(btn.dataset.model);
+    if (btn.dataset.mm === "enable" || btn.dataset.mm === "disable") {
+      postModelToggle(btn.dataset.mm === "enable", nodeId, model);
+      return;
+    }
+    postModelCommand(btn.dataset.mm, nodeId, model);
   });
+
+  // --- Node vector-collection assignment (phase 74) -------------------------------------------
+
+  const pushCollectionNote = (text, isError) => {
+    const note = document.getElementById("coll-note");
+    if (note) {
+      note.textContent = text;
+      note.style.color = isError ? "var(--danger, #ff6b6b)" : "";
+    }
+  };
+
+  const postCollectionAssignment = async (assigning) => {
+    const node = selectedModelNode();
+    const collection = document.getElementById("coll-name")?.value.trim();
+    if (!node) { pushCollectionNote("Select a node first (Model management, above).", true); return; }
+    if (!collection) { pushCollectionNote("Enter a collection name.", true); return; }
+
+    const url = `/api/admin/nodes/${encodeURIComponent(node.nodeId)}/collections/${encodeURIComponent(collection)}/${assigning ? "assign" : "unassign"}`;
+    try {
+      const res = await fetch(url, { method: "POST", headers: adminHeaders() });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        pushCollectionNote(`${assigning ? "assign" : "unassign"} '${collection}' failed: ${body.error ?? ("HTTP " + res.status)}`, true);
+        return;
+      }
+      pushCollectionNote(`'${collection}' ${assigning ? "assigned to" : "unassigned from"} ${node.name}. Owner: ${body.owner ?? "?"}`, false);
+      fetchStatus();
+    } catch (err) {
+      pushCollectionNote(`${assigning ? "assign" : "unassign"} '${collection}' failed: ${err.message}`, true);
+    }
+  };
+
+  document.getElementById("coll-assign")?.addEventListener("click", () => postCollectionAssignment(true));
+  document.getElementById("coll-unassign")?.addEventListener("click", () => postCollectionAssignment(false));
 
   // --- Node profiles (phase 43) --------------------------------------------------------------
   //

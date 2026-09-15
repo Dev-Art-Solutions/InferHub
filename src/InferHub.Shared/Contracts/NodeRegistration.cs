@@ -40,7 +40,16 @@ public sealed record NodeRegistration(
     /// "I speak this contract" and nothing else. Considered and rejected: comparing
     /// <see cref="Version"/> — a version string is a fact about a build and this is a fact
     /// about a capability, and the two stop agreeing the first time somebody backports.
-    bool? SupportsStreamedSpeech = null);
+    bool? SupportsStreamedSpeech = null,
+    /// Phase 74. This node's operator-declared VRAM budget and reserve, in MiB, from
+    /// <c>Node:Vram</c> config — the same figures <c>NodeProfileClamp</c> already gates image-recipe
+    /// narrowing against, now also reported at registration so the coordinator can precheck an
+    /// admin's "enable this model on this node" request before pushing it down. **A node before
+    /// v3.37 sends neither field (both null)**, which the precheck reads the same way it reads a
+    /// declared 0: nothing to check against, so it admits rather than guessing. A modern node always
+    /// sends its real figures, including 0 when the operator never set a budget.
+    int? VramBudgetMiB = null,
+    int? VramReserveMiB = null);
 
 /// <summary>
 /// One row of a node's on-disk vector replica inventory, reported at registration so the

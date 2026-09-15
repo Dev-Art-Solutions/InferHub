@@ -35,21 +35,35 @@ public static class BackendCapabilities
     /// <c>Node:Capabilities:Disabled</c> and can only ever be a superset of it, because the clamp
     /// that produced it started from that list and refuses to remove anything from it.
     /// </param>
+    /// <param name="disabledModels">
+    /// Models a coordinator profile hid from routing (phase 74, <c>NodeProfile.Models.Disabled</c>).
+    /// Filtered out before declaration, so the hub needs no separate per-model narrowing of its
+    /// own — a disabled model simply never appears in what this node says it provides, and
+    /// <c>NodeCapabilityResolver.Provides</c> returns false for it exactly as if the node never had
+    /// it. Distinct from <paramref name="narrowed"/>, which narrows a whole capability kind rather
+    /// than one model within it.
+    /// </param>
     public static IReadOnlyList<NodeCapability> Declare(
         IReadOnlyList<ModelInfo> models,
         IReadOnlyList<string> backendKinds,
         CapabilityOptions options,
         IReadOnlyList<NodeCapability>? toolCapabilities = null,
-        IReadOnlyList<string>? narrowed = null)
+        IReadOnlyList<string>? narrowed = null,
+        IReadOnlyList<string>? disabledModels = null)
     {
         var disabled = narrowed is { Count: > 0 } ? narrowed : options.Disabled;
 
         bool IsDisabled(string kind) =>
             disabled.Any(entry => string.Equals(entry?.Trim(), kind, StringComparison.OrdinalIgnoreCase));
 
+        bool IsModelDisabled(string model) =>
+            disabledModels is { Count: > 0 }
+            && disabledModels.Any(entry => string.Equals(entry?.Trim(), model, StringComparison.OrdinalIgnoreCase));
+
         var names = models
             .Where(model => !string.IsNullOrWhiteSpace(model.Name))
             .Select(model => model.Name.Trim())
+            .Where(name => !IsModelDisabled(name))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(model => model, StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -81,16 +95,18 @@ public static class BackendCapabilities
 
         foreach (var capability in toolCapabilities.Where(c => !IsDisabled(c.Kind)))
         {
+            var capabilityModels = capability.Models.Where(m => !IsModelDisabled(m)).ToArray();
+
             if (!merged.TryGetValue(capability.Kind, out var existing))
             {
-                merged[capability.Kind] = capability.Models
+                merged[capability.Kind] = capabilityModels
                     .OrderBy(model => model, StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
                 continue;
             }
 
-            foreach (var model in capability.Models.Where(m => !existing.Contains(m, StringComparer.OrdinalIgnoreCase)))
+            foreach (var model in capabilityModels.Where(m => !existing.Contains(m, StringComparer.OrdinalIgnoreCase)))
             {
                 existing.Add(model);
             }

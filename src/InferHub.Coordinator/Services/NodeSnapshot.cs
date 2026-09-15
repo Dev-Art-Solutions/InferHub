@@ -24,4 +24,9 @@ public sealed record NodeSnapshot(
     IReadOnlyList<NodeCapability>? Capabilities = null,
     /// What the node last said about its inference backend (phase 69). Null is no opinion: an
     /// older node, one watching nothing, or a vendor-typed one.
-    BackendHealth? BackendHealth = null);
+    BackendHealth? BackendHealth = null,
+    /// The node's operator-declared VRAM budget and reserve, in MiB (phase 74). Null on a node
+    /// before v3.37, which never reported either — the model-enable precheck reads that the same
+    /// way it reads a declared 0: nothing to check against.
+    int? VramBudgetMiB = null,
+    int? VramReserveMiB = null);

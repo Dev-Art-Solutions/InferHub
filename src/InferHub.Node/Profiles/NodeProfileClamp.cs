@@ -40,7 +40,7 @@ public static class NodeProfileClamp
         {
             // No profile: the box runs its own configuration, which is the state it boots in.
             return new ClampResult(
-                new EffectiveProfile(local.DisabledCapabilities, Array.Empty<string>(), local.MaxConcurrency, Array.Empty<string>()),
+                new EffectiveProfile(local.DisabledCapabilities, Array.Empty<string>(), local.MaxConcurrency, Array.Empty<string>(), Array.Empty<string>()),
                 Array.Empty<string>(),
                 Array.Empty<NodeProfileRefusal>(),
                 Array.Empty<string>(),
@@ -61,7 +61,7 @@ public static class NodeProfileClamp
         ClampImageRecipes(local, desired, disabledRecipes, applied, refusals);
 
         var concurrency = ClampConcurrency(local, desired, applied, refusals);
-        var (ensure, remove) = ClampModels(local, desired, applied, refusals);
+        var (ensure, remove, disabledModels) = ClampModels(local, desired, applied, refusals);
         var retrieval = ClampRetrieval(local, desired, applied, refusals);
 
         return new ClampResult(
@@ -69,7 +69,8 @@ public static class NodeProfileClamp
                 disabledCapabilities.OrderBy(kind => kind, StringComparer.OrdinalIgnoreCase).ToArray(),
                 disabledTools.OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToArray(),
                 concurrency,
-                disabledRecipes.OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToArray()),
+                disabledRecipes.OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToArray(),
+                disabledModels),
             applied,
             refusals,
             ensure,
@@ -300,7 +301,7 @@ public static class NodeProfileClamp
     /// models on a backend that cannot manage them is refused here with the reason that endpoint
     /// already gives, instead of failing later inside the executor.
     /// </summary>
-    private static (IReadOnlyList<string> Ensure, IReadOnlyList<string> Remove) ClampModels(
+    private static (IReadOnlyList<string> Ensure, IReadOnlyList<string> Remove, IReadOnlyList<string> Disabled) ClampModels(
         LocalCeiling local,
         NodeProfile desired,
         List<string> applied,
@@ -309,9 +310,19 @@ public static class NodeProfileClamp
         var ensure = Clean(desired.Models?.Ensure);
         var remove = Clean(desired.Models?.Remove);
 
+        // Narrowing, so it is honoured unconditionally — same posture as a capability or a tool
+        // switched off, and independent of Ensure/Remove: a model can be pulled and hidden from
+        // routing at once (staged, not yet exposed), which is not a contradiction to refuse.
+        var disabled = Clean(desired.Models?.Disabled);
+
+        foreach (var model in disabled)
+        {
+            applied.Add($"model '{model}' disabled");
+        }
+
         if (ensure.Count == 0 && remove.Count == 0)
         {
-            return (ensure, remove);
+            return (ensure, remove, disabled);
         }
 
         if (!local.SupportsModelManagement)
@@ -323,7 +334,7 @@ public static class NodeProfileClamp
                     "this node runs a backend that cannot manage models"));
             }
 
-            return (Array.Empty<string>(), Array.Empty<string>());
+            return (Array.Empty<string>(), Array.Empty<string>(), disabled);
         }
 
         // A model in both lists is a profile that cannot be satisfied, and guessing which half the
@@ -345,7 +356,7 @@ public static class NodeProfileClamp
             remove = remove.Where(m => !contradictory.Contains(m, StringComparer.OrdinalIgnoreCase)).ToArray();
         }
 
-        return (ensure, remove);
+        return (ensure, remove, disabled);
     }
 
     /// <summary>
@@ -458,7 +469,12 @@ public sealed record EffectiveProfile(
     IReadOnlyList<string> DisabledTools,
     int? MaxConcurrency,
     /// <summary>Image recipes a profile switched off (phase 48). Narrowing only.</summary>
-    IReadOnlyList<string> DisabledImageRecipes);
+    IReadOnlyList<string> DisabledImageRecipes,
+    /// <summary>
+    /// Models a profile hid from routing (phase 74). Narrowing only — does not affect whether the
+    /// model is pulled or removed, only whether it is declared as something this node provides.
+    /// </summary>
+    IReadOnlyList<string> DisabledModels);
 
 public sealed record ClampResult(
     EffectiveProfile Effective,

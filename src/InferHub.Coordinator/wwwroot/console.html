@@ -302,6 +302,22 @@
   <!-- Phase 44. A corpus the hub assigned, as the node that owns it counts it. -->
   <section>
     <h2>Node retrieval</h2>
+    <!--
+      Phase 74. A structured assign/unassign for one collection on one node, instead of hand-editing
+      a profile's retrieval.collections JSON. Reuses the Model management node picker (#mm-node) —
+      it is the same "which node" question either panel is asking. Every other retrieval field
+      (provider, url, credentialRef, embeddingModel) stays a raw-profile-editor decision; there is no
+      good structured control for picking a vector engine.
+    -->
+    <div class="card" style="margin-bottom:12px">
+      <div class="actions" style="flex-wrap:wrap;gap:8px;align-items:center">
+        <span class="meta">Node: uses the selection above in Model management (<code>#mm-node</code>)</span>
+        <input id="coll-name" placeholder="collection name" style="min-width:220px" />
+        <button id="coll-assign">Assign to node</button>
+        <button id="coll-unassign">Unassign from node</button>
+      </div>
+      <div id="coll-note" class="empty" style="padding:8px 0 0"></div>
+    </div>
     <div class="table-wrap">
       <table id="corpora-table">
         <thead>

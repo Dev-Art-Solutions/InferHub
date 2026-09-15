@@ -218,6 +218,39 @@ public class CapabilityRoutingTests
         Assert.Empty(BackendCapabilities.Declare([], ChatAndEmbed, new CapabilityOptions()));
     }
 
+    /// <summary>
+    /// Phase 74: a model a profile disabled is filtered out before declaration, so the hub needs no
+    /// separate per-model narrowing — it simply never appears as something the node provides,
+    /// including through a tool's own merged capability.
+    /// </summary>
+    [Fact]
+    public void ADisabledModelIsFilteredOutOfWhatTheNodeDeclares()
+    {
+        IReadOnlyList<ModelInfo> models = [Model("llama3"), Model("nomic-embed-text")];
+
+        var declared = BackendCapabilities.Declare(
+            models,
+            ChatAndEmbed,
+            new CapabilityOptions(),
+            disabledModels: ["llama3"]);
+
+        var chat = declared.Single(c => c.Kind == CapabilityKinds.Chat);
+        Assert.Equal(["nomic-embed-text"], chat.Models);
+
+        var toolCapabilities = new[] { new NodeCapability("chat", ["llama3", "phi3"]) };
+
+        var withTool = BackendCapabilities.Declare(
+            models,
+            ChatAndEmbed,
+            new CapabilityOptions(),
+            toolCapabilities,
+            disabledModels: ["llama3"]);
+
+        var mergedChat = withTool.Single(c => c.Kind == CapabilityKinds.Chat);
+        Assert.DoesNotContain("llama3", mergedChat.Models);
+        Assert.Contains("phi3", mergedChat.Models);
+    }
+
     [Fact]
     public void DisablingEveryKindTheBackendHasIsAStartupFailure()
     {

@@ -144,9 +144,24 @@ public static class AdminEndpoints
 
         // Fleet-wide model matrix (phase 26): model × node, with sizes and which nodes hold each.
         // The view that makes the whole feature make sense.
-        group.MapGet("/models", (INodeRegistry registry) =>
+        group.MapGet("/models", (INodeRegistry registry, IProfileRegistry profiles) =>
         {
             var inventory = registry.ModelInventory();
+
+            // Phase 74. A model a profile disabled is still held (and shown as such — the operator
+            // needs to see it to re-enable it) but is no longer routed to on that node. Sourced from
+            // each node's currently-*assigned* profile rather than a state report, same as every
+            // other "effective" field this endpoint already computes from the profile book.
+            var disabledByNode = registry.Snapshot(DateTimeOffset.UtcNow)
+                .ToDictionary(
+                    n => n.NodeId,
+                    n => (IReadOnlySet<string>)new HashSet<string>(
+                        profiles.MatchFor(n.NodeId, n.Labels).Profile?.Models?.Disabled ?? Array.Empty<string>(),
+                        StringComparer.OrdinalIgnoreCase),
+                    StringComparer.OrdinalIgnoreCase);
+
+            IReadOnlySet<string> DisabledOn(string nodeId) =>
+                disabledByNode.TryGetValue(nodeId, out var set) ? set : (IReadOnlySet<string>)Array.Empty<string>().ToHashSet();
 
             var nodes = inventory
                 .Select(n => new
@@ -168,7 +183,10 @@ public static class AdminEndpoints
                     sizeBytes = g.Select(x => x.Model.SizeBytes).Where(s => s.HasValue).Select(s => s!.Value)
                         .DefaultIfEmpty(0).Max() is var mx && mx > 0 ? (long?)mx : null,
                     nodes = g.Select(x => x.NodeId).Distinct(StringComparer.OrdinalIgnoreCase)
-                        .OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray()
+                        .OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray(),
+                    disabledOn = g.Select(x => x.NodeId).Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Where(nodeId => DisabledOn(nodeId).Contains(g.Key))
+                        .OrderBy(nodeId => nodeId, StringComparer.OrdinalIgnoreCase).ToArray()
                 })
                 .OrderBy(m => m.name, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
@@ -316,6 +334,37 @@ public static class AdminEndpoints
                 reportedAtUtc = state?.AtUtc
             });
         });
+
+        // Per-(node, model) routing toggle and per-node vector-collection assignment (phase 74).
+        // Both are ergonomic wrappers around the profile mechanism above: they read-modify-write
+        // whichever named profile already matches the node (creating a fresh `node:{id}` one if
+        // none does) rather than asking the operator to hand-edit the raw profile JSON for a single
+        // model or collection. Every write still goes through IProfileRegistry.Put +
+        // NodeProfileCoordinator.ReassertAsync, so CollectionOwnership stays derived, never a second
+        // source of truth.
+        group.MapPost("/nodes/{nodeId}/models/{model}/enable", async (
+            string nodeId, string model, bool? force, HttpContext context,
+            INodeRegistry registry, IProfileRegistry profiles, NodeProfileCoordinator coordinator,
+            IAuditLog audit, ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
+            await SetModelEnabledAsync(nodeId, model, enabled: true, force ?? false, context, registry, profiles, coordinator, audit, loggerFactory, cancellationToken));
+
+        group.MapPost("/nodes/{nodeId}/models/{model}/disable", async (
+            string nodeId, string model, HttpContext context,
+            INodeRegistry registry, IProfileRegistry profiles, NodeProfileCoordinator coordinator,
+            IAuditLog audit, ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
+            await SetModelEnabledAsync(nodeId, model, enabled: false, force: true, context, registry, profiles, coordinator, audit, loggerFactory, cancellationToken));
+
+        group.MapPost("/nodes/{nodeId}/collections/{collection}/assign", async (
+            string nodeId, string collection, HttpContext context,
+            INodeRegistry registry, IProfileRegistry profiles, NodeProfileCoordinator coordinator,
+            CollectionOwnership ownership, IAuditLog audit, ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
+            await SetCollectionAssignedAsync(nodeId, collection, assigned: true, context, registry, profiles, coordinator, ownership, audit, loggerFactory, cancellationToken));
+
+        group.MapPost("/nodes/{nodeId}/collections/{collection}/unassign", async (
+            string nodeId, string collection, HttpContext context,
+            INodeRegistry registry, IProfileRegistry profiles, NodeProfileCoordinator coordinator,
+            CollectionOwnership ownership, IAuditLog audit, ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
+            await SetCollectionAssignedAsync(nodeId, collection, assigned: false, context, registry, profiles, coordinator, ownership, audit, loggerFactory, cancellationToken));
 
         group.MapGet("/stream", StreamAsync);
 
@@ -503,6 +552,291 @@ public static class AdminEndpoints
             kind,
             commandId = result.CommandId,
             reused = result.Reused
+        });
+    }
+
+    /// <summary>
+    /// Which named profile a per-node admin action should patch: whatever already matches the
+    /// node, or a fresh <c>node:{id}</c> skeleton if none does. Mirrors <see cref="NodeProfileCoordinator.ReassertAsync"/>'s
+    /// own match so a conflicted node is refused here exactly as it is refused a push.
+    /// </summary>
+    private static (IResult? Error, string Name, NodeProfile Profile) ResolveProfileForNode(
+        NodeSnapshot node,
+        IProfileRegistry profiles)
+    {
+        var assignment = profiles.MatchFor(node.NodeId, node.Labels);
+
+        if (assignment.IsConflict)
+        {
+            return (Results.Conflict(new
+            {
+                error = $"node '{node.NodeId}' matches {assignment.Conflicts!.Count} profiles ({string.Join(", ", assignment.Conflicts)}); resolve the conflict in the raw profile editor before toggling a model or collection here"
+            }), string.Empty, null!);
+        }
+
+        if (assignment.Profile is { } existing)
+        {
+            return (null, existing.Name, existing);
+        }
+
+        var name = $"node:{node.NodeId}";
+        return (null, name, new NodeProfile(name, 0, new NodeProfileSelector(NodeId: node.NodeId)));
+    }
+
+    /// <summary>
+    /// Enables or disables one model on one node, going through the profile mechanism (D2) rather
+    /// than a second routing switch. Enabling runs the VRAM precheck first (phase 74): since the
+    /// only figure available is a disk-size estimate rather than a measured footprint, a refusal is
+    /// a 409 the operator can override with <c>force=true</c>, not a hard wall the way an image
+    /// recipe's declared VRAM figure is.
+    /// </summary>
+    private static async Task<IResult> SetModelEnabledAsync(
+        string nodeId,
+        string model,
+        bool enabled,
+        bool force,
+        HttpContext context,
+        INodeRegistry registry,
+        IProfileRegistry profiles,
+        NodeProfileCoordinator coordinator,
+        IAuditLog audit,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        model = (model ?? string.Empty).Trim();
+
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            return Results.BadRequest(new { error = "a model name is required" });
+        }
+
+        var node = registry.Snapshot(DateTimeOffset.UtcNow)
+            .FirstOrDefault(n => string.Equals(n.NodeId, nodeId, StringComparison.OrdinalIgnoreCase));
+
+        if (node is null)
+        {
+            return Results.NotFound(new { error = $"node '{nodeId}' not found" });
+        }
+
+        ModelPrecheckResult? precheck = null;
+
+        if (enabled)
+        {
+            precheck = PrecheckModel(node, model, registry);
+
+            if (!precheck.Ok && !force)
+            {
+                return Results.Conflict(new
+                {
+                    error = precheck.Reason,
+                    nodeId = node.NodeId,
+                    model,
+                    precheck = new
+                    {
+                        ok = false,
+                        estimatedMiB = precheck.EstimatedMiB,
+                        estimate = precheck.IsEstimate,
+                        budgetMiB = precheck.BudgetMiB,
+                        reserveMiB = precheck.ReserveMiB
+                    },
+                    hint = "retry with ?force=true to enable anyway"
+                });
+            }
+        }
+
+        var (error, name, existing) = ResolveProfileForNode(node, profiles);
+
+        if (error is not null)
+        {
+            return error;
+        }
+
+        var models = existing.Models ?? new NodeProfileModels();
+        var disabled = (models.Disabled ?? Array.Empty<string>())
+            .Where(m => !string.IsNullOrWhiteSpace(m))
+            .Select(m => m.Trim())
+            .Where(m => !string.Equals(m, model, StringComparison.OrdinalIgnoreCase));
+
+        var updatedDisabled = enabled
+            ? disabled.ToArray()
+            : disabled.Append(model).ToArray();
+
+        var updated = existing with { Models = models with { Disabled = updatedDisabled } };
+
+        var stored = profiles.Put(name, updated);
+        await coordinator.ReassertAsync(cancellationToken);
+
+        var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin");
+        audit.Record(node.NodeId, $"model.{(enabled ? "enable" : "disable")}:{model}", ActorOf(context), DateTimeOffset.UtcNow);
+        logger.LogInformation(
+            "Model '{Model}' {State} on node {NodeId} via profile '{Profile}' revision {Revision}",
+            model, enabled ? "enabled" : "disabled", node.NodeId, stored.Name, stored.Revision);
+
+        return Results.Ok(new
+        {
+            nodeId = node.NodeId,
+            model,
+            enabled,
+            profile = stored,
+            precheck = precheck is null
+                ? null
+                : new
+                {
+                    ok = precheck.Ok,
+                    overridden = !precheck.Ok && force,
+                    estimatedMiB = precheck.EstimatedMiB,
+                    estimate = precheck.IsEstimate,
+                    budgetMiB = precheck.BudgetMiB,
+                    reserveMiB = precheck.ReserveMiB,
+                    reason = precheck.Reason
+                }
+        });
+    }
+
+    /// <summary>
+    /// Estimates whether a node has room for a model it does not necessarily hold yet, and gates on
+    /// it. There is no measured VRAM/RAM footprint anywhere in this codebase for an Ollama-style
+    /// model (unlike an image recipe, which declares one) — <see cref="ModelInfo.SizeBytes"/> is
+    /// on-disk weight size, not resident size, so this is deliberately labeled an estimate rather
+    /// than treated as a fact the way image-recipe VRAM gating is.
+    /// </summary>
+    private static ModelPrecheckResult PrecheckModel(NodeSnapshot node, string model, INodeRegistry registry)
+    {
+        var budgetMiB = node.VramBudgetMiB ?? 0;
+        var reserveMiB = node.VramReserveMiB ?? 0;
+
+        if (budgetMiB <= 0)
+        {
+            // Same posture as VramBudget.Fits on the node: no declared budget means nothing is
+            // gated, because a deployment that never set Node:Vram:BudgetMiB behaves as it always
+            // did rather than being blocked by a check it never opted into.
+            return new ModelPrecheckResult(true, null, false, null, null,
+                "this node has not declared a VRAM budget (Node:Vram:BudgetMiB), so nothing is checked");
+        }
+
+        var inventory = registry.ModelInventory();
+        var resident = inventory
+            .FirstOrDefault(n => string.Equals(n.NodeId, node.NodeId, StringComparison.OrdinalIgnoreCase))?
+            .Models.FirstOrDefault(m => string.Equals(m.Name, model, StringComparison.OrdinalIgnoreCase));
+
+        var isEstimate = resident is null;
+        var sizeBytes = resident?.SizeBytes
+            ?? registry.DistinctModels()
+                .FirstOrDefault(m => string.Equals(m.Name, model, StringComparison.OrdinalIgnoreCase))?.SizeBytes;
+
+        if (sizeBytes is not { } bytes || bytes <= 0)
+        {
+            // A model with no reported size anywhere in the fleet is admitted rather than guessed
+            // at — inventing a number would put it behind a refusal derived from arithmetic nobody
+            // wrote down (the same rule VramBudget.Evaluate applies to an unrecognised recipe).
+            return new ModelPrecheckResult(true, null, false, budgetMiB, reserveMiB,
+                "no reported size for this model anywhere in the fleet, so there is nothing to check it against");
+        }
+
+        var estimatedMiB = (long)Math.Ceiling(bytes / (1024.0 * 1024.0));
+        var headroomMiB = budgetMiB - Math.Max(0, reserveMiB);
+        var fits = headroomMiB > 0 && estimatedMiB <= headroomMiB;
+
+        var reason = fits
+            ? "fits within this node's declared VRAM budget"
+            : $"'{model}' is estimated at {estimatedMiB} MiB ({(isEstimate ? "fleet-wide disk size, not measured on this node" : "this node's own reported disk size")}) and this node budgets {Math.Max(0, headroomMiB)} MiB for models (Node:Vram:BudgetMiB {budgetMiB} minus Node:Vram:ReserveMiB {reserveMiB})";
+
+        return new ModelPrecheckResult(fits, estimatedMiB, isEstimate, budgetMiB, reserveMiB, reason);
+    }
+
+    private sealed record ModelPrecheckResult(
+        bool Ok,
+        long? EstimatedMiB,
+        bool IsEstimate,
+        int? BudgetMiB,
+        int? ReserveMiB,
+        string Reason);
+
+    /// <summary>
+    /// Assigns or releases one vector collection on one node (phase 74), through the same profile
+    /// read-modify-write as the model toggle. Never touches Provider/Url/CredentialRef/EmbeddingModel
+    /// — those stay a raw-profile-editor decision, since a structured per-collection control has no
+    /// good UI for picking a vector engine.
+    /// </summary>
+    private static async Task<IResult> SetCollectionAssignedAsync(
+        string nodeId,
+        string collection,
+        bool assigned,
+        HttpContext context,
+        INodeRegistry registry,
+        IProfileRegistry profiles,
+        NodeProfileCoordinator coordinator,
+        CollectionOwnership ownership,
+        IAuditLog audit,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        collection = (collection ?? string.Empty).Trim();
+
+        if (string.IsNullOrWhiteSpace(collection))
+        {
+            return Results.BadRequest(new { error = "a collection name is required" });
+        }
+
+        var node = registry.Snapshot(DateTimeOffset.UtcNow)
+            .FirstOrDefault(n => string.Equals(n.NodeId, nodeId, StringComparison.OrdinalIgnoreCase));
+
+        if (node is null)
+        {
+            return Results.NotFound(new { error = $"node '{nodeId}' not found" });
+        }
+
+        if (assigned)
+        {
+            var currentOwner = ownership.OwnerOfCollection(collection);
+            var thisNodeOwner = $"node:{node.NodeId}";
+
+            if (!string.Equals(currentOwner, CollectionOwnership.Hub, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(currentOwner, thisNodeOwner, StringComparison.OrdinalIgnoreCase))
+            {
+                return Results.Conflict(new { error = ownership.RefusalFor(collection) });
+            }
+        }
+
+        var (error, name, existing) = ResolveProfileForNode(node, profiles);
+
+        if (error is not null)
+        {
+            return error;
+        }
+
+        var currentCollections = (existing.Retrieval?.Collections ?? Array.Empty<string>())
+            .Where(c => !string.IsNullOrWhiteSpace(c))
+            .Select(c => c.Trim())
+            .Where(c => !string.Equals(c, collection, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (assigned)
+        {
+            currentCollections.Add(collection);
+        }
+
+        var updatedRetrieval = existing.Retrieval is { } retrieval
+            ? retrieval with { Enabled = true, Collections = currentCollections }
+            : new RetrievalProfile(Enabled: true, Collections: currentCollections);
+
+        var updated = existing with { Retrieval = updatedRetrieval };
+        var stored = profiles.Put(name, updated);
+        await coordinator.ReassertAsync(cancellationToken);
+
+        var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin");
+        audit.Record(node.NodeId, $"collection.{(assigned ? "assign" : "unassign")}:{collection}", ActorOf(context), DateTimeOffset.UtcNow);
+        logger.LogInformation(
+            "Collection '{Collection}' {State} on node {NodeId} via profile '{Profile}' revision {Revision}",
+            collection, assigned ? "assigned" : "unassigned", node.NodeId, stored.Name, stored.Revision);
+
+        return Results.Ok(new
+        {
+            nodeId = node.NodeId,
+            collection,
+            assigned,
+            profile = stored,
+            owner = ownership.OwnerOfCollection(collection)
         });
     }
 

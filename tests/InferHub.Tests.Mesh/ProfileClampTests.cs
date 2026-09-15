@@ -176,6 +176,56 @@ public class ProfileClampTests
     /// possible ones.
     /// </summary>
     [Fact]
+    public void ADisabledModelIsHiddenFromRoutingUnconditionally()
+    {
+        var result = NodeProfileClamp.Apply(
+            TestProfiles.OpenCeiling(),
+            TestProfiles.Profile(models: new NodeProfileModels(Disabled: ["llama3.2"])));
+
+        Assert.Empty(result.Refusals);
+        Assert.Equal(["llama3.2"], result.Effective.DisabledModels);
+        Assert.Contains("model 'llama3.2' disabled", result.Applied);
+    }
+
+    /// <summary>
+    /// A model can be pulled and hidden from routing at once — staging, not a contradiction the way
+    /// naming the same model in both 'ensure' and 'remove' is.
+    /// </summary>
+    [Fact]
+    public void EnsureAndDisableOnTheSameModelIsNotAContradiction()
+    {
+        var result = NodeProfileClamp.Apply(
+            TestProfiles.OpenCeiling(),
+            TestProfiles.Profile(models: new NodeProfileModels(Ensure: ["llama3.2"], Disabled: ["llama3.2"])));
+
+        Assert.Empty(result.Refusals);
+        Assert.Equal(["llama3.2"], result.EnsureModels);
+        Assert.Equal(["llama3.2"], result.Effective.DisabledModels);
+    }
+
+    [Fact]
+    public void RemoveAndDisableOnTheSameModelIsHarmless()
+    {
+        var result = NodeProfileClamp.Apply(
+            TestProfiles.OpenCeiling(),
+            TestProfiles.Profile(models: new NodeProfileModels(Remove: ["llama3.2"], Disabled: ["llama3.2"])));
+
+        Assert.Empty(result.Refusals);
+        Assert.Equal(["llama3.2"], result.RemoveModels);
+        Assert.Equal(["llama3.2"], result.Effective.DisabledModels);
+    }
+
+    [Fact]
+    public void AbsentDisabledIsBackwardCompatible()
+    {
+        var result = NodeProfileClamp.Apply(
+            TestProfiles.OpenCeiling(),
+            TestProfiles.Profile(models: new NodeProfileModels(Ensure: ["llama3.2"])));
+
+        Assert.Empty(result.Effective.DisabledModels);
+    }
+
+    [Fact]
     public void OneRefusedItemDoesNotStopTheRest()
     {
         var result = NodeProfileClamp.Apply(

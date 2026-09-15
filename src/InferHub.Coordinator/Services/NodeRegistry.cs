@@ -402,7 +402,9 @@ public sealed class NodeRegistry : INodeRegistry
             entry.Cordoned,
             entry.Registration.SupportsModelManagement,
             entry.Capabilities,
-            entry.Backend);
+            entry.Backend,
+            entry.Registration.VramBudgetMiB,
+            entry.Registration.VramReserveMiB);
     }
 
     /// <summary>
