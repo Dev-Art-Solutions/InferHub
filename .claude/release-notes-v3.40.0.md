@@ -50,3 +50,12 @@ scope exclusion, a disconnected owner reported rather than papered over, and the
 against the collision it exists to prevent. `dotnet build InferHub.sln` succeeds. **The rest of the
 solution's test slice was not run for this release** — per the release instruction, only the slice
 this phase touched.
+
+**The published image was pulled and run** (`ghcr.io/dev-art-solutions/inferhub-coordinator:3.40.0`,
+digest `sha256:cf8202181bc5bb43dd319ad68b7dceba75efbfd10a141d166ee2aa780739ff3b`) — a solo coordinator
+container with no node attached. `POST /api/retrieve/federated` against a real hub-owned collection
+plus a missing one returned `not_found` for the missing name and `unavailable` for the real one
+(there is no node in this container to embed the query against, so retrieval genuinely could not
+answer — the honest per-source status the phase exists to produce, not a bug in it), and 17
+collections in one call came back `400`. This is a solo-container smoke test, not a fleet: a case
+with a node actually answering `ok` was not exercised against the published artifact.
