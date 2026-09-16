@@ -291,6 +291,10 @@ if (vectorStoreEnabled)
     app.MapVectorEndpoints(vectorSupportsReplication);
     app.MapIngestionEndpoints();
     app.MapSearchEndpoints();
+
+    // Phase 75. Beside /search rather than instead of it: fan-out to several collections is a caller
+    // of the single-collection path, not a second one (75 D1).
+    app.MapFederatedRetrievalEndpoints();
 }
 
 app.MapHub<NodeHub>("/hubs/node");

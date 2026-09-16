@@ -108,6 +108,9 @@ internal sealed class HubHost : IAsyncDisposable
             // where the ownership refusal lives (D1). `supportsReplication: false` keeps the fleet
             // half out of a fixture that has no replication services.
             host.app.MapVectorEndpoints(supportsReplication: false);
+
+            // Phase 75.
+            host.app.MapFederatedRetrievalEndpoints();
         }
 
         await host.app.StartAsync();
@@ -130,6 +133,11 @@ internal sealed class HubHost : IAsyncDisposable
     /// </remarks>
     public Task<CollectionInfo> CreateCollectionAsync(string name, int dimension)
         => app.Services.GetRequiredService<IVectorStore>().CreateCollectionAsync(name, dimension, distance: null);
+
+    /// <summary>Upserts straight through the hub's own store — for a federated-fan-out test to have
+    /// something to find in a hub-owned collection without going through the HTTP surface.</summary>
+    public Task<VectorRecord> UpsertAsync(string collection, VectorUpsert upsert)
+        => app.Services.GetRequiredService<IVectorStore>().UpsertAsync(collection, upsert);
 
     /// <summary>Who owns which collection (phase 44). Empty unless a test assigns something.</summary>
     public InferHub.Coordinator.Vector.CollectionOwnership Ownership

@@ -266,3 +266,48 @@ and the timestamp says so.
 
 **Rule 5 survived again.** Phase 44 added **zero** new dependencies.
 
+### Phase 75 (federated retrieval) — also load-bearing
+
+**D1 — `POST /api/retrieve/federated` calls the exact single-collection path `/search` already uses,
+once per named collection, unchanged.** Hub-owned names go through `RetrievalPipeline.SearchAsync`;
+node-owned names go through `NodeCorpusDispatcher.SearchAsync` (44 D5), exactly as
+[SearchEndpoints](src/InferHub.Coordinator/Endpoints/SearchEndpoints.cs) already dispatches them.
+**Considered and rejected: a parallel vector-only path** that embeds the query once and reuses the
+vector across every collection — it silently drops node-owned collections, which are searched by
+*text* dispatched to the owner's own pipeline, because a node's embedding model is its own and the
+hub does not know it in advance (44 D4). Reusing the single-collection path means a federated result
+for one name is provably what that name's own `/search` would have returned, in isolation. Ownership
+itself is untouched: every name still has exactly one authority (44 D1), looked up exactly as
+`/search` looks it up — federation is a caller of `CollectionOwnership`, not a second one.
+
+**D2 — Cross-collection fusion is RRF keyed by `(collection, id)`, not by `id` alone.**
+[HybridSearch.Fuse](src/InferHub.Shared/Vector/HybridSearch.cs) (phase 24) keys on the bare record id,
+which is safe within one collection's own namespace and unsafe across several — two unrelated
+collections' chunk `"1"` are different records that a bare-id fuse would silently merge into one
+scored entry. `FederatedRetrievalEndpoints.FuseAcrossCollections` reuses `HybridSearch.RrfK` (60) for
+the same different-engines-different-scales reasoning phase 24 already argued, but scores the
+composite key and returns a `FederatedMatch` that names its source collection.
+
+**D3 — A collection outside the caller's scope reports `status: "not_found"`, identical to a
+genuinely missing one — never a separate "forbidden".** 31 D3's principle, applied per name instead
+of per route: there is no `{collection}` route parameter here for `RequireCollectionScope` to hang
+off, so `CollectionAccessPolicy.CanAccess` runs once per name inside the handler, before the store or
+the owner is asked. A name a client cannot see must read identically to one that does not exist, the
+same as every other collection-naming path.
+
+**D4 — Partial failure answers with whoever answered in time; a slow or unreachable source never
+fails the whole request.** Each name gets its own `maxWaitMs` budget (4000ms default) via a linked,
+per-target `CancellationTokenSource`. A timeout or an unreachable owner
+(`NodeCorpusUnavailableException`, 31 D4's failure mode) contributes zero matches and a `sources[]`
+entry naming the status — never silently dropped, because a caller who cannot tell "nothing relevant"
+from "the node that holds it was asleep" cannot reason about the answer. **Considered and rejected:
+failing the whole request if any collection fails** — that makes a federated query strictly worse
+than issuing the N single-collection requests by hand.
+
+**D5 — `collections` is capped at 16, returned as a 400.** Fan-out has no natural bound otherwise; a
+client could name every collection on the fleet in one call and turn a read into an N-way thundering
+herd. Arbitrary and generous for the ranking use case federation is for — raise it with an argument,
+not a config knob, if it turns out to bind.
+
+**Rule 5 survived again.** Phase 75 added **zero** new dependencies.
+

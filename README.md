@@ -1755,6 +1755,41 @@ Two things are said out loud rather than left to be discovered:
 - **An owner that is not connected is a 503 naming the node**, never a quiet answer from the hub's own
   store. A confident answer from the wrong corpus is the failure nobody notices.
 
+### Federated retrieval across corpora (v3.40+)
+
+A single query can now fan out to several collections at once — hub-owned and node-owned, mixed —
+and come back as one ranked list:
+
+```bash
+curl localhost:5080/api/retrieve/federated -H 'Content-Type: application/json' -d '{
+  "collections": ["site-sofia-docs", "release-notes"],
+  "query": "how does node ownership work",
+  "k": 5
+}'
+```
+
+Each name runs through the exact single-collection path `/search` already uses — nothing about how a
+collection is searched changes — in parallel, bounded by a per-collection `maxWaitMs` (4s default).
+The ranked lists are combined by Reciprocal Rank Fusion, keyed by `(collection, id)` so two unrelated
+corpora's identically-named chunk ids are never merged into one. The response names every source's
+outcome:
+
+```jsonc
+{
+  "matches": [{ "collection": "site-sofia-docs", "id": "c1", "score": 0.031, "payload": "…" }],
+  "sources": [
+    { "collection": "site-sofia-docs", "status": "ok", "matches": 3, "elapsedMs": 42 },
+    { "collection": "release-notes", "status": "timeout", "matches": 0, "elapsedMs": 4000 }
+  ]
+}
+```
+
+A collection outside the caller's scope or that genuinely doesn't exist reports `not_found` — the two
+are indistinguishable, exactly as a single-collection request already keeps them (phase-31 D3). An
+owner that is offline reports `unavailable` rather than being silently dropped or answered from the
+wrong corpus. A slow source times out without failing the other collections' answers. At most 16
+collections per call.
+
 ### The engine, the secret and the disk stay the operator's
 
 A profile names `provider` and `credentialRef`. It cannot name a **secret**: `credentialRef` is a
