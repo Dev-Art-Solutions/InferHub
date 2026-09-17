@@ -161,6 +161,13 @@ else
     builder.Services.AddSingleton<IUsageLedger, InMemoryUsageLedger>();
 }
 
+// Phase 76. Reacts to fallback pressure in the usage ledger above by enabling a model on a node
+// that already holds it but has it disabled (phase 74) — the same VRAM-precheck path an admin hits
+// through the console. Off by default (AutoScaling:Enabled) and dry-run by default
+// (AutoScaling:DryRun) even when on, so turning it on the first time only produces log lines.
+builder.Services.AddSingleton<NodeModelToggle>();
+builder.Services.AddHostedService<AutoScalerService>();
+
 // Cloud providers (phase 61). Registered always and inert unless something is configured: with no
 // `Providers:` section and no `Fallback:Enabled`, ProviderRegistry.Resolve is a null for every model
 // and Decide is a single `No` for every request — byte-for-byte the pre-v3.29 behaviour.

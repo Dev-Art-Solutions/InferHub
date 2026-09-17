@@ -344,15 +344,13 @@ public static class AdminEndpoints
         // source of truth.
         group.MapPost("/nodes/{nodeId}/models/{model}/enable", async (
             string nodeId, string model, bool? force, HttpContext context,
-            INodeRegistry registry, IProfileRegistry profiles, NodeProfileCoordinator coordinator,
-            IAuditLog audit, ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
-            await SetModelEnabledAsync(nodeId, model, enabled: true, force ?? false, context, registry, profiles, coordinator, audit, loggerFactory, cancellationToken));
+            INodeRegistry registry, NodeModelToggle toggle, CancellationToken cancellationToken) =>
+            await SetModelEnabledAsync(nodeId, model, enabled: true, force ?? false, context, registry, toggle, cancellationToken));
 
         group.MapPost("/nodes/{nodeId}/models/{model}/disable", async (
             string nodeId, string model, HttpContext context,
-            INodeRegistry registry, IProfileRegistry profiles, NodeProfileCoordinator coordinator,
-            IAuditLog audit, ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
-            await SetModelEnabledAsync(nodeId, model, enabled: false, force: true, context, registry, profiles, coordinator, audit, loggerFactory, cancellationToken));
+            INodeRegistry registry, NodeModelToggle toggle, CancellationToken cancellationToken) =>
+            await SetModelEnabledAsync(nodeId, model, enabled: false, force: true, context, registry, toggle, cancellationToken));
 
         group.MapPost("/nodes/{nodeId}/collections/{collection}/assign", async (
             string nodeId, string collection, HttpContext context,
@@ -584,11 +582,10 @@ public static class AdminEndpoints
     }
 
     /// <summary>
-    /// Enables or disables one model on one node, going through the profile mechanism (D2) rather
-    /// than a second routing switch. Enabling runs the VRAM precheck first (phase 74): since the
-    /// only figure available is a disk-size estimate rather than a measured footprint, a refusal is
-    /// a 409 the operator can override with <c>force=true</c>, not a hard wall the way an image
-    /// recipe's declared VRAM figure is.
+    /// Enables or disables one model on one node. Thin HTTP wrapper (phase 76) around
+    /// <see cref="NodeModelToggle"/>, which does the profile read-modify-write and VRAM precheck —
+    /// the same path the auto-scaler calls, so a human's <c>force=true</c> override and the
+    /// scaler's decision can never disagree about what "fits" means.
     /// </summary>
     private static async Task<IResult> SetModelEnabledAsync(
         string nodeId,
@@ -597,10 +594,7 @@ public static class AdminEndpoints
         bool force,
         HttpContext context,
         INodeRegistry registry,
-        IProfileRegistry profiles,
-        NodeProfileCoordinator coordinator,
-        IAuditLog audit,
-        ILoggerFactory loggerFactory,
+        NodeModelToggle toggle,
         CancellationToken cancellationToken)
     {
         model = (model ?? string.Empty).Trim();
@@ -618,139 +612,53 @@ public static class AdminEndpoints
             return Results.NotFound(new { error = $"node '{nodeId}' not found" });
         }
 
-        ModelPrecheckResult? precheck = null;
+        var outcome = await toggle.SetEnabledAsync(node, model, enabled, force, ActorOf(context), cancellationToken);
 
-        if (enabled)
+        if (outcome.Conflict)
         {
-            precheck = PrecheckModel(node, model, registry);
+            return Results.Conflict(new { error = outcome.ConflictError });
+        }
 
-            if (!precheck.Ok && !force)
+        if (!outcome.Applied)
+        {
+            var precheck = outcome.Precheck!;
+            return Results.Conflict(new
             {
-                return Results.Conflict(new
+                error = precheck.Reason,
+                nodeId = node.NodeId,
+                model,
+                precheck = new
                 {
-                    error = precheck.Reason,
-                    nodeId = node.NodeId,
-                    model,
-                    precheck = new
-                    {
-                        ok = false,
-                        estimatedMiB = precheck.EstimatedMiB,
-                        estimate = precheck.IsEstimate,
-                        budgetMiB = precheck.BudgetMiB,
-                        reserveMiB = precheck.ReserveMiB
-                    },
-                    hint = "retry with ?force=true to enable anyway"
-                });
-            }
+                    ok = false,
+                    estimatedMiB = precheck.EstimatedMiB,
+                    estimate = precheck.IsEstimate,
+                    budgetMiB = precheck.BudgetMiB,
+                    reserveMiB = precheck.ReserveMiB
+                },
+                hint = "retry with ?force=true to enable anyway"
+            });
         }
-
-        var (error, name, existing) = ResolveProfileForNode(node, profiles);
-
-        if (error is not null)
-        {
-            return error;
-        }
-
-        var models = existing.Models ?? new NodeProfileModels();
-        var disabled = (models.Disabled ?? Array.Empty<string>())
-            .Where(m => !string.IsNullOrWhiteSpace(m))
-            .Select(m => m.Trim())
-            .Where(m => !string.Equals(m, model, StringComparison.OrdinalIgnoreCase));
-
-        var updatedDisabled = enabled
-            ? disabled.ToArray()
-            : disabled.Append(model).ToArray();
-
-        var updated = existing with { Models = models with { Disabled = updatedDisabled } };
-
-        var stored = profiles.Put(name, updated);
-        await coordinator.ReassertAsync(cancellationToken);
-
-        var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin");
-        audit.Record(node.NodeId, $"model.{(enabled ? "enable" : "disable")}:{model}", ActorOf(context), DateTimeOffset.UtcNow);
-        logger.LogInformation(
-            "Model '{Model}' {State} on node {NodeId} via profile '{Profile}' revision {Revision}",
-            model, enabled ? "enabled" : "disabled", node.NodeId, stored.Name, stored.Revision);
 
         return Results.Ok(new
         {
             nodeId = node.NodeId,
             model,
             enabled,
-            profile = stored,
-            precheck = precheck is null
+            profile = outcome.Profile,
+            precheck = outcome.Precheck is null
                 ? null
                 : new
                 {
-                    ok = precheck.Ok,
-                    overridden = !precheck.Ok && force,
-                    estimatedMiB = precheck.EstimatedMiB,
-                    estimate = precheck.IsEstimate,
-                    budgetMiB = precheck.BudgetMiB,
-                    reserveMiB = precheck.ReserveMiB,
-                    reason = precheck.Reason
+                    ok = outcome.Precheck.Ok,
+                    overridden = !outcome.Precheck.Ok && force,
+                    estimatedMiB = outcome.Precheck.EstimatedMiB,
+                    estimate = outcome.Precheck.IsEstimate,
+                    budgetMiB = outcome.Precheck.BudgetMiB,
+                    reserveMiB = outcome.Precheck.ReserveMiB,
+                    reason = outcome.Precheck.Reason
                 }
         });
     }
-
-    /// <summary>
-    /// Estimates whether a node has room for a model it does not necessarily hold yet, and gates on
-    /// it. There is no measured VRAM/RAM footprint anywhere in this codebase for an Ollama-style
-    /// model (unlike an image recipe, which declares one) — <see cref="ModelInfo.SizeBytes"/> is
-    /// on-disk weight size, not resident size, so this is deliberately labeled an estimate rather
-    /// than treated as a fact the way image-recipe VRAM gating is.
-    /// </summary>
-    private static ModelPrecheckResult PrecheckModel(NodeSnapshot node, string model, INodeRegistry registry)
-    {
-        var budgetMiB = node.VramBudgetMiB ?? 0;
-        var reserveMiB = node.VramReserveMiB ?? 0;
-
-        if (budgetMiB <= 0)
-        {
-            // Same posture as VramBudget.Fits on the node: no declared budget means nothing is
-            // gated, because a deployment that never set Node:Vram:BudgetMiB behaves as it always
-            // did rather than being blocked by a check it never opted into.
-            return new ModelPrecheckResult(true, null, false, null, null,
-                "this node has not declared a VRAM budget (Node:Vram:BudgetMiB), so nothing is checked");
-        }
-
-        var inventory = registry.ModelInventory();
-        var resident = inventory
-            .FirstOrDefault(n => string.Equals(n.NodeId, node.NodeId, StringComparison.OrdinalIgnoreCase))?
-            .Models.FirstOrDefault(m => string.Equals(m.Name, model, StringComparison.OrdinalIgnoreCase));
-
-        var isEstimate = resident is null;
-        var sizeBytes = resident?.SizeBytes
-            ?? registry.DistinctModels()
-                .FirstOrDefault(m => string.Equals(m.Name, model, StringComparison.OrdinalIgnoreCase))?.SizeBytes;
-
-        if (sizeBytes is not { } bytes || bytes <= 0)
-        {
-            // A model with no reported size anywhere in the fleet is admitted rather than guessed
-            // at — inventing a number would put it behind a refusal derived from arithmetic nobody
-            // wrote down (the same rule VramBudget.Evaluate applies to an unrecognised recipe).
-            return new ModelPrecheckResult(true, null, false, budgetMiB, reserveMiB,
-                "no reported size for this model anywhere in the fleet, so there is nothing to check it against");
-        }
-
-        var estimatedMiB = (long)Math.Ceiling(bytes / (1024.0 * 1024.0));
-        var headroomMiB = budgetMiB - Math.Max(0, reserveMiB);
-        var fits = headroomMiB > 0 && estimatedMiB <= headroomMiB;
-
-        var reason = fits
-            ? "fits within this node's declared VRAM budget"
-            : $"'{model}' is estimated at {estimatedMiB} MiB ({(isEstimate ? "fleet-wide disk size, not measured on this node" : "this node's own reported disk size")}) and this node budgets {Math.Max(0, headroomMiB)} MiB for models (Node:Vram:BudgetMiB {budgetMiB} minus Node:Vram:ReserveMiB {reserveMiB})";
-
-        return new ModelPrecheckResult(fits, estimatedMiB, isEstimate, budgetMiB, reserveMiB, reason);
-    }
-
-    private sealed record ModelPrecheckResult(
-        bool Ok,
-        long? EstimatedMiB,
-        bool IsEstimate,
-        int? BudgetMiB,
-        int? ReserveMiB,
-        string Reason);
 
     /// <summary>
     /// Assigns or releases one vector collection on one node (phase 74), through the same profile
