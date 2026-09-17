@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Linq;
 
 namespace InferHub.Coordinator.Observability;
 
@@ -36,6 +37,9 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
 
     /// <summary>Image jobs per recipe (phase 51): outcomes, and how long they took.</summary>
     private readonly ConcurrentDictionary<string, ImageJobCounter> perImageRecipe = new(StringComparer.Ordinal);
+
+    /// <summary>Per-model count for <see cref="RecordCapabilityUnavailable"/> (phase 76).</summary>
+    private readonly ConcurrentDictionary<string, ModelCounter> perModelCapabilityUnavailable = new(StringComparer.OrdinalIgnoreCase);
 
     public void RecordRequestStart(string nodeId)
     {
@@ -135,6 +139,28 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
     /// expose by probing (66 D6).
     /// </summary>
     public void RecordProviderRefused() => Interlocked.Increment(ref providerRefused);
+
+    /// <summary>
+    /// A request named a model the fleet holds, but no node currently declares the capability for it
+    /// — almost always a model disabled somewhere (phase 74's per-node disable list). This is a
+    /// different question from <see cref="RecordFallbackDispatched"/>, which fires when nobody holds
+    /// the model at all: cloud burst's own trigger (<c>FleetSaturation</c>) reads raw inventory and
+    /// is deliberately blind to a merely-disabled model, so a demand signal for "re-enable this
+    /// somewhere" cannot be read off it. This counter is that signal, and it is what phase 76's
+    /// <c>AutoScalerService</c> reads.
+    /// </summary>
+    public void RecordCapabilityUnavailable(string model)
+    {
+        var counter = perModelCapabilityUnavailable.GetOrAdd(model, _ => new ModelCounter());
+        Interlocked.Increment(ref counter.Count);
+    }
+
+    /// <summary>Cumulative per-model counts for <see cref="RecordCapabilityUnavailable"/>, since process start.</summary>
+    public IReadOnlyDictionary<string, long> CapabilityUnavailableByModel() =>
+        perModelCapabilityUnavailable.ToDictionary(
+            pair => pair.Key,
+            pair => Volatile.Read(ref pair.Value.Count),
+            StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Tool work that succeeded, in the unit it is actually in (phase-42 D7): seconds for a
@@ -346,6 +372,11 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
         {
             Interlocked.Exchange(ref counter.InFlight, 0);
         }
+    }
+
+    private sealed class ModelCounter
+    {
+        public long Count;
     }
 
     private sealed class NodeCounter

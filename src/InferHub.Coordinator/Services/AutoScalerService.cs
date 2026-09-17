@@ -1,30 +1,42 @@
 using System.Collections.Concurrent;
+using InferHub.Coordinator.Observability;
 using InferHub.Shared.Contracts;
 
 namespace InferHub.Coordinator.Services;
 
 /// <summary>
-/// Phase 76: reacts to fallback pressure recorded in the usage ledger (phase 25) by re-enabling a
-/// model on a node that already holds it but has it disabled (phase 74), instead of leaving that
-/// discovery to an operator staring at <c>/api/admin/usage</c>. It calls <see cref="NodeModelToggle"/> —
-/// the same profile read-modify-write and the same VRAM precheck a human hits through the console —
-/// so nothing here can grant a model room a human admin would have been refused.
+/// Phase 76: reacts to <see cref="Metrics.RecordCapabilityUnavailable"/> by re-enabling a model on a
+/// node that already holds it but has it disabled (phase 74), instead of leaving that discovery to an
+/// operator staring at logs. It calls <see cref="NodeModelToggle"/> — the same profile read-modify-write
+/// and the same VRAM precheck a human hits through the console — so nothing here can grant a model
+/// room a human admin would have been refused.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Scale-out only.</b> There is no per-node dimension anywhere in <see cref="IUsageLedger"/> — a
-/// <see cref="UsageRecord"/> knows the client and the model, never which node served it — so there is
-/// no real signal to decide "this node's copy of the model is idle, disable it." Inventing one from
-/// silence would be the kind of guess this codebase refuses to make (the VRAM precheck already labels
-/// its own estimate rather than pretending it measured something). A scale-in phase can follow once a
-/// node-attributed usage signal exists; it is a non-goal here, not an oversight.
+/// <b>The signal is <c>Metrics</c>, not <see cref="IUsageLedger"/>.</b> The first cut of this phase
+/// read <c>IUsageLedger.FallbackRequests</c>, on the assumption that a disabled model would make
+/// requests fall back the same way an unheld one does. It does not: <c>FleetSaturation</c> (which
+/// gates cloud burst) and <c>RequestQueue</c> both call <c>INodeRegistry.FindNodesWithModel</c> with
+/// no capability filter, which matches raw inventory — a disabled model is still "held", so fallback
+/// never fires for it, and <c>FallbackRequests</c> would have sat at zero for the one case this phase
+/// exists to fix. The real 503 a caller gets for a disabled model ("no node currently provides
+/// '{capability}' for model '{model}'", <c>InferenceCore.DispatchAsync</c>) had no counter before this
+/// phase; <see cref="Metrics.RecordCapabilityUnavailable"/> is that counter, added alongside this
+/// service rather than reusing a metric that measures a different failure.
+/// </para>
+/// <para>
+/// <b>Scale-out only.</b> There is still no per-node dimension anywhere that would justify a
+/// scale-*in* decision — <see cref="Metrics.CapabilityUnavailableByModel"/>, like the usage ledger,
+/// knows the model, never which node's copy sat idle. Inventing one from silence would be the kind of
+/// guess <c>NodeModelToggle.Precheck</c> already refuses to make about a model's resident size. A
+/// scale-in phase can follow once a node-attributed signal exists; it is a non-goal here.
 /// </para>
 /// <para>
 /// <b>No pulls.</b> A candidate is a node that already has the model in <see cref="INodeRegistry.ModelInventory"/> —
-/// on disk — but does not currently declare it as a routable capability (phase 74's disabled list, or
-/// an unhealthy/cordoned node). Downloading a model onto a node that never had it is a multi-minute
-/// job with its own existing manual flow (<c>ModelCommandCoordinator</c>, phase 26/48) and its own
-/// bandwidth/disk cost; auto-triggering that is a separate, riskier feature.
+/// on disk — but does not currently declare it as a routable capability. Downloading a model onto a
+/// node that never had it is a multi-minute job with its own existing manual flow
+/// (<c>ModelCommandCoordinator</c>, phase 26/48) and its own bandwidth/disk cost; auto-triggering that
+/// is a separate, riskier feature.
 /// </para>
 /// <para>
 /// <b>Never forces.</b> <c>force=true</c> is how a human overrides the VRAM precheck's refusal; the
@@ -32,16 +44,22 @@ namespace InferHub.Coordinator.Services;
 /// </para>
 /// </remarks>
 public sealed class AutoScalerService(
-    IUsageLedger usageLedger,
+    Metrics metrics,
     INodeRegistry registry,
     NodeModelToggle toggle,
     IConfiguration configuration,
     ILogger<AutoScalerService> logger) : BackgroundService
 {
     private static readonly TimeSpan DefaultInterval = TimeSpan.FromSeconds(60);
-    private static readonly TimeSpan DefaultLookback = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan DefaultCooldown = TimeSpan.FromMinutes(15);
-    private const long DefaultFallbackThreshold = 5;
+    private const long DefaultPressureThreshold = 5;
+
+    /// <summary>
+    /// Per model, the cumulative <see cref="Metrics.CapabilityUnavailableByModel"/> count as of the
+    /// last tick. The counter is cumulative for the process lifetime; a tick acts on the <em>delta</em>
+    /// since the previous tick, which is what "pressured right now" actually means.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, long> lastObservedCount = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Per (nodeId, model), when the scaler last acted on it — the flap guard.</summary>
     private readonly ConcurrentDictionary<(string NodeId, string Model), DateTimeOffset> lastActionUtc = new();
@@ -71,8 +89,7 @@ public sealed class AutoScalerService(
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // A bad tick must not take the loop down — the next tick tries again, the way
-                // usage recording never fails the request it meters (IUsageLedger.RecordAsync).
+                // A bad tick must not take the loop down — the next tick tries again.
                 logger.LogError(ex, "Auto-scaler tick failed");
             }
         } while (await timer.WaitForNextTickAsync(stoppingToken));
@@ -80,19 +97,23 @@ public sealed class AutoScalerService(
 
     private async Task TickAsync(bool dryRun, CancellationToken cancellationToken)
     {
-        var lookback = GetSeconds("AutoScaling:LookbackMinutes", DefaultLookback, minutes: true);
-        var threshold = configuration.GetValue("AutoScaling:FallbackThreshold", DefaultFallbackThreshold);
+        var threshold = configuration.GetValue("AutoScaling:PressureThreshold", DefaultPressureThreshold);
         var cooldown = GetSeconds("AutoScaling:CooldownMinutes", DefaultCooldown, minutes: true);
 
         var now = DateTimeOffset.UtcNow;
-        var usage = await usageLedger.QueryAsync(new UsageQuery(FromUtc: now - lookback), cancellationToken);
 
-        var pressured = usage
-            .GroupBy(row => row.Model, StringComparer.OrdinalIgnoreCase)
-            .Select(group => new { Model = group.Key, FallbackRequests = group.Sum(row => row.FallbackRequests) })
-            .Where(row => row.FallbackRequests >= threshold)
-            .OrderByDescending(row => row.FallbackRequests)
+        var pressured = metrics.CapabilityUnavailableByModel()
+            .Select(pair => new { Model = pair.Key, Delta = pair.Value - lastObservedCount.GetOrAdd(pair.Key, 0) })
+            .Where(row => row.Delta >= threshold)
+            .OrderByDescending(row => row.Delta)
             .ToArray();
+
+        // Every model's watermark advances regardless of whether it crossed the threshold, so a
+        // model that stays just under it forever does not silently accumulate an ever-growing delta.
+        foreach (var pair in metrics.CapabilityUnavailableByModel())
+        {
+            lastObservedCount[pair.Key] = pair.Value;
+        }
 
         if (pressured.Length == 0)
         {
@@ -105,9 +126,9 @@ public sealed class AutoScalerService(
 
         foreach (var row in pressured)
         {
-            // One node per model per tick: if fallback pressure is still elevated next tick, that
-            // is this tick's evidence the first move was not enough, not a reason to have moved
-            // faster — the same hysteresis NodeReaper's fixed interval gives eviction.
+            // One node per model per tick: if pressure is still elevated next tick, that is this
+            // tick's evidence the first move was not enough, not a reason to have moved faster — the
+            // same hysteresis NodeReaper's fixed interval gives eviction.
             var candidate = FindScaleOutCandidate(row.Model, inventory, snapshots, cooldown, now);
 
             if (candidate is null)
@@ -120,8 +141,8 @@ public sealed class AutoScalerService(
             if (dryRun)
             {
                 logger.LogInformation(
-                    "Auto-scaler (dry-run): would enable '{Model}' on node {NodeId} ({FallbackRequests} fallback requests in the last {LookbackMinutes}m; {Reason})",
-                    row.Model, node.NodeId, row.FallbackRequests, lookback.TotalMinutes, precheck.Reason);
+                    "Auto-scaler (dry-run): would enable '{Model}' on node {NodeId} ({Delta} capability-unavailable refusals since the last tick; {Reason})",
+                    row.Model, node.NodeId, row.Delta, precheck.Reason);
                 continue;
             }
 
@@ -131,8 +152,8 @@ public sealed class AutoScalerService(
             {
                 lastActionUtc[(node.NodeId, row.Model)] = now;
                 logger.LogWarning(
-                    "Auto-scaler enabled '{Model}' on node {NodeId} ({FallbackRequests} fallback requests in the last {LookbackMinutes}m)",
-                    row.Model, node.NodeId, row.FallbackRequests, lookback.TotalMinutes);
+                    "Auto-scaler enabled '{Model}' on node {NodeId} ({Delta} capability-unavailable refusals since the last tick)",
+                    row.Model, node.NodeId, row.Delta);
             }
             else
             {

@@ -234,6 +234,13 @@ internal static class InferenceCore
                         capability,
                         model);
 
+                    // Phase 76: the fleet holds this model (raw inventory says so — `holders > 0`)
+                    // but nobody currently declares the capability for it, almost always because an
+                    // admin (or the auto-scaler itself) disabled it somewhere (phase 74). Cloud
+                    // burst's own trigger is blind to this (FleetSaturation reads raw inventory too),
+                    // so this is the one place the signal becomes visible.
+                    metrics.RecordCapabilityUnavailable(model);
+
                     return DispatchOutcome.Failure(
                         StatusCodes.Status503ServiceUnavailable,
                         $"no node currently provides '{capability}' for model '{model}'",
