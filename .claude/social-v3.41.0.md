@@ -1,9 +1,9 @@
 # Social copy — v3.41.0
 
-**Post link:** not yet published — connector unreachable at release time (`CLIENT_HTTP_NOT_IMPLEMENTED`
-dialing `blog.devart.solutions/api/mcp`), a different failure than the known sessionId/org-membership
-blips. Draft parked here; do not duplicate — publish once, then fill in the slug/ID/link above.
-Intended slug: `inferhub-3-41-the-fleet-turns-a-model-back-on-by-itself`.
+**Post link:** https://blog.devart.solutions/blog/inferhub-3-41-the-fleet-turns-a-model-back-on-by-itself
+(slug `inferhub-3-41-the-fleet-turns-a-model-back-on-by-itself`, ID `6aab5927c890ab012fae2ba7`,
+EN-visible / BG-hidden. Connector reconnected under a different server name in-session; published
+without a retry loop.)
 
 ## X — the product angle (243 chars; the link counts as 23)
 
