@@ -124,6 +124,26 @@ public sealed class ReplicaStore : IDisposable
         }
     }
 
+    /// <summary>
+    /// Phase 77 promotion: detaches a held replica from this store — it is no longer served or
+    /// persisted here — and hands back the directory its raw files live in, so the caller can move
+    /// that directory into the node's own corpus data directory and start a <c>local</c> corpus over
+    /// it. Unlike <see cref="Drop"/>, this does not delete the files: the whole point is that they
+    /// survive the move.
+    /// </summary>
+    public string? DetachForPromotion(string collection)
+    {
+        if (!_replicas.TryRemove(collection, out var entry))
+        {
+            return null;
+        }
+
+        var directory = entry.Raw.Directory;
+        entry.Raw.Close();
+        _logger.LogInformation("Replica '{Collection}' detached for promotion from {Directory}", collection, directory);
+        return directory;
+    }
+
     public IReadOnlyList<VectorMatch>? Query(VectorQueryRequest request)
     {
         if (!_replicas.TryGetValue(request.Collection, out var entry))

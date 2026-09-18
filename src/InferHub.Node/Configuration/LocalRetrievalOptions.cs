@@ -79,6 +79,14 @@ public sealed class LocalRetrievalOptions
     public int SnapshotEveryOps { get; set; } = 5000;
 
     /// <summary>
+    /// Phase 77. Off by default. When true, this node forwards its own <c>local</c>-provider writes
+    /// up to the coordinator so they can be relayed to a standby, <em>if</em> an admin ever assigns
+    /// one for a collection this node owns — the node's own half of the "opt-in twice" shape: the
+    /// operator allows the corpus to be tailed at all, the admin decides which collection actually is.
+    /// </summary>
+    public bool ReplicateOwnedCollections { get; set; }
+
+    /// <summary>
     /// Embedding model, resolved against this node's own backend. A model the backend does not
     /// serve is a <c>NoEmbeddingNodeException</c>, exactly as an unheld model is on the hub.
     /// </summary>

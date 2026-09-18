@@ -9,6 +9,7 @@ using InferHub.Node.Retrieval;
 using InferHub.Node.Tools;
 using InferHub.Node.Vector;
 using InferHub.Shared.Contracts;
+using InferHub.Shared.Vector;
 using InferHub.Shared.Vector.Replication;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Options;
@@ -47,11 +48,13 @@ public sealed class CoordinatorConnection(
     private int inFlight;
     private bool subscribedToSupervisor;
     private bool subscribedToTools;
+    private LocalVectorStore? tailedStore;
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
         SubscribeToSupervisor();
         SubscribeToTools();
+        retrieval.CorpusChanged += OnCorpusChanged;
         return ConnectUntilSuccessfulAsync(cancellationToken);
     }
 
@@ -59,6 +62,8 @@ public sealed class CoordinatorConnection(
     {
         UnsubscribeFromSupervisor();
         UnsubscribeFromTools();
+        retrieval.CorpusChanged -= OnCorpusChanged;
+        UnsubscribeFromTailedStore();
         await lifetime.CancelAsync();
 
         if (heartbeatTask is not null)
@@ -95,6 +100,8 @@ public sealed class CoordinatorConnection(
     {
         UnsubscribeFromSupervisor();
         UnsubscribeFromTools();
+        retrieval.CorpusChanged -= OnCorpusChanged;
+        UnsubscribeFromTailedStore();
         await lifetime.CancelAsync();
         reconnectLock.Dispose();
         lifetime.Dispose();
@@ -263,6 +270,8 @@ public sealed class CoordinatorConnection(
         hubConnection.On<VectorReplicaAssignment>("AssignVectorReplica", OnAssignVectorReplica);
         hubConnection.On<VectorReplicaOp>("ApplyVectorOp", OnApplyVectorOp);
         hubConnection.On<string>("DropVectorReplica", OnDropVectorReplica);
+        hubConnection.On<string>("RequestCorpusSnapshot", OnRequestCorpusSnapshot);
+        hubConnection.On<string>("PromoteCorpusReplica", collection => _ = OnPromoteCorpusReplicaAsync(collection));
 
         hubConnection.Reconnecting += error =>
         {
@@ -908,6 +917,212 @@ public sealed class CoordinatorConnection(
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Failed to drop replica '{Collection}'", collection);
+        }
+    }
+
+    /// <summary>
+    /// Phase 77. Fires whenever <see cref="RetrievalHost.Current"/> changes. Re-points the tailing
+    /// subscription at whatever store is running now — a restart replaces the <c>LocalVectorStore</c>
+    /// instance entirely, so a subscription kept on the old one would silently stop forwarding
+    /// anything the moment a profile touched retrieval.
+    /// </summary>
+    private void OnCorpusChanged(RunningCorpus? corpus)
+    {
+        UnsubscribeFromTailedStore();
+
+        if (corpus?.Store is not LocalVectorStore store || !retrieval.ReplicationEnabled)
+        {
+            return;
+        }
+
+        tailedStore = store;
+        store.RecordUpserted += OnLocalRecordUpserted;
+        store.RecordDeleted += OnLocalRecordDeleted;
+        store.CollectionDropped += OnLocalCollectionDropped;
+    }
+
+    private void UnsubscribeFromTailedStore()
+    {
+        if (tailedStore is not { } store)
+        {
+            return;
+        }
+
+        store.RecordUpserted -= OnLocalRecordUpserted;
+        store.RecordDeleted -= OnLocalRecordDeleted;
+        store.CollectionDropped -= OnLocalCollectionDropped;
+        tailedStore = null;
+    }
+
+    /// <summary>
+    /// Forwards one write on a collection this node owns up to the hub, for relay to a standby if one
+    /// is assigned. Fire-and-forget by design (D1's whole point: the hub is a pass-through, and this
+    /// node's own store write already completed by the time this runs) — a lost relay message is
+    /// caught the same way a lost hub-owned replica op is: the next full snapshot resync, here driven
+    /// by an admin re-assigning the standby or this node reconnecting (<c>OnPrimaryReconnectedAsync</c>
+    /// on the hub side).
+    /// </summary>
+    private void OnLocalRecordUpserted(string collection, VectorRecord record)
+    {
+        var op = new VectorReplicaOp(collection, "upsert", record.Id, record.Vector, record.Payload, record.Metadata, record.SeqNo, record.TimestampUtc);
+        ForwardCorpusOpAsync(op);
+    }
+
+    private void OnLocalRecordDeleted(string collection, string id, long seq, DateTimeOffset ts)
+    {
+        var op = new VectorReplicaOp(collection, "delete", id, null, null, null, seq, ts);
+        ForwardCorpusOpAsync(op);
+    }
+
+    private void ForwardCorpusOpAsync(VectorReplicaOp op)
+    {
+        _ = Task.Run(async () =>
+        {
+            var activeConnection = connection;
+
+            if (activeConnection is not { State: HubConnectionState.Connected })
+            {
+                return;
+            }
+
+            try
+            {
+                await activeConnection.InvokeAsync("ReportCorpusReplicaOp", nodeId, op, lifetime.Token);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "Could not forward a corpus op for '{Collection}' to the coordinator", op.Collection);
+            }
+        });
+    }
+
+    private void OnLocalCollectionDropped(string collection)
+    {
+        _ = Task.Run(async () =>
+        {
+            var activeConnection = connection;
+
+            if (activeConnection is not { State: HubConnectionState.Connected })
+            {
+                return;
+            }
+
+            try
+            {
+                await activeConnection.InvokeAsync("ReportCorpusReplicaDropped", nodeId, collection, lifetime.Token);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "Could not report the drop of '{Collection}' to the coordinator", collection);
+            }
+        });
+    }
+
+    /// <summary>The hub asked for a full snapshot of a collection this node owns — an initial standby assignment, or a re-derivation after a hub restart. Reuses <see cref="LocalVectorStore.SnapshotForReplica"/> verbatim, the same call the hub's own <c>ReplicationCoordinator</c> makes against its local store.</summary>
+    private void OnRequestCorpusSnapshot(string collection)
+    {
+        _ = Task.Run(async () =>
+        {
+            var activeConnection = connection;
+
+            if (activeConnection is not { State: HubConnectionState.Connected })
+            {
+                return;
+            }
+
+            if (retrieval.Current?.Store is not LocalVectorStore store)
+            {
+                return;
+            }
+
+            var snapshot = store.SnapshotForReplica(collection);
+
+            if (snapshot is null)
+            {
+                logger.LogDebug("Coordinator asked for a snapshot of '{Collection}', which this node does not hold", collection);
+                return;
+            }
+
+            var assignment = new VectorReplicaAssignment(snapshot.Collection, snapshot.Dimension, snapshot.Distance, snapshot.Records, snapshot.LastSeq);
+
+            try
+            {
+                await activeConnection.InvokeAsync("PushCorpusReplicaSnapshot", nodeId, assignment, lifetime.Token);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Could not push the corpus snapshot for '{Collection}'", collection);
+            }
+        });
+    }
+
+    /// <summary>
+    /// The hub asked this node — a standby — to take over a collection because its primary has been
+    /// unreachable past the failover grace period. Moves the replica's on-disk directory into this
+    /// node's own retrieval data directory; the actual corpus (re)start happens separately, when the
+    /// hub follows up with a profile that names this collection (<c>NodeCorpusReplicator.OnPromotedAsync</c>)
+    /// — the same profile-driven path an ordinary <c>.../collections/{c}/assign</c> already takes, so
+    /// promotion cannot bring a collection up any way an admin's own assignment couldn't.
+    /// </summary>
+    private async Task OnPromoteCorpusReplicaAsync(string collection)
+    {
+        string? error = null;
+        var success = false;
+
+        try
+        {
+            var sourceDirectory = replicaStore.DetachForPromotion(collection);
+
+            if (sourceDirectory is null)
+            {
+                error = "no replica held for this collection";
+            }
+            else
+            {
+                var target = Path.Combine(retrieval.DataDirectory, collection);
+
+                if (Directory.Exists(target))
+                {
+                    error = $"a local directory already exists for '{collection}'; refusing to overwrite it";
+                }
+                else
+                {
+                    Directory.CreateDirectory(retrieval.DataDirectory);
+                    Directory.Move(sourceDirectory, target);
+                    success = true;
+                    logger.LogWarning("Promoted: '{Collection}' moved from the replica store into this node's own corpus directory", collection);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            logger.LogWarning(ex, "Failed to promote replica '{Collection}'", collection);
+        }
+
+        var activeConnection = connection;
+
+        if (activeConnection is not { State: HubConnectionState.Connected })
+        {
+            return;
+        }
+
+        try
+        {
+            await activeConnection.InvokeAsync("PromotedCorpusReplica", nodeId, collection, success, error, lifetime.Token);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Could not report the outcome of promoting '{Collection}' to the coordinator", collection);
         }
     }
 

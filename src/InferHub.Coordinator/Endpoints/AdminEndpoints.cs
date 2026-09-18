@@ -364,6 +364,42 @@ public static class AdminEndpoints
             CollectionOwnership ownership, IAuditLog audit, ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
             await SetCollectionAssignedAsync(nodeId, collection, assigned: false, context, registry, profiles, coordinator, ownership, audit, loggerFactory, cancellationToken));
 
+        // Node-corpus replication (phase 77): a standby for a node-owned collection, so the
+        // collection survives its owning node's permanent loss. The hub relays snapshot+tail traffic
+        // between the two nodes and never stores a copy itself (NodeCorpusReplicator's own D1).
+        group.MapPost("/collections/{collection}/standby/{standbyNodeId}", async (
+            string collection, string standbyNodeId, HttpContext context,
+            NodeCorpusReplicator replicator, CancellationToken cancellationToken) =>
+        {
+            collection = (collection ?? string.Empty).Trim();
+            standbyNodeId = (standbyNodeId ?? string.Empty).Trim();
+
+            if (string.IsNullOrWhiteSpace(collection) || string.IsNullOrWhiteSpace(standbyNodeId))
+            {
+                return Results.BadRequest(new { error = "a collection name and a standby node id are required" });
+            }
+
+            var (ok, error) = await replicator.AssignStandbyAsync(collection, standbyNodeId, ActorOf(context), cancellationToken);
+
+            return ok
+                ? Results.Ok(new { collection, standbyNodeId })
+                : Results.Conflict(new { error });
+        });
+
+        group.MapDelete("/collections/{collection}/standby", (
+            string collection, HttpContext context, NodeCorpusReplicator replicator) =>
+        {
+            collection = (collection ?? string.Empty).Trim();
+
+            if (string.IsNullOrWhiteSpace(collection))
+            {
+                return Results.BadRequest(new { error = "a collection name is required" });
+            }
+
+            replicator.ClearStandby(collection, ActorOf(context));
+            return Results.Ok(new { collection, standbyNodeId = (string?)null });
+        });
+
         group.MapGet("/stream", StreamAsync);
 
         // Usage accounting (phase 25). Aggregates only — the ledger holds counts, never text,

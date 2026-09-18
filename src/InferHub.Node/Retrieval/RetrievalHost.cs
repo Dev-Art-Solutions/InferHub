@@ -54,6 +54,20 @@ public sealed class RetrievalHost(
     public string? LastError => Volatile.Read(ref lastError);
 
     /// <summary>
+    /// Phase 77. Fires whenever <see cref="Current"/> changes — a start, a restart (stop-then-build
+    /// runs as one transition, not two) or a stop to null. The one hook a caller needs to keep its own
+    /// subscriptions on the <em>current</em> store's events rather than a stale one from a corpus that
+    /// no longer exists.
+    /// </summary>
+    public event Action<RunningCorpus?>? CorpusChanged;
+
+    /// <summary>Where a <c>local</c> corpus's collections live on disk. Phase 77's promotion path moves a detached replica's directory here before restarting the corpus over it.</summary>
+    public string DataDirectory => Path.GetFullPath(options.Value.DataDirectory);
+
+    /// <summary>Phase 77: whether this node forwards its own <c>local</c>-provider writes up to the hub for relay to a standby, if one is ever assigned. Off by default — a node operator opts in explicitly, same "opt-in twice" shape as tools (41 D1).</summary>
+    public bool ReplicationEnabled => options.Value.ReplicateOwnedCollections;
+
+    /// <summary>
     /// Takes a lease on the running corpus, or returns null when there is none. A lease is what
     /// <see cref="StopCorpusAsync"/> drains: a request that is already retrieving finishes against
     /// the store it started on, rather than faulting because an operator switched a profile.
@@ -189,6 +203,7 @@ public sealed class RetrievalHost(
 
             Volatile.Write(ref current, corpus);
             Volatile.Write(ref lastError, null);
+            CorpusChanged?.Invoke(corpus);
 
             logger.LogInformation(
                 "Retrieval is on ({Source}): provider {Provider}, embedding model {Model}{Where}. This node is the authority for {Collections}.",
@@ -476,6 +491,7 @@ public sealed class RetrievalHost(
         }
 
         Volatile.Write(ref current, null);
+        CorpusChanged?.Invoke(null);
         await running.DrainAndDisposeAsync(cancellationToken);
 
         logger.LogInformation("Retrieval is off on this node; the corpus has been stopped and its routes answer 501 again.");

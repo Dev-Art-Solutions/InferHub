@@ -36,6 +36,14 @@ public sealed class CollectionOwnership
     private readonly ConcurrentDictionary<string, string> owners = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
+    /// Phase 77. Collection name → the standby node id, when one has been assigned. Admin-set, not
+    /// derived from a profile the way <see cref="owners"/> is (D2) — <see cref="Rebuild"/> deliberately
+    /// leaves this alone, so an unrelated profile edit elsewhere cannot silently drop a standby
+    /// assignment the way it can (and does, per the phase-77 research) an ownership entry.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, string> standbys = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Records the collections a profile assigns to a node, replacing whatever that node owned
     /// before. A node that was assigned <c>a, b</c> and is then assigned <c>a</c> stops owning
     /// <c>b</c> — which is what makes a profile desired state here too (phase-43 D2).
@@ -145,4 +153,53 @@ public sealed class CollectionOwnership
             }
         }
     }
+
+    /// <summary>
+    /// Phase 77, D2. Records that <paramref name="standbyNodeId"/> should hold a live copy of a
+    /// node-owned collection, so <c>NodeCorpusReplicator</c> knows where to relay a primary's
+    /// snapshot and ongoing writes. Refuses a collection the hub owns (there is no primary to
+    /// relay from) and a standby that is already the owner (nothing to fail over to).
+    /// </summary>
+    public string? AssignStandby(string collection, string standbyNodeId)
+    {
+        collection = (collection ?? string.Empty).Trim();
+        standbyNodeId = (standbyNodeId ?? string.Empty).Trim();
+
+        if (string.IsNullOrWhiteSpace(collection) || string.IsNullOrWhiteSpace(standbyNodeId))
+        {
+            return "a collection and a standby node id are required";
+        }
+
+        if (IsHubOwned(collection))
+        {
+            return $"collection '{collection}' is owned by {Hub}; a standby only makes sense for a node-owned collection";
+        }
+
+        if (string.Equals(NodeOwning(collection), standbyNodeId, StringComparison.OrdinalIgnoreCase))
+        {
+            return $"node '{standbyNodeId}' already owns '{collection}'; it cannot also be its own standby";
+        }
+
+        standbys[collection] = standbyNodeId;
+        return null;
+    }
+
+    public void ClearStandby(string collection)
+    {
+        if (!string.IsNullOrWhiteSpace(collection))
+        {
+            standbys.TryRemove(collection.Trim(), out _);
+        }
+    }
+
+    /// <summary>The node id designated to hold a live copy of this collection, or null.</summary>
+    public string? StandbyNodeOf(string collection) =>
+        string.IsNullOrWhiteSpace(collection) ? null : standbys.GetValueOrDefault(collection.Trim());
+
+    /// <summary>Every collection with a standby assigned, owner and standby both named. For the console and status.</summary>
+    public IReadOnlyDictionary<string, (string Owner, string Standby)> StandbyAssignments() =>
+        standbys.ToArray().ToDictionary(
+            pair => pair.Key,
+            pair => (OwnerOfCollection(pair.Key), pair.Value),
+            StringComparer.OrdinalIgnoreCase);
 }

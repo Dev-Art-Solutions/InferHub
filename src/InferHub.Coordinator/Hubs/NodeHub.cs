@@ -73,11 +73,11 @@ public sealed class NodeHub(
     /// It returns a value, which is fine — the binder trap on <c>StreamChunks</c> is specific to
     /// client-to-server <em>streams</em>, and this is an ordinary invocation with a result.
     /// </remarks>
-    public Task<NodeProfileAssignment> RequestNodeProfile(string nodeId)
+    public async Task<NodeProfileAssignment> RequestNodeProfile(string nodeId)
     {
         if (services.GetService(typeof(IProfileRegistry)) is not IProfileRegistry profiles)
         {
-            return Task.FromResult(NodeProfileAssignment.None);
+            return NodeProfileAssignment.None;
         }
 
         var node = registry.Snapshot(DateTimeOffset.UtcNow)
@@ -109,7 +109,15 @@ public sealed class NodeHub(
             }
         }
 
-        return Task.FromResult(assignment);
+        // Phase 77. A reconnecting primary re-derives its standby relay the same way ownership
+        // re-derives itself above: in-memory relay wiring does not survive a hub restart (rule 4),
+        // so asking again on every pull is the whole recovery story rather than a special case of it.
+        if (services.GetService(typeof(NodeCorpusReplicator)) is NodeCorpusReplicator replicator)
+        {
+            await replicator.OnPrimaryReconnectedAsync(nodeId, Context.ConnectionId);
+        }
+
+        return assignment;
     }
 
     /// <summary>
@@ -183,6 +191,54 @@ public sealed class NodeHub(
             state.Applied.Count,
             state.Refusals.Count,
             state.Pending.Count);
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// A primary's full snapshot of a node-owned collection, sent in response to
+    /// <c>RequestCorpusSnapshot</c> (phase 77). Relayed to the assigned standby, never stored here —
+    /// see <see cref="NodeCorpusReplicator"/>'s own remarks on why.
+    /// </summary>
+    public Task PushCorpusReplicaSnapshot(string nodeId, InferHub.Shared.Vector.Replication.VectorReplicaAssignment snapshot)
+    {
+        if (services.GetService(typeof(NodeCorpusReplicator)) is NodeCorpusReplicator replicator)
+        {
+            return replicator.HandleSnapshotAsync(nodeId, snapshot);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>One live write on a node-owned collection with a standby assigned (phase 77). Relayed, not stored.</summary>
+    public Task ReportCorpusReplicaOp(string nodeId, InferHub.Shared.Vector.Replication.VectorReplicaOp op)
+    {
+        if (services.GetService(typeof(NodeCorpusReplicator)) is NodeCorpusReplicator replicator)
+        {
+            return replicator.HandleOpAsync(nodeId, op);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>A node-owned collection with a standby was dropped on its primary (phase 77).</summary>
+    public Task ReportCorpusReplicaDropped(string nodeId, string collection)
+    {
+        if (services.GetService(typeof(NodeCorpusReplicator)) is NodeCorpusReplicator replicator)
+        {
+            return replicator.HandleDropAsync(nodeId, collection);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>A standby reports the outcome of a promotion <see cref="NodeCorpusReplicator.PromoteAsync"/> asked it to attempt (phase 77).</summary>
+    public Task PromotedCorpusReplica(string nodeId, string collection, bool success, string? error)
+    {
+        if (services.GetService(typeof(NodeCorpusReplicator)) is NodeCorpusReplicator replicator)
+        {
+            return replicator.OnPromotedAsync(nodeId, collection, success, error, CancellationToken.None);
+        }
 
         return Task.CompletedTask;
     }

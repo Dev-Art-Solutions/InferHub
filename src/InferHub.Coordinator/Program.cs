@@ -168,6 +168,13 @@ else
 builder.Services.AddSingleton<NodeModelToggle>();
 builder.Services.AddHostedService<AutoScalerService>();
 
+// Phase 77. A standby for a node-owned collection, so it survives its owning node's permanent loss.
+// Off by default (CorpusFailover:Enabled) — with no standby ever assigned through the admin endpoint,
+// NodeCorpusReplicator's relay methods have nothing to relay and CorpusFailoverService's tick finds
+// nothing to watch.
+builder.Services.AddSingleton<NodeCorpusReplicator>();
+builder.Services.AddHostedService<CorpusFailoverService>();
+
 // Cloud providers (phase 61). Registered always and inert unless something is configured: with no
 // `Providers:` section and no `Fallback:Enabled`, ProviderRegistry.Resolve is a null for every model
 // and Decide is a single `No` for every request — byte-for-byte the pre-v3.29 behaviour.
