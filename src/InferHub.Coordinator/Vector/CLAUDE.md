@@ -311,3 +311,49 @@ not a config knob, if it turns out to bind.
 
 **Rule 5 survived again.** Phase 75 added **zero** new dependencies.
 
+### Phase 77 (node-corpus standby replication) — also load-bearing
+
+**D1 — The hub relays; it never stores.** [CollectionOwnership.RefusalFor](src/InferHub.Coordinator/Vector/CollectionOwnership.cs)'s
+own sentence — "this hub deliberately holds no copy of it" — is rule 4 sharpened by 44 D1, and a
+design that buffered node-owned vectors on the hub to make replication easier would violate it while
+reading as reasonable. [NodeCorpusReplicator](src/InferHub.Coordinator/Vector/NodeCorpusReplicator.cs)
+forwards a primary's snapshot/op the moment it arrives and holds nothing beyond the single message in
+flight — reusing 15/16's own hub-owned-replica wire shapes (`VectorReplicaAssignment`/`VectorReplicaOp`,
+`AssignVectorReplica`/`ApplyVectorOp`/`DropVectorReplica`) so the standby's receiving side needs **zero
+new code**: `ReplicaStore` on the node already applies these for a hub-owned replica, and a node-owned
+collection's replica is indistinguishable to it.
+
+**D2 — A standby is a second, independent dictionary on `CollectionOwnership`, not a field inside the
+derived `owners` map or inside a profile.** The owners map is rebuilt from scratch on every unrelated
+profile write (`Rebuild`), and this phase's own research found that rebuild already silently drops a
+node absent from the connected fleet — a standby marker living in the same structure would inherit
+that exact fragility. `AssignStandby`/`ClearStandby`/`StandbyNodeOf` are admin-set and `Rebuild` does
+not touch them.
+
+**D3 — Promotion is confirmed-permanent-loss only, via a grace-period watcher, never a bare
+disconnect.** [CorpusFailoverService](src/InferHub.Coordinator/Services/CorpusFailoverService.cs),
+same `BackgroundService` shape as `AutoScalerService`/`NodeReaper`, promotes only once a collection's
+owner has been absent from `INodeRegistry` past `CorpusFailover:GraceMinutes` — 69 D5's rule (null/gone
+is not evidence by itself) one layer over.
+
+**D4 — Promotion moves bytes, then reuses the ordinary profile-driven corpus start.** The standby
+detaches its held replica from `ReplicaStore` (`DetachForPromotion`, a filesystem move, not a copy)
+into its own corpus data directory, then the hub writes the standby's profile to include the
+collection through the exact `IProfileRegistry.Put` + `NodeProfileCoordinator.ReassertAsync` path an
+admin's own `.../collections/{c}/assign` already takes (74's shape). No second corpus-start call
+exists anywhere — promotion cannot bring a collection up any way a human admin's own assignment
+couldn't. The dead primary's own profile is best-effort scrubbed of the same collection so a later
+reconnect cannot silently reclaim a name its data no longer backs.
+
+**Scope: `local` provider only.** `qdrant`'s store fires no change events — the same "never widen
+`ReplicationCoordinator` past `LocalVectorStore`" boundary from this file's own phase-44 remarks
+applies to this phase's tail hook too — and `postgres` has no credential-ref path (71 D5). Both are
+simply never tailed; `AssignStandby` checks only that a collection is node-owned, not which provider,
+so a standby-assignment attempt for either is a known, unaddressed gap rather than a named refusal.
+
+**Not established anywhere in this codebase:** `CorpusFailoverService`'s own interval/grace-period
+timer running end to end — only `NodeCorpusReplicator.PromoteAsync` was driven directly, live, over a
+real two-node mesh (`tests/InferHub.Tests.Mesh/NodeCorpusReplicationTests.cs`).
+
+**Rule 5 survived again.** Phase 77 added **zero** new dependencies.
+

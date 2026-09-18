@@ -1790,6 +1790,29 @@ owner that is offline reports `unavailable` rather than being silently dropped o
 wrong corpus. A slow source times out without failing the other collections' answers. At most 16
 collections per call.
 
+### A node-owned collection can survive its owning node (v3.42+)
+
+Until now, a node-owned collection lived only on that node's own disk — if the box was gone for good,
+so was the corpus. An admin can now assign a **standby**:
+
+```bash
+curl -X POST localhost:5080/api/admin/collections/site-sofia-docs/standby/gpu-box-2 \
+  -H 'Authorization: Bearer <admin-key>'
+```
+
+While the primary is healthy, the hub relays its snapshot and every subsequent write to the standby —
+without ever holding a copy itself, the same "this hub deliberately holds no copy of it" guarantee a
+node-owned collection always had. If the primary is confirmed gone (not a reconnect blip — a
+configurable grace period, off by default via `CorpusFailover:Enabled`), the standby is promoted: it
+becomes the collection's new owner through the exact same profile mechanism an admin's own assignment
+uses. There is no automatic failback — a primary that comes back afterward holds a stray copy an
+operator resolves by hand.
+
+Two things worth knowing: this covers the `local` provider only for now (`qdrant`/`postgres`-owned
+collections have no standby path yet), and it is off on both ends by default — a node forwards nothing
+unless `LocalApi:Retrieval:ReplicateOwnedCollections` is set, and the hub promotes nothing unless
+`CorpusFailover:Enabled` is set.
+
 ### The engine, the secret and the disk stay the operator's
 
 A profile names `provider` and `credentialRef`. It cannot name a **secret**: `credentialRef` is a
