@@ -1082,3 +1082,19 @@ fifth should take the record instead.
 after 90% of the audio pays nothing and the fleet pays for the work. The alternative makes the number
 on a bill depend on when a socket died, and 42 D7 already settled that the unit is a property of the
 request. Stated, not mitigated.
+
+### Phase 78 (`AutoScalerService` scale-in — the mirror of phase 76's scale-out)
+
+The plan is `plan/phase-78-scale-in.md`; the five decisions there (D1–D5) are the durable ones — the
+node-attributed `Metrics.RecordModelServed`/`LastServedUtc` signal phase 76 D2 named as missing, the
+"never the last routable copy fleet-wide" guard, the wall-clock-since-boot idle gate, the cooldown map
+shared bidirectionally with scale-out, and the independent `AutoScaling:ScaleIn:Enabled` switch that
+keeps an upgraded fleet's behaviour unchanged until an operator opts in.
+
+What is new in this file's own territory: `InferenceCore.DispatchAsync`'s two `router.Route` success
+points (`DispatchWithFailoverAsync`'s fresh dispatch and its failover retry) each call
+`Metrics.RecordModelServed(nodeId, model)` — the one place both values are known together, the same
+reasoning phase 76 §1a used for `RecordCapabilityUnavailable`. `AutoScalerService.TickScaleInAsync`
+reuses `NodeModelToggle.SetEnabledAsync(..., enabled: false, force: false, ...)` and the same
+`lastActionUtc` cooldown map `TickAsync` already keeps — one map, checked from both directions, rather
+than a second one that could disagree with the first about when a pair last moved.

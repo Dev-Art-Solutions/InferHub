@@ -3793,6 +3793,44 @@ cleanly (never a 500), and the console greys out its controls. A duplicate comma
 node+model coalesces onto the running one, and every command is audited. All of this is on the
 **Model management** panel in the [console](#management-console--admin-api).
 
+### Auto-scaling: enabling and disabling a model without an operator (v3.41+, v3.43+)
+
+A node can hold a model on disk and still have it **disabled** (§ above — the per-node enable/disable
+toggle, gated by a VRAM precheck). `AutoScaler` watches for the mismatch between what the fleet holds
+and what it is currently willing to route, in both directions, and off by default in both:
+
+- **Scale-out (v3.41).** When a model draws repeated "no node currently provides X" refusals, the
+  scaler looks for a node that already holds it on disk, disabled, healthy and uncordoned, and enables
+  it there — through the exact same `NodeModelToggle` path an admin's own toggle uses, so it can only
+  ever do what a human would have been allowed to. It never pulls a model onto a node that never had
+  it, and it never passes `force=true`.
+- **Scale-in (v3.43).** The mirror: an enabled, routable `(node, model)` pair that has not actually
+  been served in `AutoScaling:ScaleIn:IdleMinutes` gets disabled — unless it is the **only** node still
+  routing that model fleet-wide, in which case it is left alone no matter how idle. A freshly restarted
+  coordinator withholds scale-in for `MinUptimeMinutes` so silence right after boot is never read as
+  idleness.
+
+Both directions share one cooldown (`AutoScaling:CooldownMinutes`) so a `(node, model)` pair cannot be
+toggled again in either direction inside the window, and both respect `AutoScaling:DryRun` (default
+`true`) — the first thing to turn on is the log line, not the write.
+
+```jsonc
+"AutoScaling": {
+  "Enabled": false,        // master switch for scale-out; must be true for either direction to tick
+  "DryRun": true,          // log the decision, write nothing, until you have watched it once
+  "PressureThreshold": 5,  // scale-out: refusals since the last tick before a model is "pressured"
+  "CooldownMinutes": 15,   // shared: minimum gap before the same (node, model) pair moves again
+  "ScaleIn": {
+    "Enabled": false,        // independent third switch — upgrading never turns this on for you
+    "IdleMinutes": 60,       // no request served for this pair before it is a scale-in candidate
+    "MinUptimeMinutes": 30   // process must have run this long before scale-in evaluates anything
+  }
+}
+```
+
+No console panel and no new endpoint for either direction — the audit log (actor `auto-scaler`) and
+`GET /api/admin/nodes` are how an operator sees what it decided.
+
 ## Conversations & routing
 
 InferHub stores **no conversation content**. Clients send the full message history on every

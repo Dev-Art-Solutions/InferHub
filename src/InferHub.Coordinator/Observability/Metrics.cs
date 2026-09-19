@@ -41,6 +41,9 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
     /// <summary>Per-model count for <see cref="RecordCapabilityUnavailable"/> (phase 76).</summary>
     private readonly ConcurrentDictionary<string, ModelCounter> perModelCapabilityUnavailable = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Per-(node, model) last-served timestamp for <see cref="RecordModelServed"/> (phase 78).</summary>
+    private readonly ConcurrentDictionary<(string NodeId, string Model), DateTimeOffset> perNodeModelLastServed = new();
+
     public void RecordRequestStart(string nodeId)
     {
         Interlocked.Increment(ref requestsTotal);
@@ -161,6 +164,25 @@ public sealed class Metrics : InferHub.Shared.Vector.IRetrievalMetrics
             pair => pair.Key,
             pair => Volatile.Read(ref pair.Value.Count),
             StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// A request was actually routed to <paramref name="nodeId"/> for <paramref name="model"/> —
+    /// the node-attributed signal phase 76 D2 named as missing when it declined to build scale-in.
+    /// Called from <c>InferenceCore.DispatchAsync</c> at both places a node is chosen (fresh route
+    /// and failover retry), which is the only place both values are known at once. Deliberately not
+    /// folded into <see cref="RecordRequestStart"/>: that counter has no model dimension today and
+    /// widening it would attribute every request type flowing through it, not just this phase's
+    /// (node, model) question.
+    /// </summary>
+    public void RecordModelServed(string nodeId, string model) =>
+        perNodeModelLastServed[(nodeId, model)] = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// When <paramref name="nodeId"/> last served <paramref name="model"/>, or <c>null</c> if never
+    /// (since process start — there is no persisted history before this).
+    /// </summary>
+    public DateTimeOffset? LastServedUtc(string nodeId, string model) =>
+        perNodeModelLastServed.TryGetValue((nodeId, model), out var at) ? at : null;
 
     /// <summary>
     /// Tool work that succeeded, in the unit it is actually in (phase-42 D7): seconds for a

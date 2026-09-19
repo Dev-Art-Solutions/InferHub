@@ -353,6 +353,10 @@ internal static class InferenceCore
         ILogger logger,
         CancellationToken cancellationToken)
     {
+        // Phase 78: the node-attributed "actually served" signal the scale-in tick reads — recorded
+        // here rather than in RecordRequestStart, which has no model dimension.
+        metrics.RecordModelServed(node.NodeId, model);
+
         try
         {
             if (stream is not false)
@@ -389,6 +393,8 @@ internal static class InferenceCore
                     model);
                 throw;
             }
+
+            metrics.RecordModelServed(retryNode.NodeId, model);
 
             // Issue a fresh job id so the dispatcher's pending tables stay coherent.
             var retryJob = job with { JobId = Guid.NewGuid() };

@@ -25,11 +25,13 @@ namespace InferHub.Coordinator.Services;
 /// service rather than reusing a metric that measures a different failure.
 /// </para>
 /// <para>
-/// <b>Scale-out only.</b> There is still no per-node dimension anywhere that would justify a
-/// scale-*in* decision — <see cref="Metrics.CapabilityUnavailableByModel"/>, like the usage ledger,
-/// knows the model, never which node's copy sat idle. Inventing one from silence would be the kind of
-/// guess <c>NodeModelToggle.Precheck</c> already refuses to make about a model's resident size. A
-/// scale-in phase can follow once a node-attributed signal exists; it is a non-goal here.
+/// <b>Scale-out and scale-in.</b> <c>TickAsync</c> is scale-out, unchanged since phase 76.
+/// <c>TickScaleInAsync</c> (phase 78) is the mirror: it disables an enabled, routable
+/// <c>(node, model)</c> pair nobody has actually been routed to in a while, reading the
+/// node-attributed signal (<see cref="Metrics.RecordModelServed"/>) phase 76 named as missing when it
+/// declined to build this. Gated by its own <c>AutoScaling:ScaleIn:Enabled</c>, independent of
+/// scale-out's <c>AutoScaling:Enabled</c>, so an upgraded fleet already running scale-out sees no
+/// behaviour change until an operator opts in.
 /// </para>
 /// <para>
 /// <b>No pulls.</b> A candidate is a node that already has the model in <see cref="INodeRegistry.ModelInventory"/> —
@@ -53,6 +55,10 @@ public sealed class AutoScalerService(
     private static readonly TimeSpan DefaultInterval = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan DefaultCooldown = TimeSpan.FromMinutes(15);
     private const long DefaultPressureThreshold = 5;
+
+    /// <summary>Phase 78 scale-in defaults.</summary>
+    private static readonly TimeSpan DefaultIdleMinutes = TimeSpan.FromMinutes(60);
+    private static readonly TimeSpan DefaultMinUptime = TimeSpan.FromMinutes(30);
 
     /// <summary>
     /// Per model, the cumulative <see cref="Metrics.CapabilityUnavailableByModel"/> count as of the
@@ -91,6 +97,18 @@ public sealed class AutoScalerService(
             {
                 // A bad tick must not take the loop down — the next tick tries again.
                 logger.LogError(ex, "Auto-scaler tick failed");
+            }
+
+            try
+            {
+                if (configuration.GetValue("AutoScaling:ScaleIn:Enabled", false))
+                {
+                    await TickScaleInAsync(dryRun, stoppingToken);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogError(ex, "Auto-scaler scale-in tick failed");
             }
         } while (await timer.WaitForNextTickAsync(stoppingToken));
     }
@@ -165,6 +183,129 @@ public sealed class AutoScalerService(
                     row.Model, node.NodeId, outcome.ConflictError ?? outcome.Precheck?.Reason ?? "precheck declined");
             }
         }
+    }
+
+    /// <summary>
+    /// Phase 78: the mirror of <see cref="TickAsync"/> — disables an enabled, routable
+    /// <c>(node, model)</c> pair nobody has actually been routed to in a while, as long as at least
+    /// one other node still serves that model. Never runs unless <c>AutoScaling:ScaleIn:Enabled</c> is
+    /// set, independently of scale-out's own <c>AutoScaling:Enabled</c>.
+    /// </summary>
+    private async Task TickScaleInAsync(bool dryRun, CancellationToken cancellationToken)
+    {
+        var minUptime = GetSeconds("AutoScaling:ScaleIn:MinUptimeMinutes", DefaultMinUptime, minutes: true);
+
+        if (DateTimeOffset.UtcNow - metrics.StartedAtUtc < minUptime)
+        {
+            return; // D3: too soon after boot to read silence as idleness.
+        }
+
+        var idleAfter = GetSeconds("AutoScaling:ScaleIn:IdleMinutes", DefaultIdleMinutes, minutes: true);
+        var cooldown = GetSeconds("AutoScaling:CooldownMinutes", DefaultCooldown, minutes: true);
+        var now = DateTimeOffset.UtcNow;
+
+        var snapshots = registry.Snapshot(now).ToArray();
+
+        // D2: how many healthy, uncordoned nodes currently route each model — a pair is never a
+        // candidate if it is the only one left, no matter how idle.
+        var routableNodeCountByModel = RoutableNodeCountByModel(snapshots);
+
+        foreach (var node in snapshots)
+        {
+            if (node.Cordoned || !node.SupportsModelManagement)
+            {
+                continue;
+            }
+
+            if (node.BackendHealth is { } health && health != BackendHealth.Healthy)
+            {
+                continue;
+            }
+
+            foreach (var capability in node.Capabilities ?? [])
+            {
+                foreach (var model in capability.Models)
+                {
+                    routableNodeCountByModel.TryGetValue(model, out var routableCount);
+                    DateTimeOffset? lastAction = lastActionUtc.TryGetValue((node.NodeId, model), out var action) ? action : null;
+                    var lastServed = metrics.LastServedUtc(node.NodeId, model);
+
+                    if (!ShouldScaleIn(routableCount, lastAction, lastServed, metrics.StartedAtUtc, now, idleAfter, cooldown))
+                    {
+                        continue;
+                    }
+
+                    var idleSince = lastServed ?? metrics.StartedAtUtc;
+
+                    if (dryRun)
+                    {
+                        logger.LogInformation(
+                            "Auto-scaler (dry-run): would disable '{Model}' on node {NodeId} (idle {IdleMinutes:F0}m, {RoutableCount} other node(s) still serve it)",
+                            model, node.NodeId, (now - idleSince).TotalMinutes, routableCount - 1);
+                        continue;
+                    }
+
+                    var outcome = await toggle.SetEnabledAsync(node, model, enabled: false, force: false, by: "auto-scaler", cancellationToken);
+
+                    if (outcome.Applied)
+                    {
+                        lastActionUtc[(node.NodeId, model)] = now;
+                        logger.LogWarning(
+                            "Auto-scaler disabled '{Model}' on node {NodeId} (idle {IdleMinutes:F0}m, {RoutableCount} other node(s) still serve it)",
+                            model, node.NodeId, (now - idleSince).TotalMinutes, routableCount - 1);
+                    }
+                    else
+                    {
+                        logger.LogInformation(
+                            "Auto-scaler skipped disabling '{Model}' on node {NodeId}: {Reason}",
+                            model, node.NodeId, outcome.ConflictError ?? "profile write declined");
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// D2: for each model, how many currently healthy, uncordoned nodes declare it as a routable
+    /// capability. Pulled out of <see cref="TickScaleInAsync"/> so it is testable without a live
+    /// <see cref="INodeRegistry"/>.
+    /// </summary>
+    internal static IReadOnlyDictionary<string, int> RoutableNodeCountByModel(IReadOnlyCollection<NodeSnapshot> snapshots) =>
+        snapshots
+            .Where(n => !n.Cordoned && (n.BackendHealth is null || n.BackendHealth == BackendHealth.Healthy))
+            .SelectMany(n => (n.Capabilities ?? []).SelectMany(c => c.Models).Select(m => (Model: m, n.NodeId)))
+            .GroupBy(x => x.Model, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(x => x.NodeId).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+                StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The per-pair decision (D2, D3, D4), as a pure function of already-looked-up state — testable
+    /// without constructing the service's DI graph. <paramref name="lastServed"/> null means "never
+    /// observed", which counts as idle since <paramref name="processStartUtc"/> (D3).
+    /// </summary>
+    internal static bool ShouldScaleIn(
+        int routableNodeCount,
+        DateTimeOffset? lastAction,
+        DateTimeOffset? lastServed,
+        DateTimeOffset processStartUtc,
+        DateTimeOffset now,
+        TimeSpan idleAfter,
+        TimeSpan cooldown)
+    {
+        if (routableNodeCount <= 1)
+        {
+            return false; // D2: never the last (or only) routable copy fleet-wide.
+        }
+
+        if (lastAction is { } action && now - action < cooldown)
+        {
+            return false; // D4: shared cooldown with scale-out, checked both directions.
+        }
+
+        var idleSince = lastServed ?? processStartUtc;
+        return now - idleSince >= idleAfter;
     }
 
     private (NodeSnapshot Node, ModelPrecheckResult Precheck)? FindScaleOutCandidate(
