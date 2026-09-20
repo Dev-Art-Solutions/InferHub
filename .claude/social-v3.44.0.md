@@ -5,13 +5,10 @@ Release: https://github.com/Dev-Art-Solutions/InferHub/releases/tag/v3.44.0
 
 ## X / Twitter
 
-InferHub's tool workers (transcription, TTS, anything you wire up) have always been plain child
-processes — no shell, no native binding. Turns out the runtime was already OS-agnostic C#.
+InferHub's tool runtime was already OS-agnostic. Every manifest's command wasn't — hardcoded to
+Linux.
 
-What wasn't: every manifest's command was a hardcoded Linux path.
-
-v3.44 lets one manifest's `command` be keyed by platform — `{"linux": [...], "windows": [...]}` —
-so the same tool id runs unedited on a bare-metal Windows node and the Linux `:tools` image.
+v3.44: command can be keyed by platform, so one manifest runs on Windows too.
 
 https://blog.devart.solutions/blog/inferhub-3-44-the-manifest-didnt-know-about-windows
 
