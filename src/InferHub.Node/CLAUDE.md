@@ -831,3 +831,24 @@ whole answer, and it comes from this node's own config or environment, never fro
 `PackageReference` to the node on purpose — `Npgsql` + `Pgvector`, called out in the release notes as
 the one deliberate exception. `InferHub.Shared.csproj` is unchanged; `InferHub.Node.csproj` is not,
 and that is the point of D1.
+
+### Phase 80 (`LocalCrossEncoderReranker` — solo mode's half of the dedicated reranker)
+
+The plan is `plan/phase-80-cross-encoder-reranker.md`. This file's own territory: `NodeHostBuilderExtensions.AddRetrieval`
+reads `LocalApi:Retrieval:Retrieval:Rerank` straight off `builder.Configuration` (mirroring the hub's
+read of the un-bound section in `VectorStoreServiceCollectionExtensions`) to pick between
+`LocalReranker` and the new `LocalCrossEncoderReranker` — the same key, same two values, same
+default, so a node's config means the same thing whichever host it ends up wired into (phase-37 D2's
+framing, again). `LocalCrossEncoderReranker` dispatches through `ToolExecutor` rather than
+`InferenceExecutor` — a cross-encoder is a tool worker, not a chat model — and is otherwise
+`LocalReranker`'s structural twin, same as the hub pair.
+
+`NodeOptionsValidator`'s well-known-capability list (`Node:Capabilities:Disabled`) now names
+`rerank` alongside chat/embed/transcribe/speak/image/image-edit — `CapabilityKinds.IsWellKnown`
+already covered it via `NodeCapability.cs`'s own change; only the error message's literal list of
+names needed touching here.
+
+No node-side unit test for `LocalCrossEncoderReranker` — `LocalReranker` itself has never had one
+either (`RetrievalHostTests.cs`'s solo-retrieval tests inject a `NoReranker` test double instead),
+so this phase did not open that gap, just declined to close a pre-existing one under a different
+name.

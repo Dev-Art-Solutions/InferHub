@@ -238,8 +238,9 @@ public sealed class RetrievalPipeline(
     /// <summary>
     /// Optionally rerank the fused candidate pool, then trim to <paramref name="k"/>. Reranking is
     /// off unless the request set <c>X-InferHub-Rerank: true</c> or the deployment defaults
-    /// <c>Retrieval:Rerank=llm</c>. At most <c>RerankCandidates</c> chunks go to the model in one
-    /// round trip; any pool beyond that keeps its fused order and rides behind the reranked head.
+    /// <c>Retrieval:Rerank</c> to <c>llm</c> or, since phase 80, <c>cross-encoder</c>. At most
+    /// <c>RerankCandidates</c> chunks go to the model in one round trip; any pool beyond that keeps
+    /// its fused order and rides behind the reranked head.
     /// </summary>
     private async Task<IReadOnlyList<VectorMatch>?> MaybeRerankAsync(
         RetrievalRequest retrieval,
@@ -250,7 +251,9 @@ public sealed class RetrievalPipeline(
         CancellationToken cancellationToken)
     {
         var opts = options.Retrieval;
-        var rerankEnabled = retrieval.Rerank ?? string.Equals(opts.Rerank, "llm", StringComparison.OrdinalIgnoreCase);
+        var rerankEnabled = retrieval.Rerank ??
+            (string.Equals(opts.Rerank, "llm", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(opts.Rerank, "cross-encoder", StringComparison.OrdinalIgnoreCase));
 
         if (!rerankEnabled || pool.Count <= 1)
         {

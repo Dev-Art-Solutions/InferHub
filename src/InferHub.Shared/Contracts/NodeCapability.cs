@@ -85,11 +85,19 @@ public static class CapabilityKinds
     public const string Video = "video";
 
     /// <summary>
+    /// Reranking a retrieved candidate set (phase 80). Declared by a tool runtime, exactly as the
+    /// audio and image kinds are: a cross-encoder is a model, but not one with an Ollama shape, so
+    /// it is a tool worker rather than a backend model. <see cref="Vector.IReranker"/> is the seam
+    /// on the .NET side that either calls a chat model directly (<c>LlmReranker</c>) or routes here.
+    /// </summary>
+    public const string Rerank = "rerank";
+
+    /// <summary>
     /// Only used at the client edge, for error messages. The mesh carries any string — see the
     /// remarks on <see cref="NodeCapability"/>.
     /// </summary>
     public static bool IsWellKnown(string? kind) =>
-        kind is Chat or Embed or Transcribe or Speak or Image or ImageEdit or Video;
+        kind is Chat or Embed or Transcribe or Speak or Image or ImageEdit or Video or Rerank;
 
     /// <summary>
     /// Either image kind — the question everything that reasons about a <em>recipe</em> asks.

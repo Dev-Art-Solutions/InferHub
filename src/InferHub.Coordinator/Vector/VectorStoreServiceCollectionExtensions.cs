@@ -134,7 +134,21 @@ public static class VectorStoreServiceCollectionExtensions
         }
 
         // RAG works in both modes; keep it outside the provider branch.
-        services.AddSingleton<IReranker, LlmReranker>();
+        //
+        // Reranker selection (phase 80) reuses Retrieval:Rerank rather than adding a Reranker:Type
+        // key — it is already the exact selector RetrievalPipeline reads to decide whether/how to
+        // rerank. Anything other than "cross-encoder" (including unset, "llm" and "none") keeps the
+        // v2.6 chat-model reranker, so an existing deployment's behavior is unchanged by this phase.
+        var rerankMode = section.GetSection("Retrieval")
+            .GetValue<string>(nameof(RetrievalOptions.Rerank)) ?? "none";
+        if (string.Equals(rerankMode, "cross-encoder", StringComparison.OrdinalIgnoreCase))
+        {
+            services.AddSingleton<IReranker, CrossEncoderReranker>();
+        }
+        else
+        {
+            services.AddSingleton<IReranker, LlmReranker>();
+        }
         services.AddSingleton(sp => new RetrievalPipeline(
             sp.GetRequiredService<IOptions<VectorStoreOptions>>().Value,
             sp.GetRequiredService<IVectorStore>(),

@@ -1,0 +1,26 @@
+{
+  "id": "rerank",
+  "capabilities": [
+    {
+      "kind": "rerank",
+      "models": [
+        "ms-marco-minilm-l6",
+        "bge-reranker-base",
+        "bge-reranker-large",
+        "bge-reranker-v2-m3"
+      ]
+    }
+  ],
+  "command": ["/opt/inferhub/venv/bin/python", "-u", "/opt/inferhub/tools/rerank_worker.py"],
+  "workdir": "/opt/inferhub/tools",
+  "env": {
+    "HF_HOME": "/data/tools/hf",
+    "OMP_NUM_THREADS": "4",
+    "LD_LIBRARY_PATH": "/usr/local/lib/ollama/cuda_v12:/usr/local/lib/ollama/cuda_v13"
+  },
+  "minWorkers": 0,
+  "maxWorkers": 1,
+  "startTimeoutSeconds": 120,
+  "requestTimeoutSeconds": 60,
+  "idleTimeoutSeconds": 900
+}

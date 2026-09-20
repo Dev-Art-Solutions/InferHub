@@ -517,3 +517,37 @@ Every frame carries `sampleRate`, `sampleWidth` and `channels`, not only the fir
 refuse a worker that changes its mind halfway instead of concatenating two rates. A format that
 cannot be streamed is refused here as well as at the edge — `/api/tools/speak` forwards a payload
 verbatim, and a worker that only works when somebody else validated for it has a hole in it.
+
+### Phase 80 (rerank_worker.py: a cross-encoder tool worker, the shape whisper/piper already proved)
+
+**A JSON-in/JSON-out worker with no file at all.** Every worker before this one carries at least one
+attachment (audio in, audio out, an image). `rerank_worker.py`'s request is
+`{"query": "...", "documents": ["...", ...]}` and its answer is `{"scores": [...]}` — both plain
+`request.payload`, nothing in `request.files`. This is *why* the .NET side needed no new HTTP route
+(D1 in `plan/phase-80-cross-encoder-reranker.md`): `/api/tools/{capability}` (phase 41) was already
+JSON-shaped for exactly this case, and the dialect-specific routes audio needed (phase 42) exist for
+multipart-in/binary-out, neither of which applies here.
+
+**`sentence_transformers.CrossEncoder` is one library across four model names**, the same shape
+`faster-whisper` gives `whisper_worker.py` across its six sizes: `model.predict([[query, doc], ...])`
+returns one float per pair in the order sent, so there is no score-to-document alignment to get
+wrong on the Python side — the worker returns the list in the same order `documents` arrived in and
+the .NET side (`RerankPrompt.Apply`) does the sorting.
+
+**`cached()` cannot reuse `whisper_worker.py`'s `_MODELS`-lookup trick.** Faster-whisper ships its own
+name → repo map to check against; sentence-transformers has no such registry to ask, so `cached()`
+here walks `HF_HOME` for `models--{org}--{name}` directly — the same convention every
+`huggingface_hub` cache uses, just without a library-provided table to consult first. If a future
+`sentence-transformers` release changes that cache-directory convention, this is the one function to
+revisit; `whisper_worker.py`'s equivalent would not need the same fix.
+
+**No `local_files_only` double-check documented for `CrossEncoder` the way `whisper_worker.py` notes
+one for `WhisperModel`** — not established either way against a real install this session (see the
+plan brief's "not established" list); assumed to behave like every other `from_pretrained`-based
+loader in this ecosystem, not verified by running it.
+
+Rule 5 holds the same way it does for every prior tool: `sentence-transformers` is a line in
+`requirements-tools.txt`, not a `PackageReference`, and `InferHub.Shared.csproj` is untouched. It is,
+however, the dependency that pulls `torch` into the `:tools` image for the first time — flagged in
+the requirements file itself and worth restating here, since every dependency before it in that file
+was deliberately torch-free.

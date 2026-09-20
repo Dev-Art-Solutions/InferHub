@@ -357,3 +357,41 @@ real two-node mesh (`tests/InferHub.Tests.Mesh/NodeCorpusReplicationTests.cs`).
 
 **Rule 5 survived again.** Phase 77 added **zero** new dependencies.
 
+### Phase 80 (`CrossEncoderReranker` — a reranker tool worker, not a chat model asked to score)
+
+Plan: `plan/phase-80-cross-encoder-reranker.md`; D1–D4 there are the durable decisions — a tool
+worker rather than an in-process model (rule 5's reasoning: a native binding's segfault takes the
+node down with every in-flight job, a dead child process is a log line and a restart), `Retrieval:Rerank`
+itself as the selector rather than a second `Reranker:Type` key, the new `CrossEncoderReranker`/
+`LocalCrossEncoderReranker` pair dispatching a `ToolJob` instead of an `InferenceJob`, and the new
+`CapabilityKinds.Rerank` with no chat-model fallback once that mode is chosen — `RetrievalOptions.RerankModel`
+must name a model the cross-encoder tool actually serves, and a chat model there is treated like any
+other "no node holds it" failure rather than validated at startup.
+
+**This file's own territory:** `AddInferHubVectorStore` reads `Retrieval:Rerank` directly off the
+raw configuration section — not through `IOptions<VectorStoreOptions>`, which is not resolvable yet
+at this point in composition — to decide which `IReranker` singleton to register, mirroring the read
+`VectorStoreProviderExtensions`/`Provider` already does one branch up in the same method.
+`CrossEncoderReranker` is structurally `LlmReranker`'s twin, down to the try/catch shape and the
+timeout-vs-cancellation distinction; the only real differences are what travels in the
+`ToolJob.Payload` (`{"query", "documents"}`, no prompt template to build) and what comes back
+(`{"scores": [...]}`, no free text to parse — no analogue of `RerankPrompt.ParseScores` needed).
+`RerankPrompt.Apply(candidates, scores)` is reused **unchanged** for the actual reordering: sorting
+a candidate list by a parallel score array was never specific to how those scores were produced, and
+duplicating a five-line stable sort would have been the wrong kind of caution.
+
+**No node-side unit test for `LocalCrossEncoderReranker`, matching an existing gap rather than
+opening a new one:** `LocalReranker` itself has never had a direct unit test — the solo-retrieval
+tests (`RetrievalHostTests.cs`) inject their own `NoReranker` stub instead of exercising the real
+implementation. `CrossEncoderReranker` (the hub side) does have full coverage —
+`CrossEncoderRerankerTests.cs`, eight cases mirroring `RerankerTests.cs`'s coverage of `LlmReranker`.
+
+**Not established this session:** `rerank_worker.py` has never been run. No Python environment with
+`sentence-transformers`/`torch` was installed (multi-GB), so nothing has loaded a real
+`bge-reranker` model or confirmed its JSON frames match what the .NET side expects — see
+`python/CLAUDE.md`'s own phase-80 entry and the plan brief's "not established" list.
+
+**Rule 5 survived again**, on the .NET side: **zero** new `PackageReference`s. The one new
+dependency, `sentence-transformers`, is Python — a line in `requirements-tools.txt`, exactly like
+every prior tool worker's libraries.
+

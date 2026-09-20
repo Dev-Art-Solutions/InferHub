@@ -185,7 +185,19 @@ public static class NodeHostBuilderExtensions
         // corpus has no replicas by construction.
         builder.Services.AddSingleton<IVectorQueryRouter, NullVectorQueryRouter>();
         builder.Services.AddSingleton<IEmbeddingDispatcher, LocalEmbeddingDispatcher>();
-        builder.Services.AddSingleton<IReranker, LocalReranker>();
+
+        // Mirrors the hub's selection in VectorStoreServiceCollectionExtensions (phase 80): the
+        // same LocalApi:Retrieval:Retrieval:Rerank key picks the same reranker, so a node's config
+        // means the same thing whichever host it is wired into.
+        var rerankMode = builder.Configuration[$"{LocalRetrievalOptions.SectionName}:Retrieval:Rerank"] ?? "none";
+        if (string.Equals(rerankMode, "cross-encoder", StringComparison.OrdinalIgnoreCase))
+        {
+            builder.Services.AddSingleton<IReranker, LocalCrossEncoderReranker>();
+        }
+        else
+        {
+            builder.Services.AddSingleton<IReranker, LocalReranker>();
+        }
 
         // No /metrics on a node (phase-37 D5), so the pipelines' counters go nowhere. The numbers an
         // operator can act on are reported to the hub (D6) and read off /api/status.

@@ -44,3 +44,9 @@ ctranslate2==4.8.1
 # wheel, so there is no system package to install alongside it.
 piper-tts==1.6.0
 onnxruntime==1.28.0
+
+# Reranking (phase 80). The one dependency that pulls torch into this image — by far the largest
+# addition here, and worth it only if you turn Retrieval:Rerank=cross-encoder on. CrossEncoder loads
+# BAAI's bge-reranker family directly, the same split as faster-whisper above: CUDA if the driver
+# loads, CPU otherwise, decided at runtime rather than by which wheel got installed.
+sentence-transformers==3.3.1

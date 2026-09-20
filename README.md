@@ -3475,11 +3475,13 @@ per-request and both off by default:
   `postgres`, an in-memory BM25 index under `local`, an IDF-weighted sparse vector under
   `qdrant`) and added **zero dependencies**. Under `qdrant` (v3.2+) the fusion itself runs
   **server-side** — one Query API round trip instead of two branches fused on the hub.
-- **Reranking** via `X-InferHub-Rerank: true`: an opt-in pass that hands the top
-  candidates to a chat model already on your fleet with a scoring prompt and reorders
-  them. It costs a round trip, so it is off unless asked, hard-capped by
+- **Reranking** via `X-InferHub-Rerank: true`: an opt-in pass that hands the top candidates to a
+  reranker and reorders them. It costs a round trip, so it is off unless asked, hard-capped by
   `Retrieval:RerankCandidates` and `Retrieval:RerankTimeoutSeconds` — past the timeout the
-  un-reranked order is kept. Nothing is retained (rule #7).
+  un-reranked order is kept. Nothing is retained (rule #7). Two implementations, chosen by
+  `Retrieval:Rerank`: `llm` (v2.6+) prompts a chat model already on your fleet with a scoring
+  prompt; `cross-encoder` (v3.45+) routes to a dedicated reranker [tool worker](#tools-on-a-node-v39)
+  instead — see below.
 
 ```bash
 curl http://your-coordinator:5080/v1/chat/completions \
@@ -3500,6 +3502,33 @@ There is also a query playground in the admin console (and `POST /api/collection
 behind it) that shows what each mode retrieves for a query, side by side — the most useful
 thing to look at when a corpus is retrieving badly.
 
+### A dedicated cross-encoder reranker (v3.45+)
+
+The LLM reranker above works, but it prompts a model that was never trained to score passages and
+costs a full chat round trip to do it. `Retrieval:Rerank=cross-encoder` routes reranking to a real
+cross-encoder instead — `sentence-transformers`' `CrossEncoder`, which loads BAAI's `bge-reranker`
+family directly — running as a [tool worker](#tools-on-a-node-v39) on the fleet, same shape as
+Whisper and Piper:
+
+```jsonc
+"Retrieval": {
+  "Rerank": "cross-encoder",
+  "RerankModel": "bge-reranker-v2-m3"   // required — no chat-model fallback under this mode
+},
+"Tools": { "Enabled": true, "Allowed": ["rerank"] }
+```
+
+Four models ship in the `rerank` manifest: `ms-marco-minilm-l6` (small, English, a reasonable CPU
+default), `bge-reranker-base`, `bge-reranker-large` and `bge-reranker-v2-m3` (multilingual). It lives
+in the existing `:tools` image alongside Whisper and Piper — no new image — but is the first
+dependency in that image to pull in `torch`, and it is the largest single addition `requirements-tools.txt`
+has taken since the image existed; skip it if you never turn `Rerank=cross-encoder` on.
+
+Nothing about the LLM reranker changed: `Retrieval:Rerank` unset, `none`, or `llm` behaves exactly as
+it did before this section existed. `RerankModel` under `cross-encoder` must name a model the tool
+actually serves — a chat model there simply never routes, which the reranker treats like "no node
+holds it": logged, original order kept, nothing thrown.
+
 ### Vector configuration
 
 Coordinator keys (all under `VectorStore:`):
@@ -3519,8 +3548,8 @@ Coordinator keys (all under `VectorStore:`):
 | `VectorStore:Retrieval:Template` | _(see below)_ | Prompt template applied to retrieved context; must contain `{context}`. |
 | `VectorStore:Retrieval:Mode` | `vector` | Default mode: `vector` \| `keyword` \| `hybrid`. **(v2.6+)** |
 | `VectorStore:Retrieval:CandidatesPerBranch` | `20` | Candidates each branch fetches before RRF fusion in hybrid mode. **(v2.6+)** |
-| `VectorStore:Retrieval:Rerank` | `none` | Default reranker: `none` \| `llm`. **(v2.6+)** |
-| `VectorStore:Retrieval:RerankModel` | _(request model)_ | Chat model for the LLM reranker. **(v2.6+)** |
+| `VectorStore:Retrieval:Rerank` | `none` | Default reranker: `none` \| `llm` **(v2.6+)** \| `cross-encoder` **(v3.45+)**. |
+| `VectorStore:Retrieval:RerankModel` | _(request model)_ | Chat model for `llm`; **required**, no fallback, for `cross-encoder` — must name a model the reranker tool serves. |
 | `VectorStore:Retrieval:RerankCandidates` | `20` | Max candidates sent to the reranker in one round trip. **(v2.6+)** |
 | `VectorStore:Retrieval:RerankTimeoutSeconds` | `20` | Reranker timeout; past it the un-reranked order is used. **(v2.6+)** |
 | `VectorStore:Healing:DebounceMilliseconds` | `750` | Debounce for fleet-change-driven heal passes. |

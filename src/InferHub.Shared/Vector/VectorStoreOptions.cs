@@ -201,13 +201,22 @@ public sealed class RetrievalOptions
     public int CandidatesPerBranch { get; set; } = 20;
 
     /// <summary>
-    /// Default reranker: <c>none</c> (default) | <c>llm</c>. Reranking costs a fleet round trip, so it
-    /// is off unless a request asks for it with <c>X-InferHub-Rerank: true</c> or this is set to
-    /// <c>llm</c>.
+    /// Default reranker: <c>none</c> (default) | <c>llm</c> | <c>cross-encoder</c> (phase 80).
+    /// Reranking costs a fleet round trip, so it is off unless a request asks for it with
+    /// <c>X-InferHub-Rerank: true</c> or this names an implementation. <c>llm</c> prompts a chat
+    /// model already on the fleet; <c>cross-encoder</c> routes to a dedicated reranker tool worker
+    /// instead — this also picks which <see cref="IReranker"/> is registered in DI (both hub and
+    /// node composition roots read this key at startup, not per request).
     /// </summary>
     public string Rerank { get; set; } = "none";
 
-    /// <summary>Chat model used by the LLM reranker. When null, the request's own model is used.</summary>
+    /// <summary>
+    /// Rerank model. Under <c>llm</c>, a chat model already on the fleet — when null, the request's
+    /// own chat model is used. Under <c>cross-encoder</c> there is no such fallback: this must name
+    /// a model the cross-encoder tool worker actually serves (e.g. <c>bge-reranker-v2-m3</c>), and a
+    /// chat model here simply never routes, which the reranker treats like any other "no node holds
+    /// it" failure — original order, logged, nothing thrown.
+    /// </summary>
     public string? RerankModel { get; set; }
 
     /// <summary>Upper bound on how many candidates are handed to the reranker in one round trip.</summary>
