@@ -136,9 +136,9 @@ COPY python/manifests/       /opt/inferhub/tools/manifests/
 # transcription somebody attempts on a box they just set up.
 ENV PYTHONPATH=/opt/inferhub
 RUN /opt/inferhub/venv/bin/python -c \
-      "import faster_whisper, ctranslate2, piper, onnxruntime, inferhub_worker; print('tool venv ok')" \
+      "import faster_whisper, ctranslate2, piper, onnxruntime, sentence_transformers, inferhub_worker; print('tool venv ok')" \
  && /opt/inferhub/venv/bin/python -c \
-      "import py_compile; py_compile.compile('/opt/inferhub/tools/whisper_worker.py', doraise=True); py_compile.compile('/opt/inferhub/tools/piper_worker.py', doraise=True); print('workers compile')"
+      "import py_compile; py_compile.compile('/opt/inferhub/tools/whisper_worker.py', doraise=True); py_compile.compile('/opt/inferhub/tools/piper_worker.py', doraise=True); py_compile.compile('/opt/inferhub/tools/rerank_worker.py', doraise=True); print('workers compile')"
 
 ENV NVIDIA_VISIBLE_DEVICES=all
 # `compute` is not decoration. The container runtime's default is `utility`, which gives a working
@@ -174,6 +174,7 @@ ENV Ollama__Supervisor__StopOnShutdown=true
 ENV Tools__Enabled=true
 ENV Tools__Allowed__0=whisper
 ENV Tools__Allowed__1=piper
+ENV Tools__Allowed__2=rerank
 ENV Tools__ManifestDirectory=/opt/inferhub/tools/manifests
 ENV Tools__ScratchDirectory=/data/tools/scratch
 

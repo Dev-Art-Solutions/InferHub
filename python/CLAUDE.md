@@ -541,10 +541,31 @@ here walks `HF_HOME` for `models--{org}--{name}` directly — the same conventio
 `sentence-transformers` release changes that cache-directory convention, this is the one function to
 revisit; `whisper_worker.py`'s equivalent would not need the same fix.
 
-**No `local_files_only` double-check documented for `CrossEncoder` the way `whisper_worker.py` notes
-one for `WhisperModel`** — not established either way against a real install this session (see the
-plan brief's "not established" list); assumed to behave like every other `from_pretrained`-based
-loader in this ecosystem, not verified by running it.
+**D5 — `CrossEncoder` is imported at module scope, on the main thread, not lazily inside `load()` the
+way `faster-whisper` is in `whisper_worker.py`. Found by running the worker, not by reading it.**
+Driven directly through the real process protocol (`hello`/`ready`/`request`/`result`), the first
+version — lazy import inside `load()`, called on the per-request thread `Worker._handle` spawns for
+every job (v3.16.2's one-reader shape) — deadlocked hard on the first request, every time.
+`faulthandler.dump_traceback(all_threads=True)` pinned it exactly: stuck inside CPython's import
+machinery loading numpy's compiled `multiarray` extension. The identical import from a plain
+background thread with nothing else happening completes in a few seconds; a main thread parked in a
+blocking `stdin` read *plus* a second thread loading a large native extension for the first time is
+what triggers it — a loader-lock class of hazard, not a bug in the scoring logic, and not one
+Whisper/Piper have ever hit because the `:tools` image is Linux-only (this is very likely
+Windows-specific — native `.pyd` loading has different lock semantics than Linux `.so` loading —
+**unconfirmed on Linux itself**, since no Linux box was available to cross-check this session).
+Moving the import to module scope pays the cost once at boot, before `Worker.run()` ever spawns a
+request thread, which sidesteps the whole hazard class rather than working around one instance of
+it — and means `ready` genuinely means ready rather than "ready, plus a surprise multi-second import
+for whoever's first request." **Whisper/Piper's own lazy-import shape is left exactly as it is**:
+changing a working pattern to guard against an unconfirmed-on-Linux hazard would be fixing something
+that has never actually failed, on the strength of a Windows-only repro.
+
+After the fix, verified for real: a leave-policy passage scored `7.46` against "how much annual
+leave," an unrelated one `-11.23` — correct ranking; a bad-model request refused `invalid_request`,
+matching what `CrossEncoderReranker`'s .NET-side fallback expects; a second call for an
+already-loaded model answered in `26 ms` (cache hit, `local_files_only` behaving as every other
+`from_pretrained`-based loader in this ecosystem does).
 
 Rule 5 holds the same way it does for every prior tool: `sentence-transformers` is a line in
 `requirements-tools.txt`, not a `PackageReference`, and `InferHub.Shared.csproj` is untouched. It is,

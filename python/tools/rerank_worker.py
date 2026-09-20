@@ -41,6 +41,21 @@ from inferhub_worker import (  # noqa: E402
     Worker,
 )
 
+# Imported here, at module scope, on the main thread — not lazily inside `load()` the way
+# faster-whisper is in whisper_worker.py. FOUND BY RUNNING THE WORKER, not by reading it: `Worker`
+# dispatches a request onto its own thread (v3.16.2's one-reader shape), and the first time this
+# import happened there — pulling in numpy's and torch's native extensions for the first time in the
+# process — it deadlocked hard inside CPython's import machinery loading numpy's compiled
+# `multiarray` module, confirmed with `faulthandler.dump_traceback` against every thread. A plain
+# background thread with nothing else going on imports the same modules in a few seconds; the
+# combination of a main thread parked in a blocking stdin read plus a second thread pulling in a
+# large native extension for the first time is what triggers it — a class of loader-lock hazard,
+# not a bug in the scoring logic. Paying the (several-second) import cost once at boot, before
+# `Worker.run()` ever spawns a request thread, sidesteps the whole class rather than working around
+# one instance of it — and it means `ready` genuinely means ready, not "ready, plus one surprise
+# multi-second import on whoever's first request."
+from sentence_transformers import CrossEncoder  # noqa: E402
+
 TOOL_ID = "rerank"
 
 #: Model name -> the sentence-transformers CrossEncoder repo it maps to. A caller says
@@ -124,8 +139,6 @@ def load(model: str):
             f"\"from sentence_transformers import CrossEncoder; CrossEncoder('{repo}')\"",
             ERROR_MODEL_UNAVAILABLE,
         )
-
-    from sentence_transformers import CrossEncoder
 
     where = device()
     log(f"loading {model} ({repo}) on {where}")
