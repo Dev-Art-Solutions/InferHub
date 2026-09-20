@@ -688,9 +688,9 @@ public sealed class LocalRetrievalOptionsValidator(IConfiguration? configuration
             failures.Add($"{prefix}{nameof(RetrievalOptions.CandidatesPerBranch)} must be >= 1 (got {retrieval.CandidatesPerBranch}).");
         }
 
-        if (retrieval.Rerank is not "none" and not "llm")
+        if (retrieval.Rerank is not "none" and not "llm" and not "cross-encoder")
         {
-            failures.Add($"{prefix}{nameof(RetrievalOptions.Rerank)} must be 'none' or 'llm' (got '{retrieval.Rerank}').");
+            failures.Add($"{prefix}{nameof(RetrievalOptions.Rerank)} must be 'none', 'llm' or 'cross-encoder' (got '{retrieval.Rerank}').");
         }
 
         if (retrieval.RerankCandidates < 1)

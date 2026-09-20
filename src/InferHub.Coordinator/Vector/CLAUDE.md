@@ -386,10 +386,22 @@ tests (`RetrievalHostTests.cs`) inject their own `NoReranker` stub instead of ex
 implementation. `CrossEncoderReranker` (the hub side) does have full coverage —
 `CrossEncoderRerankerTests.cs`, eight cases mirroring `RerankerTests.cs`'s coverage of `LlmReranker`.
 
-**Not established this session:** `rerank_worker.py` has never been run. No Python environment with
-`sentence-transformers`/`torch` was installed (multi-GB), so nothing has loaded a real
-`bge-reranker` model or confirmed its JSON frames match what the .NET side expects — see
-`python/CLAUDE.md`'s own phase-80 entry and the plan brief's "not established" list.
+**`rerank_worker.py` was run for real and found a deadlock — see `python/CLAUDE.md`'s phase-80 D5**
+for the full story (a native-extension import racing a blocked main thread). Not this file's
+territory; recorded there.
+
+**D6 — v3.45.0 shipped a startup crash for the exact config its own release notes documented,
+because both `Rerank` validators were missed.** `VectorStoreOptionsValidator` here and
+`NodeConfigurationValidation`'s retrieval check on the node both still hard-refused anything but
+`"none"`/`"llm"` — added everywhere else (`RetrievalPipeline`, both composition roots, the docs) but
+not in the one place that runs before any of them, `ValidateOnStart`. Found within hours, by pulling
+`ghcr.io/dev-art-solutions/inferhub-node:tools` and starting it with `Retrieval:Rerank=cross-encoder`
+set: `OptionsValidationException: ...must be 'none' or 'llm' (got 'cross-encoder')`. No unit test in
+this phase constructs a node/coordinator host through `ValidateOnStart`, which is exactly why the
+whole green suite said nothing — the same lesson `EnabledStoreAcceptsAllSupportedRerankModes` now
+exists to catch mechanically rather than by memory. Fixed and re-verified in v3.45.1: the same
+container, over real HTTP, through `/api/tools/rerank` — identical scores to the standalone
+worker-protocol check.
 
 **Rule 5 survived again**, on the .NET side: **zero** new `PackageReference`s. The one new
 dependency, `sentence-transformers`, is Python — a line in `requirements-tools.txt`, exactly like

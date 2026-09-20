@@ -354,6 +354,32 @@ public class VectorStoreOptionsValidatorTests
         Assert.True(result.Succeeded, string.Join("; ", result.Failures ?? Array.Empty<string>()));
     }
 
+    [Theory]
+    [InlineData("none")]
+    [InlineData("llm")]
+    [InlineData("cross-encoder")]
+    public void EnabledStoreAcceptsAllSupportedRerankModes(string rerank)
+    {
+        var validator = new VectorStoreOptionsValidator();
+        var options = new VectorStoreOptions { Enabled = true, Retrieval = { Rerank = rerank } };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Succeeded, string.Join("; ", result.Failures ?? Array.Empty<string>()));
+    }
+
+    [Fact]
+    public void EnabledStoreRejectsUnknownRerankMode()
+    {
+        var validator = new VectorStoreOptionsValidator();
+        var options = new VectorStoreOptions { Enabled = true, Retrieval = { Rerank = "garbage" } };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, m => m.Contains("cross-encoder"));
+    }
+
     [Fact]
     public void UnknownProviderMessageNamesQdrant()
     {

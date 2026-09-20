@@ -101,9 +101,9 @@ public sealed partial class VectorStoreOptionsValidator : IValidateOptions<Vecto
                 failures.Add($"{VectorStoreOptions.SectionName}:Retrieval:{nameof(RetrievalOptions.CandidatesPerBranch)} must be >= 1 (got {options.Retrieval.CandidatesPerBranch}).");
             }
 
-            if (options.Retrieval.Rerank is not "none" and not "llm")
+            if (options.Retrieval.Rerank is not "none" and not "llm" and not "cross-encoder")
             {
-                failures.Add($"{VectorStoreOptions.SectionName}:Retrieval:{nameof(RetrievalOptions.Rerank)} must be 'none' or 'llm' (got '{options.Retrieval.Rerank}').");
+                failures.Add($"{VectorStoreOptions.SectionName}:Retrieval:{nameof(RetrievalOptions.Rerank)} must be 'none', 'llm' or 'cross-encoder' (got '{options.Retrieval.Rerank}').");
             }
 
             if (options.Retrieval.RerankCandidates < 1)
