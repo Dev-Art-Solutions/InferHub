@@ -1,6 +1,6 @@
 # Social copy — v3.44.0 (phase 79: platform-keyed tool manifests)
 
-Blog: not posted (blog connector unavailable this session)
+Blog: https://blog.devart.solutions/blog/inferhub-3-44-the-manifest-didnt-know-about-windows
 Release: https://github.com/Dev-Art-Solutions/InferHub/releases/tag/v3.44.0
 
 ## X / Twitter
@@ -12,6 +12,8 @@ What wasn't: every manifest's command was a hardcoded Linux path.
 
 v3.44 lets one manifest's `command` be keyed by platform — `{"linux": [...], "windows": [...]}` —
 so the same tool id runs unedited on a bare-metal Windows node and the Linux `:tools` image.
+
+https://blog.devart.solutions/blog/inferhub-3-44-the-manifest-didnt-know-about-windows
 
 ## Facebook / LinkedIn
 
@@ -29,3 +31,5 @@ tool's config for a Windows box.
 Proven with a real spawned process on a real Windows machine, not just a parsed JSON file. What's
 still open, named rather than implied: no Windows build of the shipped Whisper/Piper tools yet, and
 no Windows container image — this is the manifest mechanism, not a finished Windows tools story.
+
+https://blog.devart.solutions/blog/inferhub-3-44-the-manifest-didnt-know-about-windows
