@@ -161,6 +161,40 @@ this track is heading; splitting the local path across releases would mean build
 `System.Text.Json` ship in the shared framework, `InferHub.Shared.csproj` is still empty, and there is
 no Python in any `.csproj` — the reference library in `python/` is copied or vendored, never packaged.
 
+### Phase 79 (a manifest's `command` can be keyed by platform) — the pointer, and the one thing that moved
+
+**The runtime was already OS-agnostic; the manifest's own JSON was not.** `ProcessToolRuntime`,
+`ToolWorkerPool` and `ToolWorkerProcess` are plain `System.Diagnostics.Process` with no shell and no
+POSIX-only P/Invoke — `ToolWorkerProcess.ApplyEnvironment` already branches on
+`RuntimeInformation.IsOSPlatform(OSPlatform.Windows)` to add what Windows needs to start a process at
+all (D3, above). What could not vary was the manifest's `command`: every shipped one is a POSIX
+absolute path, because the only place a manifest had ever been written was the `:tools` image.
+
+**D1 — `command` may be the argv array it always was, or an object keyed by platform**
+(`{"linux": [...], "windows": [...]}`), resolved against the same three-way switch D3 already uses.
+**Considered and rejected: a `Tools:Platform` config override** — it would let an operator lie about
+which OS is running the process, and a manifest that lies about its own platform has no honest use
+(the argv has to run on the box that reads it; nothing here is cross-compiled).
+
+**D2 — a manifest naming only platforms this node is not running on is refused by name, D2's own
+"loaded, logged, skipped" shape one level down.** The error names the branch it needed and the ones
+offered, so an operator sees "this tool does not run on this platform" rather than a silent absence
+from the capability list.
+
+**D3 (renumbered from this phase's own brief) — `workdir`'s missing-branch case is the opposite of
+`command`'s, on purpose: it resolves to "unset", not a refusal.** `command` is required — a tool
+cannot start without an argv. `workdir` is optional and always has been; a platform branch that does
+not match is exactly as absent as the field never being written.
+
+**Proven for real, not only parsed:** `ARealWorkerStartsFromAPlatformKeyedCommandOnThisMachine`
+(`tests/InferHub.Tests.Mesh/ToolManifestTests.cs`) starts the real `inferhub-echo-worker` — a native
+.NET executable needing no Python, no CUDA and no container, so it builds and runs identically on
+whichever OS the test itself is running on — from an object-form `command`, through
+`ToolWorkerPool.StartAsync`/`AcquireAsync`/`ExecuteAsync`. **What this did not prove:** the shipped
+`whisper.json`/`piper.json` gained no `windows` branch (a real Windows Python/CUDA/`ffmpeg` pipeline
+this phase did not build or run), and no Windows container image exists — the mechanism is proven,
+a Windows tool *deployment* is not.
+
 ### Phase 42 (STT and TTS for real) — also load-bearing
 
 **D1 — The client surface is OpenAI's audio API, exactly, and this is the phase-21 argument again.**

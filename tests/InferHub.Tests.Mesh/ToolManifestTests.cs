@@ -1,4 +1,5 @@
 using InferHub.Node.Tools;
+using InferHub.Shared.Contracts;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -197,5 +198,147 @@ public class ToolManifestTests
             NullLogger.Instance);
 
         Assert.Empty(manifests);
+    }
+
+    /// <summary>
+    /// Phase 79. A per-platform <c>command</c> resolves to this process's own OS — the same object
+    /// works unedited on a Linux `:tools` image and a bare-metal Windows node.
+    /// </summary>
+    [Fact]
+    public void ACommandKeyedByPlatformResolvesToThisProcessSOwnOs()
+    {
+        var currentPlatform = OperatingSystem.IsWindows() ? "windows" : "linux";
+        var otherPlatform = currentPlatform == "windows" ? "linux" : "windows";
+
+        var ok = ToolManifestLoader.TryParse(
+            $$"""
+            {
+              "id": "cross",
+              "capabilities": [ { "kind": "echo", "models": ["echo"] } ],
+              "command": {
+                "{{currentPlatform}}": ["here", "-u", "worker.py"],
+                "{{otherPlatform}}": ["there.exe", "-u", "worker.py"]
+              },
+              "workdir": { "{{currentPlatform}}": "C:\\here", "{{otherPlatform}}": "/there" }
+            }
+            """,
+            "cross.json",
+            out var manifest,
+            out var error);
+
+        Assert.True(ok, error);
+        Assert.Equal("here", manifest!.Command[0]);
+        Assert.Equal("C:\\here", manifest.WorkingDirectory);
+    }
+
+    /// <summary>
+    /// A manifest that only names platforms this process is not running on is refused **by name** —
+    /// the same "loaded, logged, skipped" shape as an unknown id, because one tool that cannot start
+    /// here must not take the node offline (the loader's own class remark).
+    /// </summary>
+    [Fact]
+    public void ACommandWithNoBranchForThisPlatformIsRefusedNamingWhatItOffers()
+    {
+        var otherPlatform = OperatingSystem.IsWindows() ? "linux" : "windows";
+
+        var ok = ToolManifestLoader.TryParse(
+            $$"""
+            {
+              "id": "elsewhere",
+              "capabilities": [ { "kind": "echo", "models": ["echo"] } ],
+              "command": { "{{otherPlatform}}": ["x"] }
+            }
+            """,
+            "elsewhere.json",
+            out _,
+            out var error);
+
+        Assert.False(ok);
+        Assert.Contains("does not offer", error);
+        Assert.Contains(otherPlatform, error);
+    }
+
+    /// <summary>
+    /// Unlike <c>command</c>, <c>workdir</c> is optional — so a platform branch that does not match
+    /// resolves to "unset" rather than a refusal, exactly as an absent field always has.
+    /// </summary>
+    [Fact]
+    public void AWorkdirWithNoBranchForThisPlatformIsUnsetRatherThanRefused()
+    {
+        var otherPlatform = OperatingSystem.IsWindows() ? "linux" : "windows";
+
+        var ok = ToolManifestLoader.TryParse(
+            $$"""
+            {
+              "id": "no-workdir-here",
+              "capabilities": [ { "kind": "echo", "models": ["echo"] } ],
+              "command": ["x"],
+              "workdir": { "{{otherPlatform}}": "/elsewhere" }
+            }
+            """,
+            "no-workdir-here.json",
+            out var manifest,
+            out var error);
+
+        Assert.True(ok, error);
+        Assert.Null(manifest!.WorkingDirectory);
+    }
+
+    /// <summary>
+    /// The real, end-to-end case this phase exists for: a manifest whose <c>command</c> is keyed by
+    /// platform starts a real child process on whichever OS is running the test — proving the
+    /// resolution live rather than only against a parsed <see cref="ToolManifest"/>. The echo worker
+    /// is a real .NET executable and needs no Python, no CUDA and no container to build and run
+    /// identically on Windows and Linux, which is what makes it the one fixture that can prove this
+    /// without a second platform's toolchain.
+    /// </summary>
+    [Fact]
+    public async Task ARealWorkerStartsFromAPlatformKeyedCommandOnThisMachine()
+    {
+        var argv = ToolWorkerFixture.Command();
+        var currentPlatform = OperatingSystem.IsWindows() ? "windows" : "linux";
+        var otherPlatform = currentPlatform == "windows" ? "linux" : "windows";
+
+        var manifestJson = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            id = "echo",
+            capabilities = new[] { new { kind = "echo", models = new[] { "echo" } } },
+            command = new Dictionary<string, string[]>
+            {
+                [currentPlatform] = argv,
+                [otherPlatform] = ["this-platform-has-no-such-binary"]
+            }
+        });
+
+        Assert.True(ToolManifestLoader.TryParse(manifestJson, "echo.json", out var manifest, out var parseError), parseError);
+
+        using var scratch = new ToolWorkerFixture.TempDirectory("inferhub-cross-platform-worker");
+        await using var pool = new ToolWorkerPool(
+            manifest!,
+            ToolWorkerFixture.Options(scratch.Path, "echo"),
+            TimeProvider.System,
+            ToolWorkerFixture.Logger());
+
+        await pool.StartAsync(CancellationToken.None);
+        await using var lease = await pool.AcquireAsync(CancellationToken.None);
+
+        var request = new ToolFrame
+        {
+            Type = ToolFrameTypes.Request,
+            Id = "req-0",
+            Capability = "echo",
+            Model = "echo",
+            Payload = System.Text.Json.JsonSerializer.SerializeToElement(new { }, ToolProtocol.Json)
+        };
+
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var frames = new List<ToolFrame>();
+
+        await foreach (var frame in lease.ExecuteAsync(request, deadline.Token))
+        {
+            frames.Add(frame);
+        }
+
+        Assert.Single(frames, f => f.Type is ToolFrameTypes.Result);
     }
 }

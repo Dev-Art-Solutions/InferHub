@@ -641,6 +641,28 @@ curl localhost:5080/api/tools/transcribe -H "Authorization: Bearer $KEY" \
 what the node does when a worker misbehaves. `python/inferhub_worker/` is a ~150-line reference
 implementation you copy or vendor; it is deliberately not a package.
 
+**`command` (and `workdir`) may be keyed by platform instead of a single argv array (v3.44+)**, for a
+node running bare-metal or as the [Windows service](#running-a-node-as-a-windows-service) rather than
+the `:tools` image, with a tool built for that box:
+
+```jsonc
+{
+  "id": "my-tool",
+  "capabilities": [ { "kind": "echo", "models": ["echo"] } ],
+  "command": {
+    "linux":   ["/opt/inferhub/venv/bin/python", "-u", "/opt/inferhub/tools/worker.py"],
+    "windows": ["C:\\ProgramData\\InferHub\\Node\\tools\\venv\\Scripts\\python.exe", "-u",
+                "C:\\ProgramData\\InferHub\\Node\\tools\\worker.py"]
+  }
+}
+```
+
+One id, both platforms — the branch is picked by the OS the node process is actually running on. A
+manifest that names no branch for this node's platform is refused by name (logged, skipped, the node
+stays up); `workdir` is optional, so a missing branch there resolves to "unset" rather than a
+refusal. The shipped `whisper.json`/`piper.json` are unchanged and stay POSIX-only — they are the
+`:tools` image's own manifests, and there is no Windows build of that image.
+
 ### Why a subprocess and not a library
 
 Because the libraries are Python, and the alternative — Python.NET, CSnakes, an embedded interpreter
