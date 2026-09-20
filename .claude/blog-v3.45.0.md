@@ -6,7 +6,8 @@ EN visible / BG hidden. Author: Admin.
 
 Excerpt (EN): The reranker InferHub shipped in v2.6 works by prompting a chat model to score
 passages it was never trained to rank. v3.45 adds the thing the seam was always designed for: a
-real cross-encoder, running the same way Whisper and Piper already do.
+real cross-encoder — and running it for the first time found a deadlock a green test suite could
+never have seen.
 
 > **No shell commands in the HTML** — the blog sits behind a Cloudflare WAF that blocks the request,
 > not the command. JSON bodies only.
@@ -41,8 +42,20 @@ real cross-encoder, running the same way Whisper and Piper already do.
 
 <p>A chat model named in <code>RerankModel</code> under this mode simply never routes — there's no fallback to "use whatever chat model the request already named," because that's meaningless for a model that was never a chat model. The reranker treats it exactly like any other "no node holds this" failure: original order kept, logged, nothing thrown. Reranking has always been an improvement InferHub is willing to skip, never a dependency it's willing to break retrieval over.</p>
 
-<h2>What was not established when this was written</h2>
+<h2>The deadlock a green test suite could never have seen</h2>
 
-<p>The worker script had not been run against a real model at the time this feature was built — no GPU or spare hour of bandwidth for a multi-gigabyte <code>torch</code> install in that environment. It's since been driven directly through its real process protocol — handshake, a real cross-encoder query, a deliberately wrong model name — on a CPU box, and the results are folded into this release rather than held back for a second one. What's still open is a live run against a real fleet end to end, through the coordinator, over a network — the next thing to check before leaning on this in production.</p>
+<p>The .NET side of this — route, dispatch, parse the reply, fall back to the original order on any failure — is unit-tested against a stub tool dispatcher, eight cases, all green. None of that touches the actual Python worker. So it got run for real: a venv with <code>sentence-transformers</code>, the worker driven directly through its own protocol — <code>hello</code>, <code>ready</code>, a real <code>request</code> frame.</p>
+
+<p>It deadlocked. Every time, on the first request.</p>
+
+<p><code>faulthandler.dump_traceback</code> against every thread pinned it exactly: the model library was imported lazily on first use, inside the function that handles a request — which runs on its own thread, so the worker's main loop stays free to notice a cancel while a job is in flight. That import was pulling in <code>numpy</code>'s compiled extension for the first time, and it hung hard inside CPython's own import machinery. The identical import from an ordinary background thread with nothing else going on finishes in a few seconds. A main thread parked in a blocking read <em>plus</em> a second thread loading a large native extension for the first time, at once, is what triggers it — a loader-lock hazard, not a bug in the scoring code, and not one InferHub's other tool workers have ever hit, because they've only ever run on Linux.</p>
+
+<p>The fix is also just better design: import the library once, at boot, on the main thread — before the worker ever spawns a thread to handle anything — instead of paying that cost lazily on whoever's first request happens to land. It sidesteps the whole class of hazard rather than working around one instance of it, and it means the worker's "I'm ready" actually means ready.</p>
+
+<p>After the fix: a leave-policy passage scored <code>7.46</code> against "how much annual leave do employees get," an unrelated one about the office kitchen scored <code>-11.23</code> — correctly ranked. A request naming a chat model that isn't a reranker got refused by name, exactly the failure the .NET-side fallback is built to catch. A second call for an already-loaded model came back in 26 milliseconds.</p>
+
+<h2>What's still open</h2>
+
+<p>What's verified is the worker's own protocol, directly. What's still not run is the whole stack wired together — a real coordinator, a real node, an HTTP request through <code>/api/tools/rerank</code>, on a real collection. That's the next thing to check before leaning on this in production, and it's said here rather than left implied.</p>
 
 <p>Release notes: <a href="https://github.com/Dev-Art-Solutions/InferHub/releases/tag/v3.45.0">v3.45.0 on GitHub</a>. Docs: <a href="https://inferhub.devart.solutions/#idocs_cross_encoder">A dedicated cross-encoder reranker</a>.</p>
