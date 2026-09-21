@@ -31,6 +31,12 @@ builder.Services.Configure<DispatcherOptions>(builder.Configuration.GetSection("
 builder.Services.Configure<RouterOptions>(builder.Configuration.GetSection("Router"));
 builder.Services.AddSingleton<Metrics>();
 builder.Services.Configure<MetricsOptions>(builder.Configuration.GetSection(MetricsOptions.SectionName));
+
+// Phase 81: OTLP metrics push, off by default (Observability:Otlp:Enabled read at tick time,
+// the same shape AutoScalerService/CorpusFailoverService already use).
+builder.Services.AddHttpClient(OtlpMetricsExporterService.HttpClientName);
+builder.Services.Configure<OtlpExporterOptions>(builder.Configuration.GetSection(OtlpExporterOptions.SectionName));
+builder.Services.AddHostedService<OtlpMetricsExporterService>();
 builder.Services.AddSingleton<INodeRegistry, NodeRegistry>();
 builder.Services.AddSingleton<IAuditLog, AuditLog>();
 

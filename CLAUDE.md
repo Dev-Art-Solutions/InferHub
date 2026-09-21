@@ -92,8 +92,9 @@ longer pays for the Qdrant connector's UUID mapping and the cluster lease's spli
 |---|---|---|
 | `src/InferHub.Shared/` | `src/InferHub.Shared/CLAUDE.md` | contracts, the OpenAI/Ollama dialects, the retrieval core, the vector stores, the image and video envelopes, the upstream dialects (OpenAI, Anthropic and Gemini) · phases 24, 29, 33, 34, 40, 46, 47, 57, 61, 63, 64, 70 |
 | `src/InferHub.Shared.Postgres/` | `src/InferHub.Shared/CLAUDE.md` (its "Phase 71" note) | the Postgres+pgvector store and bootstrap, shared by the coordinator and a node · phase 71 |
-| `src/InferHub.Coordinator/` | `src/InferHub.Coordinator/CLAUDE.md` | endpoints, routing, admission, cluster, `/metrics`, the console, the cloud providers · phases 21–23, 25, 26, 28, 30, 32, 45, 51, 57, 59–66, 69, 70 |
+| `src/InferHub.Coordinator/` | `src/InferHub.Coordinator/CLAUDE.md` | endpoints, routing, admission, cluster, the console, the cloud providers · phases 21–23, 25, 26, 30, 32, 45, 51, 57, 59–65, 69, 70 |
 | `src/InferHub.Coordinator/Vector/` | `src/InferHub.Coordinator/Vector/CLAUDE.md` | the three vector providers, replication and healing, collection ownership, cross-provider migration, federated retrieval · phases 31, 35, 44, 75 (split out in phase 62) |
+| `src/InferHub.Coordinator/Observability/` | `src/InferHub.Coordinator/Observability/CLAUDE.md` | `/metrics`, the `Metrics` registry, the OTLP push exporter · phases 28, 66, 81 (split out in phase 81) |
 | `src/InferHub.Coordinator/Cluster/` | `src/InferHub.Coordinator/Cluster/CLAUDE.md` | the multi-coordinator lease, the split-brain fence, the standby's refusal set · phase 32 (split out in phase 69) |
 | `src/InferHub.Node/` | `src/InferHub.Node/CLAUDE.md` | backends and the upstream dialects a node can drive, the Ollama supervisor, solo mode, profiles · phases 36–39, 43, 53, 67 |
 | `src/InferHub.Node/Tools/` | `src/InferHub.Node/Tools/CLAUDE.md` | the tool runtime, STT/TTS, the image and video catalogues, the VRAM budget and the licence gate · phases 41, 42, 48, 55–58, 70 (split out in phase 67) |
@@ -254,6 +255,12 @@ as load-bearing:
    Dockerfile — a static encoder binary inside a wheel — reached through the same child process over
    the same line protocol, and **zero** of it is a `PackageReference`. Nothing in any `.csproj`
    compiles against a codec and no C# anywhere decodes a frame.
+
+   **Phase 81 (an OTLP push exporter) was the one item on the standing backlog explicitly flagged as
+   needing a new dependency, and it did not take one.** The OpenTelemetry .NET SDK was considered and
+   declined (see `src/InferHub.Coordinator/Observability/CLAUDE.md`, phase-81 D1) in favour of
+   hand-rolled `HttpClient` POSTing OTLP's own JSON wire encoding — the Qdrant precedent applied to a
+   fourth integration. Zero new packages.
 6. **The node-facing *inference* job protocol is Ollama-shaped. Client-facing and upstream-facing
    dialects are translations at the boundary.**
    > **The word "inference" was added in phase 40, and it is a bounding, not a weakening.**

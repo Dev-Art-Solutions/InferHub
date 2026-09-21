@@ -3688,6 +3688,32 @@ Written by hand, like the NDJSON and SSE framing before it: the exposition forma
 `# HELP` / `# TYPE` / `name{labels} value`, and `prometheus-net` would have been a permanent
 dependency in exchange for code that fits on a screen. **Zero new dependencies.**
 
+### OTLP push exporter (v3.46+)
+
+No Prometheus server to scrape you? `/metrics`'s own numbers can instead be **pushed** to any
+OTLP-compatible collector — Grafana Alloy, the reference `otelcol`, Honeycomb, Datadog's agent —
+on an interval, opt-in and off by default:
+
+```json
+"Observability": {
+  "Otlp": {
+    "Enabled": true,
+    "Endpoint": "http://otel-collector:4318",
+    "IntervalSeconds": 30,
+    "Headers": { "x-honeycomb-team": "your-ingest-key" }
+  }
+}
+```
+
+It is the **same** numbers `/metrics` serves, reformatted rather than remeasured: a background loop
+reads `/metrics`'s own exposition text back out and `POST`s it as an OTLP/HTTP JSON payload to
+`{Endpoint}/v1/metrics`. No OpenTelemetry SDK and no gRPC — the JSON encoding is a documented OTLP
+wire format this hub already speaks by hand, the same call made for the Qdrant connector.
+**Zero new dependencies.** `Enabled=false` (the default) means zero new HTTP calls and byte-for-byte
+the same behaviour as every earlier release. A push that fails is logged and dropped — there is no
+retry queue, since a stale number sent late is not "caught up," it is the past reported as now.
+Histogram series (image/video job durations) are not sent yet.
+
 ## Management console & admin API
 
 A browser console at `/console` (alias for `/console.html`) lets an operator drive the

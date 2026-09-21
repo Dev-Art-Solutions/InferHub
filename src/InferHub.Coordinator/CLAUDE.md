@@ -13,6 +13,7 @@ vector stores split out in phase 62** — see below.
 
 - The contracts and dialects this host renders: `src/InferHub.Shared/CLAUDE.md`
 - The vector providers, replication, ownership and migration: `src/InferHub.Coordinator/Vector/CLAUDE.md`
+- `/metrics`, the `Metrics` registry and the OTLP push exporter: `src/InferHub.Coordinator/Observability/CLAUDE.md`
 - The other side of every job: `src/InferHub.Node/CLAUDE.md`
 - The images this ships in, and their permissions traps: `deploy/CLAUDE.md`
 
@@ -385,48 +386,9 @@ release once there is evidence, not an argument.
 
 **Rule 5 survived again.** Phase 26 added **zero** new dependencies.
 
-### Phase 28 (Prometheus `/metrics`) — also load-bearing
-
-**D1 — The exposition format is hand-written, and `prometheus-net` stays out.**
-[PrometheusFormatter](src/InferHub.Coordinator/Observability/PrometheusFormatter.cs) is a pure
-function from a gathered `PrometheusScrape` to a string. The format is `# HELP` / `# TYPE` /
-`name{labels} value` — the same "three lines of string formatting" reasoning that kept the NDJSON
-(phase 9) and SSE (phase 21) framing dependency-free. Rule 5 survived again: **zero new
-dependencies**. An OTLP *push* exporter would genuinely need a package and is deferred, opt-in,
-only if demand appears.
-
-**D2 — This phase exposes numbers; it measures none.** Every series comes from `Metrics`,
-`ThroughputTracker`, `RequestQueue` and `AdmissionControl`, all of which already computed it.
-Nothing was added to the request path, and `/api/status` is **unchanged** — this adds a surface,
-it does not migrate one. If a future change starts *measuring* in the formatter, it has drifted.
-
-**D3 — `/metrics` is admin-guarded by default, and is not under the bearer guard.** It is
-operational like `/health` (which is open), but unlike `/health` it exposes node names, model
-names, client ids and traffic shape. So `AdminApiKeyMiddleware` now guards a small **prefix set**
-(`/api/admin`, plus `/metrics` unless `Metrics:OpenScrape`) rather than one constant.
-`OpenScrape=true` opens **only** the scrape endpoint — `PrometheusMetricsTests` fails if it ever
-unlocks `/api/admin/*`, which would be a config flag that quietly grants cordon and model-pull to
-anyone who can reach the port. It is deliberately not under `BearerApiKeyMiddleware`: a scraper is
-not an inference client and must not hold a token that can spend GPU time.
-
-**D4 — Client series come from `AdmissionControl`, never from the usage ledger.** The ledger is
-append-only history and is never *read* to drive anything (rule 4 / phase-25 D2) — a metrics
-endpoint reading it would have quietly ended that reasoning. Counts only; there is no content
-anywhere in the usage path (rule 7).
-
-**D5 — Absence is a fact, so absence is what is emitted.** An unmeasured `(node, model)` has **no**
-`inferhub_node_tokens_per_second` series rather than a `0`: the router treats an unmeasured node as
-*average*, never as slow (phase 26, D4), and a zero on a dashboard is a lie that pages someone about
-a node nobody has asked anything yet. Same for an unset client limit (unlimited is no series — not
-`0`, and not a `-1` sentinel a dashboard would happily plot) and for the queue's median before
-anything has queued. The **fleet** counters are the opposite and always present at zero, where a
-zero is a statement rather than an absence.
-
-> `PrometheusMetricsTests` **parses the output back** with a minimal in-test exposition reader
-> rather than string-matching it. Substring assertions pass happily on output no Prometheus can
-> read, which is the exact failure this endpoint exists to avoid. It also asserts an invariant
-> decimal separator on every value line — a decimal comma is a locale bug that only appears on a
-> Bulgarian or German host and sinks the whole scrape.
+**Phase 28 (Prometheus `/metrics`) moved to `src/InferHub.Coordinator/Observability/CLAUDE.md` in
+phase 81**, alongside 66 and the new phase 81 itself — the observability subtree the provider track
+had nothing to do with (the same move 62 D6 made for phases 31/35/44 and 67 D6 for 41/42/48/55–58).
 
 ### Phase 30 (stable-node affinity + optional persistence) — also load-bearing
 
@@ -939,59 +901,10 @@ client dialects and both failure paths read the same answer — `ShouldServe` is
 
 **Rule 5 survived again.** Phase 65 added **zero** new dependencies.
 
-### Phase 66 (console, metrics and docs for the provider track) — load-bearing
-
-**D1 — The Cloud providers panel is fed by `/api/status` alone, and it is the one panel that stays on
-the page when it is empty.** Every other panel hides; this one renders *No cloud provider is
-configured — nothing leaves your machines.* That sentence is the feature (22 D5's question, answered
-where somebody is already looking), and a panel that vanishes when the answer is the reassuring one
-teaches an operator to read absence as "I could not tell". **Rejected: a new admin route** — the data
-is in the poll already, and a second surface is a second thing to keep in step.
-
-**D2 — The console draws the projected `Fallback:` upstream as a row; the payload still does not
-carry it.** 61 D2 and 65 D5 keep it out of `providers[]` so a v3.28-configured hub is byte-identical,
-and that is unchanged — `console.js` synthesizes the row from the `fallback` block it already reads
-and marks it `legacy`. Its `credential` cell is a dash on purpose: **the legacy block gains no key
-for this panel**, because a new field there would land in the payload of every deployment that
-changed nothing. `TheLegacyUpstreamIsNotAProviderInThePayloadEvenThoughTheConsoleDrawsItAsARow` is
-the guard against somebody tidying the projection into the array.
-
-**D3 — A failed dispatch is counted per provider and the vendor's own sentence is kept — one, in
-memory, admin-gated.** `inferhub_provider_failed_total{provider}` plus `failed` / `lastError` /
-`lastErrorAtUtc` on the status block. **`inferhub_requests_failed_total` is deliberately not
-incremented**: a `prefer` provider that fails is usually followed by a node answering successfully,
-and one request must not fail twice in one number. **Rule 7, argued rather than assumed:** an error
-message is a vendor's sentence *about* a request, but nothing stops a vendor quoting a prompt inside
-one — so it is treated as content, held once per provider, never persisted, never a metric label, and
-reachable only through the admin-gated payload. **Rejected: a ring of recent errors**, which is a log.
-
-**D4 — A provider with no credential is a needs-attention row, not a startup refusal.** The validator
-has never demanded an `ApiKey` and must not: an `openai-compatible` endpoint on your own network
-legitimately has none. Enabled, mapping models and keyless against a vendor is the purest "I turned
-it on and nothing happened" (45 D1), so the strip carries it, alongside a failing provider and — named
-separately — a failing `only` one, whose models have no backstop by construction. The strip's second
-column is **Where** rather than Node since this phase, because half its rows now name a vendor.
-
-**D5/D6 — `inferhub_provider_info` describes; `inferhub_provider_refused_total` counts and carries no
-label.** An info series with a constant 1 measures nothing, so 28 D5 does not reach it — and it is
-what makes the absence of `inferhub_provider_dispatched_total` legible, since without it *no vendor
-configured* and *a vendor that has served nothing* are the same silence. No key, no base URL (they
-carry tokens in query strings in the wild) and no model names (cardinality) in its labels. The
-refusal counter has **no label at all**: the id a caller steers at is text they chose, so labelling it
-lets anyone with an inference key mint unbounded series, and labelling it with the provider that
-*does* claim the model rebuilds by scrape the enumeration 65 D4 refused to expose by probing. It is
-emitted at zero like the other hub-wide counters — a hub with no provider can still refuse a steer.
-
-> **A `# HELP` belongs to the metric *family*, not to the row — and the second one rejects the whole
-> scrape.** `Info` writes its own header, so calling it in a loop emitted a duplicate header for
-> `inferhub_provider_info` (since v3.34.0) and `inferhub_provider_last_model` (since **v3.29.0**);
-> Prometheus refuses the entire endpoint, so every InferHub series left the dashboard the moment an
-> operator configured a **second** provider — the configuration this whole track exists to make
-> possible. Fixed in **v3.35.1**: one `Header` per family, `Sample` per row, as the
-> `inferhub_node_vram_*` families have done since 48. Every provider test declared one provider, and
-> the in-test reader overwrote a duplicate silently; **`Exposition.Parse` now fails on a repeated
-> header for any name**, which is the half that guards the families nobody has written yet. Found by
-> scraping a published image with two providers on it (phase 68), not by a suite.
+**Phase 66 (console, metrics and docs for the provider track) moved to
+`src/InferHub.Coordinator/Observability/CLAUDE.md` in phase 81** — see that file's D5/D6 for the
+`inferhub_provider_info`/`inferhub_provider_refused_total` shape and the phase-68 duplicate-`HELP`
+finding.
 
 ### Phase 69 (the hub routes on backend health) — load-bearing; the node's half is 69 D4 in `src/InferHub.Node/CLAUDE.md`
 
