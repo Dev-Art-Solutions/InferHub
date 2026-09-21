@@ -23,8 +23,9 @@ standalone node answers a new request with the same <code>503</code> and <code>R
 concurrency gate has always used. Nothing already running is touched; this decides admission, not
 what happens to work in flight. It clears itself the same way, after enough clean readings.</p>
 
-<pre><code>$ curl -i -X POST http://localhost:5099/api/chat -d '{"model":"llama3.2","messages":[...]}'
-HTTP/1.1 503 Service Unavailable
+<p>A chat request against a node over its own cap comes back as:</p>
+
+<pre><code>HTTP/1.1 503 Service Unavailable
 Retry-After: 15
 
 {"error":"node is over its own configured resource cap: CPU 95% &gt; Node:ResourceLimits:MaxCpuPercent (80%); retry in 15s"}
@@ -54,6 +55,13 @@ answered a real chat request with the 503 above, and — with no restart — acc
 through the admin page and passed the very next request. The write landed exactly where the page
 itself reads from; getting the two to agree on one file, rather than two files nobody noticed
 disagreed, was the one thing this release found live rather than by unit test.</p>
+
+<p>Then re-verified against the real published <code>ghcr.io/dev-art-solutions/inferhub-node:3.47.1</code>
+image, which found one thing the from-source run couldn't have: on Docker Desktop for Windows,
+generating CPU load on the Windows host itself never moved the reading, because <code>/proc/stat</code>
+inside the container reflects the Linux VM Docker Desktop runs containers in — a different machine
+entirely. A busy loop run <em>inside</em> the container with <code>docker exec</code> registered
+immediately and tripped the same cap.</p>
 
 <p>What's not yet verified: a real two-node mesh actually rerouting a request away from a throttled
 node, rather than only refusing it in isolation — the unit suite covers the routing narrowing

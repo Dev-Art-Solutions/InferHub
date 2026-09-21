@@ -1,6 +1,6 @@
 # Social copy — v3.47.1 (phase 82: Node:ResourceLimits, a node-local CPU/GPU ceiling)
 
-Blog: (to be filled in once published)
+Blog: https://blog.devart.solutions/blog/inferhub-3-47-a-ceiling-the-coordinator-cannot-see
 Release: https://github.com/Dev-Art-Solutions/InferHub/releases/tag/v3.47.1
 
 ## X / Twitter
@@ -9,7 +9,7 @@ Every InferHub node limit a coordinator could always narrow further. v3.47 adds 
 can't even see: an optional local CPU/GPU cap the box's own operator sets, with a page the node
 serves itself to change it live, no restart.
 
-https://blog.devart.solutions/blog/inferhub-3-47-...
+https://blog.devart.solutions/blog/inferhub-3-47-a-ceiling-the-coordinator-cannot-see
 
 ## Facebook / LinkedIn
 
@@ -34,4 +34,4 @@ restart.
 Verified live: a node capped at an unreachable 1% tripped in two polls, refused a real request with
 the 503 above, and then accepted a raised cap through the page with zero downtime.
 
-https://blog.devart.solutions/blog/inferhub-3-47-...
+https://blog.devart.solutions/blog/inferhub-3-47-a-ceiling-the-coordinator-cannot-see
