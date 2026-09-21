@@ -580,6 +580,89 @@ public class NodeRegistryTests
         Assert.Empty(registry.FindNodesWithModel("llama3"));
     }
 
+    // ---- phase 82 -------------------------------------------------------------------------------
+
+    /// <summary>
+    /// 82 D4. A node over its own resource cap still holds its models — it is unserviceable for new
+    /// placement the same way an unhealthy backend is (69 D2), and for the same reason.
+    /// </summary>
+    [Fact]
+    public void AThrottledNodeTakesItselfOutOfTheCandidateSetWithoutLeavingTheFleet()
+    {
+        var registry = WithModel(out var now);
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 0, ResourceThrottled: true), now);
+
+        Assert.Empty(registry.FindNodesWithModel("llama3"));
+        Assert.Single(registry.FindNodesWithModel("llama3", includeUnserviceable: true));
+
+        var node = Assert.Single(registry.Snapshot(now));
+        Assert.True(node.ResourceThrottled);
+        Assert.Equal(1, node.ModelCount);
+    }
+
+    /// <summary>82 D1/D4, the mixed-fleet rule one field over: a node with no opinion routes exactly as before.</summary>
+    [Fact]
+    public void ANodeThatDeclaresNoResourceOpinionIsRoutableExactlyAsItWasBefore()
+    {
+        var registry = WithModel(out var now);
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 0), now);
+
+        Assert.Single(registry.FindNodesWithModel("llama3"));
+        Assert.Null(Assert.Single(registry.Snapshot(now)).ResourceThrottled);
+    }
+
+    /// <summary>82 D4. Recovery needs nothing but the next heartbeat, the same as an unhealthy backend's.</summary>
+    [Fact]
+    public void RecoveryFromThrottlingPutsTheNodeBackWithNoRestart()
+    {
+        var registry = WithModel(out var now);
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 0, ResourceThrottled: true), now);
+        Assert.Empty(registry.FindNodesWithModel("llama3"));
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 0, ResourceThrottled: false), now.AddSeconds(15));
+
+        Assert.Single(registry.FindNodesWithModel("llama3"));
+    }
+
+    /// <summary>
+    /// 82 the same way as 69 D6: a heartbeat every few seconds must not re-render the console, only
+    /// a genuine transition should.
+    /// </summary>
+    [Fact]
+    public void OnlyAResourceThrottleTransitionRaisesChanged()
+    {
+        var registry = WithModel(out var now);
+
+        var count = 0;
+        registry.Changed += () => count++;
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 0, ResourceThrottled: false), now);
+        Assert.Equal(1, count);
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 1, ResourceThrottled: false), now.AddSeconds(15));
+        Assert.Equal(1, count);
+
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 0, ResourceThrottled: true), now.AddSeconds(30));
+        Assert.Equal(2, count);
+    }
+
+    /// <summary>Both signals narrow the same serviceability question independently (82 D4).</summary>
+    [Fact]
+    public void AResourceThrottledNodeWithAHealthyBackendIsStillUnserviceable()
+    {
+        var registry = WithModel(out var now);
+
+        registry.Touch(
+            "connection-1",
+            new Heartbeat("node-1", now, InFlight: 0, Backend: BackendHealth.Healthy, ResourceThrottled: true),
+            now);
+
+        Assert.Empty(registry.FindNodesWithModel("llama3"));
+    }
+
     [Fact]
     public void AHealthyNodeThatReportsNoModelsIsStillEmptiedExactlyAsBefore()
     {

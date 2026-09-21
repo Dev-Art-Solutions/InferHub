@@ -30,6 +30,7 @@ public sealed class CoordinatorConnection(
     RetrievalHost retrieval,
     ReplicaStore replicaStore,
     IBackendSupervisor supervisor,
+    Resources.IResourceGovernor resourceGovernor,
     ILogger<CoordinatorConnection> logger) : IAsyncDisposable
 {
     private readonly CoordinatorOptions coordinator = coordinatorOptions.Value;
@@ -635,11 +636,16 @@ public sealed class CoordinatorConnection(
 
         // Phase 69. `Health` is null until the supervisor has made up its mind, and null on a node
         // that watches nothing — both travel as "no opinion", which the hub reads as routable.
+        //
+        // Phase 82: `ResourceThrottled` is null on a node with no Node:ResourceLimits cap configured
+        // (NoResourceGovernor.IsThrottled is always false, never "no opinion" as a bool — so the
+        // null is applied here, from whether a cap exists at all, not from the governor's verdict).
         var heartbeat = new Heartbeat(
             nodeId,
             DateTimeOffset.UtcNow,
             Volatile.Read(ref inFlight),
-            supervisor.Health);
+            supervisor.Health,
+            node.ResourceLimits.IsConfigured ? resourceGovernor.IsThrottled : null);
 
         await connection.InvokeAsync("Heartbeat", heartbeat, cancellationToken);
     }

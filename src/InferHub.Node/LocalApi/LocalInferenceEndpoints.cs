@@ -101,7 +101,7 @@ internal static class LocalInferenceEndpoints
 
                 return Results.Text(result.ResponseJson ?? "{}", "application/json");
             },
-            retryAfter => Saturated(retryAfter),
+            Saturated,
             cancellationToken);
     }
 
@@ -211,9 +211,9 @@ internal static class LocalInferenceEndpoints
         return Results.Json(new OllamaTagsResponse(visible), LocalApiEndpoints.JsonOptions);
     }
 
-    private static IResult Saturated(int retryAfterSeconds)
+    private static IResult Saturated(int retryAfterSeconds, string reason)
         => Results.Json(
-            new { error = $"node is at its configured concurrency limit; retry in {retryAfterSeconds}s" },
+            new { error = $"node is {reason}; retry in {retryAfterSeconds}s" },
             LocalApiEndpoints.JsonOptions,
             statusCode: StatusCodes.Status503ServiceUnavailable);
 

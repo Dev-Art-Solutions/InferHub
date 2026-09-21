@@ -141,9 +141,50 @@ public sealed class NodeOptionsValidator : IValidateOptions<NodeOptions>
                 $"{NodeOptions.SectionName}:Vram figures are in MiB and cannot be negative (budget {options.Vram.BudgetMiB}, reserve {options.Vram.ReserveMiB}).");
         }
 
+        ValidateResourceLimits(options.ResourceLimits, failures);
+
         return failures.Count == 0
             ? ValidateOptionsResult.Success
             : ValidateOptionsResult.Fail(failures);
+    }
+
+    /// <summary>Phase 82. Percentages are checked; the platform gap (GPU on Windows, hard cap
+    /// elsewhere) is a logged warning at startup, not a refusal — an operator who deploys the same
+    /// config across a mixed-OS fleet must not have it rejected on the boxes where a sub-feature
+    /// happens not to apply.</summary>
+    private static void ValidateResourceLimits(ResourceLimitOptions options, List<string> failures)
+    {
+        const string prefix = NodeOptions.SectionName + ":ResourceLimits:";
+
+        if (options.MaxCpuPercent is { } cpu && (cpu < 1 || cpu > 100))
+        {
+            failures.Add($"{prefix}{nameof(ResourceLimitOptions.MaxCpuPercent)} must be between 1 and 100 when set (got {cpu}).");
+        }
+
+        if (options.MaxGpuPercent is { } gpu && (gpu < 1 || gpu > 100))
+        {
+            failures.Add($"{prefix}{nameof(ResourceLimitOptions.MaxGpuPercent)} must be between 1 and 100 when set (got {gpu}).");
+        }
+
+        if (options.HardCpuCapPercent is { } hard && (hard < 1 || hard > 100))
+        {
+            failures.Add($"{prefix}{nameof(ResourceLimitOptions.HardCpuCapPercent)} must be between 1 and 100 when set (got {hard}).");
+        }
+
+        if (options.PollInterval <= TimeSpan.Zero)
+        {
+            failures.Add($"{prefix}{nameof(ResourceLimitOptions.PollInterval)} must be positive (got {options.PollInterval}).");
+        }
+
+        if (options.SustainedPolls < 1)
+        {
+            failures.Add($"{prefix}{nameof(ResourceLimitOptions.SustainedPolls)} must be >= 1 (got {options.SustainedPolls}).");
+        }
+
+        if (options.RecoverPolls < 1)
+        {
+            failures.Add($"{prefix}{nameof(ResourceLimitOptions.RecoverPolls)} must be >= 1 (got {options.RecoverPolls}).");
+        }
     }
 }
 

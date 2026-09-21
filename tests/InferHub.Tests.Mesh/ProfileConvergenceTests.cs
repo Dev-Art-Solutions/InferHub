@@ -465,6 +465,7 @@ public class ProfileConvergenceTests
                 TestProfiles.IdleRetrieval(),
                 replicas,
                 new NoBackendSupervisor(),
+                InferHub.Node.Resources.NoResourceGovernor.Instance,
                 NullLogger<CoordinatorConnection>.Instance);
 
             await node.StartAsync(CancellationToken.None);

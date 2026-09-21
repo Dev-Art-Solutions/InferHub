@@ -65,14 +65,15 @@ public sealed class NodeRegistry : INodeRegistry
         {
             LastSeenUtc = now,
             InFlight = Math.Max(0, heartbeat.InFlight),
-            Backend = heartbeat.Backend
+            Backend = heartbeat.Backend,
+            ResourceThrottled = heartbeat.ResourceThrottled
         };
 
-        // Phase 69 D6. A heartbeat arrives every few seconds and deliberately does not wake the
-        // console; a *transition* does, because that is the thing somebody wants to see the moment
-        // it happens. Raising on every beat would re-render every panel per node per interval to
-        // deliver a value that changes twice a week.
-        if (existing.Backend != heartbeat.Backend)
+        // Phase 69 D6, phase 82 the same way. A heartbeat arrives every few seconds and
+        // deliberately does not wake the console; a *transition* does, because that is the thing
+        // somebody wants to see the moment it happens. Raising on every beat would re-render every
+        // panel per node per interval to deliver a value that changes twice a week.
+        if (existing.Backend != heartbeat.Backend || existing.ResourceThrottled != heartbeat.ResourceThrottled)
         {
             RaiseChanged();
         }
@@ -302,7 +303,12 @@ public sealed class NodeRegistry : INodeRegistry
                 // Phase 69 D2. "Who holds this model" and "who can serve it" were the same question
                 // until a node could be up and unable to answer. This is the serving question; a
                 // caller asking about possession — placement, discovery, a diagnosis — opts back in.
-                && (includeUnserviceable || pair.Value.Backend is null or BackendHealth.Healthy)
+                //
+                // Phase 82 widens the same question rather than adding a second one: a node over
+                // its own resource cap still HAS the model, exactly like an unhealthy-backend node
+                // (69 D2's own distinction), so it is unserviceable for NEW placement the same way.
+                && (includeUnserviceable
+                    || (pair.Value.Backend is null or BackendHealth.Healthy && pair.Value.ResourceThrottled is not true))
                 && (!requireStreamedAttachments || pair.Value.StreamedAttachments is true)
                 // Phase 70 D7. A pre-v3.37 node still serves buffered speech to the whole fleet;
                 // it is only a streaming request that cannot see it.
@@ -404,7 +410,8 @@ public sealed class NodeRegistry : INodeRegistry
             entry.Capabilities,
             entry.Backend,
             entry.Registration.VramBudgetMiB,
-            entry.Registration.VramReserveMiB);
+            entry.Registration.VramReserveMiB,
+            entry.ResourceThrottled);
     }
 
     /// <summary>
@@ -482,5 +489,8 @@ public sealed class NodeRegistry : INodeRegistry
         BackendHealth? Backend = null,
         /// Whether the node speaks the streamed-speech contract (phase 70). Same null-is-not-a-
         /// declaration shape as the field above it, for the same reason.
-        bool? StreamedSpeech = null);
+        bool? StreamedSpeech = null,
+        /// Whether the node's own Node:ResourceLimits cap is tripped (phase 82). Same null-is-no-
+        /// opinion shape as Backend, for the same reason — an older node, or one with no cap set.
+        bool? ResourceThrottled = null);
 }

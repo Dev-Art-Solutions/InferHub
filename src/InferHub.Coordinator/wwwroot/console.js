@@ -85,6 +85,12 @@
       pills.push(`<span class="pill pill-err">backend ${escapeHtml(node.backendHealth)}</span>`);
     }
 
+    // Phase 82. Same posture as the backend-health pill above: visible beside "online" rather than
+    // instead of it, because the connection genuinely is up and the box is simply over its own cap.
+    if (node.resourceThrottled === true) {
+      pills.push(`<span class="pill pill-warn">resource capped</span>`);
+    }
+
     return pills.join(" ");
   };
 
@@ -706,6 +712,15 @@
           why: node.backendHealth === "unreachable"
             ? "nothing is listening at the node's inference backend — the node is connected and takes no work until it answers"
             : "the node's inference backend accepts connections and never answers — it is wedged, and takes no work until it is restarted"
+        });
+      }
+
+      // Phase 82. A node's own Node:ResourceLimits cap, tripped — an operator's own ceiling, not a
+      // fault, so the sentence says "capped", not "unhealthy".
+      if (node.resourceThrottled === true) {
+        items.push({
+          kind: "resource", where: label,
+          why: "this node's own Node:ResourceLimits cap is tripped — it takes no new work until its CPU/GPU usage falls and stays down"
         });
       }
 

@@ -578,6 +578,21 @@ public static class PrometheusFormatter
                         1);
                 }
             }
+
+            // Phase 82, the same shape as backend health one block up: absence over a manufactured
+            // zero. A node with no Node:ResourceLimits cap configured has literally nothing to
+            // report here, and `resource_throttled 0` on every such node would be noise dressed as
+            // a measurement.
+            var throttled = nodes.Where(node => node.ResourceThrottled is not null).ToArray();
+
+            if (throttled.Length > 0)
+            {
+                Header(builder, "inferhub_node_resource_throttled", "gauge", "1 while a node's own Node:ResourceLimits cap is tripped and it is withdrawn from new placement.");
+                foreach (var node in throttled)
+                {
+                    Sample(builder, "inferhub_node_resource_throttled", [("node", node.NodeId)], node.ResourceThrottled == true ? 1 : 0);
+                }
+            }
         }
 
         // Unmeasured (node, model) pairs produce no series at all. An unmeasured node is treated

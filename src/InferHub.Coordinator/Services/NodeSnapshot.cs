@@ -29,4 +29,7 @@ public sealed record NodeSnapshot(
     /// before v3.37, which never reported either — the model-enable precheck reads that the same
     /// way it reads a declared 0: nothing to check against.
     int? VramBudgetMiB = null,
-    int? VramReserveMiB = null);
+    int? VramReserveMiB = null,
+    /// Whether the node's own Node:ResourceLimits cap is tripped (phase 82). Null is no opinion: no
+    /// cap is configured on that box, or it is older than v3.47.
+    bool? ResourceThrottled = null);

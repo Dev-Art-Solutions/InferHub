@@ -1011,3 +1011,14 @@ reasoning phase 76 §1a used for `RecordCapabilityUnavailable`. `AutoScalerServi
 reuses `NodeModelToggle.SetEnabledAsync(..., enabled: false, force: false, ...)` and the same
 `lastActionUtc` cooldown map `TickAsync` already keeps — one map, checked from both directions, rather
 than a second one that could disagree with the first about when a pair last moved.
+
+### Phase 82 (widening `NodeRegistry.FindNodesWithModel`'s serviceability check for a node-local resource cap)
+
+This file's own territory is small: `Heartbeat.ResourceThrottled` (nullable, phase-82's node-side
+`Node:ResourceLimits` — full decisions in `InferHub.Node/CLAUDE.md`) is stored on `NodeRegistryEntry`
+and folded into the same predicate 69 D2 built (`Backend is null or Healthy`) — now also requiring
+`ResourceThrottled is not true`. A throttled node is unserviceable for **new** placement exactly like
+an unhealthy-backend one (still holds its models, `includeUnserviceable: true` still finds it), not
+evicted. `NodeSnapshot`/`StatusEndpoint`/`PrometheusFormatter`/`console.js` each gained one nullable
+field or block, all following 69 D5/D7's own null-is-no-opinion, absence-over-a-manufactured-zero
+rules verbatim — nothing new to argue here.

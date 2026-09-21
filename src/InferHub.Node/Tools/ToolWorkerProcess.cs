@@ -193,6 +193,11 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
                 ex);
         }
 
+        // Phase-82 D6. A no-op unless Node:ResourceLimits:HardCpuCapPercent is set and this is
+        // Windows — the one place a tool worker meets the hard cap, since this is the only file in
+        // the node that ever spawns one (D1's own reasoning, one mechanism over).
+        InferHub.Node.Resources.HardCpuCap.TryAssign(process);
+
         var worker = new ToolWorkerProcess(manifest, process, logger);
 
         try

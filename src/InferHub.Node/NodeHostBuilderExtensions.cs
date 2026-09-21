@@ -23,6 +23,19 @@ public static class NodeHostBuilderExtensions
 {
     public static IHostApplicationBuilder AddInferHubNode(this IHostApplicationBuilder builder)
     {
+        // Phase 82, D7. Optional, reload-on-change, and merged in AFTER appsettings.json so it wins —
+        // the local admin page (/api/admin/resource-limits) writes here, never into the hand-authored
+        // appsettings.json, so a live edit reaches IOptionsMonitor<NodeOptions> with no restart and
+        // never fights an operator's own file.
+        //
+        // Pinned to AppContext.BaseDirectory rather than left relative: the host's content root is
+        // the working directory (the project folder under `dotnet run`), while the admin endpoint —
+        // and appsettings.json's own published/service deployment — resolve against the assembly's
+        // own directory. Left relative, the two would watch different files and a save would never
+        // appear to take effect.
+        builder.Configuration.AddJsonFile(
+            Path.Combine(AppContext.BaseDirectory, "node.local.json"), optional: true, reloadOnChange: true);
+
         builder.Services
             .AddOptions<CoordinatorOptions>()
             .Bind(builder.Configuration.GetSection(CoordinatorOptions.SectionName))
@@ -156,9 +169,36 @@ public static class NodeHostBuilderExtensions
         AddOllamaSupervision(builder, ollamaOptions);
         AddToolRuntime(builder);
         AddRetrieval(builder);
+        AddResourceGovernance(builder);
         AddLocalApi(builder);
 
         return builder;
+    }
+
+    /// <summary>
+    /// Phase 82. Registered either way, the same <c>NoBackendSupervisor</c> shape phase 36 uses: a
+    /// node with no <c>Node:ResourceLimits</c> cap gets <see cref="Resources.NoResourceGovernor"/>,
+    /// which is never throttled and costs nothing — <c>CoordinatorConnection</c> and the local API
+    /// hold one shape rather than a nullable service.
+    /// </summary>
+    private static void AddResourceGovernance(IHostApplicationBuilder builder)
+    {
+        var resourceLimits = (builder.Configuration
+            .GetSection(NodeOptions.SectionName)
+            .Get<NodeOptions>() ?? new NodeOptions()).ResourceLimits;
+
+        // The hard cap (D6) is independent of the soft one, so the gate covers both: a deployment
+        // that sets only HardCpuCapPercent still needs the monitor's StartAsync to configure it.
+        if (!resourceLimits.IsConfigured && resourceLimits.HardCpuCapPercent is null)
+        {
+            builder.Services.AddSingleton<Resources.IResourceGovernor>(Resources.NoResourceGovernor.Instance);
+            return;
+        }
+
+        builder.Services.TryAddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<Resources.ResourceMonitor>();
+        builder.Services.AddSingleton<Resources.IResourceGovernor>(sp => sp.GetRequiredService<Resources.ResourceMonitor>());
+        builder.Services.AddHostedService(sp => sp.GetRequiredService<Resources.ResourceMonitor>());
     }
 
     /// <summary>
@@ -281,6 +321,12 @@ public static class NodeHostBuilderExtensions
         if (node.MaxConcurrency is not null)
         {
             builder.Services.AddSingleton<LocalConcurrencyGate>();
+        }
+
+        // Phase 82, D4. Same "absent means no gate object at all" rule, one config key over.
+        if (node.ResourceLimits.IsConfigured)
+        {
+            builder.Services.AddSingleton<ResourceAdmissionGate>();
         }
     }
 

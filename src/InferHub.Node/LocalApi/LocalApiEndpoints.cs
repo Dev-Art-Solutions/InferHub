@@ -99,6 +99,10 @@ public static class LocalApiEndpoints
         app.MapLocalIngestionEndpoints();
         app.MapLocalSearchEndpoints();
 
+        // Phase 82. The local configuring UI, mapped unconditionally like everything above — a cap
+        // switched on for the first time should not need a URL that only appears after it exists.
+        app.MapLocalResourceLimitsAdminEndpoints();
+
         var retrieval = app.Services.GetRequiredService<IOptions<LocalRetrievalOptions>>().Value;
 
         if (retrieval.Enabled)
@@ -319,9 +323,20 @@ public static class LocalApiEndpoints
         HttpContext httpContext,
         LocalConcurrencyGate? gate,
         Func<Task<IResult>> run,
-        Func<int, IResult> saturated,
+        Func<int, string, IResult> saturated,
         CancellationToken cancellationToken)
     {
+        // Phase 82, D4. Checked first and cheaply, before a concurrency slot is even considered: a
+        // request about to be refused for being over this node's own resource cap should not first
+        // take (and then immediately release) a slot another waiting request could have used.
+        var resourceGate = httpContext.RequestServices.GetService<ResourceAdmissionGate>();
+
+        if (resourceGate is not null && !resourceGate.TryEnter(out var resourceReason))
+        {
+            httpContext.Response.Headers.RetryAfter = resourceGate.RetryAfterSeconds.ToString();
+            return saturated(resourceGate.RetryAfterSeconds, $"over its own configured resource cap: {resourceReason}");
+        }
+
         if (gate is null)
         {
             return await run();
@@ -332,7 +347,7 @@ public static class LocalApiEndpoints
         if (slot is null)
         {
             httpContext.Response.Headers.RetryAfter = gate.RetryAfterSeconds.ToString();
-            return saturated(gate.RetryAfterSeconds);
+            return saturated(gate.RetryAfterSeconds, "at its configured concurrency limit");
         }
 
         try

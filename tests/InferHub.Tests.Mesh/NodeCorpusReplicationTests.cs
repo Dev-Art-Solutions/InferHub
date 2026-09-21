@@ -236,6 +236,7 @@ public class NodeCorpusReplicationTests
                 retrieval,
                 replicas,
                 new NoBackendSupervisor(),
+                InferHub.Node.Resources.NoResourceGovernor.Instance,
                 NullLogger<CoordinatorConnection>.Instance);
 
             await connection.StartAsync(CancellationToken.None);

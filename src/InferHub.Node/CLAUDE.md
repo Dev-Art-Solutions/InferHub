@@ -852,3 +852,77 @@ No node-side unit test for `LocalCrossEncoderReranker` — `LocalReranker` itsel
 either (`RetrievalHostTests.cs`'s solo-retrieval tests inject a `NoReranker` test double instead),
 so this phase did not open that gap, just declined to close a pre-existing one under a different
 name.
+
+### Phase 82 (`Node:ResourceLimits` — the node's own CPU/GPU ceiling, and the local configuring UI)
+
+Files: `Configuration/NodeOptions.cs` (`ResourceLimitOptions`), `Resources/` (`ResourceGovernor.cs`,
+`ResourceMonitor.cs`, `CpuUsageProbe.cs`, `NvmlProbe.cs`, `HardCpuCap.cs`), `LocalApi/ResourceAdmissionGate.cs`,
+`LocalApi/LocalResourceLimitsAdminEndpoints.cs`. User-requested (Bulgarian): an optional, node-local
+performance ceiling that overrides everything else, plus a local UI to configure it.
+
+**D1 — the one ceiling in this file with NO matching field on `NodeProfile`.** Every other ceiling —
+`Tools:Allowed`, `Node:MaxConcurrency`, `Node:Vram` — a hub-sent profile can *narrow further*
+(phase-43 D1). `Node:ResourceLimits` is not on the wire at all: the whole point of a per-box
+performance ceiling is the operator's own final word over a coordinator they may not fully trust, and
+a profile that could narrow it would still be a coordinator with a hand on the dial. Unset (both
+percentages null) is byte-identical to v3.46.
+
+**D2 — soft by default: a debounced admission withdrawal, not a throttle on anything running.**
+`ResourceGovernorLogic` (pure, table-tested like `VramBudget`) takes a `ResourceSnapshot` plus the
+*current* config on every call — not fixed at construction — specifically so D7's live edits reach it
+within one poll. `SustainedPolls` (default 3) and `RecoverPolls` (default 2) are independent
+debounces, deliberately allowed to differ: tripping and recovering are different questions, and a box
+that just stopped being over its cap is not necessarily routable the very next tick.
+
+**D3 — CPU is hand-rolled per platform, not a package (rule 5).** `CpuUsageProbe` calls
+`GetSystemTimes` via P/Invoke on Windows and reads `/proc/stat` on Linux — both idle/total deltas,
+zero `PackageReference`s. `System.Diagnostics.PerformanceCounter` (the obvious Windows shortcut) is a
+separate NuGet package on modern .NET and was rejected for exactly that reason.
+
+**D4 — enforcement reuses phase 69's exact shape, one field over.** `Heartbeat.ResourceThrottled`
+(nullable, null = no opinion, same mixed-fleet rule as `BackendHealth`); `NodeRegistry.FindNodesWithModel`
+widens its existing serviceability check (`Backend is null or Healthy`) to also require
+`ResourceThrottled is not true` — a throttled node still HAS its models, exactly like an unhealthy
+one, so it is unserviceable for **new** placement, not evicted. Solo mode gets a parallel
+`ResourceAdmissionGate`, consulted first inside `LocalApiEndpoints.WithSlotAsync` (before a
+concurrency slot is even taken) — same 503 + `Retry-After` shape as `LocalConcurrencyGate`, so a
+client's retry logic cannot tell the two refusals apart.
+
+**D5 — GPU utilization is Linux-only (`NvmlProbe`), same platform scope as `CudaDeviceProbe`
+(phase-39 D5) but re-queried every poll rather than cached at boot.** Set with no NVML device
+visible, the node logs once and the GPU half never trips — never a startup failure, the same
+never-throw posture the CUDA probe itself takes.
+
+**D6 — the hard cap is a second, independent mechanism, Windows only, applied to tool workers
+only.** `HardCpuCap` wraps one Windows Job Object (`JOBOBJECT_CPU_RATE_CONTROL_INFORMATION`, hand-rolled
+P/Invoke, zero packages) shared by every tool-worker child process this node spawns —
+`ToolWorkerProcess.StartAsync` assigns each one right after `Process.Start()`, the only file that
+spawns a worker (D1's own reasoning, phase 41, one mechanism over). Configured once, in
+`ResourceMonitor.StartAsync`; re-configuring a job's rate after processes are already inside it is
+not attempted, so `HardCpuCapPercent` needs a restart to change — the one field on this whole section
+that is **not** live.
+
+**D7 — the local configuring UI is a page served by the node itself over `LocalApi`, not a separate
+program.** Considered and rejected: a standalone desktop app (a new project, a new build/release
+pipeline, Windows-only) — the node process already has a loopback-guarded HTTP server in solo mode
+(`LocalApi`), and `LocalApiAuthMiddleware.IsGuardedPath` already protects everything under `/api/`, so
+mapping the panel at `/api/admin/resource-limits` inherits that guard for free rather than needing a
+second auth story invented for it. Writes go to a new, optional, reload-on-change `node.local.json` —
+**never** to the hand-authored `appsettings.json`, which would either destroy its `//Key` comments or
+fight the page's own last write. `node.local.json` is pinned to `AppContext.BaseDirectory` explicitly
+(not left to the host's default content root) because the admin endpoint writes there too — the two
+must agree on one file, and the content root under `dotnet run` is the project directory while
+`AppContext.BaseDirectory` is the build output; found live, by actually running a node and posting to
+the page, not by a unit test. `ResourceMonitor` reads `IOptionsMonitor<NodeOptions>` fresh every poll
+rather than caching `IOptions<NodeOptions>` at construction, which is the whole of what makes a save
+reach the governor with no restart. **Trade-off stated in the page itself and in
+`appsettings.json`'s own comment:** the page requires `LocalApi:Enabled=true`; a purely meshed node
+reaches it only after turning that on (loopback-only by default, so doing so for this alone is safe),
+or edits `node.local.json` by hand — same format either way.
+
+Verified live, not just by the unit suite: a solo node run from source with `MaxCpuPercent=1` tripped
+within two polls, a chat request got a `503` naming the cap and `Retry-After: 15`, a `POST` to
+`/api/admin/resource-limits` raising the cap to 100 reached the running governor within one poll with
+**no restart**, and the next chat request passed the gate. `dotnet test InferHub.sln` green
+(1631+ tests, four new files: `ResourceGovernorTests`, `ResourceAdmissionGateTests`, plus
+`NodeRegistryTests`/coordinator-side additions).

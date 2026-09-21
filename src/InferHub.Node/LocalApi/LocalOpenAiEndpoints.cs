@@ -397,9 +397,9 @@ internal static class LocalOpenAiEndpoints
             : null;
     }
 
-    private static IResult Saturated(int retryAfterSeconds)
+    private static IResult Saturated(int retryAfterSeconds, string reason)
         => Error(new OpenAiRequestException(
-            $"node is at its configured concurrency limit; retry in {retryAfterSeconds}s",
+            $"node is {reason}; retry in {retryAfterSeconds}s",
             StatusCodes.Status503ServiceUnavailable,
             OpenAiErrorTypes.ApiError,
             code: "server_busy"));

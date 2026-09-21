@@ -52,7 +52,8 @@ public static class StatusEndpoint
                     BuildProfileBlock(profiles, node),
                     corpora?.Of(node.NodeId),
                     tools?.Of(node.NodeId),
-                    node.BackendHealth?.ToString().ToLowerInvariant())).ToArray(),
+                    node.BackendHealth?.ToString().ToLowerInvariant(),
+                    node.ResourceThrottled)).ToArray(),
                 models,
                 registry.CapabilitySummary(),
                 snapshot,
@@ -399,7 +400,11 @@ public static class StatusEndpoint
         // What the node last said about its inference backend (phase 69). Null is no opinion — an
         // older node, one with Ollama:Supervisor:Watch off, or a vendor-typed one — and a fleet of
         // those keeps the v3.35 payload exactly.
-        string? BackendHealth = null);
+        string? BackendHealth = null,
+        // Whether the node's own Node:ResourceLimits cap is tripped (phase 82). Null is no opinion —
+        // no cap configured on that box, or one older than v3.47 — and a fleet of those keeps the
+        // pre-3.47 payload exactly.
+        bool? ResourceThrottled = null);
 
     internal sealed record NodeProfileStatusBlock(
         string? Name,
