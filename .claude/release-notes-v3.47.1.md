@@ -65,6 +65,18 @@ governor within one poll — the next chat request passed the gate — and the u
 resolves against (`AppContext.BaseDirectory`, pinned explicitly rather than left to the host's
 default content root — the two disagreeing, found live, is why the file is pinned at all).
 
+## Re-verified against the published image itself
+
+Pulled `ghcr.io/dev-art-solutions/inferhub-node:3.47.1` and ran it as a real container. **One
+methodology gotcha, not a code defect:** driving CPU load on the Docker Desktop *host* (Windows)
+never moved the reading, because `/proc/stat` inside the container reflects the Linux VM Docker
+Desktop runs containers in, not the Windows host's own task manager — the two are different machines
+as far as this cap is concerned. A busy loop run *inside* the container (`docker exec`) reproduced it
+immediately: `cpuPercent` climbed to 6%, the cap tripped, and a live chat request against the running
+image got the same `503` + `Retry-After: 15` the from-source check did. Worth remembering for anyone
+verifying this on Docker Desktop for Windows/Mac: the load has to be inside the container's own
+namespace to register.
+
 ## Scope, stated rather than implied
 
 - The local configuring page rides on `LocalApi`, which is off by default (phase 37). A purely
