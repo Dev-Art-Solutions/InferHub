@@ -71,10 +71,17 @@ total` decoded as `Sum`/`IsMonotonic: true`/`AggregationTemporality: Cumulative`
 `StartTimestamp` across ticks, `inferhub_queue_depth` decoded as a plain `Gauge`, and the resource
 carried `service.name: inferhub-coordinator` / `service.version: 3.46.0+<commit>`.
 
+**Addendum, same day — re-verified against the published image itself.** After the tag built,
+pulled `ghcr.io/dev-art-solutions/inferhub-coordinator:3.46.0` and ran it for real: two containers
+on one Docker network, the published coordinator image pushing to a real `otelcol` container over
+container-to-container DNS, no host loopback tricks. Same result as the local check — every push
+`200`, 24 metrics / 24 data points per tick, no error anywhere in the collector's log, and the
+resource this time reading `service.version: 3.46.0` (no `+<commit>` suffix, because the published
+image's build strips the informational-version metadata the local `dotnet run` carries — a cosmetic
+difference, not a defect). The local-binary check above and this one now both stand.
+
 ## What is still not established
 
-That check ran against a locally built binary, not the published container image — the published-
-image check happens after this tag, per the release ritual, and will be recorded as an addendum if
-it turns up anything the local run did not. The two items phase 80 left open (a full ingest →
-hybrid-search → reranked-order comparison through the retrieval pipeline itself, and a run through a
-real coordinator+node pair) are unrelated to this phase and remain open from before it.
+The two items phase 80 left open (a full ingest → hybrid-search → reranked-order comparison through
+the retrieval pipeline itself, and a run through a real coordinator+node pair) are unrelated to this
+phase and remain open from before it.
