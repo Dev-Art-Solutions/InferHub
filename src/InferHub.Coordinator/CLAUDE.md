@@ -1015,7 +1015,7 @@ than a second one that could disagree with the first about when a pair last move
 ### Phase 82 (widening `NodeRegistry.FindNodesWithModel`'s serviceability check for a node-local resource cap)
 
 This file's own territory is small: `Heartbeat.ResourceThrottled` (nullable, phase-82's node-side
-`Node:ResourceLimits` — full decisions in `InferHub.Node/CLAUDE.md`) is stored on `NodeRegistryEntry`
+`Node:ResourceLimits` — full decisions in `src/InferHub.Node/CLAUDE.md`) is stored on `NodeRegistryEntry`
 and folded into the same predicate 69 D2 built (`Backend is null or Healthy`) — now also requiring
 `ResourceThrottled is not true`. A throttled node is unserviceable for **new** placement exactly like
 an unhealthy-backend one (still holds its models, `includeUnserviceable: true` still finds it), not
