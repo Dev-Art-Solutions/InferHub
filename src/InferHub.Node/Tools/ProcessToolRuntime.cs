@@ -338,6 +338,19 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
                 continue;
             }
 
+            if (manifest.Sandbox.Mode == ToolSandboxMode.Bubblewrap && !manifest.Sandbox.Network && options.AllowModelDownload)
+            {
+                // Phase-83 D2: `Tools:AllowModelDownload` and `sandbox.network: false` are two
+                // consents that can disagree, and disagreeing silently is worse than either answer
+                // — a worker that unshares its network namespace cannot honour a download the node
+                // has otherwise told it to attempt, and the failure would otherwise surface three
+                // layers down as a confusing DNS error inside a Python traceback.
+                logger.LogWarning(
+                    "Tool '{ToolId}' is sandboxed with network off, but {Key} is true. This tool's worker cannot reach the network to fetch weights it does not already have on disk — set 'sandbox.network: true' in its manifest if it needs to, or pre-fetch its weights.",
+                    manifest.Id,
+                    $"{ToolOptions.SectionName}:{nameof(ToolOptions.AllowModelDownload)}");
+            }
+
             var pool = new ToolWorkerPool(
                 manifest,
                 options,

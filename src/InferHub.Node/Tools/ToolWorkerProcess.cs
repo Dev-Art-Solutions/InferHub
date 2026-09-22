@@ -149,12 +149,12 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
     public static async Task<ToolWorkerProcess> StartAsync(
         ToolManifest manifest,
         IReadOnlyDictionary<string, string> nodeEnvironment,
+        string scratchDirectory,
         ILogger logger,
         CancellationToken cancellationToken)
     {
         var startInfo = new ProcessStartInfo
         {
-            FileName = manifest.Command[0],
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -164,9 +164,14 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
             StandardErrorEncoding = new UTF8Encoding(false)
         };
 
-        // ArgumentList, never Arguments: the framework quotes each element for the platform, so
-        // there is no string for a space or a quote to escape out of.
-        foreach (var argument in manifest.Command.Skip(1))
+        // ArgumentList, never Arguments, in both branches: the framework quotes each element for
+        // the platform, so there is no string for a space or a quote to escape out of. D3 still
+        // applies to the bwrap invocation itself — it is built the same way the tool's own argv is.
+        var argv = ToolSandboxing.BuildArgv(manifest, scratchDirectory);
+
+        startInfo.FileName = argv[0];
+
+        foreach (var argument in argv.Skip(1))
         {
             startInfo.ArgumentList.Add(argument);
         }

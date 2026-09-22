@@ -70,6 +70,102 @@ public class ToolManifestTests
         Assert.False(manifest.Provides("transcribe", "whisper-medium"));
     }
 
+    /// <summary>
+    /// Phase 83. Absent <c>sandbox</c> is <see cref="ToolSandboxMode.None"/> — byte-identical to
+    /// every manifest shipped before this phase, which is the whole of the opt-in design.
+    /// </summary>
+    [Fact]
+    public void SandboxAbsentIsNoneByDefault()
+    {
+        var ok = ToolManifestLoader.TryParse(
+            """{ "id": "a", "capabilities": [{"kind":"a","models":["b"]}], "command": ["x"] }""",
+            "t.json",
+            out var manifest,
+            out var error);
+
+        Assert.True(ok, error);
+        Assert.Equal(ToolSandboxMode.None, manifest!.Sandbox.Mode);
+        Assert.False(manifest.Sandbox.Network);
+    }
+
+    [Fact]
+    public void SandboxModeNoneIsAcceptedExplicitly()
+    {
+        var ok = ToolManifestLoader.TryParse(
+            """{ "id": "a", "capabilities": [{"kind":"a","models":["b"]}], "command": ["x"], "sandbox": { "mode": "none" } }""",
+            "t.json",
+            out var manifest,
+            out var error);
+
+        Assert.True(ok, error);
+        Assert.Equal(ToolSandboxMode.None, manifest!.Sandbox.Mode);
+    }
+
+    [Fact]
+    public void AnUnknownSandboxModeIsRefusedByName()
+    {
+        var ok = ToolManifestLoader.TryParse(
+            """{ "id": "a", "capabilities": [{"kind":"a","models":["b"]}], "command": ["x"], "sandbox": { "mode": "docker" } }""",
+            "t.json",
+            out _,
+            out var error);
+
+        Assert.False(ok);
+        Assert.Contains("bubblewrap", error);
+    }
+
+    [Fact]
+    public void ASandboxThatIsNotAnObjectIsRefused()
+    {
+        var ok = ToolManifestLoader.TryParse(
+            """{ "id": "a", "capabilities": [{"kind":"a","models":["b"]}], "command": ["x"], "sandbox": "bubblewrap" }""",
+            "t.json",
+            out _,
+            out var error);
+
+        Assert.False(ok);
+        Assert.Contains("'sandbox' must be an object", error);
+    }
+
+    /// <summary>
+    /// The load-bearing refusal: <c>bubblewrap</c> only exists on Linux, and this asserts the
+    /// behaviour on <em>whichever platform is actually running the test</em> rather than only on
+    /// Linux CI — a manifest asking for a sandbox this box cannot give it must never be silently
+    /// downgraded to unsandboxed, on any OS (phase-83 D... — see the loader's own remarks).
+    /// </summary>
+    [Fact]
+    public void BubblewrapIsAcceptedOnLinuxAndRefusedByNameEverywhereElse()
+    {
+        var ok = ToolManifestLoader.TryParse(
+            """{ "id": "a", "capabilities": [{"kind":"a","models":["b"]}], "command": ["x"], "sandbox": { "mode": "bubblewrap", "network": true } }""",
+            "t.json",
+            out var manifest,
+            out var error);
+
+        if (OperatingSystem.IsLinux())
+        {
+            Assert.True(ok, error);
+            Assert.Equal(ToolSandboxMode.Bubblewrap, manifest!.Sandbox.Mode);
+            Assert.True(manifest.Sandbox.Network);
+        }
+        else
+        {
+            Assert.False(ok);
+            Assert.Contains("only runs on Linux", error);
+            Assert.Contains("no unsandboxed fallback", error, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Theory]
+    [InlineData("""{ "id": "a", "capabilities": [{"kind":"a","models":["b"]}], "command": ["x"], "sandbox": { "mode": "bubblewrap", "network": "yes" } }""")]
+    public void ANonBooleanSandboxNetworkIsRefused(string json)
+    {
+        var ok = ToolManifestLoader.TryParse(json, "t.json", out _, out var error);
+
+        Assert.False(ok);
+        Assert.Contains("'sandbox.network' must be a boolean", error);
+    }
+
     [Theory]
     [InlineData("""{ "capabilities": [{"kind":"a","models":["b"]}], "command": ["x"] }""", "'id' is required")]
     [InlineData("""{ "id": "a", "command": ["x"] }""", "'capabilities'")]

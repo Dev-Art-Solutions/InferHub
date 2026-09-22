@@ -195,6 +195,104 @@ whichever OS the test itself is running on — from an object-form `command`, th
 this phase did not build or run), and no Windows container image exists — the mechanism is proven,
 a Windows tool *deployment* is not.
 
+### Phase 83 (bubblewrap sandboxing) — the deferred half of D7, closed partway
+
+**D1 — The deferred piece named by D7 above ("real isolation... a container per tool, seccomp, a
+user namespace") is implemented with `bwrap`, wrapping the resolved argv after phase-79's
+platform-keyed `command` resolution has already run.** An optional manifest field,
+`"sandbox": {"mode": "bubblewrap", "network": false}`. Absent — every manifest shipped before this
+phase, unedited — is `ToolSandboxMode.None`, D7's exact process isolation, byte-identical.
+[ToolSandboxing.BuildArgv](src/InferHub.Node/Tools/ToolSandboxing.cs) is where the wrapping happens;
+`ToolWorkerProcess.StartAsync` spawns whatever it returns and does not otherwise know the sandbox
+exists.
+
+**Considered and rejected: mounting `docker.sock` into the node and `docker run`-ing each tool.**
+D7's own text names "a container per tool" as the deferred answer, and the docker-socket route is the
+obvious way to get one without teaching the node a container runtime. It was rejected because the
+socket is root-equivalent on the host — a process that can reach it can mount `/` from the host into
+a throwaway container and read anything, which trades "an untrusted tool has the node's filesystem"
+for "an untrusted tool has the *host's* filesystem". `bwrap` needs no daemon and no socket: it is a
+binary the node's own user invokes directly, and its blast radius is the namespaces it constructs.
+
+**The binds are derived from the manifest's own paths, never a guessed universal list.** Every argv
+element that resolves to a real file or directory is bound read-only (a venv's `pyvenv.cfg` is
+detected so the whole venv — not just the interpreter's own `bin/` — is reachable), plus `workdir`,
+plus the handful of base-OS paths any interpreter needs (`/usr`, `/etc`, and `/bin`/`/lib`/`/lib64`/
+`/sbin` **recreated as symlinks into `/usr`**, not bound plainly — see the "found running it" note
+below). The one read-write grant is exactly `Tools:ScratchDirectory` (phase-41 D5), added to the argv
+*after* the base skeleton so a scratch directory that happens to live under `/tmp` is not shadowed by
+the `--tmpfs /tmp` mounted ahead of it.
+
+**D2 — This is Linux-only, and a manifest naming `bubblewrap` on a platform that cannot run it is
+refused by name at load — `ToolManifestLoader`'s own "loaded, logged, skipped" shape (phase-41 D2,
+phase-79 D2) one field further.** `bwrap` needs Linux namespaces that do not exist on Windows or
+macOS; **there is no unsandboxed fallback**, because silently running a tool unsandboxed that an
+operator explicitly asked to sandbox is the one failure mode this field exists to make impossible.
+The refusal is `ToolManifestLoader.TryResolveSandbox`, checked the same way phase-79's platform
+branch is: at parse time, before a pool is ever built for that manifest.
+
+**`sandbox.network` is tied to `Tools:AllowModelDownload` honestly, not left to coincide by
+accident.** Default `network: false` means `--unshare-net` — no network namespace at all. A pool
+whose manifest asks for that *and* whose node has `AllowModelDownload=true` gets one warning at
+startup naming both keys, because a worker that unshares its network cannot honour a download the
+node otherwise told it to attempt, and the failure would otherwise surface three layers down as a
+DNS error inside a traceback nobody would connect back to the sandbox.
+
+**Found running this for real, not from reading the bwrap manual — three separate bugs, each fixed
+before this phase's test slice went green:**
+
+1. **`/bin`, `/lib`, `/lib64`, `/sbin` are symlinks into `/usr` on every merged-usr distribution**
+   (Debian/Ubuntu since ~2017, which is what this project's own Dockerfiles are built from) —
+   `--ro-bind /bin /bin` against a symlink does not recreate the symlink in bwrap's new root, so the
+   dynamic loader at `/lib64/ld-linux-x86-64.so.2` came back `ENOENT` even with `/usr` bound and
+   readable. Fixed with `--symlink <resolved target> /bin` (and the other three) instead of
+   `--ro-bind`.
+2. **Bind order matters, and a scratch directory under `/tmp` was shadowed by a `--tmpfs /tmp` added
+   after it.** `ToolWorkerFixture`'s own test scratch directories live under `Path.GetTempPath()`,
+   which is `/tmp` on Linux — the exact case this bit. The read-write scratch bind is now added last.
+3. **`--die-with-parent` is NOT in the built argv — a deviation from the phase brief, found by
+   running a real child under it.** Bubblewrap implements it with `PR_SET_PDEATHSIG`, which Linux
+   ties to the specific OS *thread* that forked, not the process. `System.Diagnostics.Process.Start`
+   can fork from a .NET thread-pool thread that is recycled moments later, and when it is, the kernel
+   SIGKILLs the sandboxed worker before it can send `hello` — reliably, in this project's own real
+   Mesh test run inside a Linux container, not intermittently. Bubblewrap's own answer for a
+   multi-threaded parent is `--sync-fd` (hold a pipe open; bwrap exits on EOF), which has no portable
+   path through `ProcessStartInfo` without native interop this project does not otherwise carry — the
+   same bar rule 5 sets for a package, applied to a P/Invoke surface instead. **What this leaves
+   uncovered:** a node that crashes uncleanly (a segfault, `kill -9`) rather than shutting down
+   through `ToolWorkerProcess.StopAsync`/`TerminateAsync` (which still `Process.Kill
+   (entireProcessTree: true)` the whole tree — phase-41 D6, unaffected) can leave an orphaned
+   sandboxed worker running. Narrow, on the unclean-exit path only, and named here rather than
+   silently dropped.
+
+**Verified against a real Linux container, not only parsed:**
+`ASandboxedWorkerCannotReadAFileOutsideItsDeclaredBinds`
+(`tests/InferHub.Tests.Mesh/ToolSecurityTests.cs`) writes a marker file in the node's own working
+directory, starts the real `inferhub-echo-worker` under `sandbox.mode: bubblewrap`, and asks the
+worker **itself** — not the node — to open the marker by path (the echo worker's `read` behaviour,
+distinct from the existing `escape` behaviour, which tests the phase-41 application-level scratch
+check rather than the OS-level one). It comes back absent; the same setup with the sandbox off comes
+back present, which is the control that makes the first result attributable to the sandbox. Gated by
+`[BubblewrapFact]` (`tests/InferHub.Tests.Common/BubblewrapFactAttribute.cs`), which skips off-Linux
+or when `bwrap` is not on `PATH` rather than failing the suite there — the same shape as
+`PythonWorkerFactAttribute`. **Also requires the container it runs in to hold `CAP_SYS_ADMIN` and
+`CAP_NET_ADMIN`** (`deploy/CLAUDE.md`'s new section) — without them `bwrap` itself refuses to build a
+namespace, which this project's own CI container needed granting before the slice could go green.
+
+**Not covered, named rather than implied away, the same honesty D7 already committed to:** seccomp
+syscall filtering and UID-namespace remapping are both out of scope. A sandboxed worker still runs as
+the node's own uid — no `--unshare-user`, which needs either a setuid `bwrap` or
+`kernel.unprivileged_userns_clone`, neither of which this phase requires a deployment to have — and
+can still make any syscall the kernel allows. What changed is *what it can see and reach*, not *what
+it can do* with what it already has. D7's sentence is now half-true rather than fully true, and the
+half that remains true is named, not softened: this is filesystem and network isolation, not a
+syscall sandbox, and the next deferred step is exactly the two things this paragraph names.
+
+**The console/`/api/status` surface gained one field, `NodeToolInfo.Sandboxed`** — whether a running
+pool's manifest names `bubblewrap` — because it was a one-line, honest answer to "is this tool
+actually sandboxed" sitting right next to `State`/`Capabilities` already, not because every phase
+that touches a pool earns a new reported field by default.
+
 ### Phase 42 (STT and TTS for real) — also load-bearing
 
 **D1 — The client surface is OpenAI's audio API, exactly, and this is the phase-21 argument again.**

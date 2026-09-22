@@ -40,6 +40,19 @@
 #     curl -fsSLO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx && \
 #     curl -fsSLO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx.json'
 #   docker restart inferhub
+#
+# BUBBLEWRAP (phase 83) is installed here — same category of dependency as ffmpeg/curl above, a
+# package `apt-get install`s, never a `PackageReference` (rule 5) — but it is INERT unless a manifest
+# names `"sandbox": {"mode": "bubblewrap"}`. None of whisper.json/piper.json/rerank.json do; this
+# image's default behaviour is byte-identical to before this phase. An operator who adds `sandbox` to
+# their own manifest also needs to grant the CONTAINER two capabilities bwrap needs to build its own
+# mount and network namespaces — Docker's default capability set does not include either:
+#
+#   docker run --cap-add SYS_ADMIN --cap-add NET_ADMIN ... ghcr.io/dev-art-solutions/inferhub-node:tools
+#
+# Without them, a worker whose manifest asks for the sandbox fails to start and says why in the log
+# (ToolStartException naming bwrap's own "Operation not permitted") — it does NOT fall back to
+# running unsandboxed, which is the one failure mode phase-83 D2 refuses to allow silently.
 
 ARG OLLAMA_VERSION=0.32.5
 
@@ -118,7 +131,7 @@ COPY --from=ollama /opt/ollama/lib/ /usr/local/lib/
 COPY python/requirements-tools.txt /tmp/requirements-tools.txt
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 python3-venv ffmpeg curl ca-certificates \
+ && apt-get install -y --no-install-recommends python3 python3-venv ffmpeg curl ca-certificates bubblewrap \
  && python3 -m venv /opt/inferhub/venv \
  && /opt/inferhub/venv/bin/pip install --no-cache-dir --upgrade pip \
  && /opt/inferhub/venv/bin/pip install --no-cache-dir -r /tmp/requirements-tools.txt \

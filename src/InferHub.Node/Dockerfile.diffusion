@@ -101,11 +101,15 @@ COPY --from=build /app .
 # There is no CUDA toolkit and there does not need to be one: the torch wheel bundles its own CUDA
 # runtime and reaches libcuda.so.1, which the NVIDIA container runtime injects at `docker run`
 # (phase-39 D1).
+#
+# bubblewrap (phase 83): inert unless diffusion.json (or an operator's own manifest) grows a
+# `sandbox` field, which it does not here — see Dockerfile.tools's own note for the full reasoning
+# and the extra `docker run --cap-add SYS_ADMIN --cap-add NET_ADMIN` a sandboxed manifest then needs.
 # ---------------------------------------------------------------------------------------------
 COPY python/requirements-diffusion.txt /tmp/requirements-diffusion.txt
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 python3-venv curl ca-certificates \
+ && apt-get install -y --no-install-recommends python3 python3-venv curl ca-certificates bubblewrap \
  && python3 -m venv /opt/inferhub/venv \
  && /opt/inferhub/venv/bin/pip install --no-cache-dir --upgrade pip \
  && /opt/inferhub/venv/bin/pip install --no-cache-dir -r /tmp/requirements-diffusion.txt \

@@ -172,7 +172,8 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
             Interlocked.Read(ref requestsServed),
             Interlocked.Read(ref requestsFailed),
             lastError,
-            errorTicks == 0 ? null : new DateTimeOffset(errorTicks, TimeSpan.Zero));
+            errorTicks == 0 ? null : new DateTimeOffset(errorTicks, TimeSpan.Zero),
+            Sandboxed: manifest.Sandbox.Mode == ToolSandboxMode.Bubblewrap);
     }
 
     private void RecordError(string message)
@@ -649,7 +650,7 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
 
         try
         {
-            var worker = await ToolWorkerProcess.StartAsync(manifest, options.WorkerEnvironment(modelBudgetMiB), logger, cancellationToken);
+            var worker = await ToolWorkerProcess.StartAsync(manifest, options.WorkerEnvironment(modelBudgetMiB), options.ResolvedScratchDirectory(), logger, cancellationToken);
 
             // v3.14.1. A worker may report a *different* set later than it did at handshake; the
             // narrowing clamp is applied to it exactly as it is at start, so this cannot widen
@@ -693,7 +694,7 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
 
         try
         {
-            var worker = await ToolWorkerProcess.StartAsync(manifest, options.WorkerEnvironment(modelBudgetMiB), logger, cancellationToken);
+            var worker = await ToolWorkerProcess.StartAsync(manifest, options.WorkerEnvironment(modelBudgetMiB), options.ResolvedScratchDirectory(), logger, cancellationToken);
 
             logger.LogInformation(
                 "Tool '{ToolId}' started again after giving up; its capabilities are back on this node.",

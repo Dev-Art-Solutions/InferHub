@@ -684,18 +684,52 @@ not redundant: since v3.11 a coordinator can turn a node's tools and capabilitie
 never raise.** A single switch would make "the operator enabled tools" and "the hub may run any tool
 present on this box" the same consent.
 
-### This is not a sandbox
+### This is not a sandbox (unless you ask for one, v3.48+)
 
 Said plainly, because the alternative is implying safety by listing mitigations.
 
-A worker runs **as the node's user, with the node's filesystem and the node's network.** The node
-drops its own environment before spawning — a worker gets `PATH`, `HOME`, `LANG`, `LC_ALL`, `TMPDIR`,
-`USER`, `SHELL` and whatever the manifest's `env` names, and never
-`Coordinator__EnrollmentSecret` or `LocalApi__ApiKeys__0` — and that is the honest extent of the
-isolation. **A tool you did not write and did not read has your box.**
+By default a worker runs **as the node's user, with the node's filesystem and the node's network.**
+The node drops its own environment before spawning — a worker gets `PATH`, `HOME`, `LANG`, `LC_ALL`,
+`TMPDIR`, `USER`, `SHELL` and whatever the manifest's `env` names, and never
+`Coordinator__EnrollmentSecret` or `LocalApi__ApiKeys__0` — and until v3.48 that was the honest
+extent of the isolation. **A tool you did not write and did not read has your box.**
 
-If you want real isolation, run the tool in its own container and point a manifest at it: a
-"process" that is `docker exec` is still a process, and the protocol does not care.
+An optional `sandbox` field wraps the worker in [bubblewrap](https://github.com/containers/bubblewrap)
+(`bwrap`, in the `:tools`/`:diffusion` images already — nothing to install):
+
+```jsonc
+{
+  "id": "my-tool",
+  "command": ["/opt/inferhub/venv/bin/python", "-u", "/opt/inferhub/tools/worker.py"],
+  "sandbox": { "mode": "bubblewrap", "network": false }
+}
+```
+
+The worker gets read-only access to its own venv/script tree and the base OS, read-**write** access
+to exactly `Tools:ScratchDirectory` and nothing else, and **no network namespace at all** unless
+`network: true` is set. **Absent `sandbox` is unchanged — every manifest that does not write this
+field runs exactly as before**, which is every manifest InferHub ships (`whisper.json`, `piper.json`,
+`rerank.json`, `diffusion.json` are deliberately left unsandboxed; auditing their real filesystem
+needs — HF cache directories outside scratch, voice files — is future work).
+
+**Linux-only, and there is no silent fallback**: a manifest naming `bubblewrap` on Windows/macOS is
+refused at load, by name, the node stays up otherwise. Running the *container* itself needs two
+extra capabilities `bwrap` requires to build its own namespaces:
+
+```bash
+docker run --cap-add SYS_ADMIN --cap-add NET_ADMIN ... ghcr.io/dev-art-solutions/inferhub-node:tools
+```
+
+**Not covered**: seccomp syscall filtering and UID-namespace remapping. A sandboxed worker still runs
+as the node's own uid and can make any syscall the kernel allows — what changed is what it can *see
+and reach*, not what it can *do*. Also not covered: a node that crashes uncleanly (not a normal
+shutdown) can orphan a sandboxed worker process — `--die-with-parent` was tried and dropped after it
+reliably SIGKILLed workers under .NET's threading model (see `src/InferHub.Node/Tools/CLAUDE.md`,
+phase-83).
+
+If you want *more* isolation than this gives you — or want it on Windows — run the tool in its own
+container and point a manifest at it: a "process" that is `docker exec` is still a process, and the
+protocol does not care.
 
 ### What happens when a tool misbehaves
 

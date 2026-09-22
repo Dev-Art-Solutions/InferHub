@@ -155,6 +155,7 @@ model, options and paths all arrive in the protocol, on stdin, after you are alr
 | `startTimeoutSeconds` | `120` | `hello` → `ready`. Generous: loading weights is slow, not broken. |
 | `requestTimeoutSeconds` | `600` | Per request. Overrunning kills the worker and fails the job. |
 | `idleTimeoutSeconds` | `900` | Idle workers are retired, so a rarely-used tool does not hold VRAM forever. |
+| `sandbox` | `{"mode":"none"}` | v3.48+. `{"mode":"bubblewrap","network":false}` wraps the worker in `bwrap`: read-only access to its own venv/script tree and the base OS, read-**write** to exactly `Tools:ScratchDirectory`, no network unless `network` is `true`. **Linux-only — a manifest naming it on another platform is refused at load, by name, never a silent unsandboxed fallback.** The container itself needs `--cap-add SYS_ADMIN --cap-add NET_ADMIN` for `bwrap` to build its own namespaces. |
 
 A manifest that fails to load is **logged and skipped**, never fatal: one bad JSON comma must not
 take a node's inference offline.

@@ -49,6 +49,10 @@ using System.Text.Json;
 //   env        answer with the value of the environment variable named in "name" — or null.
 //              This is the probe for the D3 environment-inheritance test, and it must run in a
 //              real process to mean anything.
+//   read       (phase 83) open the file named in "path" itself, in the worker process, and answer
+//              with whether it succeeded and (if so) its content. The probe for the bubblewrap
+//              sandbox test — "escape" asks the NODE to open a path the worker only names, which
+//              proves the application-level scratch check; this proves the OS-level one.
 //   files      read every input file, write one output file into the scratch directory, and name
 //              it back in the result
 //   digest     (phase 53) read every input file and answer with its size and SHA-256 — and nothing
@@ -336,6 +340,36 @@ async Task HandleRequestAsync(JsonElement frame, CancellationToken cancellationT
                 type = "result",
                 id,
                 payload = new { name, present = value is not null, value }
+            });
+            return;
+        }
+
+        case "read":
+        {
+            // Phase 83. Unlike "escape" (which names a path back and asks the NODE to open it,
+            // testing the application-level scratch-directory check), this behaviour opens the path
+            // itself, IN THE WORKER PROCESS — the only way to prove bwrap's filesystem namespace is
+            // real rather than a check this codebase remembered to add. A sandboxed worker sees
+            // "No such file or directory" for anything outside its declared binds, because the path
+            // does not exist in its mount namespace at all; an unsandboxed one reads it happily.
+            var path = payload.TryGetProperty("path", out var pth) ? pth.GetString() : null;
+            string? content = null;
+            string? error = null;
+
+            try
+            {
+                content = path is null ? null : await File.ReadAllTextAsync(path, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                error = ex.GetType().Name;
+            }
+
+            Send(new
+            {
+                type = "result",
+                id,
+                payload = new { present = content is not null, content, error }
             });
             return;
         }

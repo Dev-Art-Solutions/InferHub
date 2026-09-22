@@ -385,6 +385,76 @@ public class ToolSecurityTests
             new ToolOptions().WorkerEnvironment(0).Keys);
     }
 
+    /// <summary>
+    /// Phase 83, D7's real answer: a worker under <c>sandbox.mode: bubblewrap</c> cannot read a file
+    /// outside its declared binds, proven by asking the worker ITSELF to open the path (the "read"
+    /// behaviour) rather than asking the node whether it would refuse one — that would only prove
+    /// the phase-41 scratch-directory check, which this phase does not touch.
+    /// </summary>
+    /// <remarks>
+    /// The marker lives directly in the node process's own working directory — the exact thing
+    /// process isolation (phase-41 D7) always left exposed and this phase's whole claim is that
+    /// <c>bwrap</c> closes. The companion assertion (sandbox off) is the control: same worker, same
+    /// marker, same path — the only variable is the sandbox, so a read that fails only with it on is
+    /// attributable to the sandbox and not to a typo in the path.
+    /// </remarks>
+    [BubblewrapFact]
+    public async Task ASandboxedWorkerCannotReadAFileOutsideItsDeclaredBinds()
+    {
+        var marker = Path.Combine(Environment.CurrentDirectory, $"inferhub-sandbox-marker-{Guid.NewGuid():N}.txt");
+        await File.WriteAllTextAsync(marker, "the node's own working directory, not a bind");
+
+        try
+        {
+            using var scratchSandboxed = new ToolWorkerFixture.TempDirectory();
+            var sandboxedResult = await ReadViaWorker(scratchSandboxed.Path, marker, sandboxed: true);
+
+            Assert.False(sandboxedResult.GetProperty("present").GetBoolean(),
+                "a sandboxed worker must not be able to read a file outside its scratch directory and command tree");
+
+            using var scratchPlain = new ToolWorkerFixture.TempDirectory();
+            var plainResult = await ReadViaWorker(scratchPlain.Path, marker, sandboxed: false);
+
+            Assert.True(plainResult.GetProperty("present").GetBoolean(),
+                "the control: the same worker, unsandboxed, must be able to read the same file — otherwise the first assertion proves nothing about the sandbox");
+        }
+        finally
+        {
+            File.Delete(marker);
+        }
+    }
+
+    private static async Task<JsonElement> ReadViaWorker(string scratch, string path, bool sandboxed)
+    {
+        var manifest = ToolWorkerFixture.Manifest() with
+        {
+            Sandbox = new ToolSandbox
+            {
+                Mode = sandboxed ? ToolSandboxMode.Bubblewrap : ToolSandboxMode.None
+            }
+        };
+
+        var options = ToolWorkerFixture.Options(scratch, "echo");
+        var pool = new ToolWorkerPool(manifest, options, TimeProvider.System, NullLogger.Instance);
+
+        var executor = new ToolExecutor(
+            new PoolRuntime(pool),
+            ToolWorkerFixture.Wrap(options),
+            NullLogger<ToolExecutor>.Instance);
+
+        var payload = JsonSerializer.Serialize(new { model = "echo", behaviour = "read", path });
+
+        var result = await executor.RunAsync(
+            new InferHub.Shared.Contracts.ToolJob(Guid.NewGuid(), "echo", "echo", payload),
+            CancellationToken.None);
+
+        Assert.True(result.Success, result.Error);
+
+        await pool.DisposeAsync();
+
+        return JsonDocument.Parse(result.Payload!).RootElement;
+    }
+
     private static async Task<JsonElement> Ask(ToolExecutor executor, string variable)
     {
         var payload = JsonSerializer.Serialize(new { model = "echo", behaviour = "env", name = variable });

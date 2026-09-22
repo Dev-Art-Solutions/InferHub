@@ -218,7 +218,14 @@ public sealed record NodeToolInfo(
     /// tailing — so it travels.
     /// </summary>
     [property: JsonPropertyName("lastError")] string? LastError,
-    [property: JsonPropertyName("lastErrorAtUtc")] DateTimeOffset? LastErrorAtUtc)
+    [property: JsonPropertyName("lastErrorAtUtc")] DateTimeOffset? LastErrorAtUtc,
+    /// <summary>
+    /// Phase 83. Whether this pool's manifest names <c>sandbox.mode: bubblewrap</c> — process
+    /// isolation (phase-41 D7) versus the narrower bind-mount-and-namespace isolation this phase
+    /// adds. <c>false</c> for every manifest that does not opt in, which is every manifest shipped
+    /// before this phase.
+    /// </summary>
+    [property: JsonPropertyName("sandboxed")] bool Sandboxed = false)
 {
     public const string Running = "running";
 

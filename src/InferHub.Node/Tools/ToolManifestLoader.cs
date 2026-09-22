@@ -171,6 +171,12 @@ public static class ToolManifestLoader
             return false;
         }
 
+        if (!TryResolveSandbox(file.Sandbox, out var sandbox, out var sandboxError))
+        {
+            error = sandboxError;
+            return false;
+        }
+
         manifest = new ToolManifest
         {
             Id = file.Id!.Trim(),
@@ -184,9 +190,83 @@ public static class ToolManifestLoader
             MaxWorkers = file.MaxWorkers,
             StartTimeoutSeconds = file.StartTimeoutSeconds,
             RequestTimeoutSeconds = file.RequestTimeoutSeconds,
-            IdleTimeoutSeconds = file.IdleTimeoutSeconds
+            IdleTimeoutSeconds = file.IdleTimeoutSeconds,
+            Sandbox = sandbox
         };
 
+        return true;
+    }
+
+    /// <summary>
+    /// Phase 83. <c>sandbox</c> is optional; absent is <see cref="ToolSandboxMode.None"/>, byte-
+    /// identical to every manifest shipped before this phase. <c>{"mode":"bubblewrap"}</c> naming a
+    /// platform this node is not running on is refused <b>by name</b> — phase-79 D2's shape one field
+    /// over: silently running a tool unsandboxed that an operator explicitly asked to sandbox is the
+    /// one failure mode this field exists to make impossible, so it fails the same way an unresolved
+    /// <c>command</c> platform branch does, not by quietly falling back to <c>none</c>.
+    /// </summary>
+    private static bool TryResolveSandbox(JsonElement? element, out ToolSandbox sandbox, out string? error)
+    {
+        sandbox = new ToolSandbox();
+        error = null;
+
+        if (element is not { } value || value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return true;
+        }
+
+        if (value.ValueKind is not JsonValueKind.Object)
+        {
+            error = "'sandbox' must be an object: {\"mode\": \"bubblewrap\", \"network\": false}.";
+            return false;
+        }
+
+        string? mode = null;
+        var network = false;
+
+        if (value.TryGetProperty("mode", out var modeElement) && modeElement.ValueKind is JsonValueKind.String)
+        {
+            mode = modeElement.GetString();
+        }
+
+        if (value.TryGetProperty("network", out var networkElement))
+        {
+            if (networkElement.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                network = networkElement.GetBoolean();
+            }
+            else
+            {
+                error = "'sandbox.network' must be a boolean.";
+                return false;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(mode) || string.Equals(mode, "none", StringComparison.OrdinalIgnoreCase))
+        {
+            sandbox = new ToolSandbox { Mode = ToolSandboxMode.None, Network = network };
+            return true;
+        }
+
+        if (!string.Equals(mode, "bubblewrap", StringComparison.OrdinalIgnoreCase))
+        {
+            error = $"'sandbox.mode' is '{mode}'; the only value that means anything is \"bubblewrap\" (or omit 'sandbox' entirely for none).";
+            return false;
+        }
+
+        // Bubblewrap is Linux-only — it is a thin wrapper over user, mount and PID namespaces that
+        // do not exist on Windows or macOS. Ignoring the field on those platforms would mean an
+        // operator who wrote "sandbox this" gets an *unsandboxed* worker with no signal that their
+        // request was dropped, which is precisely the failure mode this field exists to prevent.
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            error = $"'sandbox.mode' is \"bubblewrap\", which only runs on Linux (this node is {CurrentPlatformKey}). " +
+                "There is no unsandboxed fallback: either drop 'sandbox' from this manifest for this node, or run it on Linux.";
+
+            return false;
+        }
+
+        sandbox = new ToolSandbox { Mode = ToolSandboxMode.Bubblewrap, Network = network };
         return true;
     }
 
@@ -334,6 +414,8 @@ public static class ToolManifestLoader
         public JsonElement? Command { get; init; }
 
         public JsonElement? Workdir { get; init; }
+
+        public JsonElement? Sandbox { get; init; }
 
         public Dictionary<string, string>? Env { get; init; }
 

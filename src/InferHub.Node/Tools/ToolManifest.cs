@@ -69,9 +69,40 @@ public sealed record ToolManifest
 
     public TimeSpan IdleTimeout => TimeSpan.FromSeconds(IdleTimeoutSeconds);
 
+    /// <summary>
+    /// Phase 83. Absent (the default) is <see cref="ToolSandboxMode.None"/> — today's exact
+    /// behaviour, byte-identical, for every manifest that does not name this field.
+    /// </summary>
+    public ToolSandbox Sandbox { get; init; } = new();
+
     /// <summary>Whether this manifest claims the given (capability, model) pair.</summary>
     public bool Provides(string capability, string model) =>
         Capabilities.Any(c =>
             string.Equals(c.Kind, capability, StringComparison.OrdinalIgnoreCase)
             && c.Models.Any(m => string.Equals(m, model, StringComparison.OrdinalIgnoreCase)));
+}
+
+/// <summary>
+/// Phase 83's optional <c>sandbox</c> field. <see cref="Mode"/> <see cref="ToolSandboxMode.None"/>
+/// is the default and is not a lesser sandbox — it is today's process isolation (phase-41 D7),
+/// unchanged, and every manifest that does not write this field gets exactly that.
+/// </summary>
+public sealed record ToolSandbox
+{
+    public ToolSandboxMode Mode { get; init; } = ToolSandboxMode.None;
+
+    /// <summary>
+    /// Default <c>false</c>: the worker gets no network namespace at all
+    /// (<c>bwrap --unshare-net</c>). Set <c>true</c> only for a tool that genuinely reaches the
+    /// internet — see <c>Tools:AllowModelDownload</c>, which this is tied to honestly rather than
+    /// left to coincide by accident (phase-83 D2).
+    /// </summary>
+    public bool Network { get; init; }
+}
+
+/// <summary>Phase 83. <c>bubblewrap</c> is the only real mode; more may be added later.</summary>
+public enum ToolSandboxMode
+{
+    None,
+    Bubblewrap
 }

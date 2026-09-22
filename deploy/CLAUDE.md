@@ -68,6 +68,29 @@ dead on arrival in Docker over exactly that, against the image's own default. Li
 through `LocalApiOptions.TryParse`, which parses them the way Kestrel accepts them and reports "is
 this a wildcard?" separately from "did this parse?".
 
+## Bubblewrap (phase 83), and the two capabilities a sandboxed manifest needs
+
+`:tools` and `:diffusion` both carry `bwrap` now — `apt-get install bubblewrap`, the same category of
+dependency as `ffmpeg`/`curl` above, never a `PackageReference` (rule 5). It is **inert** by default:
+none of the shipped manifests (`whisper.json`, `piper.json`, `rerank.json`, `diffusion.json`) name a
+`sandbox` field, so a `docker run` that changes no manifest is byte-identical to before this phase.
+
+An operator who adds `"sandbox": {"mode": "bubblewrap"}` to a manifest on the volume also has to grant
+the **container** — not the process inside it — two capabilities Docker does not include by default,
+because `bwrap` builds its own mount and network namespaces and that needs `CAP_SYS_ADMIN` and (for
+`--unshare-net`'s loopback setup) `CAP_NET_ADMIN`:
+
+```
+docker run --cap-add SYS_ADMIN --cap-add NET_ADMIN ... ghcr.io/dev-art-solutions/inferhub-node:tools
+```
+
+Without them a sandboxed tool fails to start and the log names `bwrap`'s own "Operation not
+permitted" — it does not fall back to running unsandboxed (`src/InferHub.Node/Tools/CLAUDE.md`,
+phase-83 D2). This was found by pulling the published image and running a real sandboxed request
+against it, the same discipline as the permissions trap above: a container's *default* capability
+set is not the process's own privilege, and the two are easy to conflate until something inside the
+sandbox fails for a reason `strace` on the host would never show.
+
 ## Pull the published image and run it
 
 **This is a release step, not a suggestion.** Six releases were dead on arrival with a green suite
