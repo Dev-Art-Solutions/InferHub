@@ -103,22 +103,47 @@ real `hello`/`ready`/`request`/`result` protocol (not a direct function call) �
 returned a valid `result` frame with a 16-bit PCM file carrying real signal (peak ~24460/32767, not
 silence), the loader-lock and stdout-corruption bugs having been found and fixed in this same pass.
 
+**Against the published `:tts-bg` image, after the tag's GHCR build finished — the non-negotiable
+check, run for real, the same rule v3.10.0 and five releases since have all followed:**
+
+Pulled `ghcr.io/dev-art-solutions/inferhub-node:3.49.0-tts-bg` (digest
+`sha256:d9165072cdd118ae97b19ff002c2e127dd4e6271506aa333d0d043bc719e8ee4`). Ran the container for
+real (`--gpus all`, `LocalApi:Enabled=true`), placed the 2.9 GB checkpoint by hand exactly as the
+file header documents (`docker cp` into `/data/tools/bg-tts-v5/checkpoint.pt`), and drove it over the
+real HTTP API — not the process protocol directly this time, the layer above it:
+
+- `docker logs` on startup: `[bg-tts-v5] offering voices: bg-tts-v5-spk0, bg-tts-v5-spk1 (formats:
+  wav, pcm)` and `Tool runtime is on: 1 of 1 manifest(s) started` — the manifest loaded and the
+  worker declared both speakers from inside the container, on its own venv, on the first try.
+- `GET /api/status` came back `"nodeVersion":"3.49.0"`, `"gpu":{"cuda":true,"devices":1,"names":
+  ["NVIDIA GeForce RTX 3090 Ti"]}`, `"capabilities":["speak"]` — CUDA genuinely visible inside the
+  container, not just claimed.
+- `POST /v1/audio/speech` with `{"model":"bg-tts-v5-spk0","input":"Здравей, свят! Проверка на
+  публикувания образ."}` returned `HTTP 200` and a 28,268-byte WAV: 22,050 Hz, 16-bit, 0.64s, peak
+  ~19690/32767 — real signal, not silence, not an error page.
+- The same endpoint with `"response_format":"pcm"` also returned `HTTP 200` with a headerless PCM
+  body — the format-selection path works end to end through the real HTTP layer, not only inside the
+  worker's own protocol frames.
+- **This is also the first time the loader-lock and NeMo stdout-logging fixes (D4/D5 above) ran on
+  Linux at all.** The published image answered its very first request without hanging and without a
+  corrupted frame — consistent with the fixes being harmless there, though the counterfactual
+  (the pre-fix code, on Linux) was never tried, so this is evidence rather than a controlled
+  comparison.
+
 ## What is still not established
 
-- **Linux behaviour for the loader-lock and stdout-logging fixes.** Both were found and fixed on
-  Windows; this session had no Linux box to cross-check against, the same caveat phase-80 D5 carried.
-  The fixes cost nothing on Linux and everything on Windows, so they stay regardless.
 - **The CPU fallback path is read, not run.** `device()` falls back to CPU with a logged warning the
-  same way `rerank_worker.py` does; no synthesis was attempted without a GPU.
+  same way `rerank_worker.py` does; no synthesis was attempted without a GPU, on Windows or in the
+  published container.
 - **The encoded formats (`mp3`/`opus`/`flac`) share `piper_worker.py`'s `ffmpeg` subprocess shape
-  verbatim and were not separately re-verified here.**
-- **No image has been built or pulled from GHCR yet for this tag** — the checks above ran against a
-  hand-built local venv on the box doing the work, not the published `:tts-bg` container. See the
-  next release notes update for that, InferHub's own standing rule (v3.10.0, and five times since).
+  verbatim and were not separately re-verified here**, on the hand-run venv or the published image.
+- **`bg-tts-v5-spk1` was not re-verified against the published image** — only `spk0`, over HTTP. The
+  hand-run verification above already found it can run to several times the length of a short prompt
+  (a model characteristic, not a bug), which the published-image pass did not repeat.
 
 ## Site and blog copy
 
 - `inferhub.devart.solutions` changelog row: "v3.49.0 — bg-tts-v5, a second `speak` engine for
   Bulgarian TTS (new `:tts-bg` image, GPU required, checkpoint placed by hand)."
-- Blog angle: "Piper stays Piper — Bulgarian gets its own engine, and three bugs in the vendored
-  model code we found (and fixed) running it for real before shipping it."
+- Blog: `blog-v3.49.0.md`, posted to blog.devart.solutions.
+- Social: `social-v3.49.0.md`.
