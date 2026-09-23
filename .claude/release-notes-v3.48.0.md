@@ -102,10 +102,47 @@ node's own working directory, and the same setup with the sandbox off could — 
 the result attributable to the sandbox rather than a bad path. This same container run is also where
 the three bugs above were found and fixed; the code in this release is the fixed version.
 
-**Against the published `:tools` image: pending.** This draft is written before the tag's GHCR build
-has finished — see the follow-up commit for the real result, per this project's own convention
-(v3.47.1's "record the published-image check" pattern) rather than claiming it here ahead of doing
-it.
+**Against the published `:tools` image, after the tag's GHCR build finished — the non-negotiable
+check, run for real:**
+
+Pulled `ghcr.io/dev-art-solutions/inferhub-node:3.48.0-tools` (digest
+`sha256:d47814c4f9a174607bf318023e2c2c2b7bbd744cf918c2676cbec700f86f283c`). Confirmed
+`bwrap --version` → `bubblewrap 0.9.0` is on the image. Ran the container for real
+(`--cap-add SYS_ADMIN --cap-add NET_ADMIN`, `LocalApi:Enabled=true`) with two extra manifests bind-
+mounted in (`sandbox.mode: bubblewrap` with `network: false` and `network: true`) and a small
+self-contained worker script that opens a path or reaches a URL on request, then drove it over the
+real `POST /api/tools/echo` HTTP endpoint:
+
+- **Filesystem, outside the declared binds:** reading `/marker-outside.txt` (a file created directly
+  in the container's own filesystem, unrelated to any bind) came back
+  `FileNotFoundError: [Errno 2] No such file or directory` — not a permission error, an *absence*,
+  because the path does not exist in the sandbox's mount namespace at all.
+- **Filesystem, inside the declared bind:** the same worker reading its own script,
+  `/opt/inferhub/tools/verify_worker.py`, came back with the file's real content — proving the
+  sandbox is restricting, not simply failing every read.
+- **Network, `sandbox.network: false`:** a request to `https://api.github.com` came back
+  `URLError: [Errno -3] Temporary failure in name resolution` — `--unshare-net` is a real network
+  namespace with no resolver reachable, not an application-layer block.
+- **Network, `sandbox.network: true`:** the same request from the same worker script under a
+  manifest naming `network: true` came back `{"reached": true, "status": 200}` — the escape hatch
+  works, and the two manifests prove the field actually gates the behaviour rather than both being
+  silently sandboxed the same way.
+- **The honesty tie, seen live in the container's own log, unprompted:** `Tool 'verify' is sandboxed
+  with network off, but Tools:AllowModelDownload is true.` — the warning added this phase fired
+  exactly as designed against the real image, the first time this exact manifest combination was
+  ever loaded by a running node.
+- Also observed for free: `Tool runtime is on: 5 of 6 manifest(s) started` — `diffusion` correctly
+  stayed unstarted (not in `Tools:Allowed`), confirming this phase's two new manifests loaded
+  alongside the four shipped ones without disturbing them.
+- **A fourth real finding, from the first attempt:** a verification worker script that did
+  `from inferhub_worker import Worker` (the reference protocol library baked into every `:tools`
+  image at `/opt/inferhub/inferhub_worker/`) failed to start under the sandbox with
+  `ModuleNotFoundError: No module named 'inferhub_worker'` — because that directory is not on the
+  manifest's own `command`/`workdir` paths, `ToolSandboxing`'s "derived, not guessed" binds correctly
+  left it out. Not a bug: a manifest whose worker imports the reference library needs that
+  directory on its own `command`/`workdir` tree (or `/opt/inferhub` bound explicitly) to use it
+  sandboxed. The verification worker was rewritten self-contained (no imports outside the standard
+  library) rather than changing the sandbox to guess a wider default.
 
 ## What is still not established
 

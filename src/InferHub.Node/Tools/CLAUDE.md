@@ -279,6 +279,22 @@ or when `bwrap` is not on `PATH` rather than failing the suite there — the sam
 `CAP_NET_ADMIN`** (`deploy/CLAUDE.md`'s new section) — without them `bwrap` itself refuses to build a
 namespace, which this project's own CI container needed granting before the slice could go green.
 
+**Verified a second way, against the published `ghcr.io/dev-art-solutions/inferhub-node:3.48.0-tools`
+image itself, not only in CI.** Ran the real image with two extra manifests bind-mounted in
+(`sandbox.network: false` and `sandbox.network: true`) and drove them over the real
+`POST /api/tools/echo` HTTP endpoint: a read outside the declared binds came back a real
+`FileNotFoundError` (the path does not exist in the mount namespace, not a permission refusal), the
+same worker reading its own script inside its bind succeeded, `network: false` produced
+`Temporary failure in name resolution`, and `network: true` reached a real host. The
+`AllowModelDownload`/`network: false` warning (D2, above) fired live in the container's own log
+against this exact combination, unprompted. **One more real finding from this run:** a worker that
+imports the reference `inferhub_worker` library (baked into every `:tools` image at
+`/opt/inferhub/inferhub_worker/`) fails under the sandbox with `ModuleNotFoundError` unless that
+directory is itself on the manifest's `command`/`workdir` tree — the derived-binds design (D1)
+correctly did not guess it should be included, which is the mechanism working as designed rather
+than a gap; a manifest that wants the reference library sandboxed needs to say so with its own paths,
+same as it needs to say anything else it depends on.
+
 **Not covered, named rather than implied away, the same honesty D7 already committed to:** seccomp
 syscall filtering and UID-namespace remapping are both out of scope. A sandboxed worker still runs as
 the node's own uid — no `--unshare-user`, which needs either a setuid `bwrap` or
