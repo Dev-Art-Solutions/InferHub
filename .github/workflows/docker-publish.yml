@@ -125,6 +125,28 @@ jobs:
             extra-tags: type=raw,value=diffusion,suffix=
             reclaim-disk: true
 
+          # The Bulgarian TTS image (phase 84): the PLAIN node plus a Python venv, PyTorch and
+          # nemo_toolkit, for bg-tts-v5. Does not stack on :tools or :diffusion for the same reason
+          # :diffusion does not stack on :tools — nemo_toolkit's dependency tree (pytorch-lightning,
+          # hydra, omegaconf) on top of its own pinned torch would sit next to `diffusers`' pinned
+          # torch in one image, the "two engines, whose pin wins" question phase-39 D9 exists to
+          # avoid asking.
+          #
+          # amd64 only and `cache: none`, the same reasons as node-diffusion above: several GB of
+          # torch + NeMo wheels would evict every other image from the shared 10 GB GHA cache budget
+          # to save a download this job does once per tag. reclaim-disk is on for the same headroom
+          # reason.
+          - name: inferhub-node
+            scope: node-tts-bg
+            dockerfile: src/InferHub.Node/Dockerfile.tts-bg
+            platforms: linux/amd64
+            cache: none
+            flavor: |
+              suffix=-tts-bg
+              latest=false
+            extra-tags: type=raw,value=tts-bg,suffix=
+            reclaim-disk: true
+
     steps:
       - uses: actions/checkout@v4
 

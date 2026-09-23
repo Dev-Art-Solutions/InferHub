@@ -1,0 +1,20 @@
+{
+  "id": "bg-tts-v5",
+  "capabilities": [
+    {
+      "kind": "speak",
+      "models": []
+    }
+  ],
+  "command": ["/opt/inferhub/venv/bin/python", "-u", "/opt/inferhub/tools/bg_tts_worker.py"],
+  "workdir": "/opt/inferhub/tools",
+  "env": {
+    "INFERHUB_BG_TTS_CHECKPOINT": "/data/tools/bg-tts-v5",
+    "HF_HOME": "/data/tools/hf"
+  },
+  "minWorkers": 0,
+  "maxWorkers": 1,
+  "startTimeoutSeconds": 180,
+  "requestTimeoutSeconds": 300,
+  "idleTimeoutSeconds": 900
+}

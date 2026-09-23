@@ -572,3 +572,85 @@ Rule 5 holds the same way it does for every prior tool: `sentence-transformers` 
 however, the dependency that pulls `torch` into the `:tools` image for the first time — flagged in
 the requirements file itself and worth restating here, since every dependency before it in that file
 was deliberately torch-free.
+
+### Phase 84 (bg_tts_worker.py: a second `speak` engine, and three bugs found by running it)
+
+**A `speak` capability was already served by Piper. This is not a Piper voice.**
+[`beleata74/bg-tts-v5`](https://huggingface.co/beleata74/bg-tts-v5) (MIT) is a 250.8M-parameter
+encoder-decoder Transformer over NVIDIA's NanoCodec, trained on ~700 hours of Bulgarian speech —
+nothing `onnxruntime` can load, and nothing Piper's per-voice `.onnx`/`.onnx.json` pair shape fits.
+It needs `torch` plus `nemo_toolkit[asr]` (for the codec only — nothing here touches ASR) and a GPU
+to run at a usable speed, so it ships as a sixth image, `:tts-bg`, for the exact reason `:diffusion`
+is a fifth rather than a flag on `:tools`: stacking NeMo's dependency tree (pytorch-lightning, hydra,
+omegaconf, on top of its own pinned torch) onto `:diffusion` would put two pinned CUDA builds next to
+each other, the "two engines, whose pin wins" question phase-39 D9 exists to avoid asking.
+
+**D1 — Two model names, one loaded checkpoint.** The checkpoint bakes in `speaker_id` 0
+(AI-generated, clear, fast) and 1 (a real voice, tuned for 250-320 character passages) rather than
+shipping as separate weight files, so `bg-tts-v5-spk0` and `bg-tts-v5-spk1` are declared as two
+models sharing one loaded model/tokenizer/codec. A caller who asked for one speaker and got the
+other has the same wrong-voice problem Piper's own README already warns about (70's header), and the
+model name is what pins it — no `voice` field that could silently pick a different speaker than the
+one requested.
+
+**D2 — No streaming, no `speed`, both refused by name.** The model has no chunked/incremental decode
+path to hang a `stream` frame off (unlike Piper's per-sentence `synthesize()`) and no length-scale
+knob to honour an OpenAI-style `speed`. Silently ignoring either would be the substitution this
+repository's most-repeated rule refuses; both come back `invalid_request` / `unsupported_format`
+naming the reason.
+
+**D3 — Two real bugs in the vendored inference code, found by running it against the real 2.9 GB
+checkpoint, not by reading it.** `tts_v5/` (vendored into `bg_tts_v5/`, not a PyPI dependency — see
+`bg_tts_v5/NOTICE.md`) is upstream's own source, and upstream's own example script never actually ran
+end to end against `torchaudio==2.6.0`'s `soundfile` backend:
+
+1. `codec.py`'s `tokens_to_wav` did `torchaudio.save(output, wav.squeeze(0), ...)`. `decode()`
+   returns `[batch=1, samples]` — already the `[channels, samples]` shape torchaudio wants — so
+   squeezing the only leading dim of size 1 collapsed it to a bare 1D tensor and every single
+   synthesis failed with `ValueError: Expected 2D Tensor, got 1D.` Fixed by only squeezing when the
+   result would still be at least 2D.
+2. The same call wrote IEEE-float WAV (`wFormatTag == 3`) by omitting `encoding`. Every other
+   InferHub `speak` worker — this one included — derives `pcm` from a saved `wav` through Python's
+   own `wave` module, which refuses float WAV outright (`wave.Error: unknown format: 3`). Pinned to
+   `encoding="PCM_S", bits_per_sample=16`, which is also what Piper's `wave.open(..., "wb")` already
+   produces, so a caller comparing the two workers' `wav` output gets the same container either way.
+
+Both are recorded as deviations in `codec.py` itself, at the lines they change, rather than only
+here — the same place phase-49's `guidanceParameter` and phase-50's `MaskConventions` deviations
+live, because the next reader of *that file* is the one who needs the reason, not only the next
+reader of this one.
+
+**D4 — The phase-80 D5 loader-lock hazard, one dependency heavier, found the same way: by driving
+the worker through the real process protocol, not by reading it.** The first version imported
+`torch` and `bg_tts_v5.codec` lazily inside `load()`, Piper's own shape. Driven with real `hello`/
+`request` frames over real pipes, it hung forever on the very first request, every time, on Windows.
+`rerank_worker.py`'s fix — move the heavy import to module scope, on the main thread, before
+`Worker.run()` ever spawns a request thread — was necessary but **not sufficient** here: `bg_tts_v5.
+codec.CodecV5._load_model` does its own lazy `from nemo.collections.tts.models import
+AudioCodecModel` inside a method that only ever runs from `load()`, so importing the outer
+`bg_tts_v5.codec` *module* at boot left that inner import still on the request thread, and the hang
+persisted. `import nemo.collections.tts.models` had to be forced at module scope in
+`bg_tts_worker.py` itself, ahead of `CodecV5`'s own import, before `ready` stopped lying about being
+ready. Not confirmed as Windows-specific here the way phase-80 D5's was (no Linux box was available
+to cross-check this worker either) — the fix costs nothing on Linux and everything on Windows, so it
+stays regardless.
+
+**D5 — NeMo's own logger binds a `StreamHandler` directly to the `sys.stdout` object at import
+time, and `contextlib.redirect_stdout` does nothing to it.** Found immediately after D4 stopped the
+hang: the very first `AudioCodecModel.from_pretrained()` call wrote a bare
+`[NeMo I ...] Model AudioCodecModel was successfully restored ...` line onto the worker's real
+stdout — not JSON, landing mid-protocol, exactly the corruption `inferhub_worker`'s rule 1 warns
+about, because `redirect_stdout` reassigns what the *name* `sys.stdout` points at and a handler that
+already captured the concrete stream object at setup time never notices. `nemo.utils.logging`
+exposes `patch_stdout_handler` as a context manager for exactly this, but it only holds for its own
+scope; `_handlers["stream_stdout"].stream = sys.stderr` is set once, permanently, at module import,
+which is what a background worker that logs for its whole lifetime needs rather than a context
+manager re-entered per call.
+
+**Verified for real, on an RTX 3090 Ti, the same bar phase 80 set: after D3-D5 landed, both speakers
+synthesized real Bulgarian audio through the actual `hello`/`ready`/`request`/`result` protocol —
+`bg-tts-v5-spk0` returned a valid 16-bit PCM `result` frame with real signal (not silence), matching
+the two hand-run syntheses that first surfaced the D3 bugs. What was *not* established: Linux
+behaviour for D4/D5 (this session had no Linux box, phase-58's caveat repeated), CPU-path timing (the
+`device()` fallback is untested, only read), and the encoded formats (`mp3`/`opus`/`flac` share
+`piper_worker.py`'s `ffmpeg` subprocess shape verbatim and were not separately re-verified here).

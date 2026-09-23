@@ -311,6 +311,77 @@ public class BundledNodeTests
         }
     }
 
+    // ---- the tts-bg image (bg-tts-v5) --------------------------------------------------------
+
+    [Fact]
+    public void TheTtsBgImageDoesNotStackOnTheOtherFour()
+    {
+        var dockerfile = TtsBgInstructions();
+
+        // A sixth image, Dockerfile.diffusion's own D9 argument one dependency tree further:
+        // nemo_toolkit pulls in pytorch-lightning, hydra and omegaconf on top of its own pinned
+        // torch, and stacking it onto :diffusion would put two pinned CUDA builds next to each
+        // other — the "two engines, whose pin wins" question phase-39 D9 exists to avoid asking.
+        Assert.DoesNotContain("ollama", dockerfile, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("whisper", dockerfile, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("piper", dockerfile, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("diffusers", dockerfile, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("requirements-tools", dockerfile);
+        Assert.DoesNotContain("requirements-diffusion", dockerfile);
+    }
+
+    [Fact]
+    public void NoneOfTheOtherFiveImagesLearnedAboutNemo()
+    {
+        // The reverse of the assertion above: bg-tts-v5's several-GB NeMo dependency tree must not
+        // leak into any image that did not ask for it.
+        foreach (var name in new[] { "Dockerfile", "Dockerfile.ollama", "Dockerfile.tools", "Dockerfile.diffusion" })
+        {
+            var text = File.ReadAllText(Path.Combine(RepoRoot(), "src", "InferHub.Node", name));
+
+            Assert.DoesNotContain("nemo", text, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("bg-tts", text, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("requirements-tts-bg", text);
+        }
+    }
+
+    [Fact]
+    public void TheTtsBgImageEnablesItsOptInsAndFetchesOnlyTheSmallCodec()
+    {
+        var dockerfile = TtsBgInstructions();
+
+        Assert.Contains("ENV Tools__Enabled=true", dockerfile);
+        Assert.Contains("ENV Tools__Allowed__0=bg-tts-v5", dockerfile);
+
+        // True for an honest reason unrelated to what bg_tts_worker.py itself reads: this image
+        // genuinely reaches the internet, for NVIDIA's NanoCodec (a few hundred MB). The 2.9 GB
+        // checkpoint is placed by hand regardless of this flag, Piper's shape rather than
+        // diffusion's — see the file header for why a caller cannot trigger that download.
+        Assert.Contains("ENV Tools__AllowModelDownload=true", dockerfile);
+
+        Assert.Contains("ENV Tools__ScratchDirectory=/data/tools/scratch", dockerfile);
+        Assert.Contains("/data/tools/hf", dockerfile);
+        Assert.Contains("/data/tools/bg-tts-v5", dockerfile);
+        Assert.Contains("chown -R app:app /data", dockerfile);
+        Assert.Contains("USER app", dockerfile);
+
+        Assert.Contains("NVIDIA_DRIVER_CAPABILITIES=compute,utility", dockerfile);
+    }
+
+    /// <summary>
+    /// The v3.10.0 bug, a sixth time: the interpreter that builds the venv must be the interpreter
+    /// that runs it, or the first request dies on an import nothing before it would have caught.
+    /// </summary>
+    [Fact]
+    public void TheTtsBgImageAssertsItsVenvImportsAtBuildTime()
+    {
+        var dockerfile = TtsBgInstructions();
+
+        Assert.Contains("python3 -m venv /opt/inferhub/venv", dockerfile);
+        Assert.Contains("import torch, torchaudio, nemo, inferhub_worker", dockerfile);
+        Assert.Contains("bg_tts_v5.inference", dockerfile);
+    }
+
     [Fact]
     public void TheDiffusionImageEnablesItsOptInsAndKeepsRequireGpuOn()
     {
@@ -520,6 +591,9 @@ public class BundledNodeTests
     private static string DiffusionDockerfile()
         => File.ReadAllText(Path.Combine(RepoRoot(), "src", "InferHub.Node", "Dockerfile.diffusion"));
 
+    private static string TtsBgDockerfile()
+        => File.ReadAllText(Path.Combine(RepoRoot(), "src", "InferHub.Node", "Dockerfile.tts-bg"));
+
     /// <summary>
     /// The Dockerfile with its comments stripped. Necessary here rather than cosmetic: the header of
     /// <c>Dockerfile.diffusion</c> explains at length why the image has no Ollama in it, so a naive
@@ -534,6 +608,11 @@ public class BundledNodeTests
         => string.Join(
             '\n',
             ToolsDockerfile().Split('\n').Where(line => !line.TrimStart().StartsWith('#')));
+
+    private static string TtsBgInstructions()
+        => string.Join(
+            '\n',
+            TtsBgDockerfile().Split('\n').Where(line => !line.TrimStart().StartsWith('#')));
 
     private static string OllamaVersionOf(string dockerfile)
         => System.Text.RegularExpressions.Regex.Match(dockerfile, @"ARG OLLAMA_VERSION=(\S+)").Groups[1].Value;

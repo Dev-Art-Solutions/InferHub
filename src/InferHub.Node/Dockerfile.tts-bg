@@ -1,0 +1,145 @@
+# The Bulgarian TTS node image: the plain node, plus a Python venv, plus bg-tts-v5.
+#
+#   docker build -f src/InferHub.Node/Dockerfile.tts-bg -t inferhub-node:tts-bg .
+#
+# A SIXTH IMAGE, FOR THE SAME REASON :diffusion IS A FIFTH ONE RATHER THAN A FLAG ON :tools.
+# ``nemo_toolkit[asr]`` (needed only for the NanoCodec that decodes bg-tts-v5's audio tokens) pulls
+# in pytorch-lightning, hydra, and the rest of NeMo's dependency tree on top of the CUDA build of
+# torch the :tools image deliberately keeps out (phase-42's ~1.5 GB Python-into-every-audio-image
+# argument, now with several more GB behind it). Stacking it onto :tools would put NeMo into every
+# Whisper/Piper deployment; stacking it onto :diffusion would put `diffusers`' own pinned torch next
+# to NeMo's, which is exactly the "two engines, one CUDA build, whose pin wins" question phase-39 D9
+# exists to avoid asking. A third GPU image, same as :diffusion, is the mesh doing the composition
+# (40 D1) rather than one image doing everything:
+#
+#   inferhub-node            ~340 MB, multi-arch, no engine at all       — UNCHANGED
+#   inferhub-node:ollama     ~4 GB,   amd64, Ollama inside               — UNCHANGED
+#   inferhub-node:tools      ~5.6 GB, amd64, Ollama + Whisper + Piper    — UNCHANGED
+#   inferhub-node:diffusion  ~12 GB,  amd64, PyTorch + diffusers         — UNCHANGED
+#   inferhub-node:tts-bg     ~9 GB,   amd64, PyTorch + NeMo + bg-tts-v5  — this file
+#
+# Solo, text to Bulgarian speech:
+#
+#   docker run -d --name inferhub-bg-tts --gpus all \
+#     -e LocalApi__Enabled=true -e Coordinator__Enabled=false \
+#     -e LocalApi__ApiKeys__0=your-key \
+#     -v inferhub-bg-tts:/data -p 5083:8080 \
+#     ghcr.io/dev-art-solutions/inferhub-node:tts-bg
+#
+#   curl http://localhost:5083/v1/audio/speech -H "Authorization: Bearer your-key" \
+#        -H 'Content-Type: application/json' \
+#        -d '{"model":"bg-tts-v5-spk0","input":"Добър ден! Как сте днес?"}' -o out.wav
+#
+# THE CHECKPOINT IS NOT BAKED IN AND IS NOT AUTO-FETCHED (Piper's shape, not diffusion's). It is
+# 2.9 GB, is not published through `huggingface_hub`'s `from_pretrained` convention (it is one raw
+# `checkpoint.pt` under a `checkpoint/` folder), and no caller is asking the fleet to spend 2.9 GB
+# of a fresh volume's bandwidth on their first request the way v3.14.0 once did to a diffusion image
+# before v3.14.1 fixed it. So the checkpoint is placed by hand, exactly as Piper's voices are —
+# `Tools__AllowModelDownload` is still on below (see that line's own comment for why):
+#
+#   docker exec inferhub-bg-tts mkdir -p /data/tools/bg-tts-v5
+#   curl -L -o /tmp/checkpoint.pt \
+#     https://huggingface.co/beleata74/bg-tts-v5/resolve/main/checkpoint/checkpoint.pt
+#   docker cp /tmp/checkpoint.pt inferhub-bg-tts:/data/tools/bg-tts-v5/checkpoint.pt
+#
+# THE NANOCODEC IS THE ONE THING THIS IMAGE DOES FETCH ON ITS OWN. NVIDIA's
+# `nemo-nano-codec-22khz-0.6kbps-12.5fps` is a few hundred MB, `nemo.collections.tts.models.
+# AudioCodecModel.from_pretrained` has no local-files-only switch this worker exposes, and there is
+# no such thing as offering `bg-tts-v5-spk0` without its own codec — so the first request after a
+# fresh volume pays that one small fetch regardless of `Tools__AllowModelDownload`, into the same
+# `/data/tools/hf` cache the diffusion image already uses that key for.
+#
+# YOU NEED A CARD. Unlike :diffusion, this is not enforced by a `RequireGpu` flag — bg-tts-v5 has no
+# recipe catalogue to gate and no C# on this path at all (phase-41 D1: the node speaks a process
+# protocol, not Python, and nothing here teaches it a new one). The worker itself picks CUDA when
+# it is loadable and falls back to the CPU with a logged warning otherwise (phase-39 D6's rule,
+# `rerank_worker.py`'s shape) — a 250M-parameter autoregressive decoder on a CPU is not fast, but it
+# is not refused either, because refusing would mean adding a C# option for exactly one worker to
+# read, which is a much larger footprint than one log line.
+
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+ARG TARGETARCH
+WORKDIR /src
+
+COPY Directory.Build.props nuget.config ./
+COPY src/InferHub.Shared/InferHub.Shared.csproj           src/InferHub.Shared/
+COPY src/InferHub.Shared.Postgres/InferHub.Shared.Postgres.csproj src/InferHub.Shared.Postgres/
+COPY src/InferHub.Node/InferHub.Node.csproj               src/InferHub.Node/
+RUN dotnet restore src/InferHub.Node/InferHub.Node.csproj -a "$TARGETARCH"
+
+COPY src/InferHub.Shared/          src/InferHub.Shared/
+COPY src/InferHub.Shared.Postgres/ src/InferHub.Shared.Postgres/
+COPY src/InferHub.Node/            src/InferHub.Node/
+RUN dotnet publish src/InferHub.Node/InferHub.Node.csproj \
+        -c Release -a "$TARGETARCH" --no-restore -o /app
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
+WORKDIR /app
+COPY --from=build /app .
+
+# THE VENV IS BUILT IN THIS STAGE — phase-21 D7's v3.10.0 lesson, restated for a sixth image: the
+# interpreter that builds it is the interpreter that runs it, by construction, or a venv's
+# site-packages live under a python minor version nothing here is looking in.
+COPY python/requirements-tts-bg.txt /tmp/requirements-tts-bg.txt
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-venv curl ca-certificates \
+ && python3 -m venv /opt/inferhub/venv \
+ && /opt/inferhub/venv/bin/pip install --no-cache-dir --upgrade pip \
+ && /opt/inferhub/venv/bin/pip install --no-cache-dir -r /tmp/requirements-tts-bg.txt \
+ && apt-get purge -y python3-venv \
+ && apt-get autoremove -y \
+ && rm -rf /tmp/requirements-tts-bg.txt /var/lib/apt/lists/*
+
+COPY python/inferhub_worker/          /opt/inferhub/inferhub_worker/
+COPY python/tools/bg_tts_worker.py    /opt/inferhub/tools/
+COPY python/tools/bg_tts_v5/          /opt/inferhub/tools/bg_tts_v5/
+COPY python/manifests/bg_tts.json     /opt/inferhub/tools/manifests/
+
+# The build-time assertion, same reason as :diffusion's: an import that only fails on somebody's
+# first real request is the v3.10.0 class of bug this repository refuses to ship a third time.
+ENV PYTHONPATH=/opt/inferhub
+RUN /opt/inferhub/venv/bin/python -c \
+      "import torch, torchaudio, nemo, inferhub_worker; print('tts-bg venv ok')" \
+ && /opt/inferhub/venv/bin/python -c \
+      "import sys; sys.path.insert(0, '/opt/inferhub/tools'); \
+       import bg_tts_v5.config, bg_tts_v5.tokenizer, bg_tts_v5.codec, bg_tts_v5.model, bg_tts_v5.inference; \
+       print('bg_tts_v5 package ok')" \
+ && /opt/inferhub/venv/bin/python -c \
+      "import py_compile; py_compile.compile('/opt/inferhub/tools/bg_tts_worker.py', doraise=True); print('worker compiles')" \
+ && /opt/inferhub/venv/bin/python -c \
+      "import json; json.load(open('/opt/inferhub/tools/manifests/bg_tts.json')); print('manifest parses')"
+
+ENV NVIDIA_VISIBLE_DEVICES=all
+# `compute`, not the runtime's default of `utility` — a working nvidia-smi with no libcuda behind it
+# is what phase-39's WSL2 note and Dockerfile.diffusion's own comment both warn about: everything
+# looks right and the worker silently falls back to the CPU at a fraction of the speed.
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+# THE PERMISSIONS TRAP, again. `USER app` cannot write /app, and a fresh named volume's ownership is
+# seeded from the image's mount point — so a directory this image never created is root-owned on
+# first write, on somebody else's machine, after the release (phase-21 D7 and five repeats since).
+RUN mkdir -p /data /data/tools/scratch /data/tools/hf /data/tools/bg-tts-v5 \
+ && chown -R app:app /data
+ENV Vector__ReplicaDirectory=/data/vector-replicas
+ENV Node__DataDirectory=/data
+ENV LocalApi__Urls=http://+:8080
+ENV LocalApi__Retrieval__DataDirectory=/data/retrieval
+
+ENV Tools__Enabled=true
+ENV Tools__Allowed__0=bg-tts-v5
+ENV Tools__ManifestDirectory=/opt/inferhub/tools/manifests
+ENV Tools__ScratchDirectory=/data/tools/scratch
+
+# TRUE, because this worker genuinely reaches the internet (the NanoCodec fetch), which is what
+# this key honestly means — not because bg_tts_worker.py reads it: it does not gate on this value
+# at all, the same relationship Piper already has to it in the :tools image (whisper_worker.py is
+# the one that cares there). The 2.9 GB checkpoint is placed by hand regardless of this flag — see
+# the file header — so "true" here buys the small NanoCodec fetch, never the large one.
+ENV Tools__AllowModelDownload=true
+
+ENV PYTHONUNBUFFERED=1
+
+USER app
+
+ENTRYPOINT ["dotnet", "InferHub.Node.dll"]

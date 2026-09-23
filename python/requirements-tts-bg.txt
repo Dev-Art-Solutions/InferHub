@@ -1,0 +1,47 @@
+# The Python for the :tts-bg image (bg-tts-v5). Nothing here is a .csproj dependency — design rule
+# 5 is intact and `InferHub.Shared.csproj` is still an empty `<Project Sdk="Microsoft.NET.Sdk">`.
+# The node speaks a *process* protocol and does not know what language a worker is in (phase-41
+# D1); this file is what the image happens to install so the worker has its libraries.
+#
+# SEPARATE FROM BOTH requirements-tools.txt AND requirements-diffusion.txt, on purpose.
+# `nemo_toolkit[asr]` — needed only for the NanoCodec that decodes bg-tts-v5's audio tokens — pulls
+# in pytorch-lightning, hydra, omegaconf and the rest of NeMo's dependency tree on top of a CUDA
+# build of torch. Stacking it onto :tools would put several more GB of PyTorch into every
+# Whisper/Piper deployment (phase-42's argument, restated); stacking it onto :diffusion would put
+# two pinned torch builds — `diffusers`' and NeMo's — next to each other, which is precisely the
+# "two engines, one CUDA build, whose pin wins" question phase-39 D9 exists to avoid asking. See
+# Dockerfile.tts-bg's own header for the full reasoning.
+#
+# PINNED, for phase-39 D9's reason, restated a third time in this repository: two builds of the
+# same InferHub tag containing different inference engines makes "it worked in 3.x.0" a question
+# nobody can answer. Bump deliberately, rebuild, and re-run the published-image checks.
+#
+# PINNED BY VERSION, NOT BY HASH — requirements-tools.txt's reasoning, unchanged: a hash set that is
+# subtly wrong does not fail loudly, it fails the image build with something that reads like a
+# network error, after which the next person deletes the hashes.
+#
+# Installing these outside the image is supported and is how you get Bulgarian TTS on the plain
+# node:
+#
+#   python -m venv /opt/inferhub/venv
+#   /opt/inferhub/venv/bin/pip install -r requirements-tts-bg.txt
+#
+# The CUDA wheels are what pip resolves by default from PyPI for linux/amd64: torch bundles its own
+# CUDA runtime and reaches the *driver* the container runtime injects — the same split phase-39 D1
+# relies on, which is why there is no CUDA toolkit in this list and none in the image.
+
+# ONLY THE DIRECT DEPENDENCIES ARE PINNED, requirements-diffusion.txt's rule: a hand-written
+# transitive pin is a pin somebody guessed, and one that only CI can check is worse than no pin.
+
+# The engine. Pinned to the exact build this worker was verified against on a real RTX 3090 Ti —
+# see the release notes for what "verified" means here.
+torch==2.6.0
+torchaudio==2.6.0
+
+# The codec. bg-tts-v5's audio tokens decode through NVIDIA's NanoCodec
+# (`nvidia/nemo-nano-codec-22khz-0.6kbps-12.5fps`), which `AudioCodecModel.from_pretrained` loads
+# out of NeMo's TTS collection — this is the only reason NeMo is in this image at all; nothing here
+# trains, fine-tunes, or touches ASR. `[asr]` is upstream's own installation instructions
+# (https://huggingface.co/beleata74/bg-tts-v5) for the extras that bring in the TTS collection's
+# dependencies too, and there is no narrower extra that installs only `tts`.
+nemo_toolkit[asr]==3.0.0
