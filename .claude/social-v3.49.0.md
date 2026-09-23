@@ -5,10 +5,9 @@ Release: https://github.com/Dev-Art-Solutions/InferHub/releases/tag/v3.49.0
 
 ## X / Twitter
 
-InferHub's `speak` capability has been Piper since phase 42. v3.49 adds a second engine beside it —
-bg-tts-v5, real Bulgarian TTS — and running the model's own example code for the first time found
-three bugs nobody had ever hit, including one identical to a hazard we already fixed three releases
-ago, one layer deeper.
+Piper stays Piper. v3.49 gives InferHub speak a second engine — bg-tts-v5, real Bulgarian TTS, its
+own GPU image. Running the model's own code for real found 3 bugs before shipping, incl. a
+loader-lock hazard we'd hit once before, one layer deeper.
 
 https://blog.devart.solutions/blog/inferhub-3-49-piper-stays-piper-bulgarian-gets-its-own-engine
 
