@@ -143,6 +143,12 @@ public sealed class NodeOptionsValidator : IValidateOptions<NodeOptions>
 
         ValidateResourceLimits(options.ResourceLimits, failures);
 
+        if (options.OnDemand.ReleaseAfterSeconds < 0 || options.OnDemand.SwitchWaitSeconds < 0)
+        {
+            failures.Add(
+                $"{NodeOptions.SectionName}:OnDemand:{nameof(OnDemandOptions.ReleaseAfterSeconds)} and {nameof(OnDemandOptions.SwitchWaitSeconds)} are seconds and cannot be negative (got {options.OnDemand.ReleaseAfterSeconds} and {options.OnDemand.SwitchWaitSeconds}).");
+        }
+
         return failures.Count == 0
             ? ValidateOptionsResult.Success
             : ValidateOptionsResult.Fail(failures);

@@ -29,6 +29,38 @@ public sealed class NodeOptions
     /// This box's own CPU/GPU ceiling (phase 82). Unset on both = no gate, byte-identical to v3.46.
     /// </summary>
     public ResourceLimitOptions ResourceLimits { get; set; } = new();
+
+    /// <summary>
+    /// One GPU service at a time, loaded for the request and released after it (phase 85). Off by
+    /// default, which is v3.49's behaviour exactly.
+    /// </summary>
+    public OnDemandOptions OnDemand { get; set; } = new();
+}
+
+/// <summary>
+/// <c>Node:OnDemand</c> — for a box whose card is also somebody's desktop GPU (phase 85). With it on,
+/// the inference backend and each tool take the card in turn: a request for audio while a chat model
+/// is loaded waits for the chat to finish, the chat model is unloaded, the audio worker starts, and
+/// once audio has been quiet for <see cref="ReleaseAfterSeconds"/> its worker process is stopped too.
+/// </summary>
+public sealed class OnDemandOptions
+{
+    /// <summary>Default <b>false</b>: warm workers and Ollama's own <c>keep_alive</c>, as before.</summary>
+    public bool Enabled { get; set; }
+
+    /// <summary>
+    /// How long the card stays with a service after its last request, in seconds. Default 30, so a
+    /// conversation does not reload its model between every message; 0 releases the moment the last
+    /// request ends.
+    /// </summary>
+    public int ReleaseAfterSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// How long a request waits for another service to finish with the card before it is refused with
+    /// <c>503</c> + <c>Retry-After</c>. Default 300 — a video can take minutes, and a chat that arrives
+    /// during one should wait for it rather than fail.
+    /// </summary>
+    public int SwitchWaitSeconds { get; set; } = 300;
 }
 
 /// <summary>

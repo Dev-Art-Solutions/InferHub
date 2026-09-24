@@ -926,3 +926,44 @@ within two polls, a chat request got a `503` naming the cap and `Retry-After: 15
 **no restart**, and the next chat request passed the gate. `dotnet test InferHub.sln` green
 (1631+ tests, four new files: `ResourceGovernorTests`, `ResourceAdmissionGateTests`, plus
 `NodeRegistryTests`/coordinator-side additions).
+
+### Phase 85 (`Node:OnDemand` — one GPU service at a time, released between jobs)
+
+Files: `Configuration/NodeOptions.cs` (`OnDemandOptions`), `Resources/GpuArbiter.cs`,
+`Backends/OnDemandBackend.cs`, `Backends/OllamaBackend.cs` (`UnloadAllAsync`),
+`Tools/ProcessToolRuntime.cs` (`AcquireWithGpuAsync`), `Tools/ToolWorkerPool.cs`
+(`ReleaseWorkersAsync`, `ToolWorkerLease.Gpu`). User-requested (Bulgarian): a desktop whose one card
+should run audio, then video, then an LLM, and be free for its owner in between.
+
+**D1 — the unit is a *tenant*, not a model.** `ollama` and `tool:<manifest id>` — the things that
+hold VRAM *between* requests. Same-tenant requests share the card (their existing concurrency limits
+still apply); a different tenant waits for in-flight work to drain, the holder's releaser runs **to
+completion**, and only then is the newcomer admitted — the peak is never both. Nothing mid-job is
+evicted, phase-48 D2's rule one level up. FIFO across tenants: once somebody waits, new requests for
+the holder queue behind them, or a trickle of chat starves a video forever.
+
+**D2 — a tool is released by stopping its processes, not by the idle hint.** The hint (48 D3) keeps a
+Python process alive with its CUDA context — a few hundred MB the owner of a desktop card wants back.
+Capabilities are *kept* (unlike `SuspendAsync`): the next request starts a worker that re-reports and
+re-narrows exactly as at boot. The eager worker an open model set forces (the v3.10.0 deadlock fix) is
+still started, asked, and then stopped right after `StartAsync`. Model pulls (`AcquireToolAsync`) take
+no GPU lease — a 24 GB download holding the card for half an hour would be the wrong trade.
+
+**D3 — Ollama is released by unloading only the models *this node* asked for.** The first cut
+unloaded everything on `/api/ps`; checking the real box before the first live run found a 22 GB model another program
+had loaded through the same Ollama — a desktop's Ollama is shared, and dropping someone else's model
+makes them pay its load again. `OnDemandBackend` records each request's `model`, and
+`OllamaBackend.UnloadAsync` matches them against `/api/ps` with `llama3` ≡ `llama3:latest`
+(`NormalizeModelName`) — never a blind `keep_alive: 0`, which would load a model just to drop it.
+Only the local `ollama` backend is wrapped — an upstream is somebody else's GPU.
+`OnDemandBackend` is a decorator at the `IInferenceBackend` seam, so mesh jobs, solo endpoints and
+retrieval's embeddings all pass through it without knowing. Listing/pulling/deleting take no lease.
+
+**D4 — refusals reuse existing shapes.** A switch that waits past `SwitchWaitSeconds` throws
+`GpuBusyException`; on the tool path it becomes `ToolVramExhaustedException` — phase 48's 503 +
+`Retry-After`, because "the card is taken" is the same fact to a client. Off (the default) is
+byte-identical to v3.49: the arbiter returns a no-op lease and never releases anything.
+
+Tests: `GpuArbiterTests` (Node — sharing, switching order, linger, FIFO, timeout, a failing releaser,
+a stream holding the card to its last chunk) and `OnDemandToolTests` (Mesh — a real echo worker
+process is gone after the request, the capability is still declared, and the next request restarts it).

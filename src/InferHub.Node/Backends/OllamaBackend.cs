@@ -148,6 +148,49 @@ public sealed class OllamaBackend(
         await client.Generate(new OllamaGenerateRequest { Model = model, Prompt = string.Empty }, cancellationToken);
     }
 
+    /// <summary>
+    /// Unloads the named models if Ollama has them resident (phase 85, <c>Node:OnDemand</c>). A
+    /// generate with an empty prompt and <c>keep_alive: 0</c> is Ollama's documented way to drop a
+    /// model from memory at once.
+    /// </summary>
+    /// <remarks>
+    /// <b>Only the named ones.</b> The Ollama on a desktop is shared — the owner's own chat client,
+    /// an agent framework — and unloading a 20 GB model somebody else is using would make them pay
+    /// its load again. Matched against <c>/api/ps</c> first, because a <c>keep_alive: 0</c> generate
+    /// for a model that is not loaded would load it just to drop it.
+    /// </remarks>
+    public async Task UnloadAsync(IReadOnlyCollection<string> models, CancellationToken cancellationToken)
+    {
+        if (models.Count == 0)
+        {
+            return;
+        }
+
+        var wanted = models.Select(NormalizeModelName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var running = await client.GetRunningModels(cancellationToken);
+
+        foreach (var model in running.Models)
+        {
+            if (!wanted.Contains(NormalizeModelName(model.Name)) && !wanted.Contains(NormalizeModelName(model.Model)))
+            {
+                continue;
+            }
+
+            await client.Generate(
+                new OllamaGenerateRequest { Model = model.Name, Prompt = string.Empty, KeepAlive = "0s" },
+                cancellationToken);
+        }
+    }
+
+    /// <summary><c>llama3</c> and <c>llama3:latest</c> are the same model to Ollama.</summary>
+    internal static string NormalizeModelName(string? name)
+    {
+        var trimmed = (name ?? string.Empty).Trim();
+        var lastSegment = trimmed[(trimmed.LastIndexOf('/') + 1)..];
+
+        return trimmed.Length == 0 || lastSegment.Contains(':') ? trimmed : trimmed + ":latest";
+    }
+
     private static T Deserialize<T>(string requestJson)
     {
         return JsonSerializer.Deserialize<T>(requestJson, JsonOptions)

@@ -147,6 +147,13 @@ public static class NodeHostBuilderExtensions
             // chosen inside it, from the same options, so adding a vendor never adds a branch here.
             return options.Normalized() switch
             {
+                // Phase 85. Only a local Ollama holds this box's VRAM; an upstream is somebody
+                // else's GPU and has nothing to release.
+                BackendOptions.Ollama when services.GetRequiredService<Resources.GpuArbiter>().Enabled =>
+                    new OnDemandBackend(
+                        services.GetRequiredService<OllamaBackend>(),
+                        services.GetRequiredService<Resources.GpuArbiter>(),
+                        services.GetRequiredService<OllamaBackend>().UnloadAsync),
                 BackendOptions.Ollama => services.GetRequiredService<OllamaBackend>(),
                 _ when options.IsUpstream() => services.GetRequiredService<UpstreamBackend>(),
                 var type => throw new InvalidOperationException($"Unsupported inference backend '{type}'.")
@@ -154,6 +161,8 @@ public static class NodeHostBuilderExtensions
         });
         builder.Services.AddSingleton<OllamaBackend>();
         builder.Services.AddSingleton<UpstreamBackend>();
+        builder.Services.TryAddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<Resources.GpuArbiter>();
         builder.Services.AddSingleton<InferenceExecutor>();
         builder.Services.AddSingleton<ModelCommandExecutor>();
         // Phase 43. Always registered, and inert without a profile: its effective state starts as

@@ -1067,6 +1067,39 @@ is explicitly absent, because the first failure is an OOM at 2am rather than a s
 
 The worker reports what it measures and the node **logs a disagreement**; it never overrides you.
 
+### A card that is also your desktop GPU (v3.50+)
+
+Everything above assumes the card belongs to the node. On a desktop — one GPU, and you want it back
+between jobs — turn on `Node:OnDemand`:
+
+```json
+"Node": {
+  "OnDemand": { "Enabled": true, "ReleaseAfterSeconds": 30, "SwitchWaitSeconds": 300 }
+}
+```
+
+The local Ollama and every tool (speech, transcription, image, video) then take the card **one at a
+time**:
+
+1. A request arrives for a service that does not hold the card. It **waits** until the holder's
+   in-flight work finishes — nothing is ever evicted mid-job.
+2. The holder is released: Ollama unloads the models **this node** loaded (`keep_alive: 0`) —
+   never one another program on the same box loaded through the same Ollama — and a tool's worker
+   processes are **stopped** — CUDA context and all, which the idle hint cannot give back.
+3. The newcomer starts, loads its model and runs.
+4. Once a service has been quiet for `ReleaseAfterSeconds` it is released even if nobody else asked,
+   so the card is free for you. `0` releases the moment the last request ends.
+
+Requests for the service already holding the card share it (two chats run side by side). Once
+somebody is waiting for the card, new requests for the holder queue behind them, so a steady stream
+of chat cannot starve a video job. A request that waits past `SwitchWaitSeconds` gets the usual
+`503` + `Retry-After`. What the node declares to the coordinator does not change — a stopped tool is
+started again by its next request.
+
+**The price is cold starts.** Every switch pays a model load: seconds for Whisper or Piper, a minute or
+more for FLUX or a large LLM. Alternating services request by request is slow by design; this mode is
+for a box that does one kind of job at a time and should be idle in between.
+
 ### Switching models swaps weights; it does not restart anything
 
 Loading FLUX is 40–90 seconds. A pool that restarted the process per recipe would pay the interpreter
@@ -2886,6 +2919,9 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `Node:Capabilities:Disabled` | `[]` | v3.8. What this node is **not** routed for — `["chat"]` makes it an embeddings-only box. Subtractive only; disabling both `chat` and `embed` fails startup. See [What a node is for](#what-a-node-is-for-v38). |
 | `Node:Vram:BudgetMiB` | `0` | v3.16. Total VRAM to plan around, in MiB. **0 = no gate**, which is v3.15's behaviour exactly. **Declared, not detected**: under WSL2 there are no `/dev/nvidia*` nodes and the host's `nvidia-smi` cannot see the VM's VRAM, so a node that guessed would guess wrong on the most common GPU-with-Docker setup there is. A recipe that cannot fit `Budget − Reserve` is not declared; one that would fit but does not right now waits and then gets a `503` + `Retry-After`. |
 | `Node:Vram:ReserveMiB` | `2048` | v3.16. Held back for the inference backend and the display — really about the **second** thing on the card, an `:ollama` container beside the `:diffusion` one. A reserve at or above the budget fails startup: that is not strict, it is a configuration that can never admit anything. |
+| `Node:OnDemand:Enabled` | `false` | v3.50. **One GPU service at a time**, for a card that is also your desktop GPU. Ollama and each tool take the card in turn; the holder is released (models unloaded, worker processes stopped) before the next one starts. See [A card that is also your desktop GPU](#a-card-that-is-also-your-desktop-gpu-v350). |
+| `Node:OnDemand:ReleaseAfterSeconds` | `30` | v3.50. How long a service keeps the card after its last request. `0` releases the moment it ends. |
+| `Node:OnDemand:SwitchWaitSeconds` | `300` | v3.50. How long a request waits for another service to finish with the card before a `503` + `Retry-After`. |
 | `Backend:Type` | `ollama` | Inference backend selector: `ollama` or `openai`. See [Inference backends](#inference-backends). |
 | `Ollama:Endpoint` | `http://localhost:11434/` | Local Ollama URL (absolute http/https). Used when `Backend:Type=ollama`. |
 | `Ollama:RequestTimeout` | `00:05:00` | Timeout for a single Ollama call. Matches the coordinator's `Dispatcher:TimeoutSeconds`; raise it for very large models whose cold load is slow. |

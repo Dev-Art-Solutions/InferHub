@@ -46,13 +46,19 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
 
     private Task? maintenance;
 
+    /// <summary>Phase 85. Null or disabled: every pool keeps its warm workers, as before.</summary>
+    private readonly Resources.GpuArbiter? arbiter;
+
     public ProcessToolRuntime(
         IOptions<ToolOptions> toolOptions,
         TimeProvider time,
         ILoggerFactory loggerFactory,
         ILogger<ProcessToolRuntime> logger,
-        IOptions<NodeOptions>? nodeOptions = null)
+        IOptions<NodeOptions>? nodeOptions = null,
+        Resources.GpuArbiter? arbiter = null)
     {
+        this.arbiter = arbiter is { Enabled: true } ? arbiter : null;
+
         options = toolOptions.Value;
 
         // Optional, and defaulted to "no budget declared" — which is v3.15's behaviour exactly. A
@@ -372,6 +378,20 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
             }
 
             await pool.StartAsync(cancellationToken);
+
+            if (arbiter is not null)
+            {
+                // Phase 85. The card goes back by stopping the workers; what they declared stays.
+                arbiter.RegisterReleaser(GpuTenant(manifest.Id), async _ =>
+                {
+                    await pool.ReleaseWorkersAsync();
+                    residency.Clear();
+                });
+
+                // An open model set started a worker only to ask it what it has. It has answered,
+                // and on an on-demand node it does not get to sit on the card until somebody asks.
+                await pool.ReleaseWorkersAsync();
+            }
         }
 
         var missing = options.Allowed
@@ -505,7 +525,7 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
             throw new ToolNotProvidedException(capability, model);
         }
 
-        var lease = await pool.AcquireAsync(cancellationToken);
+        var lease = await AcquireWithGpuAsync(pool, cancellationToken);
 
         // The budget is consulted AFTER the worker slot is taken, and that ordering is the whole
         // trick: only then is "what is in flight" a fact rather than a guess. With `maxWorkers: 1`
@@ -545,6 +565,45 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
 
         return lease;
     }
+
+    /// <summary>
+    /// Phase 85. The card first, then the worker — starting a worker is itself a CUDA allocation, so
+    /// it must not happen while another service still owns the card.
+    /// </summary>
+    private async Task<ToolWorkerLease> AcquireWithGpuAsync(ToolWorkerPool pool, CancellationToken cancellationToken)
+    {
+        if (arbiter is null)
+        {
+            return await pool.AcquireAsync(cancellationToken);
+        }
+
+        IAsyncDisposable gpu;
+
+        try
+        {
+            gpu = await arbiter.AcquireAsync(GpuTenant(pool.Manifest.Id), cancellationToken);
+        }
+        catch (Resources.GpuBusyException ex)
+        {
+            // Rendered as the phase-48 "no room on the card" 503: from a client's side it is the
+            // same fact, and a retry loop should not tell them apart.
+            throw new ToolVramExhaustedException(ex.Message);
+        }
+
+        try
+        {
+            var lease = await pool.AcquireAsync(cancellationToken);
+            lease.Gpu = gpu;
+            return lease;
+        }
+        catch
+        {
+            await gpu.DisposeAsync();
+            throw;
+        }
+    }
+
+    internal static string GpuTenant(string toolId) => "tool:" + toolId;
 
     public IReadOnlyList<string> ToolIds
     {

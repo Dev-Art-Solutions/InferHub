@@ -224,6 +224,40 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
         RaiseCapabilitiesChanged();
     }
 
+    /// <summary>
+    /// Stops every idle worker and <b>keeps</b> what this pool declares (phase 85,
+    /// <c>Node:OnDemand</c>). Unlike the idle hint, the process goes, so its CUDA context goes with
+    /// it — a few hundred megabytes the hint cannot return. The next request starts a worker, which
+    /// re-reports and re-narrows exactly as at startup, so an open model set is still asked.
+    /// </summary>
+    /// <remarks>
+    /// Leased workers are not touched: a request mid-flight is never evicted. The arbiter only calls
+    /// this once nothing of this pool's is in flight, so in practice there are none.
+    /// </remarks>
+    public async Task ReleaseWorkersAsync()
+    {
+        List<ToolWorkerProcess> workers;
+
+        lock (gate)
+        {
+            workers = idle.ToList();
+            idle.Clear();
+        }
+
+        foreach (var worker in workers)
+        {
+            await worker.DisposeAsync();
+        }
+
+        if (workers.Count > 0)
+        {
+            logger.LogInformation(
+                "Stopped {Count} idle worker(s) for tool '{ToolId}' to free the GPU (Node:OnDemand); the next request starts one again.",
+                workers.Count,
+                manifest.Id);
+        }
+    }
+
     /// <summary>Restores a suspended pool to what <see cref="StartAsync"/> leaves behind.</summary>
     public async Task ResumeAsync(CancellationToken cancellationToken)
     {
@@ -992,15 +1026,31 @@ public sealed class ToolWorkerLease : IAsyncDisposable
     /// <summary>Marks the worker as not fit to serve the next request; it is retired on release.</summary>
     public void MarkUnhealthy() => healthy = false;
 
-    public ValueTask DisposeAsync()
+    /// <summary>
+    /// The hold on the card under <c>Node:OnDemand</c> (phase 85), or null. Given back <em>after</em>
+    /// the worker is back in the pool, so a release that follows at once finds it idle and stops it.
+    /// </summary>
+    internal IAsyncDisposable? Gpu { get; set; }
+
+    public async ValueTask DisposeAsync()
     {
         // Before the pool release, and outside it: a residency map that stayed marked busy because
         // the pool threw would refuse every later request on this box, forever.
         Released?.Invoke();
         Released = null;
 
-        pool.ReleaseLease(worker, healthy);
-        return ValueTask.CompletedTask;
+        try
+        {
+            pool.ReleaseLease(worker, healthy);
+        }
+        finally
+        {
+            if (Gpu is { } gpu)
+            {
+                Gpu = null;
+                await gpu.DisposeAsync();
+            }
+        }
     }
 }
 
