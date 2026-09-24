@@ -64,6 +64,13 @@ kind of job at a time and should be idle in between.
   after the request, the capability is still declared, the next request starts it again).
 - A solo node from source against a real Ollama: `qwen2.5:0.5b` loaded for a chat and was gone from
   `/api/ps` five seconds later. A model another program had loaded stayed resident throughout.
+- **The published image**, `ghcr.io/dev-art-solutions/inferhub-node:3.50.0` (label
+  `revision=44e7dc8`), pulled and run in solo mode with `Node__OnDemand__Enabled=true` and
+  `ReleaseAfterSeconds=5` against the host's Ollama. A streamed chat loaded `qwen2.5:0.5b`, and
+  readings of `/api/ps` every two seconds showed it gone by t+4 s and still gone at t+20 s. An
+  embedding request for the untagged `nomic-embed-text` was unloaded the same way, which shows the
+  `:latest` matching working on the artifact. A 22 GB model another program had loaded stayed
+  resident through all of it.
 
 **Not verified:** the tool path with a real Whisper, Piper or diffusion worker on a GPU. It is
 covered by the echo worker test above, which is a real child process but not a CUDA one.
