@@ -63,7 +63,17 @@ of one.
 
 ## Status
 
-**InferHub 3.15** makes a two-minute image behave like a two-minute job. v3.14 put Stable Diffusion
+**InferHub 3.50** gives a desktop its card back. Every release before it assumed the GPU belonged to
+the node — Ollama resident for its own `keep_alive`, every tool holding a warm worker — which is right
+on a dedicated box and wrong on the one machine most people start with. With
+[`Node:OnDemand`](#a-card-that-is-also-your-desktop-gpu-v350) the local Ollama and each tool take the
+card **one at a time**: a newcomer waits for the holder's in-flight work, the holder is released —
+only the models *this node* loaded, and a tool's workers stopped outright so the CUDA context goes
+with them — and a service quiet for `ReleaseAfterSeconds` lets go even if nobody asked. **Off by
+default, and a node that does not set it is byte-identical to v3.49.** The price is a cold start on
+every switch, and that is stated rather than tuned away. How it got here is below.
+
+**InferHub 3.15** made a two-minute image behave like a two-minute job. v3.14 put Stable Diffusion
 on the fleet behind OpenAI's Images API; the thing it did not have was any way to watch one. Now
 `POST /api/images/jobs` returns an id and a place in line, `GET …/events` streams
 `queued → running(step 7/28) → succeeded` over SSE, `GET …/content/0` collects the bytes **once**,
@@ -124,6 +134,42 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 45 | The console, the metrics and the docs for the whole track (done) | `v3.13.0` |
 | 46 | Text to image — Stable Diffusion on the fleet (done) | `v3.14.0` |
 | 47 | Work measured in minutes — jobs, progress, cancel (done) | `v3.15.0` |
+| 48 | The image catalogue — six models, quantized, VRAM-budgeted (done) | `v3.16.0` |
+| 49 | 360° panoramas — a LoRA, a declared projection, a seam metric and a viewer (done) | `v3.17.0` |
+| 50 | Image editing — inpainting, img2img, variations (done) | `v3.18.0` |
+| 51 | The console, the metrics and the docs for the image track (done) | `v3.19.0` |
+| 52 | Scoped context files and a test suite you can run one of (done) | `v3.20.0` |
+| 53 | Large uploads stream through the hub (done) | `v3.21.0` |
+| 54 | Lean plan briefs, written on the day (done) | `v3.22.0` |
+| 55 | Opt-in 360° seam repair (done) | `v3.23.0` |
+| 56 | Durable image jobs across a hub restart (done) | `v3.24.0` |
+| 57 | Text to video on OpenAI's Videos API (done) | `v3.25.0` |
+| 58 | A video catalogue of three, and a VRAM ceiling that refuses one (done) | `v3.26.0` |
+| 59 | The video track becomes visible — console, `media` label, second quota (done) | `v3.27.0` |
+| 60 | Verification day — and the video capability that never worked (done) | `v3.28.0` |
+| 61 | Named cloud providers (done) | `v3.29.0` |
+| 62 | OpenRouter (done) | `v3.30.0` |
+| 63 | Anthropic's own `/v1/messages` (done) | `v3.31.0` |
+| 64 | Gemini's own `:generateContent` (done) | `v3.32.0` |
+| 65 | A provider as a routing target — policy, steer, one discovery surface (done) | `v3.33.0` |
+| 66 | The provider track on the console, with a failure counter (done) | `v3.34.0` |
+| 67 | All four dialects on the node, meshed and solo (done) | `v3.35.0` |
+| 68 | Provider verification day with real vendor keys (parked) | — |
+| 69 | Backend health reaches the hub — a `503`, not a `404` (done) | `v3.36.0` |
+| 70 | Streaming speech — `stream_format` on `/v1/audio/speech` (done) | `v3.37.0` |
+| 71 | Postgres as a vector provider a node can run (done) | `v3.38.0` |
+| 74 | Per-(node, model) routing toggle and collection assignment (done) | `v3.39.0` |
+| 75 | Federated retrieval across corpora (done) | `v3.40.0` |
+| 76 | Auto-scaler scale-out — re-enable a pressured model (done) | `v3.41.0` |
+| 77 | Standby replication for node-owned collections (done) | `v3.42.0` |
+| 78 | Auto-scaler scale-in — disable an idle model (done) | `v3.43.0` |
+| 79 | Platform-keyed tool manifests (done) | `v3.44.0` |
+| 80 | A dedicated cross-encoder reranker (done) | `v3.45.0` |
+| 81 | OTLP push exporter (done) | `v3.46.0` |
+| 82 | `Node:ResourceLimits` — a node-local CPU/GPU ceiling (done) | `v3.47.1` |
+| 83 | Bubblewrap sandboxing for tool workers (done) | `v3.48.0` |
+| 84 | bg-tts-v5 — a second `speak` engine, for Bulgarian (done) | `v3.49.0` |
+| 85 | `Node:OnDemand` — one GPU service at a time (done) | `v3.50.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -163,6 +209,19 @@ cancel button — plus the series to alert on and a walkthrough somebody can fol
 Six releases, a whole new modality, and still **zero new dependencies**: PyTorch is a child process,
 not a package.
 
+**v3.20 through v3.22 changed nothing InferHub does, and said so.** v3.20 split a 2 984-line
+`CLAUDE.md` — roughly 64 000 tokens loaded into every agent session before a question was asked, 88%
+of it decision history — seven ways along the directory tree, because that is what the loader keys
+on, and split one 1 243-test project into four suites you can run one of. `ContextContractTests`
+holds every decision block to existing **exactly once**, under a line budget, because prose has no
+compiler; the same pass found CI one path away from going green having run zero tests. v3.21 is the
+one with a feature in it: [an upload past 25 MB streams *through* the
+hub](#uploads-larger-than-25-mb-v321), 64 KB at a time into the node's scratch file, instead of being
+buffered in it — off by default, and a streamed job is never retried on another node, because a
+client's socket cannot be rewound. v3.22 gave the build briefs the treatment the instructions got: a
+brief is written the day its phase starts, and the argument behind a decision lands beside the code it
+governs rather than in a plan that is two phases stale by the time anyone reads it.
+
 **v3.23 lets you close that seam** — [and only if you ask](#360-panoramas-v317). We measured the flaw
 for six releases and refused to fix it, because a repair nobody asked for is a second pass they did
 not watch and would be billed for. What changed is the asking: an operator permits a mechanism, a
@@ -188,6 +247,21 @@ could not test: `fps` is now required and its old fallback of 16 is gone, becaus
 CogVideoX's 49 frames at twice their rate is not an error — it is a clip that plays at double speed.
 The 14B entry is also the first recipe this project ships that **does not fit a 24 GB card**, which
 is the VRAM gate working: such a node never declares it, so nobody meets the ceiling mid-render.
+
+**v3.27 made the video track visible, and v3.28 found it had never worked.** v3.27 gave the console a
+[Video panel](#watching-one-from-the-console) that drives `/v1/videos` — the routes an SDK calls —
+plus exactly one client-scoped listing route of its own; it put a `media` label on the image series
+instead of minting a second family, reported *why* a video recipe is not offered, and made
+`VideoSecondsPerDay` a gate beside `MegapixelStepsPerDay`. v3.28 shipped no feature: it was the day
+every published image was pulled onto one box with a real card and driven, and it found that **no clip
+could be generated through any of the three releases before it**. The diffusion manifest never
+declared `video`, so the operator's ceiling — correctly — threw the worker's claim away; behind that,
+`ftfy` was missing from the image, and so was `peft`, which meant `qwen-360` could not load at all.
+Every test passed, because the fixtures declared their own manifests. The first clip ever rendered and
+watched was 81 frames at 832×480 in 378 s, and `Dispatcher:TimeoutSeconds` still defaults to 300 —
+documented with the measured figures rather than raised, because one number covers every kind of job.
+A green suite describes the fixture; only the artefact describes the release.
+
 **v3.32 speaks Gemini's own `:generateContent`, and reading the docs on the day found it is now the
 *legacy* one.** [`Type: "gemini"`](#gemini-v332) is the third dialect behind the seam — still
 hand-rolled, still zero new packages. Google's current documentation recommends their newer
@@ -240,12 +314,191 @@ byte-identically, header included. This is the first of eight releases that end 
 Gemini speaking their own dialects and a request being *routed* to a provider rather than falling
 into one; zero new `PackageReference`s, and there will be none in the other seven either.
 
-Still on the table beyond that: teaching the **coordinator** about backend health as a typed signal
-(a status column and an alert, rather than a line in the node's log), **active-active**
-multi-coordinator load sharing, an **OTLP push** exporter behind an explicit opt-in, and a dedicated
-cross-encoder reranker behind the existing `IReranker` seam. A fourth vector backend (Milvus,
-Weaviate) is the same shape as the third and will ship on real demand rather than for the comparison
-matrix.
+**v3.33 is what the four before it were building towards: a provider becomes a routing target.**
+Until then a vendor was only ever asked *after* the fleet failed, so "serve `smart` from Anthropic
+while my own boxes stay busy" was not a sentence the config could say.
+[`Policy`](#a-provider-as-a-routing-target-v333) is `Trigger` with two more values — `prefer` asks the
+provider first with the fleet as backstop, `only` asks it always — `ModelPolicy` overrides it per
+model, and a `Policy` and `Trigger` that disagree fail startup naming both. `X-InferHub-Provider`
+steers one request and can only ever narrow: a provider id serves only if it already claims the model,
+`node` keeps that one prompt off every vendor, and a wrong steer gets the same sentence whether the id
+is unknown, parked or mapping something else, so a key cannot enumerate your vendors by probing. **The
+backstop is the policy's answer, not the error's**: a failing `prefer` may fall back to a node, a
+failing `only` is a `502`, because answering from different weights than the caller asked for,
+silently, is the one failure that looks like a success. Provider-claimed models now appear in
+`/api/tags` and `/v1/models` with a `null` digest and size and no vendor named — until then a mapped
+model was one a client could call and could not discover.
+
+**v3.34 puts five releases of provider work on a page.** The [Cloud providers
+panel](#seeing-it-the-console-panel-and-the-series-v334) shows every place a prompt can go — policy,
+credential, claimed models, dispatches, failures and **the vendor's own sentence about the last one**
+— and it is the one panel that stays visible when empty, to say *nothing leaves your machines*.
+`inferhub_provider_info` exists before any traffic, which is the only way "no vendor configured" and
+"a vendor configured that has served nothing" stop being the same silence; `inferhub_provider_refused_total`
+carries no label at all, because a label taken from a caller's header is cardinality anybody with a
+key can mint. The vendor's error text is treated as content: held once per provider, in memory,
+admin-gated, never a label.
+
+**v3.35 gives the node the three dialects the hub got in v3.30–v3.32.** `Backend:Type` is now
+`ollama`, `openai`, `openrouter`, `anthropic` or `gemini`, composed from the same `InferHub.Shared`
+code rather than a second implementation, so a GPU-less box becomes a private, authenticated,
+RAG-capable [front end to a vendor](#inference-backends), meshed or solo. **One node is one upstream**
+and the node never grows a router — *the hub chooses, the node serves*. An Anthropic-backed node
+declares `chat` and not `embed`, so an embedding request is a `503` at the hub before the hop rather
+than a failure inside a job; a vendor-typed node with no allowlist refuses to boot, because OpenRouter
+lists 419 model ids and a node reporting the catalogue would tell the router it can chat with an image
+model.
+
+**v3.36 tells the hub what the node already knew.** Since v3.4 a node whose Ollama had died reported
+zero models, which unrouted it and turned a request for `llama3` into `404 model not found` —
+confident, specific, and sending an operator to pull weights already on the disk. Now the node's
+`healthy` / `unreachable` / `wedged` verdict [rides the heartbeat](#keeping-the-local-ollama-alive-v34):
+the model stays listed, the request is a `503` naming the backend, and recovery is the next heartbeat.
+`Ollama:Supervisor:Watch` is on by default and restarting still is not — asking a server whether it is
+alive needs no consent; bouncing one does. Driving the published image then showed the fix holding
+for six seconds before a timed empty model report brought the 404 back. **v3.36.1** made the hub hold
+an empty list from a node that has declared itself sick; **v3.36.2** fixed the root, because the empty
+report usually arrived *before* the verdict: a backend that could not be asked now returns null rather
+than an empty list, since a failure reported as data is indistinguishable from a box whose weights
+were deleted. Ninety seconds of the right answer on the image, where v3.36.0 gave six. That closes the
+eight-release provider track, bar its verification day.
+
+**v3.37 answers while it is still speaking.** [`stream_format`](#speech-that-starts-before-it-is-finished-v337)
+— OpenAI's own field, both values — streams `wav` and `pcm` as Piper makes them, split at 16 KiB so
+every frame fits under SignalR's 32 KB default, because exceeding that limit kills the connection
+rather than the message and v3.10.0 shipped dead on arrival for exactly that reason. On the published
+image the first byte left in **0.205 s** against 1.228 s buffered, for the same total: nothing got
+faster, the first byte just left earlier. A streamed wav carries `0xFFFFFFFF` in its length fields;
+the draft claimed `ffprobe` would report a nonsense duration, running the image showed it reads the
+correct one from the byte count, and the sentence was corrected everywhere before the blog post went
+out.
+
+**v3.38 lets a node run Postgres** as [its own vector provider](#the-engine-the-secret-and-the-disk-stay-the-operators).
+The refusal it replaced was right about the wrong thing: `Npgsql` could never go into
+`InferHub.Shared`, which is still an empty `<Project>` with zero packages — so `PostgresVectorStore`
+moved into a new `InferHub.Shared.Postgres` that both hosts reference, one store rather than two, and
+`InferHub.Node.csproj` took its first deliberate `PackageReference` and says so. There is no
+`credentialRef` path for it, because a connection string already carries its own password.
+**v3.38.1** followed the same day: none of the five Dockerfiles copied the new project in, which a
+from-source build never notices.
+
+**v3.39 lets an operator say the sentence routing could not**: keep this box answering chat, just not
+with the 70B somebody staged on it for testing. `POST /api/admin/nodes/{id}/models/{model}/disable`
+and `…/enable` change only what the node *declares* — nothing on disk, no restart, no un-pull — so the
+router needed zero changes to honour it. Re-enabling runs a VRAM precheck estimated from the disk size
+Ollama reports and blocks when it does not fit; it is the one refusal here that ships with an override,
+`force=true`, because it gates on a guess rather than a fact somebody declared, and the response always
+says which of the two happened. Collection `assign`/`unassign` got the same treatment, with a `409`
+naming the owner rather than a silent re-parent. (It shipped without release notes of its own, and
+v3.40's say so rather than backfilling one from memory.)
+
+**v3.40 fans one query out to several corpora** — hub-owned and node-owned, mixed — through
+[`POST /api/retrieve/federated`](#federated-retrieval-across-corpora-v340). Each name runs the exact
+single-collection path, the ranked lists are fused by Reciprocal Rank Fusion keyed on
+`(collection, id)` so two corpora's chunk `"1"` never merge into one scored entry, and `sources[]`
+names every collection's outcome: `ok`, `timeout`, `unavailable` or `not_found`. "Three matches, one
+source timed out" is a real answer; hiding the timeout would make partial coverage look like
+completeness.
+
+**v3.41 and v3.43 teach the fleet to flip that toggle itself.** The
+[auto-scaler](#auto-scaling-enabling-and-disabling-a-model-without-an-operator-v341-v343) re-enables a
+model drawing refusals on a node that already holds it disabled, through the same precheck a human's
+call runs and never with `force=true`; v3.43 adds the other direction, disabling a `(node, model)` pair
+idle past `IdleMinutes` unless it is the last node routing that model, and never in the first
+`MinUptimeMinutes` after a restart, so silence after boot is not read as idleness. The first trigger
+v3.41 wrote read the cloud-fallback counter, and reading the routing code before tagging showed it
+could never fire: burst asks whether a node *holds* a model, and a disabled model is still held. The
+signal it needed — the `503` naming the missing capability — was logged and counted by nothing, so
+v3.41 added the counter. Both directions are off by default and dry-run when on: the first thing to
+turn on is the log line, not the write.
+
+**v3.42 lets a node-owned corpus outlive its node.** An admin assigns a
+[standby](#a-node-owned-collection-can-survive-its-owning-node-v342); the hub relays the primary's
+snapshot and every later write to it without ever holding a copy itself, and after a grace period of
+confirmed absence — not a reconnect blip, not a redeploy — the standby is promoted through the same
+profile assignment an admin would use. There is no automatic failback, and it covers the `local`
+provider only.
+
+**v3.44 lets a tool manifest's `command` be [keyed by platform](#tools-on-a-node-v39).** Investigating
+"Windows tool workers" found the runtime was already plain `System.Diagnostics.Process`; the whole gap
+was one JSON field. A manifest with no branch for this OS is refused by name and the node stays up.
+The shipped `whisper.json` and `piper.json` gained no Windows branch, because that would be a claim
+about a Windows venv nobody built.
+
+**v3.45 ships the reranker the `IReranker` seam was written for in v2.6.**
+[`Retrieval:Rerank=cross-encoder`](#a-dedicated-cross-encoder-reranker-v345) routes to
+`sentence-transformers`' `CrossEncoder` over BAAI's `bge-reranker` family — four models, one new
+`rerank` manifest, on the existing `:tools` image — instead of a chat model asked to score passages it
+was never trained to rank. It is the first tool worker that moves no file, so it needed no new route:
+`POST /api/tools/{capability}` already spoke JSON in, JSON out. Running the worker for real deadlocked
+it on the first request, every time — a lazy import of numpy's native extension on a request thread
+while the main thread sat in a blocking read — and the fix was to import once at boot, so `ready`
+means ready. **v3.45.1** followed within hours: both options validators still refused `cross-encoder`,
+so a node configured exactly as the docs said would not start. Pulling the published image was the
+first thing that ever went through `ValidateOnStart`.
+
+**v3.46 pushes what `/metrics` already serves** to an [OTLP collector](#otlp-push-exporter-v346) —
+Grafana Cloud, Honeycomb, Datadog, the reference `otelcol` — for an operator with no Prometheus server
+to scrape. It reads the scrape's own exposition text back and posts it as OTLP/HTTP JSON, so there is
+one source of truth rather than two places to remember a metric; the OpenTelemetry SDK was declined
+for the protobuf and gRPC it brings. A failed push is dropped, not queued: a stale number sent late is
+the past reported as now.
+
+**v3.47 adds the one ceiling a coordinator cannot even see.** `Node:ResourceLimits` caps how much of
+its own CPU and GPU a box lets itself be routed to consume. Every other node-side limit is one a hub
+profile can narrow further; this one is not on the wire, so a coordinator — trusted or compromised —
+cannot set it, raise it or read it. Over `MaxCpuPercent` or `MaxGpuPercent` for `SustainedPolls`
+consecutive polls, a meshed node withdraws from new placement exactly the way an unhealthy backend does
+and a solo node answers `503` + `Retry-After`; nothing already running is touched. `HardCpuCapPercent`
+is a real Windows Job Object rate limit on tool workers, and the node serves its own loopback-guarded
+page at `/api/admin/resource-limits` whose saves take effect within one poll, no restart. (v3.47.0
+failed its own context-contract test on a mistyped pointer; **v3.47.1** is the one to run.) The
+published-image check found a methodology trap rather than a bug: on Docker Desktop, load on the
+Windows host never registers inside the container, because its `/proc/stat` belongs to the VM.
+
+**v3.48 makes "this is not a sandbox" optional.** A manifest may name
+`"sandbox": { "mode": "bubblewrap" }`, and its worker gets [read-only access to its own tree and the
+base OS, read-write access to the scratch directory and nothing
+else](#this-is-not-a-sandbox-unless-you-ask-for-one-v348), and no network unless `network: true`.
+Linux only, with no unsandboxed fallback: silently running unsandboxed what an operator asked to
+sandbox is the one failure it exists to prevent. Running it for real found three things the `bwrap`
+manual does not warn about — merged-usr symlinks, bind order, and `--die-with-parent` SIGKILLing
+workers because Linux ties it to the *thread* that forked, which .NET recycles — and the last was
+dropped rather than papered over, leaving a named orphan gap on an unclean node exit. No shipped
+manifest is sandboxed yet; what changed is what a worker can *see and reach*, not what it can *do*.
+
+**v3.49 adds a second `speak` engine, and with it a sixth image.**
+[`beleata74/bg-tts-v5`](https://huggingface.co/beleata74/bg-tts-v5) is a 250.8M-parameter Bulgarian
+model over NVIDIA's NanoCodec — nothing Piper's `.onnx` shape fits — served from
+`inferhub-node:tts-bg` as `bg-tts-v5-spk0` and `bg-tts-v5-spk1`: two model names over one loaded
+checkpoint, because a model name that pins the speaker cannot drift the way a `voice` field could. It
+is its own image rather than a flag, because NeMo's pinned torch beside `:diffusion`'s is two CUDA
+builds asking whose pin wins. The 2.9 GB checkpoint is placed by hand and only the small codec is
+fetched; streaming and `speed` are each refused by name. Running the vendored upstream code found two
+bugs its own example never hit, the reranker's loader-lock one import deeper, and NeMo's logger
+writing a bare line onto the worker's protocol stdout.
+
+**v3.50**, at the top of this section, gives a desktop its card back — and its first draft released
+Ollama by unloading everything resident. The box it was about to run on had a 22 GB model loaded
+through that same Ollama by another program. So the node records every model it sends a request for
+and unloads only those, which is the difference between a mode that shares a desktop and one that
+merely occupies it.
+
+**What is still open** is mostly a list the releases wrote about themselves. **Phase 68, the provider
+verification day, is parked awaiting vendor keys**: every dialect from v3.29 to v3.35 has been driven
+against stubs and recorded payloads, and the checks that need one real key per vendor have not been
+started — until they are, "the node speaks Anthropic" is a claim about translation, not about a
+conversation anybody has had. Six releases name a live drill still owed: a `wedged` backend end to end
+(v3.36), a two-node standby-and-`docker kill` (v3.42), scale-in on a real idle fleet (v3.43), the
+cross-encoder through a full coordinator-plus-node retrieval pipeline (v3.45), a throttled node's
+traffic actually rerouting (v3.47), and a real CUDA worker switching under `Node:OnDemand` (v3.50). A
+few gaps are design rather than debt: `Dispatcher:TimeoutSeconds` is still one deadline for chat and
+video where a per-capability one is wanted; no shipped tool manifest runs sandboxed until its cache
+directories are audited, and seccomp and UID remapping are out of scope; a standby covers only the
+`local` provider; the OTLP exporter skips histograms. Beyond those, the two items the previous list
+carried still stand — **active-active** multi-coordinator load sharing, and a fourth vector backend
+(Milvus, Weaviate), which is the same shape as the third and will ship on real demand rather than for
+the comparison matrix.
 
 ## Quick start
 
@@ -276,6 +529,7 @@ small one and wonders where the audio went. All tags are under
 | `inferhub-node:ollama` | ~4 GB | amd64 | You want *one* `docker run` on a GPU box with nothing installed on the host. Ollama runs inside the container, supervised. `:gpu` is an alias of the same digest — it works fine with no card. |
 | `inferhub-node:tools` | ~6 GB | amd64 | The above, **plus speech**: Python, `faster-whisper` and `piper`, so `/v1/audio/transcriptions` and `/v1/audio/speech` work out of the box. |
 | `inferhub-node:diffusion` | ~12 GB | amd64 | **Text to image** (v3.14+) and **editing** (v3.18+): PyTorch, `diffusers`, `bitsandbytes` and seven recipes — SDXL, SD 1.5, FLUX.1-schnell, Qwen-Image, SD 3.5 Medium, SDXL-Turbo and [`qwen-360`](#360-panoramas-v317) — so `/v1/images/generations`, [`/edits` and `/variations`](#editing-a-picture-v318) work out of the box. **You need a card.** |
+| `inferhub-node:tts-bg` | — | amd64 | **Bulgarian speech** (v3.49+): PyTorch and NeMo's NanoCodec for [`bg-tts-v5`](https://huggingface.co/beleata74/bg-tts-v5), served on `/v1/audio/speech` as `bg-tts-v5-spk0` / `-spk1`. Does not stack on the others. **GPU, and the 2.9 GB checkpoint is placed by hand.** |
 
 Three rules of thumb that save the mistake each way:
 
@@ -803,7 +1057,7 @@ docker run -d --gpus all \
 `--gpus` left off is CPU Whisper — roughly real time for `small` on a modern core — and the worker's
 first log line says which one it got.
 
-### The five images
+### The six images
 
 *Which one to pull, and the three mistakes worth avoiding, are in
 [Which image do I pull?](#which-image-do-i-pull-v313). This is what is inside each.*
@@ -815,6 +1069,7 @@ first log line says which one it got.
 | `inferhub-node:ollama` | ~4 GB | amd64 | The same node with Ollama inside it (v3.7+) |
 | `inferhub-node:tools` | ~6 GB | amd64 | The same again, plus Python, `faster-whisper` and `piper` (v3.10+) |
 | `inferhub-node:diffusion` | ~12 GB | amd64 | The **plain** node plus PyTorch, `diffusers`, `bitsandbytes` and seven recipes (v3.14+). Does not stack — no Ollama inside |
+| `inferhub-node:tts-bg` | — | amd64 | The **plain** node plus PyTorch, `nemo_toolkit` and the `bg-tts-v5` worker (v3.49+). Does not stack; the checkpoint is not baked in |
 
 The first three are **unchanged** by v3.10. The Python is ~1.5 GB and it is in a layer whether a
 flag is on or off, so a flag would grow every existing coordinator+node stack for a feature it does
@@ -2922,7 +3177,7 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `Node:OnDemand:Enabled` | `false` | v3.50. **One GPU service at a time**, for a card that is also your desktop GPU. Ollama and each tool take the card in turn; the holder is released (models unloaded, worker processes stopped) before the next one starts. See [A card that is also your desktop GPU](#a-card-that-is-also-your-desktop-gpu-v350). |
 | `Node:OnDemand:ReleaseAfterSeconds` | `30` | v3.50. How long a service keeps the card after its last request. `0` releases the moment it ends. |
 | `Node:OnDemand:SwitchWaitSeconds` | `300` | v3.50. How long a request waits for another service to finish with the card before a `503` + `Retry-After`. |
-| `Backend:Type` | `ollama` | Inference backend selector: `ollama` or `openai`. See [Inference backends](#inference-backends). |
+| `Backend:Type` | `ollama` | Inference backend selector: `ollama` or `openai`, and since v3.35 `openrouter`, `anthropic` or `gemini`. See [Inference backends](#inference-backends). |
 | `Ollama:Endpoint` | `http://localhost:11434/` | Local Ollama URL (absolute http/https). Used when `Backend:Type=ollama`. |
 | `Ollama:RequestTimeout` | `00:05:00` | Timeout for a single Ollama call. Matches the coordinator's `Dispatcher:TimeoutSeconds`; raise it for very large models whose cold load is slow. |
 | `Ollama:Supervisor:*` | _(off)_ | Keeps the local Ollama alive (v3.4). See [Keeping the local Ollama alive](#keeping-the-local-ollama-alive-v34) for the full table. |
