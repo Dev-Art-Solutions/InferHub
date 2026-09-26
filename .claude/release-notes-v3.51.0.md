@@ -65,6 +65,15 @@ It is visible in three places:
   messages all went to node B. **Node A's log shows no wait for the GPU.** A model another program
   had loaded through the same Ollama stayed resident throughout.
 
+- **The published images**: `ghcr.io/dev-art-solutions/inferhub-coordinator:3.51.0` and
+  `inferhub-node:3.51.0`, both labelled `revision=6f9865c`, the tag. They ran as three containers on
+  one Docker network: a hub with real API and admin keys, and two nodes with `Node:OnDemand` on
+  against the host's Ollama. Node A had the echo worker mounted as a tool. An echo request went to A,
+  and `/api/status` showed `tool:echo` as A's holder within a second. Three chats all went to B (B's
+  log shows three chat jobs; A's shows none, and no wait for the GPU). `/metrics` carried
+  `inferhub_node_gpu_holder` with `tool:echo` for A and `ollama` for B. A 35B model another program
+  had loaded through the same Ollama stayed resident.
+
 **Not verified:**
 
 - A real CUDA diffusion or Whisper worker switching. The non-Ollama service in the live run was the
