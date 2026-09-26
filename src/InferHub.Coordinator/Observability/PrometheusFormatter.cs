@@ -593,6 +593,23 @@ public static class PrometheusFormatter
                     Sample(builder, "inferhub_node_resource_throttled", [("node", node.NodeId)], node.ResourceThrottled == true ? 1 : 0);
                 }
             }
+
+            // Phase 86 D5, the same absent-when-no-opinion shape again: only an on-demand node has a
+            // card that changes hands. `holder` is a tenant id from that node's own configuration
+            // (`ollama`, `tool:<manifest id>`) — bounded by its manifests, and nothing a caller can
+            // mint — plus two reserved words that no tenant id can be: `none` and `switching`.
+            var onDemand = nodes.Where(node => node.OnDemand is not null).ToArray();
+
+            if (onDemand.Length > 0)
+            {
+                Header(builder, "inferhub_node_gpu_holder", "gauge", "1 for the service holding an on-demand node's GPU (none when free, switching mid-release).");
+                foreach (var node in onDemand)
+                {
+                    var state = node.OnDemand!;
+                    var holder = state.Switching ? "switching" : state.Holder ?? "none";
+                    Sample(builder, "inferhub_node_gpu_holder", [("node", node.NodeId), ("holder", holder)], 1);
+                }
+            }
         }
 
         // Unmeasured (node, model) pairs produce no series at all. An unmeasured node is treated

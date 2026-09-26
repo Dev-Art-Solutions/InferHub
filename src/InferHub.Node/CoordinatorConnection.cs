@@ -31,7 +31,8 @@ public sealed class CoordinatorConnection(
     ReplicaStore replicaStore,
     IBackendSupervisor supervisor,
     Resources.IResourceGovernor resourceGovernor,
-    ILogger<CoordinatorConnection> logger) : IAsyncDisposable
+    ILogger<CoordinatorConnection> logger,
+    Resources.GpuArbiter? gpuArbiter = null) : IAsyncDisposable
 {
     private readonly CoordinatorOptions coordinator = coordinatorOptions.Value;
     private readonly NodeOptions node = nodeOptions.Value;
@@ -49,12 +50,15 @@ public sealed class CoordinatorConnection(
     private int inFlight;
     private bool subscribedToSupervisor;
     private bool subscribedToTools;
+    private bool subscribedToArbiter;
+    private int onDemandBeatQueued;
     private LocalVectorStore? tailedStore;
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
         SubscribeToSupervisor();
         SubscribeToTools();
+        SubscribeToArbiter();
         retrieval.CorpusChanged += OnCorpusChanged;
         return ConnectUntilSuccessfulAsync(cancellationToken);
     }
@@ -63,6 +67,7 @@ public sealed class CoordinatorConnection(
     {
         UnsubscribeFromSupervisor();
         UnsubscribeFromTools();
+        UnsubscribeFromArbiter();
         retrieval.CorpusChanged -= OnCorpusChanged;
         UnsubscribeFromTailedStore();
         await lifetime.CancelAsync();
@@ -101,6 +106,7 @@ public sealed class CoordinatorConnection(
     {
         UnsubscribeFromSupervisor();
         UnsubscribeFromTools();
+        UnsubscribeFromArbiter();
         retrieval.CorpusChanged -= OnCorpusChanged;
         UnsubscribeFromTailedStore();
         await lifetime.CancelAsync();
@@ -146,6 +152,59 @@ public sealed class CoordinatorConnection(
 
         subscribedToTools = true;
         toolRuntime.CapabilitiesChanged += OnToolCapabilitiesChanged;
+    }
+
+    private void SubscribeToArbiter()
+    {
+        if (gpuArbiter is not { Enabled: true } || subscribedToArbiter)
+        {
+            return;
+        }
+
+        subscribedToArbiter = true;
+        gpuArbiter.Changed += OnGpuHolderChanged;
+    }
+
+    private void UnsubscribeFromArbiter()
+    {
+        if (!subscribedToArbiter || gpuArbiter is null)
+        {
+            return;
+        }
+
+        subscribedToArbiter = false;
+        gpuArbiter.Changed -= OnGpuHolderChanged;
+    }
+
+    /// <summary>
+    /// Phase 86 D4. The card changed hands, so the hub hears it now rather than a heartbeat interval
+    /// later. Coalesced: a burst of transitions (release, then the next tenant taking it) is one
+    /// send, and that send reads the state as it is when it goes out, not as it was when queued.
+    /// </summary>
+    private void OnGpuHolderChanged()
+    {
+        if (Interlocked.Exchange(ref onDemandBeatQueued, 1) == 1)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(50), lifetime.Token);
+                Volatile.Write(ref onDemandBeatQueued, 0);
+                await SendHeartbeatAsync(lifetime.Token);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                Volatile.Write(ref onDemandBeatQueued, 0);
+                logger.LogDebug(ex, "On-demand heartbeat failed; the periodic one will carry it");
+            }
+        });
     }
 
     private void UnsubscribeFromTools()
@@ -645,7 +704,9 @@ public sealed class CoordinatorConnection(
             DateTimeOffset.UtcNow,
             Volatile.Read(ref inFlight),
             supervisor.Health,
-            node.ResourceLimits.IsConfigured ? resourceGovernor.IsThrottled : null);
+            node.ResourceLimits.IsConfigured ? resourceGovernor.IsThrottled : null,
+            // Phase 86. Null unless Node:OnDemand is on, which the hub reads as "route as before".
+            gpuArbiter?.Snapshot());
 
         await connection.InvokeAsync("Heartbeat", heartbeat, cancellationToken);
     }

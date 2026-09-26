@@ -32,4 +32,7 @@ public sealed record NodeSnapshot(
     int? VramReserveMiB = null,
     /// Whether the node's own Node:ResourceLimits cap is tripped (phase 82). Null is no opinion: no
     /// cap is configured on that box, or it is older than v3.47.
-    bool? ResourceThrottled = null);
+    bool? ResourceThrottled = null,
+    /// Who holds the node's card (phase 86). Null = the node does not run on demand, or is older
+    /// than v3.51.
+    OnDemandState? OnDemand = null);

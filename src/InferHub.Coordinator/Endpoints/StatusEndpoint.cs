@@ -53,7 +53,8 @@ public static class StatusEndpoint
                     corpora?.Of(node.NodeId),
                     tools?.Of(node.NodeId),
                     node.BackendHealth?.ToString().ToLowerInvariant(),
-                    node.ResourceThrottled)).ToArray(),
+                    node.ResourceThrottled,
+                    node.OnDemand)).ToArray(),
                 models,
                 registry.CapabilitySummary(),
                 snapshot,
@@ -404,7 +405,10 @@ public static class StatusEndpoint
         // Whether the node's own Node:ResourceLimits cap is tripped (phase 82). Null is no opinion —
         // no cap configured on that box, or one older than v3.47 — and a fleet of those keeps the
         // pre-3.47 payload exactly.
-        bool? ResourceThrottled = null);
+        bool? ResourceThrottled = null,
+        // Who holds the node's card (phase 86 D5), verbatim as the node sent it. Null when the node
+        // does not run on demand, and a fleet of those keeps the pre-3.51 payload exactly.
+        OnDemandState? OnDemand = null);
 
     internal sealed record NodeProfileStatusBlock(
         string? Name,

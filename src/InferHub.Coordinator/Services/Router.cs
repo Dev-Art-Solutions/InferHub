@@ -40,6 +40,11 @@ public sealed class Router(
             return null;
         }
 
+        // Phase 86 D3. Everything below — least-busy, throughput, affinity — now runs over the best
+        // non-empty tier instead of every holder. With no on-demand node among the candidates there
+        // is one tier and this is the identity, which is the whole byte-identity argument.
+        candidates = WarmestTier(candidates, capability);
+
         var loads = candidates
             .Select(node => (Node: node, Load: registry.GetLocalInFlight(node.ConnectionId)))
             .ToArray();
@@ -82,6 +87,60 @@ public sealed class Router(
         }
 
         return best;
+    }
+
+    /// <summary>
+    /// Phase 86 D3: warm (no switch needed), then free (the card is idle), then cold (another service
+    /// holds it, or it is mid-switch). A preference, never a filter — a cold node that is the only
+    /// holder is still returned, and waits in its own arbiter exactly as it did in v3.50.
+    /// </summary>
+    /// <remarks>
+    /// A node with no <see cref="RoutableNode.OnDemand"/> state is always warm: its card is not
+    /// shared between services, so nothing about it changes. A request with no capability named is
+    /// not tiered at all, because "warm for what" has no answer.
+    /// </remarks>
+    internal static IReadOnlyCollection<RoutableNode> WarmestTier(IReadOnlyCollection<RoutableNode> candidates, string? capability)
+    {
+        if (capability is null || candidates.All(node => node.OnDemand is null))
+        {
+            return candidates;
+        }
+
+        var warm = new List<RoutableNode>();
+        var free = new List<RoutableNode>();
+        var cold = new List<RoutableNode>();
+
+        foreach (var node in candidates)
+        {
+            switch (Temperature(node.OnDemand, capability))
+            {
+                case 0: warm.Add(node); break;
+                case 1: free.Add(node); break;
+                default: cold.Add(node); break;
+            }
+        }
+
+        return warm.Count > 0 ? warm : free.Count > 0 ? free : cold;
+    }
+
+    private static int Temperature(Shared.Contracts.OnDemandState? state, string capability)
+    {
+        if (state is null)
+        {
+            return 0;
+        }
+
+        if (state.Switching)
+        {
+            return 2;
+        }
+
+        if (state.Holder is null)
+        {
+            return 1;
+        }
+
+        return state.WarmFor.Contains(capability, StringComparer.OrdinalIgnoreCase) ? 0 : 2;
     }
 
     private static RoutableNode PickLeastBusy((RoutableNode Node, int Load)[] loads, int tieBreaker)

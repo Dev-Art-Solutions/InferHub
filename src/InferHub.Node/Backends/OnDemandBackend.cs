@@ -42,7 +42,8 @@ public sealed class OnDemandBackend : IInferenceBackend
             var models = loaded.Keys.ToArray();
             loaded.Clear();
             await unload(models, cancellationToken);
-        });
+        },
+        () => inner.Kinds);
     }
 
     /// <summary>What the next release will unload. For tests.</summary>

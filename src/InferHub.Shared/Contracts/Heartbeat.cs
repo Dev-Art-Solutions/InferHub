@@ -17,4 +17,10 @@ public sealed record Heartbeat(
     /// cap configured, sends none, and both must route exactly as they did before this field existed
     /// (the same mixed-fleet rule phase-40 D1 and phase-69 D5 both hold to).
     /// </summary>
-    bool? ResourceThrottled = null);
+    bool? ResourceThrottled = null,
+    /// <summary>
+    /// Who holds this node's card, phase 86. <b>Null is "this node does not run on demand"</b> — a
+    /// node with <c>Node:OnDemand:Enabled=false</c> or one older than v3.51 sends none, and both must
+    /// route exactly as they did (the mixed-fleet rule phase-40 D1, 69 D5 and 82 all hold to).
+    /// </summary>
+    OnDemandState? OnDemand = null);

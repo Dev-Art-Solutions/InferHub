@@ -386,7 +386,10 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
                 {
                     await pool.ReleaseWorkersAsync();
                     residency.Clear();
-                });
+                },
+                // Phase 86 D2: what the pool declares now, not what the manifest claims — a
+                // released pool keeps its capabilities, and a given-up one has none to be warm for.
+                () => pool.Capabilities.Select(capability => capability.Kind).ToArray());
 
                 // An open model set started a worker only to ask it what it has. It has answered,
                 // and on an on-demand node it does not get to sit on the card until somebody asks.

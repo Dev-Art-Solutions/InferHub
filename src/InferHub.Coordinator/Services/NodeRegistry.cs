@@ -66,14 +66,17 @@ public sealed class NodeRegistry : INodeRegistry
             LastSeenUtc = now,
             InFlight = Math.Max(0, heartbeat.InFlight),
             Backend = heartbeat.Backend,
-            ResourceThrottled = heartbeat.ResourceThrottled
+            ResourceThrottled = heartbeat.ResourceThrottled,
+            OnDemand = heartbeat.OnDemand
         };
 
         // Phase 69 D6, phase 82 the same way. A heartbeat arrives every few seconds and
         // deliberately does not wake the console; a *transition* does, because that is the thing
         // somebody wants to see the moment it happens. Raising on every beat would re-render every
         // panel per node per interval to deliver a value that changes twice a week.
-        if (existing.Backend != heartbeat.Backend || existing.ResourceThrottled != heartbeat.ResourceThrottled)
+        if (existing.Backend != heartbeat.Backend
+            || existing.ResourceThrottled != heartbeat.ResourceThrottled
+            || OnDemandChanged(existing.OnDemand, heartbeat.OnDemand))
         {
             RaiseChanged();
         }
@@ -319,7 +322,8 @@ public sealed class NodeRegistry : INodeRegistry
             .Select(pair => new RoutableNode(
                 pair.Key,
                 pair.Value.Registration.NodeId,
-                pair.Value.Registration.Name))
+                pair.Value.Registration.Name,
+                pair.Value.OnDemand))
             .OrderBy(node => node.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(node => node.NodeId, StringComparer.OrdinalIgnoreCase)
             .ThenBy(node => node.ConnectionId, StringComparer.OrdinalIgnoreCase)
@@ -411,7 +415,8 @@ public sealed class NodeRegistry : INodeRegistry
             entry.Backend,
             entry.Registration.VramBudgetMiB,
             entry.Registration.VramReserveMiB,
-            entry.ResourceThrottled);
+            entry.ResourceThrottled,
+            entry.OnDemand);
     }
 
     /// <summary>
@@ -460,6 +465,21 @@ public sealed class NodeRegistry : INodeRegistry
         return maxConcurrency is { } cap && cap >= 1 ? cap : null;
     }
 
+    /// <summary>
+    /// Phase 86 D4's hub half: the card changing hands or a switch starting is a transition worth
+    /// waking the console for; the waiter count moving by one is not.
+    /// </summary>
+    private static bool OnDemandChanged(OnDemandState? before, OnDemandState? after)
+    {
+        if (before is null || after is null)
+        {
+            return before is not null || after is not null;
+        }
+
+        return !string.Equals(before.Holder, after.Holder, StringComparison.Ordinal)
+            || before.Switching != after.Switching;
+    }
+
     private static bool ModelNamesMatch(string candidate, string requested)
     {
         return string.Equals(candidate.Trim(), requested.Trim(), StringComparison.OrdinalIgnoreCase);
@@ -492,5 +512,7 @@ public sealed class NodeRegistry : INodeRegistry
         bool? StreamedSpeech = null,
         /// Whether the node's own Node:ResourceLimits cap is tripped (phase 82). Same null-is-no-
         /// opinion shape as Backend, for the same reason — an older node, or one with no cap set.
-        bool? ResourceThrottled = null);
+        bool? ResourceThrottled = null,
+        /// Who holds the node's card (phase 86). Null = the node does not run on demand.
+        OnDemandState? OnDemand = null);
 }

@@ -84,6 +84,9 @@ internal static class LocalStatusEndpoints
                     ? null
                     : new { limit = gate.Capacity, inFlight = gate.InFlight },
                 gpu = GpuBlock(),
+                // Phase 86: who holds the card, the same object a meshed node sends the hub. Null
+                // when Node:OnDemand is off. Solo mode has no router, so it is only reported.
+                onDemand = services.GetService<Resources.GpuArbiter>()?.Snapshot(),
                 // Phase 40. In solo mode this is what the node will and will not answer — the
                 // same declaration a meshed node sends the hub, enforced here at the edge instead
                 // of by a router that is not there.

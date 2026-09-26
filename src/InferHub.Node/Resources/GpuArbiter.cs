@@ -1,4 +1,5 @@
 using InferHub.Node.Configuration;
+using InferHub.Shared.Contracts;
 using Microsoft.Extensions.Options;
 
 namespace InferHub.Node.Resources;
@@ -36,6 +37,7 @@ public sealed class GpuArbiter : IAsyncDisposable
 
     private readonly object gate = new();
     private readonly Dictionary<string, Func<CancellationToken, Task>> releasers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Func<IReadOnlyList<string>>> serves = new(StringComparer.Ordinal);
     private readonly LinkedList<Waiter> waiters = new();
     private readonly CancellationTokenSource lifetime = new();
 
@@ -67,16 +69,83 @@ public sealed class GpuArbiter : IAsyncDisposable
     }
 
     /// <summary>
+    /// Raised when the card changes hands or a switch begins (phase 86 D4), so the node can tell the
+    /// hub at once instead of a heartbeat interval later. Never raised on the caller's stack — every
+    /// transition happens under <c>gate</c> — so a handler may read <see cref="Snapshot"/> freely.
+    /// </summary>
+    public event Action? Changed;
+
+    /// <summary>
     /// How a tenant gives the card back: unload its weights, stop its processes. Called with no
     /// request of that tenant in flight, and awaited before the next tenant is admitted, so the peak
     /// is never both at once.
     /// </summary>
-    public void RegisterReleaser(string tenant, Func<CancellationToken, Task> release)
+    /// <param name="servedKinds">
+    /// The capability kinds this tenant serves (phase 86 D2), read each time a snapshot is taken —
+    /// a tool's declaration can narrow after its worker says hello.
+    /// </param>
+    public void RegisterReleaser(
+        string tenant,
+        Func<CancellationToken, Task> release,
+        Func<IReadOnlyList<string>>? servedKinds = null)
     {
         lock (gate)
         {
             releasers[tenant] = release;
+
+            if (servedKinds is not null)
+            {
+                serves[tenant] = servedKinds;
+            }
         }
+    }
+
+    /// <summary>
+    /// What the hub is told (phase 86): null when this node does not run on demand, which the hub
+    /// reads as "route exactly as before".
+    /// </summary>
+    public OnDemandState? Snapshot()
+    {
+        if (!options.Enabled)
+        {
+            return null;
+        }
+
+        string? holder;
+        bool isSwitching;
+        int waiting;
+        Func<IReadOnlyList<string>>? kinds = null;
+
+        lock (gate)
+        {
+            // Mid-switch the card is held by nobody useful: the old tenant is being torn down.
+            holder = switching ? null : owner;
+            isSwitching = switching;
+            waiting = waiters.Count;
+
+            if (holder is not null)
+            {
+                serves.TryGetValue(holder, out kinds);
+            }
+        }
+
+        IReadOnlyList<string> warmFor = Array.Empty<string>();
+
+        if (kinds is not null)
+        {
+            try
+            {
+                warmFor = kinds().Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            }
+            catch (Exception ex)
+            {
+                // A preference, never a correctness boundary: an unreadable declaration makes the
+                // node look cold, which routes the way v3.50 did.
+                logger.LogDebug(ex, "On-demand: could not read what '{Tenant}' serves.", holder);
+            }
+        }
+
+        return new OnDemandState(holder, warmFor, isSwitching, waiting);
     }
 
     /// <summary>
@@ -101,6 +170,7 @@ public sealed class GpuArbiter : IAsyncDisposable
                 if (owner is null)
                 {
                     logger.LogInformation("On-demand: '{Tenant}' takes the GPU.", tenant);
+                    RaiseChanged();
                 }
 
                 owner = tenant;
@@ -248,6 +318,7 @@ public sealed class GpuArbiter : IAsyncDisposable
         CancelLinger();
         switching = true;
         pending = SwitchAsync(owner);
+        RaiseChanged();
     }
 
     private async Task SwitchAsync(string? previous)
@@ -287,6 +358,7 @@ public sealed class GpuArbiter : IAsyncDisposable
         {
             switching = false;
             owner = null;
+            RaiseChanged();
 
             if (waiters.First is not { } first)
             {
@@ -313,6 +385,18 @@ public sealed class GpuArbiter : IAsyncDisposable
             }
 
             logger.LogInformation("On-demand: '{Tenant}' takes the GPU.", next);
+        }
+    }
+
+    /// <summary>
+    /// Off the caller's stack by construction: every transition is decided under <see cref="gate"/>,
+    /// and a handler that sends a heartbeat must not run inside it.
+    /// </summary>
+    private void RaiseChanged()
+    {
+        if (Changed is { } handler)
+        {
+            ThreadPool.QueueUserWorkItem(static state => ((Action)state!).Invoke(), handler);
         }
     }
 

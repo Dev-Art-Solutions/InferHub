@@ -91,6 +91,16 @@
       pills.push(`<span class="pill pill-warn">resource capped</span>`);
     }
 
+    // Phase 86. An on-demand node's card: who holds it, free, or between two services. Neutral
+    // rather than a warning — a card changing hands is this mode working, not a fault.
+    if (node.onDemand) {
+      const gpu = node.onDemand.switching
+        ? "gpu switching"
+        : node.onDemand.holder ? `gpu ${escapeHtml(node.onDemand.holder)}` : "gpu free";
+      const waiting = node.onDemand.waiting > 0 ? ` (${node.onDemand.waiting} waiting)` : "";
+      pills.push(`<span class="pill">${gpu}${waiting}</span>`);
+    }
+
     return pills.join(" ");
   };
 

@@ -967,3 +967,12 @@ byte-identical to v3.49: the arbiter returns a no-op lease and never releases an
 Tests: `GpuArbiterTests` (Node — sharing, switching order, linger, FIFO, timeout, a failing releaser,
 a stream holding the card to its last chunk) and `OnDemandToolTests` (Mesh — a real echo worker
 process is gone after the request, the capability is still declared, and the next request restarts it).
+
+> **Phase 86 — the hub learns who holds the card.** `GpuArbiter.Snapshot()` (null when off) rides
+> `Heartbeat.OnDemand`; each releaser now registers **what its tenant serves** (`OnDemandBackend` →
+> the backend's `Kinds`, a tool → its pool's *current* `Capabilities`, so a given-up pool is warm for
+> nothing). The node resolves tenant → kinds (86 D2) so the hub never learns a tool id. `Changed`
+> fires on holder/switching transitions, always off the arbiter's lock (queued to the pool), and
+> `CoordinatorConnection` sends one coalesced out-of-band heartbeat (50 ms) so the hub is not an
+> interval behind. Solo `/api/status` reports the same `onDemand` object. The router half, and why it
+> is a preference and never a filter, is `src/InferHub.Coordinator/CLAUDE.md`'s phase-86 block.

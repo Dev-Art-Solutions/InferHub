@@ -49,6 +49,75 @@ public class GpuArbiterTests
     }
 
     [Fact]
+    public async Task OffReportsNoStateSoTheHubRoutesAsBefore()
+    {
+        await using var arbiter = Arbiter(enabled: false);
+
+        Assert.Null(arbiter.Snapshot());
+    }
+
+    [Fact]
+    public async Task TheSnapshotNamesTheHolderAndWhatItIsWarmFor()
+    {
+        await using var arbiter = Arbiter(releaseAfter: 60);
+        var releases = new Releases();
+        arbiter.RegisterReleaser("ollama", releases.For("ollama"), () => ["chat", "embed", "chat"]);
+        arbiter.RegisterReleaser("tool:diffusion", releases.For("tool:diffusion"), () => ["image", "video"]);
+
+        var idle = arbiter.Snapshot()!;
+        Assert.Null(idle.Holder);
+        Assert.Empty(idle.WarmFor);
+        Assert.False(idle.Switching);
+
+        await using (await arbiter.AcquireAsync("ollama", CancellationToken.None))
+        {
+            var held = arbiter.Snapshot()!;
+            Assert.Equal("ollama", held.Holder);
+            Assert.Equal(["chat", "embed"], held.WarmFor);
+        }
+
+        // Lingering: the card is still held, and still warm for chat, until ReleaseAfterSeconds.
+        Assert.Equal("ollama", arbiter.Snapshot()!.Holder);
+    }
+
+    [Fact]
+    public async Task ChangedFiresOnTransitionsOnly()
+    {
+        await using var arbiter = Arbiter(releaseAfter: 60);
+        var releases = new Releases();
+        arbiter.RegisterReleaser("a", releases.For("a"), () => ["chat"]);
+        arbiter.RegisterReleaser("b", releases.For("b"), () => ["image"]);
+
+        var fired = new SemaphoreSlim(0);
+        var count = 0;
+        arbiter.Changed += () =>
+        {
+            Interlocked.Increment(ref count);
+            fired.Release();
+        };
+
+        // a takes a free card: one transition. A second lease for the owner is not one.
+        var first = await arbiter.AcquireAsync("a", CancellationToken.None);
+        Assert.True(await fired.WaitAsync(Soon));
+        var second = await arbiter.AcquireAsync("a", CancellationToken.None);
+        await Task.Delay(200);
+        Assert.Equal(1, Volatile.Read(ref count));
+
+        // b waits; when a drains, the switch begins and then b takes the card.
+        var waiting = arbiter.AcquireAsync("b", CancellationToken.None);
+        await first.DisposeAsync();
+        await second.DisposeAsync();
+        await using (await waiting)
+        {
+            Assert.Equal("b", arbiter.Snapshot()!.Holder);
+            Assert.Equal(["image"], arbiter.Snapshot()!.WarmFor);
+        }
+
+        await Task.Delay(200);
+        Assert.True(Volatile.Read(ref count) >= 2);
+    }
+
+    [Fact]
     public async Task OffIsAPassThroughThatNeverReleasesAnything()
     {
         await using var arbiter = Arbiter(enabled: false);

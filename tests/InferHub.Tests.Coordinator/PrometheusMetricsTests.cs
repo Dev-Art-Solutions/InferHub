@@ -335,6 +335,41 @@ public class PrometheusMetricsTests
         Assert.False(parsed.Help.ContainsKey("inferhub_node_backend_health"));
     }
 
+    /// <summary>
+    /// 86 D5. The holder is a label on a constant 1 — `none` for a free card, `switching` mid-release —
+    /// and a node that does not run on demand emits nothing, the same absence as the two above.
+    /// </summary>
+    [Fact]
+    public void OnlyAnOnDemandNodeEmitsAGpuHolderSeries()
+    {
+        var now = DateTimeOffset.UtcNow;
+
+        var scrape = SampleScrape() with
+        {
+            Nodes =
+            [
+                Node("gpu-1", now, health: null) with { OnDemand = new OnDemandState("tool:diffusion", ["image"], false, 0) },
+                Node("gpu-2", now, health: null) with { OnDemand = new OnDemandState(null, [], false, 0) },
+                Node("gpu-3", now, health: null) with { OnDemand = new OnDemandState(null, [], true, 2) },
+                Node("gpu-4", now, health: null)
+            ]
+        };
+
+        var parsed = Exposition.Parse(PrometheusFormatter.Format(scrape));
+        var holders = parsed.Samples
+            .Where(s => s.Name == "inferhub_node_gpu_holder")
+            .ToDictionary(s => s.Labels["node"], s => (s.Labels["holder"], s.Value));
+
+        Assert.Equal(3, holders.Count);
+        Assert.Equal(("tool:diffusion", 1d), holders["gpu-1"]);
+        Assert.Equal(("none", 1d), holders["gpu-2"]);
+        Assert.Equal(("switching", 1d), holders["gpu-3"]);
+        Assert.False(holders.ContainsKey("gpu-4"));
+
+        var quiet = Exposition.Parse(PrometheusFormatter.Format(SampleScrape() with { Nodes = [Node("gpu-4", now, health: null)] }));
+        Assert.False(quiet.Help.ContainsKey("inferhub_node_gpu_holder"));
+    }
+
     private static NodeSnapshot Node(string nodeId, DateTimeOffset now, BackendHealth? health)
         => new(
             $"conn-{nodeId}",

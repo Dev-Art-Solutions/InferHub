@@ -1022,3 +1022,33 @@ an unhealthy-backend one (still holds its models, `includeUnserviceable: true` s
 evicted. `NodeSnapshot`/`StatusEndpoint`/`PrometheusFormatter`/`console.js` each gained one nullable
 field or block, all following 69 D5/D7's own null-is-no-opinion, absence-over-a-manufactured-zero
 rules verbatim — nothing new to argue here.
+
+### Phase 86 (the router prefers a node whose card needs no switch) — the node's half is in `src/InferHub.Node/CLAUDE.md`, phase 85's block
+
+`Heartbeat.OnDemand` (`OnDemandState`: holder, `warmFor` capability kinds, switching, waiting) is
+stored on `NodeRegistryEntry` and handed to the router **on `RoutableNode`** — `FindNodesWithModel`
+keeps its signature (70 D7's cost: no fifth boolean).
+
+**D3, load-bearing — three tiers ahead of the strategy, and a preference, never a filter.**
+`Router.WarmestTier` splits the candidates into *warm* (no state, or `warmFor` has the capability
+and not switching), *free* (a state with a null holder), *cold* (another tenant holds the card, or it
+is mid-switch), and the existing least-busy/throughput pick plus affinity run over the best
+non-empty tier. **No state on any candidate is one tier, which is the identity** — that is the
+byte-identity argument and `NoOnDemandStateMeansOneTierAndTodaysPick` is named after it. A request
+with no capability is not tiered ("warm for what"). A cold node that is the only holder is still
+returned and waits in its own arbiter exactly as in v3.50. Affinity only holds inside the chosen tier:
+a conversation's KV cache is worth less than a weight reload. *Rejected:* a weighted load + switch
+penalty score — it needs a switch-cost number nobody has measured (48 D1's "usually right" trap).
+
+**D2 — the hub never learns what a tenant is.** The node resolves `tool:diffusion` → `image`/`video`
+and sends the kinds; the holder string is only displayed. **The hub never commands the card**
+(no prefetch, no evict) — `Node:OnDemand` is the operator's, like 82's cap.
+
+**D5 — visibility.** `/api/status` `onDemand` verbatim (null for a node that does not run on demand);
+console pill `gpu <holder>` / `gpu free` / `gpu switching`, neutral not a warning;
+`inferhub_node_gpu_holder{node,holder}` = 1, absent for no-state nodes, `holder` bounded by the node's
+manifests plus the reserved `none`/`switching`. `Touch` raises `Changed` on holder/switching
+transitions only, not on the waiter count.
+
+Tests: `OnDemandRoutingTests` (Coordinator), `PrometheusMetricsTests.OnlyAnOnDemandNodeEmitsAGpuHolderSeries`,
+`OnDemandRoutingMeshTests` (Mesh — real SignalR; the pre-3.51 five-field heartbeat routes as before).

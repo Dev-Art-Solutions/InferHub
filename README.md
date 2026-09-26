@@ -170,6 +170,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 83 | Bubblewrap sandboxing for tool workers (done) | `v3.48.0` |
 | 84 | bg-tts-v5 — a second `speak` engine, for Bulgarian (done) | `v3.49.0` |
 | 85 | `Node:OnDemand` — one GPU service at a time (done) | `v3.50.0` |
+| 86 | The hub routes to the node whose card is already warm (done) | `v3.51.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -1354,6 +1355,17 @@ started again by its next request.
 **The price is cold starts.** Every switch pays a model load: seconds for Whisper or Piper, a minute or
 more for FLUX or a large LLM. Alternating services request by request is slow by design; this mode is
 for a box that does one kind of job at a time and should be idle in between.
+
+**With several such boxes, the coordinator avoids the switch where it can (v3.51+).** Each on-demand
+node reports who holds its card on every heartbeat, and again the moment it changes hands. When more
+than one node can serve a request, the router prefers, in order: a node whose card already holds the
+service the request needs, a node whose card is free, and only then one that would have to switch. It
+is a preference and never a refusal: if the only node holding the model is busy with something else,
+the request still goes there and waits, exactly as before. A node that does not run on demand counts
+as always warm, so a fleet without on-demand nodes routes exactly as it did. `/api/status` shows each
+node's `onDemand` state, the console shows `gpu <holder>` / `gpu free` / `gpu switching`, and
+`inferhub_node_gpu_holder{node,holder}` is on `/metrics`. The coordinator never tells a node to take
+or give back its card — that stays the node operator's decision. There is no new setting.
 
 ### Switching models swaps weights; it does not restart anything
 
