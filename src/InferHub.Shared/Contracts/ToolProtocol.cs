@@ -238,6 +238,20 @@ public sealed record ToolFrame
     [JsonPropertyName("vramTotalMiB")]
     public int? VramTotalMiB { get; init; }
 
+    /// <summary>
+    /// On <c>ready</c> (handshake or re-declaration): the models this worker is fetching in the
+    /// background right now (v3.52). Optional; absent or empty means nothing is being fetched,
+    /// which is what every worker before it meant.
+    /// </summary>
+    /// <remarks>
+    /// Phase 87 found that phase 85 killed that fetch. An on-demand node stops a tool's workers the
+    /// moment they have answered at startup, and the diffusion worker fetches weights on a thread
+    /// inside that same process. So on a fresh volume no recipe ever landed, and the tool declared
+    /// nothing, forever. A worker that says it is fetching is kept until it says it is done.
+    /// </remarks>
+    [JsonPropertyName("fetching")]
+    public IReadOnlyList<string>? Fetching { get; init; }
+
     [JsonPropertyName("level")]
     public string? Level { get; init; }
 

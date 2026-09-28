@@ -38,6 +38,12 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
 
     private int gaveUpFlag;
     private int suspendedFlag;
+
+    // Phase 87. ReleaseWorkersAsync kept a worker because it was still fetching, so the card was
+    // promised back and not yet given. Set there, cleared when that worker says it is done (and
+    // released then) or when a request leases this pool, which hands the lifecycle back to the
+    // arbiter.
+    private int releaseWhenFetchedFlag;
     private bool gaveUpLogged;
     private DateTimeOffset lastRecoveryProbe;
 
@@ -233,15 +239,41 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
     /// <remarks>
     /// Leased workers are not touched: a request mid-flight is never evicted. The arbiter only calls
     /// this once nothing of this pool's is in flight, so in practice there are none.
+    /// <para>
+    /// <b>Nor is a worker that says it is still fetching</b> (phase 87). The diffusion worker
+    /// downloads weights on a thread inside the same process, and a recipe is declared only once it
+    /// has landed. Stopping that process kills the download, so on a fresh volume an on-demand node
+    /// declared no image model, ever. Such a worker is kept and stopped when it re-declares with
+    /// nothing left to fetch. While it downloads it holds a CUDA context, a few hundred MB. That is
+    /// the price of a tool that can ever be offered at all.
+    /// </para>
     /// </remarks>
     public async Task ReleaseWorkersAsync()
     {
         List<ToolWorkerProcess> workers;
+        List<ToolWorkerProcess> fetching;
 
         lock (gate)
         {
-            workers = idle.ToList();
+            fetching = idle.Where(worker => worker.Fetching.Count > 0).ToList();
+            workers = idle.Where(worker => worker.Fetching.Count == 0).ToList();
             idle.Clear();
+
+            foreach (var worker in fetching)
+            {
+                idle.Push(worker);
+            }
+        }
+
+        if (fetching.Count > 0)
+        {
+            Interlocked.Exchange(ref releaseWhenFetchedFlag, 1);
+
+            logger.LogInformation(
+                "Kept {Count} worker(s) for tool '{ToolId}' although the GPU was released (Node:OnDemand): still fetching {Models}. Stopped when the fetch ends.",
+                fetching.Count,
+                manifest.Id,
+                string.Join(", ", fetching.SelectMany(worker => worker.Fetching).Distinct()));
         }
 
         foreach (var worker in workers)
@@ -338,6 +370,10 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
             throw new ToolUnavailableException(
                 $"tool '{manifest.Id}' is not running: it failed to start {options.MaxStartAttempts} times and this node has stopped retrying it. It is still being probed.");
         }
+
+        // A request now owns this pool's turn on the card; the arbiter releases it when the turn
+        // ends, so a release deferred by a fetch is no longer this pool's to perform.
+        Interlocked.Exchange(ref releaseWhenFetchedFlag, 0);
 
         var budget = TimeSpan.FromSeconds(Math.Max(0, options.QueueMaxWaitSeconds));
 
@@ -825,13 +861,29 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
     {
         var resolved = Narrow(manifest.Capabilities, worker.ReportedCapabilities);
 
-        if (SameAs(Capabilities, resolved))
+        if (!SameAs(Capabilities, resolved))
         {
-            return;
+            Capabilities = resolved;
+            RaiseCapabilitiesChanged();
         }
 
-        Capabilities = resolved;
-        RaiseCapabilitiesChanged();
+        // Phase 87: the release ReleaseWorkersAsync deferred for this fetch happens now. Off the
+        // worker's reader, because disposing a worker from inside its own frame handler waits on
+        // the very read that is running.
+        if (worker.Fetching.Count == 0 && Interlocked.Exchange(ref releaseWhenFetchedFlag, 0) == 1)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await ReleaseWorkersAsync();
+                }
+                catch (Exception exception)
+                {
+                    logger.LogWarning(exception, "Could not stop tool '{ToolId}' after its fetch ended.", manifest.Id);
+                }
+            });
+        }
     }
 
     private void GiveUp()

@@ -1,0 +1,67 @@
+# The one-card box: chat, speech in, speech out, reranking, images and video on ONE GPU, in ONE
+# container, taking turns (phase 87, v3.52+).
+#
+#   docker compose -f deploy/docker/compose.all.yml up -d
+#
+# This is the image for a single card and no mesh. It is :tools and :diffusion in one node with
+# Node:OnDemand ON, so one GpuArbiter decides who holds the card: a chat loads the chat model, then
+# an image request waits for that chat to finish, the chat model is unloaded and the diffusion
+# pipeline is loaded. A transcription after that stops the diffusion worker and starts Whisper.
+# Every switch costs one model load: seconds for Whisper, a minute or more for FLUX or a large LLM.
+#
+# Do NOT run compose.tools.yml and compose.diffusion.yml on the same card instead. That gives you two
+# nodes, two arbiters, each sure it owns the card, and an out-of-memory error the first time both
+# are busy. With several cards, or several boxes, composing those two through a coordinator is still
+# the right answer (46 D9), and the coordinator prefers whichever card is already warm (phase 86).
+#
+# Everything compose.tools.yml says about Piper voices and compose.diffusion.yml says about weights,
+# licences and the VRAM budget applies here. Read those two headers.
+
+name: inferhub-all
+
+services:
+  node:
+    image: ghcr.io/dev-art-solutions/inferhub-node:all
+    container_name: inferhub-node-all
+    restart: unless-stopped
+    ports:
+      - "5084:8080"
+    environment:
+      LocalApi__Enabled: "true"
+      Coordinator__Enabled: "false"
+
+      # NOT optional (phase-37 D4). The container binds a wildcard.
+      LocalApi__ApiKeys__0: "${INFERHUB_API_KEY:?set INFERHUB_API_KEY in .env}"
+
+      # On in this image. How long a service keeps the card after its last request (30 s default,
+      # so a conversation does not reload between messages), and how long a request waits for the
+      # card before a 503 + Retry-After.
+      # Node__OnDemand__ReleaseAfterSeconds: "30"
+      # Node__OnDemand__SwitchWaitSeconds: "300"
+      #
+      # A card big enough to hold all of it at once? Turn turn-taking off. Your card, your call.
+      # Node__OnDemand__Enabled: "false"
+
+      # If anything ELSE uses this card (a desktop, another Ollama), tell the node how much is its
+      # own, or a recipe that fits on paper will not fit in practice.
+      # Node__Vram__BudgetMiB: "20480"
+      # Node__Vram__ReserveMiB: "2048"
+
+      # Licences for the two gated recipes. See compose.diffusion.yml.
+      # Tools__Image__AcceptedLicenses__0: "stabilityai-ai-community"
+      # Tools__Image__AcceptedLicenses__1: "sai-nc-community"
+
+    volumes:
+      # Ollama models, Whisper and diffusion weights, Piper voices, the node id. Tens of GB.
+      - node-data:/data
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  node-data:

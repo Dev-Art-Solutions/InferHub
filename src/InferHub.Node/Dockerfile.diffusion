@@ -19,8 +19,9 @@
 #   inferhub-node:tools      ~5.6 GB, amd64, Ollama + Whisper + Piper    — UNCHANGED
 #   inferhub-node:diffusion  ~12 GB,  amd64, PyTorch + diffusers         — this file
 #
-# A combined :all image is deferred and named in the roadmap. Revisit it if 48 GB cards become the
-# norm; today it would be an image whose whole point is a configuration that does not fit.
+# Reason 2 stopped holding at phase 85: with Node:OnDemand on, the services take turns on the card
+# instead of sitting beside each other. So phase 87 added a combined image, Dockerfile.all, for the
+# box with one card and no mesh. This file is unchanged by that, and reasons 1 and 3 still apply.
 #
 # Solo, one line, with text to image:
 #

@@ -2380,8 +2380,12 @@ def prefetch_missing(worker: Worker, recipes: dict[str, dict[str, Any]], offerab
             )
         return
 
-    for identifier in missing:
+    for index, identifier in enumerate(missing):
         recipe = recipes[identifier]
+
+        # v3.52: what is still to come, so an on-demand node keeps this process until it is empty.
+        # Sent after a failure too, or a model that will never land would pin the worker forever.
+        remaining = missing[index + 1:]
 
         try:
             log(
@@ -2393,11 +2397,13 @@ def prefetch_missing(worker: Worker, recipes: dict[str, dict[str, Any]], offerab
             fetch(recipe)
         except Exception as error:  # noqa: BLE001 - one bad model must not stop the others
             log(f"could not fetch '{identifier}': {describe_fetch_failure(recipe, error)}")
+            ready = [i for i in offerable if is_ready(recipes[i])]
+            worker.redeclare(capability_frames(recipes, ready), fetching=remaining)
             continue
 
         ready = [i for i in offerable if is_ready(recipes[i])]
         log(f"'{identifier}' is ready; {describe_offering(recipes, ready)}")
-        worker.redeclare(capability_frames(recipes, ready))
+        worker.redeclare(capability_frames(recipes, ready), fetching=remaining)
 
 
 def main() -> None:
@@ -2440,6 +2446,12 @@ def main() -> None:
         capabilities=capability_frames(recipes, ready),
         on_idle=lambda: unload_all("idle"),
         vram_total_mib=_vram_total_mib,
+        # Exactly what prefetch_missing will attempt, and nothing when it may not download at all.
+        fetching=(
+            fetch_order(recipes, [i for i in offerable if i not in ready])
+            if flag("INFERHUB_ALLOW_MODEL_DOWNLOAD")
+            else []
+        ),
     )
     _worker = worker
 

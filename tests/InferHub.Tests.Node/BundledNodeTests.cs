@@ -290,6 +290,8 @@ public class BundledNodeTests
         // card running a diffusion pipeline has no room for a chat model beside it: bundling Ollama
         // would ship a combination the docs would then have to tell people not to use. Two
         // containers and capability routing is the answer, which is what phase 40 was built for.
+        // Phase 87 amended D9 without touching this file: the stacked image is Dockerfile.all, which
+        // exists only because Node:OnDemand makes the services take turns on one card.
         Assert.DoesNotContain("ollama", dockerfile, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("whisper", dockerfile, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("piper", dockerfile, StringComparison.OrdinalIgnoreCase);
@@ -335,7 +337,7 @@ public class BundledNodeTests
     {
         // The reverse of the assertion above: bg-tts-v5's several-GB NeMo dependency tree must not
         // leak into any image that did not ask for it.
-        foreach (var name in new[] { "Dockerfile", "Dockerfile.ollama", "Dockerfile.tools", "Dockerfile.diffusion" })
+        foreach (var name in new[] { "Dockerfile", "Dockerfile.ollama", "Dockerfile.tools", "Dockerfile.diffusion", "Dockerfile.all" })
         {
             var text = File.ReadAllText(Path.Combine(RepoRoot(), "src", "InferHub.Node", name));
 
@@ -558,6 +560,113 @@ public class BundledNodeTests
         }
     }
 
+    // ---- the one-card image (phase 87) -------------------------------------------------------
+
+    [Fact]
+    public void TheAllImagePinsTheSameOllamaAsTheBundledOne()
+    {
+        // A hand-copy of Dockerfile.tools's Ollama stage. Bumping it in two files and not the third
+        // means :tools and :all of the same tag carry different engines.
+        var all = AllDockerfile();
+
+        Assert.Equal(OllamaVersionOf(BundledDockerfile()), OllamaVersionOf(all));
+        Assert.Equal(OllamaShaOf(BundledDockerfile()), OllamaShaOf(all));
+        Assert.Contains("sha256sum -c -", all);
+    }
+
+    /// <summary>
+    /// 87 D2. One venv resolves both requirement files together, so a pin on one side can move a
+    /// package the other side imports. Every import either parent proves at build time must be
+    /// proven here too, or the union is only checked for the half somebody remembered.
+    /// </summary>
+    [Fact]
+    public void TheAllImageAssertsEveryImportBothParentsAssert()
+    {
+        var all = AllInstructions();
+
+        Assert.Contains("-r /tmp/requirements-tools.txt -r /tmp/requirements-diffusion.txt", all);
+        Assert.Contains("python3 -m venv /opt/inferhub/venv", all);
+
+        var parents = BuildTimeImports(ToolsInstructions()).Concat(BuildTimeImports(DiffusionInstructions()));
+
+        foreach (var import in parents.Distinct())
+        {
+            Assert.True(all.Contains(import), $"Dockerfile.all does not assert `{import}`, which a parent image does");
+        }
+
+        Assert.Contains("is_ftfy_available", all);
+        Assert.Contains("is_peft_available", all);
+    }
+
+    /// <summary>
+    /// 87 D1, the load-bearing one. With on-demand off, :all is the combination 46 D9 refused: a
+    /// resident chat model and a diffusion pipeline fighting for one card. So the image turns it on,
+    /// and nothing else does. The node's own default stays false, so a from-source node or any other
+    /// image behaves exactly as before.
+    /// </summary>
+    [Fact]
+    public void TheAllImageTurnsOnDemandOnAndTheOthersDoNot()
+    {
+        Assert.Contains("ENV Node__OnDemand__Enabled=true", AllInstructions());
+        Assert.False(new OnDemandOptions().Enabled);
+
+        foreach (var name in new[] { "Dockerfile", "Dockerfile.ollama", "Dockerfile.tools", "Dockerfile.diffusion", "Dockerfile.tts-bg" })
+        {
+            // Instructions only: Dockerfile.diffusion's header explains why :all exists, by name.
+            var text = string.Join(
+                '\n',
+                File.ReadAllText(Path.Combine(RepoRoot(), "src", "InferHub.Node", name))
+                    .Split('\n')
+                    .Where(line => !line.TrimStart().StartsWith('#')));
+
+            Assert.DoesNotContain("OnDemand", text);
+        }
+    }
+
+    [Fact]
+    public void TheAllImageAllowsEveryServiceBothParentsAllowAndKeepsTheirConsents()
+    {
+        var all = AllInstructions();
+
+        foreach (var tool in new[] { "whisper", "piper", "rerank", "diffusion" })
+        {
+            Assert.Matches($@"ENV Tools__Allowed__\d+={tool}\n", all + "\n");
+        }
+
+        Assert.Contains("ENV Tools__Enabled=true", all);
+        Assert.Contains("ENV Tools__AllowModelDownload=true", all);
+        Assert.Contains("ENV Tools__Image__RecipeDirectory=/opt/inferhub/recipes", all);
+        Assert.Contains("ENV Tools__Image__RequireGpu=true", all);
+        Assert.Contains("ENV Ollama__Supervisor__Enabled=true", all);
+        Assert.Contains("ENV OLLAMA_MODELS=/data/ollama", all);
+        Assert.Contains("NVIDIA_DRIVER_CAPABILITIES=compute,utility", all);
+
+        // The permissions trap: the union of both parents' directories.
+        Assert.Contains("mkdir -p /data /data/ollama /data/tools/scratch /data/tools/hf /data/tools/voices", all);
+        Assert.Contains("chown -R app:app /data", all);
+        Assert.Contains("USER app", all);
+        Assert.DoesNotContain("EXPOSE", all);
+    }
+
+    /// <summary>
+    /// 87 D2's "no manifest changes" is only true while every manifest the image allows names an
+    /// interpreter the image builds. A second venv added later would pass every import assertion
+    /// and still start the wrong Python.
+    /// </summary>
+    [Fact]
+    public void EveryManifestTheAllImageAllowsRunsTheVenvItBuilds()
+    {
+        foreach (var tool in new[] { "whisper", "piper", "rerank", "diffusion" })
+        {
+            using var manifest = System.Text.Json.JsonDocument.Parse(
+                File.ReadAllText(Path.Combine(RepoRoot(), "python", "manifests", $"{tool}.json")));
+
+            var command = manifest.RootElement.GetProperty("command").EnumerateArray().First().GetString();
+
+            Assert.Equal("/opt/inferhub/venv/bin/python", command);
+        }
+    }
+
     /// <summary>
     /// Rule 5's own assertion for this phase: the Python is a subprocess, not a dependency. No
     /// project file may reference it, and <c>InferHub.Shared.csproj</c> must still be empty.
@@ -614,8 +723,25 @@ public class BundledNodeTests
             '\n',
             TtsBgDockerfile().Split('\n').Where(line => !line.TrimStart().StartsWith('#')));
 
+    private static string AllDockerfile()
+        => File.ReadAllText(Path.Combine(RepoRoot(), "src", "InferHub.Node", "Dockerfile.all"));
+
+    private static string AllInstructions()
+        => string.Join(
+            '\n',
+            AllDockerfile().Split('\n').Where(line => !line.TrimStart().StartsWith('#')));
+
+    /// <summary>Every <c>import …</c> / <c>from … import …</c> statement inside a build-time <c>python -c</c>.</summary>
+    private static IEnumerable<string> BuildTimeImports(string instructions)
+        => System.Text.RegularExpressions.Regex
+            .Matches(instructions, @"(?:from [\w.]+ )?import [\w., ]+")
+            .Select(match => match.Value.TrimEnd(' ', ','));
+
     private static string OllamaVersionOf(string dockerfile)
         => System.Text.RegularExpressions.Regex.Match(dockerfile, @"ARG OLLAMA_VERSION=(\S+)").Groups[1].Value;
+
+    private static string OllamaShaOf(string dockerfile)
+        => System.Text.RegularExpressions.Regex.Match(dockerfile, @"ARG OLLAMA_SHA256=(\S+)").Groups[1].Value;
 
     private static string BundledInstructions()
         => string.Join(

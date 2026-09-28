@@ -15,6 +15,7 @@ using System.Text.Json;
 //                        [--image-no-auto-trigger] [--image-repair-worse]
 //                        [--video-fail <code>] [--video-step-ms <n>] [--video-pad-bytes <n>]
 //                        [--redeclare-on-ping <kind>:<model>,<model>] [--wedge-on-ping]
+//                        [--fetching <model>,<model>]
 //
 // Phase 42 added two behaviours that are chosen by the request's *capability* rather than by a
 // "behaviour" field, because the audio edge builds the worker payload itself and a client cannot
@@ -131,6 +132,14 @@ while (await stdin.ReadLineAsync() is { } line)
             {
                 // Deliberately silent. The node must kill this after startTimeoutSeconds rather
                 // than wait on a read that will never return.
+                continue;
+            }
+
+            if (arguments.Fetching is { Length: > 0 } fetching)
+            {
+                // v3.52: "and I am still downloading these", the diffusion worker's shape. The
+                // --redeclare-on-ping below is then the fetch landing, and it carries no list.
+                Send(new { type = "ready", protocol = 1, capabilities = arguments.Capabilities, fetching });
                 continue;
             }
 
@@ -1872,7 +1881,8 @@ internal sealed record Args(
     int SpeechChunkBytes = 0,
     double SpeechSeconds = 0,
     bool SpeechRateShift = false,
-    bool SpeechNoAudio = false)
+    bool SpeechNoAudio = false,
+    string[]? Fetching = null)
 {
     public static Args Parse(string[] args)
     {
@@ -1885,6 +1895,7 @@ internal sealed record Args(
         string? imageFailCode = null;
         var imagePadBytes = 0;
         object[]? redeclareOnPing = null;
+        string[]? fetching = null;
         var wedgeOnPing = false;
         var imageStepMs = 0;
         var ignoreCancel = false;
@@ -1933,6 +1944,9 @@ internal sealed record Args(
                     break;
                 case "--redeclare-on-ping" when i + 1 < args.Length:
                     redeclareOnPing = ParseCapabilities(args[++i]);
+                    break;
+                case "--fetching" when i + 1 < args.Length:
+                    fetching = args[++i].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
                     break;
                 case "--image-step-ms" when i + 1 < args.Length:
                     imageStepMs = int.Parse(args[++i]);
@@ -1999,7 +2013,8 @@ internal sealed record Args(
             speechChunkBytes,
             speechSeconds,
             speechRateShift,
-            speechNoAudio);
+            speechNoAudio,
+            fetching);
     }
 
     /// <summary>"transcribe:a,b;speak:c" → the capability list a ready frame carries.</summary>

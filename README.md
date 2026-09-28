@@ -171,6 +171,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 84 | bg-tts-v5 — a second `speak` engine, for Bulgarian (done) | `v3.49.0` |
 | 85 | `Node:OnDemand` — one GPU service at a time (done) | `v3.50.0` |
 | 86 | The hub routes to the node whose card is already warm (done) | `v3.51.0` |
+| 87 | `inferhub-node:all` — chat, speech and diffusion in one image, taking turns on one card (done) | `v3.52.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -531,6 +532,7 @@ small one and wonders where the audio went. All tags are under
 | `inferhub-node:tools` | ~6 GB | amd64 | The above, **plus speech**: Python, `faster-whisper` and `piper`, so `/v1/audio/transcriptions` and `/v1/audio/speech` work out of the box. |
 | `inferhub-node:diffusion` | ~12 GB | amd64 | **Text to image** (v3.14+) and **editing** (v3.18+): PyTorch, `diffusers`, `bitsandbytes` and seven recipes — SDXL, SD 1.5, FLUX.1-schnell, Qwen-Image, SD 3.5 Medium, SDXL-Turbo and [`qwen-360`](#360-panoramas-v317) — so `/v1/images/generations`, [`/edits` and `/variations`](#editing-a-picture-v318) work out of the box. **You need a card.** |
 | `inferhub-node:tts-bg` | — | amd64 | **Bulgarian speech** (v3.49+): PyTorch and NeMo's NanoCodec for [`bg-tts-v5`](https://huggingface.co/beleata74/bg-tts-v5), served on `/v1/audio/speech` as `bg-tts-v5-spk0` / `-spk1`. Does not stack on the others. **GPU, and the 2.9 GB checkpoint is placed by hand.** |
+| `inferhub-node:all` | ~11 GB | amd64 | **Everything on one card** (v3.52+): `:tools` and `:diffusion` in one node, with [on-demand](#a-card-that-is-also-your-desktop-gpu-v350) turned on, so chat, speech, images and video take turns on the card instead of fighting over it. For a box with **one card and no mesh**. **You need a card.** |
 
 Three rules of thumb that save the mistake each way:
 
@@ -542,7 +544,9 @@ Three rules of thumb that save the mistake each way:
   no Whisper and no Piper in it. A card running a diffusion pipeline has no room for a chat model
   beside it, so bundling one would ship a combination we would then have to tell you not to use.
   Want both? Run two containers and let the coordinator route `image` to one and `chat` to the
-  other — that is what capability routing is for.
+  other — that is what capability routing is for. **Unless you have one card:** two containers on
+  one card are two nodes, each sure the card is its own. That box wants **`:all`** (v3.52+), one node
+  whose services take turns.
 
 Whichever node image you choose, **mount a volume at `/data`**. Model weights, the node's stable id,
 tool scratch and any corpus live there; without it every `docker run` re-downloads gigabytes.
@@ -1071,6 +1075,7 @@ first log line says which one it got.
 | `inferhub-node:tools` | ~6 GB | amd64 | The same again, plus Python, `faster-whisper` and `piper` (v3.10+) |
 | `inferhub-node:diffusion` | ~12 GB | amd64 | The **plain** node plus PyTorch, `diffusers`, `bitsandbytes` and seven recipes (v3.14+). Does not stack — no Ollama inside |
 | `inferhub-node:tts-bg` | — | amd64 | The **plain** node plus PyTorch, `nemo_toolkit` and the `bg-tts-v5` worker (v3.49+). Does not stack; the checkpoint is not baked in |
+| `inferhub-node:all` | ~11 GB | amd64 | `:tools` + `:diffusion` in one node, with `Node:OnDemand` on (v3.52+). The only image that turns it on |
 
 The first three are **unchanged** by v3.10. The Python is ~1.5 GB and it is in a layer whether a
 flag is on or off, so a flag would grow every existing coordinator+node stack for a feature it does
@@ -1366,6 +1371,16 @@ as always warm, so a fleet without on-demand nodes routes exactly as it did. `/a
 node's `onDemand` state, the console shows `gpu <holder>` / `gpu free` / `gpu switching`, and
 `inferhub_node_gpu_holder{node,holder}` is on `/metrics`. The coordinator never tells a node to take
 or give back its card — that stays the node operator's decision. There is no new setting.
+
+**On a single card, the `:all` image is the easy way in (v3.52+).** It holds everything
+`:tools` and `:diffusion` hold (Ollama, Whisper, Piper, the reranker and every diffusion recipe) in
+one node, and it ships with `Node:OnDemand:Enabled=true`. It is the only image that turns this on.
+Do not run `:tools` and `:diffusion` side by side on one card: that is two nodes, and neither can
+see what the other has loaded.
+
+```
+docker compose -f deploy/docker/compose.all.yml up -d
+```
 
 ### Switching models swaps weights; it does not restart anything
 

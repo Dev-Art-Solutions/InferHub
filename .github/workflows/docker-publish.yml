@@ -147,6 +147,27 @@ jobs:
             extra-tags: type=raw,value=tts-bg,suffix=
             reclaim-disk: true
 
+          # The one-card image (phase 87): :tools and :diffusion in one container, with
+          # Node:OnDemand on. It exists because of phase 85. Two containers on one card are two
+          # GpuArbiters that cannot see each other, and one node with every service in it is the
+          # only way the turn-taking works. :tools and :diffusion above are unchanged; a mesh
+          # should still compose them.
+          #
+          # The largest artifact here, so it has node-diffusion's settings for node-diffusion's
+          # reasons: amd64 only, `cache: none`, `reclaim-disk: true`, and `latest=false` (read the
+          # node-ollama comment before touching that line). If it ever stops fitting on a runner,
+          # the named fallback is publishing this one tag from the GPU box, never dropping it.
+          - name: inferhub-node
+            scope: node-all
+            dockerfile: src/InferHub.Node/Dockerfile.all
+            platforms: linux/amd64
+            cache: none
+            flavor: |
+              suffix=-all
+              latest=false
+            extra-tags: type=raw,value=all,suffix=
+            reclaim-disk: true
+
     steps:
       - uses: actions/checkout@v4
 

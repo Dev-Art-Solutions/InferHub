@@ -946,7 +946,7 @@ the holder queue behind them, or a trickle of chat starves a video forever.
 Python process alive with its CUDA context — a few hundred MB the owner of a desktop card wants back.
 Capabilities are *kept* (unlike `SuspendAsync`): the next request starts a worker that re-reports and
 re-narrows exactly as at boot. The eager worker an open model set forces (the v3.10.0 deadlock fix) is
-still started, asked, and then stopped right after `StartAsync`. Model pulls (`AcquireToolAsync`) take
+still started, asked, and then stopped right after `StartAsync`, **unless it says it is still fetching** (v3.52, `ready.fetching`). Stopping it then killed the download, so an on-demand diffusion node on a fresh volume declared nothing, ever (found by phase 87; see `src/InferHub.Shared/CLAUDE.md`). It is kept and stopped when it re-declares with nothing left. Model pulls (`AcquireToolAsync`) take
 no GPU lease — a 24 GB download holding the card for half an hour would be the wrong trade.
 
 **D3 — Ollama is released by unloading only the models *this node* asked for.** The first cut
@@ -976,3 +976,9 @@ process is gone after the request, the capability is still declared, and the nex
 > `CoordinatorConnection` sends one coalesced out-of-band heartbeat (50 ms) so the hub is not an
 > interval behind. Solo `/api/status` reports the same `onDemand` object. The router half, and why it
 > is a preference and never a filter, is `src/InferHub.Coordinator/CLAUDE.md`'s phase-86 block.
+
+> **Phase 87 — the image that turns this on.** `inferhub-node:all` (`Dockerfile.all`) is `:tools` +
+> `:diffusion` in one node with `ENV Node__OnDemand__Enabled=true`. It is the only place the default
+> differs, and `OnDemandOptions.Enabled` itself stays `false`. It exists because two containers on
+> one card are two arbiters. The image decisions are in `deploy/CLAUDE.md`.
+> Running it on a fresh volume is what found the killed-fetch bug in D2 above.

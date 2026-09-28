@@ -431,6 +431,17 @@ subprocess, exactly as phase-41 D1 requires.
 >
 > `ToolRedeclarationTests` drives all of it through a real child process, including the guard on the
 > guard (a worker that never re-declares must not make the node re-report twice a minute forever).
+>
+> **v3.52 (phase 87) — `ready.fetching`, because phase 85 killed the fetch.** An on-demand node stops
+> a tool's workers the moment they answer at startup, and this background thread lives inside that
+> process. So on a fresh volume an on-demand diffusion node declared **no recipe, ever**. Found by
+> running the `:all` image, whose whole point is on-demand plus diffusion. The worker now lists what
+> it is still fetching on `ready`, at handshake and on every re-declaration (an empty list is sent
+> after a failure too, or a model that never lands would pin the process). `ReleaseWorkersAsync`
+> keeps such a worker and releases it when a re-declaration says the list is empty. Absent means
+> nothing is being fetched, so every older worker behaves as before. *Stated, not fixed:* proving an
+> **nf4** recipe loadable places modules on the card outside the arbiter, which is 85 D2's "pulls take
+> no lease" in a second place.
 
 ### Phase 47 (jobs, progress, cancel) — also load-bearing
 

@@ -1,11 +1,11 @@
 # deploy/ — agent context
 
-**Scope: `deploy/`, and the five Dockerfiles under `src/`.** What ships, what is inside each image,
+**Scope: `deploy/`, and the Dockerfiles under `src/`.** What ships, what is inside each image,
 and the one trap this repository has fallen into five separate times.
 
 > **Read the root `CLAUDE.md` first.**
 
-## The five images
+## The images
 
 | Image | Size | Arch | Inside |
 |---|---:|---|---|
@@ -14,6 +14,8 @@ and the one trap this repository has fallen into five separate times.
 | `inferhub-node:ollama` | ~4 GB | amd64 | + Ollama, supervised as the node's own child |
 | `inferhub-node:tools` | ~6 GB | amd64 | + Python, `faster-whisper`, `piper` |
 | `inferhub-node:diffusion` | ~12 GB | amd64 | + PyTorch, `diffusers`, `bitsandbytes`, seven recipes |
+| `inferhub-node:tts-bg` | ~9 GB | amd64 | + PyTorch, `nemo_toolkit`, for `bg-tts-v5` (84). Stacks on nothing |
+| `inferhub-node:all` | ~11 GB | amd64 | `:tools` + `:diffusion` in one node, `Node:OnDemand` on (87) |
 
 **`:diffusion` deliberately does not stack** — it is built from the *plain* node, with no Ollama, no
 Whisper and no Piper in it (46 D9). Stacking reaches ~15 GB and every pull pays for it, and a card
@@ -21,6 +23,26 @@ running a diffusion pipeline has no room for a chat model beside it, so bundling
 combination the docs would then have to tell people not to use. **The mesh is the composition
 mechanism**: run `:diffusion` on the card and `:ollama` beside it, and capability routing sends
 `image` to one and `chat` to the other.
+
+**Phase 87 amended that, and did not reverse it.** D9's second reason, "no room for a chat model
+beside it", stopped holding at phase 85: with `Node:OnDemand` on, the services take turns on the card
+and the node's `GpuArbiter` enforces the turns. Two containers on one card cannot do that, because
+that means two arbiters, each sure it owns the card. So the box with **one card and no mesh** gets
+`:all`, and for everyone else the mesh is still the answer. `:diffusion` and `:tools` are unchanged.
+
+- **87 D1 — `:all` sets `ENV Node__OnDemand__Enabled=true`; nothing else does.** The node's default
+  stays `false`. With on-demand off, `:all` *is* the combination D9 refused, so the image is not that
+  by default. An operator whose card holds everything at once can turn it off. *Rejected:* refusing
+  startup with it off. The node cannot tell which image it is in, and a 48 GB card is a real reason.
+- **87 D2 — one venv, one `pip install -r tools -r diffusion`.** `requirements-tools.txt` pins no torch
+  but `sentence-transformers` pulls one, so two venvs would ship PyTorch twice. Resolving them
+  together makes the diffusion pins constraints on the tools side, and every shipped manifest already
+  names `/opt/inferhub/venv/bin/python`. **Both parents' build-time import assertions run in `:all`**.
+  *Rejected:* two venvs plus a second, rewritten copy of every manifest.
+- **87 D3 — a hand-copy, pinned by `BundledNodeTests`.** `:all` cannot `FROM` the published `:tools`
+  (the matrix builds in parallel, so it would get the *previous* release's). The tests pin the same
+  Ollama version + sha, every import either parent asserts, and OnDemand on in `:all` and nowhere
+  else.
 
 ## The permissions trap, five times found and seven paths headed off
 
@@ -105,4 +127,5 @@ hours; the honest question is whether the manifest is on GHCR.
 
 - What runs inside them: `src/InferHub.Coordinator/CLAUDE.md`, `src/InferHub.Node/CLAUDE.md`
 - The workers in `:tools` and `:diffusion`: `python/CLAUDE.md`
-- The bundled-image decisions in full: `src/InferHub.Node/CLAUDE.md` (phase 39, 42 D3, 46 D9)
+- The bundled-image decisions in full: `src/InferHub.Node/CLAUDE.md` (phase 39, 42 D3, 46 D9); 87's are above
+- What `:all` turns on: `src/InferHub.Node/CLAUDE.md`'s phase-85 block (`Node:OnDemand`)

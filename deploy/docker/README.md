@@ -114,6 +114,12 @@ it. `:gpu` is an alias for the same image. See
 [A node and its Ollama in one container](../../README.md#a-node-and-its-ollama-in-one-container-v37)
 and `compose.ollama.yml` beside this file.
 
+**One card, and you want chat, speech, images and video on it (v3.52+):** use `:all` and
+`compose.all.yml`. It is `:tools` and `:diffusion` in one node with `Node:OnDemand` on, so the
+services take turns on the card. Running `compose.tools.yml` and `compose.diffusion.yml` on the same
+card instead gives you two nodes, each sure the whole card is its own. See
+[A card that is also your desktop GPU](../../README.md#a-card-that-is-also-your-desktop-gpu-v350).
+
 The shape most fleets land on is a containerized coordinator on a small always-on box plus nodes
 on the GPU machines that dial out to it — native, or bundled, as above. Nothing about that needs
 an inbound firewall rule on the node side:

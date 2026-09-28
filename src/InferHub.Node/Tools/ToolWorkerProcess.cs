@@ -84,6 +84,12 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
     public int? ReportedVramTotalMiB { get; private set; }
 
     /// <summary>
+    /// What the worker last said it is fetching in the background (v3.52, <c>ready.fetching</c>).
+    /// Empty when it said nothing, which is every worker that predates the field.
+    /// </summary>
+    public IReadOnlyList<string> Fetching { get; private set; } = [];
+
+    /// <summary>
     /// Whether this worker has already been told it is idle in the current idle period. Cleared the
     /// moment it serves anything, so a worker that goes quiet again is hinted again — and hinted
     /// <em>once</em> rather than every maintenance tick, which would be a frame every 30 seconds
@@ -112,6 +118,8 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
 
     private void ApplyRedeclaration(ToolFrame frame)
     {
+        Fetching = frame.Fetching ?? [];
+
         if (frame.Capabilities is null)
         {
             return;
@@ -561,6 +569,7 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
 
             ReportedCapabilities = frame.Capabilities;
             ReportedVramTotalMiB = frame.VramTotalMiB;
+            Fetching = frame.Fetching ?? [];
             LastUsed = DateTimeOffset.UtcNow;
             return;
         }

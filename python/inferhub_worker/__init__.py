@@ -214,6 +214,7 @@ class Worker:
         stdout: Any = None,
         on_idle: Callable[[], None] | None = None,
         vram_total_mib: int | None = None,
+        fetching: Sequence[str] | None = None,
     ) -> None:
         # Reported at handshake. The node treats it as a NARROWING of the manifest: you may say
         # you found only one of the two models the manifest names, and you may never add one.
@@ -251,7 +252,13 @@ class Worker:
         # card or on a box where somebody else's process already holds half of it.
         self._vram_total_mib = vram_total_mib
 
-    def redeclare(self, capabilities: Sequence[dict[str, Any]]) -> None:
+        # v3.52. The models this process is downloading on a background thread. Reported on
+        # `ready`, so a node that stops idle workers to free the GPU (Node:OnDemand) keeps this one
+        # until the list is empty; stopping it would kill the download. Re-declare with
+        # `fetching=[]` when the last one ends, whether it landed or failed.
+        self.fetching = list(fetching or [])
+
+    def redeclare(self, capabilities: Sequence[dict[str, Any]], fetching: Sequence[str] | None = None) -> None:
         """
         Report a NEW capability set, at any time (v3.14.1).
 
@@ -265,7 +272,18 @@ class Worker:
         report a SUBSET of what the manifest granted. Widening is refused there, not trusted here.
         """
         self.capabilities = list(capabilities)
-        self._send({"type": "ready", "protocol": PROTOCOL_VERSION, "capabilities": self.capabilities})
+
+        if fetching is not None:
+            self.fetching = list(fetching)
+
+        self._send(
+            {
+                "type": "ready",
+                "protocol": PROTOCOL_VERSION,
+                "capabilities": self.capabilities,
+                **({"fetching": self.fetching} if self.fetching else {}),
+            }
+        )
 
     def run(self, handler: Handler) -> None:
         # SIGTERM is how a node stops a worker it has decided to retire. Exiting cleanly here is
@@ -316,6 +334,7 @@ class Worker:
                         "protocol": PROTOCOL_VERSION,
                         **({"capabilities": self.capabilities} if self.capabilities else {}),
                         **({"vramTotalMiB": self._vram_total_mib} if self._vram_total_mib else {}),
+                        **({"fetching": self.fetching} if self.fetching else {}),
                     }
                 )
             elif kind == "ping":
