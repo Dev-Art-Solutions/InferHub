@@ -248,7 +248,8 @@ public sealed record ImageGenerationRequest(
     int? Steps,
     double? Guidance,
     long? Seed,
-    string? SeamRepair = null) : IImageRequest
+    string? SeamRepair = null,
+    string? Reproject = null) : IImageRequest
 {
     public string Capability => Contracts.CapabilityKinds.Image;
 
@@ -406,6 +407,12 @@ public sealed record ImageGenerationRequest(
             return null;
         }
 
+        if (!ImageExtensions.TryReproject(header, out var reproject, out error))
+        {
+            errorParam = ImageExtensions.Reproject;
+            return null;
+        }
+
         return new ImageGenerationRequest(
             model!.Trim(),
             prompt!,
@@ -415,7 +422,8 @@ public sealed record ImageGenerationRequest(
             steps,
             guidance,
             seed,
-            seamRepair);
+            seamRepair,
+            reproject);
     }
 
     /// <summary>
@@ -440,7 +448,10 @@ public sealed record ImageGenerationRequest(
             // Absent unless somebody asked, so a worker that never heard of phase 55 receives the
             // payload it received in v3.22 — and one that has heard of it can tell "no repair" from
             // "this hub does not know about repair" the only way that matters: neither spends a step.
-            seam_repair = SeamRepair
+            seam_repair = SeamRepair,
+
+            // Phase 88, and absent unless somebody asked, for the same reason as the line above.
+            reproject = Reproject
         },
         Json);
 
@@ -556,6 +567,50 @@ public static class ImageExtensions
         if (!SeamRepairModes.IsMechanism(normalised))
         {
             error = SeamRepairModes.Refusal(raw);
+            return false;
+        }
+
+        value = normalised;
+        return true;
+    }
+
+    /// <summary>
+    /// Return this panorama cut into a cubemap (phase 88, D1). The one value is
+    /// <see cref="ImageProjections.Cubemap"/>.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="SeamRepair"/>'s shape: absent and <c>off</c> are the same request and neither puts a
+    /// field in the worker's payload, and an unknown value is a <c>400</c> here, naming the one that
+    /// exists. A flat recipe is refused by the worker, because only the worker knows what a recipe
+    /// renders (46 D6).
+    /// </remarks>
+    public const string Reproject = "X-InferHub-Image-Reproject";
+
+    /// <summary>Parses <see cref="Reproject"/>. Null when absent or explicitly <c>off</c>.</summary>
+    internal static bool TryReproject(Func<string, string?> header, out string? value, out string error)
+    {
+        value = null;
+        error = string.Empty;
+
+        var raw = header(Reproject);
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return true;
+        }
+
+        var normalised = raw.Trim().ToLowerInvariant();
+
+        if (normalised == "off")
+        {
+            return true;
+        }
+
+        if (normalised != ImageProjections.Cubemap)
+        {
+            error = $"{Reproject}: '{raw}' is not a reprojection. Use '{ImageProjections.Cubemap}' " +
+                    "(six square faces in one strip, +X -X +Y -Y +Z -Z, for an equirectangular recipe) " +
+                    "or 'off'.";
             return false;
         }
 

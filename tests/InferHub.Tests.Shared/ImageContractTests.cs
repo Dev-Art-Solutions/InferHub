@@ -551,6 +551,96 @@ public class ImageContractTests
         }
     }
 
+    // ---- phase 88: cubemap re-projection ---------------------------------------------------------
+
+    [Theory]
+    [InlineData("cubemap")]
+    [InlineData("CubeMap")]
+    [InlineData(" cubemap ")]
+    public void AReprojectHeaderReachesTheWorkerPayloadNormalised(string header)
+    {
+        var request = Request(reproject: header);
+
+        Assert.Equal(ImageProjections.Cubemap, request.Reproject);
+
+        using var payload = JsonDocument.Parse(request.ToToolPayload());
+        Assert.Equal("cubemap", payload.RootElement.GetProperty("reproject").GetString());
+    }
+
+    /// <summary>
+    /// D1, the claim the release makes: no header, or <c>off</c>, is the v3.52 payload field for field.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("off")]
+    [InlineData("  ")]
+    public void NoReprojectionAskedForLeavesThePayloadExactlyAsItWas(string? header)
+    {
+        var request = Request(reproject: header);
+
+        Assert.Null(request.Reproject);
+        Assert.Equal(Request().ToToolPayload(), request.ToToolPayload());
+
+        using var payload = JsonDocument.Parse(request.ToToolPayload());
+        Assert.False(payload.RootElement.TryGetProperty("reproject", out _));
+    }
+
+    [Fact]
+    public void AnUnknownReprojectionIsRefusedNamingTheOneThatExists()
+    {
+        var request = ImageGenerationRequest.TryParse(
+            """{"model":"qwen-360","prompt":"a lighthouse"}""",
+            name => name == ImageExtensions.Reproject ? "cross" : null,
+            ImageLimits.Default,
+            out var error,
+            out var param);
+
+        Assert.Null(request);
+        Assert.Contains("'cross' is not a reprojection", error);
+        Assert.Contains("'cubemap'", error);
+        Assert.Equal(ImageExtensions.Reproject, param);
+    }
+
+    [Fact]
+    public void AnEditParsesTheReprojectHeaderThroughTheSameParser()
+    {
+        using var payload = JsonDocument.Parse(
+            Edit(headers: (ImageExtensions.Reproject, "cubemap")).ToToolPayload());
+
+        Assert.Equal("cubemap", payload.RootElement.GetProperty("reproject").GetString());
+
+        using var plain = JsonDocument.Parse(Edit().ToToolPayload());
+        Assert.False(plain.RootElement.TryGetProperty("reproject", out _));
+    }
+
+    /// <summary>
+    /// D3: <c>cubemap</c> needs no C# beyond the constant — <see cref="ImageProjections.Normalise"/>
+    /// keeps it (49 D4), the envelope carries it, and <c>size</c> stays the render's, which is what
+    /// the ledger meters.
+    /// </summary>
+    [Fact]
+    public void ACubemapResultKeepsTheRendersSizeAndSaysCubemap()
+    {
+        var result = ToolResult.Succeeded(
+            Guid.NewGuid(),
+            """{"steps":25,"projection":"cubemap","images":[{"width":2048,"height":1024,"steps":25,"seed":5,"projection":"cubemap","seamDelta":0.02}]}""",
+            [new ToolAttachment("image-0.png", "image/png", [1, 2, 3])]);
+
+        var images = ImageResults.Collect(result);
+        var image = Assert.Single(images);
+
+        Assert.Equal(ImageProjections.Cubemap, image.Projection);
+        Assert.Equal(new ImageSize(2048, 1024), image.Size);
+        Assert.Equal(2048d * 1024 * 25 / 1e6, ImageRenderer.Units(images), 6);
+
+        using var envelope = JsonDocument.Parse(ImageRenderer.Envelope(images, ImageJobSummary.None, 0));
+        var item = Assert.Single(envelope.RootElement.GetProperty("data").EnumerateArray());
+
+        Assert.Equal("cubemap", item.GetProperty("projection").GetString());
+        Assert.Equal("2048x1024", item.GetProperty("size").GetString());
+        Assert.Equal(["px", "nx", "py", "ny", "pz", "nz"], ImageProjections.CubemapFaceOrder);
+    }
+
     private static ImageEditRequest Edit(
         string operation = "edit",
         string? prompt = "a tall window",
@@ -575,13 +665,18 @@ public class ImageContractTests
             out _) ?? throw new InvalidOperationException(error);
     }
 
-    private static ImageGenerationRequest Request(string? size = null, int? steps = null, string? seamRepair = null)
+    private static ImageGenerationRequest Request(
+        string? size = null,
+        int? steps = null,
+        string? seamRepair = null,
+        string? reproject = null)
         => ImageGenerationRequest.TryParse(
             $$"""{"model":"sdxl","prompt":"a cat"{{(size is null ? "" : $",\"size\":\"{size}\"")}}}""",
             name => name switch
             {
                 ImageGenerationRequest.StepsHeader => steps?.ToString(),
                 ImageExtensions.SeamRepair => seamRepair,
+                ImageExtensions.Reproject => reproject,
                 _ => null
             },
             ImageLimits.Default,

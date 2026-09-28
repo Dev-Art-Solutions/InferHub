@@ -853,6 +853,34 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, 
         askedRepair = string.Empty;
     }
 
+    // Phase 88. The same refusals the real worker makes, before a step, so the mesh can prove the
+    // header travels and the flat-recipe refusal reaches the caller. The strip itself is a plain
+    // raster of the right shape: the arithmetic is the real worker's, and CubemapReprojectionTests
+    // runs that.
+    var askedReproject = payload.ValueKind is JsonValueKind.Object && payload.TryGetProperty("reproject", out var rp)
+        ? (rp.GetString() ?? string.Empty).Trim().ToLowerInvariant()
+        : string.Empty;
+
+    if (askedReproject is "off")
+    {
+        askedReproject = string.Empty;
+    }
+
+    if (askedReproject.Length > 0)
+    {
+        var refusal = askedReproject != "cubemap"
+            ? $"reprojection '{askedReproject}' is not one this worker knows. Use 'cubemap' (six square faces in one strip, +X -X +Y -Y +Z -Z)."
+            : !equirectangular
+                ? "this recipe renders flat images, which are not 360-degree panoramas and therefore cannot be cut into a cubemap."
+                : null;
+
+        if (refusal is not null)
+        {
+            Send(new { type = "error", id, code = "invalid_request", message = refusal });
+            return;
+        }
+    }
+
     // What actually runs, and therefore what is reported and metered (phase-50 D3): an
     // image-to-image pass enters the schedule at `int(steps × strength)`, so 30 steps at 0.6 is 18.
     var reportedSteps = edited is null ? steps : Math.Max(1, (int)(steps * edited.Strength));
@@ -992,7 +1020,21 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, 
             deltaBefore = Math.Round(before, 5);
         }
 
-        await File.WriteAllBytesAsync(path, Png.Create(width, height, arguments.ImagePadBytes, raster));
+        // Phase 88: after the seam, as the real worker does (D4). `width`/`height` stay the render's,
+        // because that is what is metered (D3); only the bytes and the projection change.
+        var imageProjection = projection;
+
+        if (askedReproject.Length > 0)
+        {
+            var face = width / 4;
+            await File.WriteAllBytesAsync(path, Png.Create(6 * face, face, arguments.ImagePadBytes, Png.Raster(6 * face, face, true)));
+            imageProjection = "cubemap";
+        }
+        else
+        {
+            await File.WriteAllBytesAsync(path, Png.Create(width, height, arguments.ImagePadBytes, raster));
+        }
+
         files.Add(new { name, mediaType = "image/png", path });
 
         delta = Math.Round(delta, 5);
@@ -1010,7 +1052,7 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, 
             height,
             steps = reportedSteps,
             seed = seed + i,
-            projection,
+            projection = imageProjection,
             seamDelta = delta,
             seamDeltaBefore = deltaBefore,
             seamRepair = askedRepair.Length == 0 ? null : askedRepair
@@ -1025,7 +1067,7 @@ async Task HandleImageAsync(string? id, JsonElement payload, JsonElement frame, 
         {
             model = frame.TryGetProperty("model", out var m) ? m.GetString() : null,
             steps = reportedSteps,
-            projection,
+            projection = askedReproject.Length > 0 ? "cubemap" : projection,
             promptAugmented,
             trigger = equirectangular ? Trigger : null,
             warnings,

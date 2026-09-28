@@ -654,3 +654,57 @@ the two hand-run syntheses that first surfaced the D3 bugs. What was *not* estab
 behaviour for D4/D5 (this session had no Linux box, phase-58's caveat repeated), CPU-path timing (the
 `device()` fallback is untested, only read), and the encoded formats (`mp3`/`opus`/`flac` share
 `piper_worker.py`'s `ffmpeg` subprocess shape verbatim and were not separately re-verified here).
+
+### Phase 88 (a panorama can come back as a cubemap, because somebody asked)
+
+**D1 — `X-InferHub-Image-Reproject: cubemap` asks for it, and absent or `off` is v3.52 byte for
+byte.** 55 D1's shape without the ceiling: the edge refuses an unknown value, neither absent nor
+`off` puts `reproject` in the payload, and `resolve_reproject` refuses a flat recipe **before a step
+runs** ("cannot be cut into a cubemap"). Parsed on the edit route too, for 55's recorded reason:
+`run_batch` is the same loop. **No operator key.** `Tools:Image:SeamRepair` exists because `diffuse`
+spends steps that land on a bill. This spends about a second of CPU, and a ceiling that guards
+nothing is only a key somebody has to learn. *Rejected:* `response_format: "cubemap"`. That is
+OpenAI's field, it means `b64_json` vs `url`, and a typed SDK refuses the value.
+
+**D2 — One PNG, a horizontal strip, faces `px nx py ny pz nz` (`CUBEMAP_FACES`), each `width / 4`.**
+The order is `GL_TEXTURE_CUBE_MAP_POSITIVE_X + 0..5`, the order three.js, Babylon, KTX and DDS
+share. `cubemap_directions` is **the OpenGL table inverted** (GL 4.6 §8.13, table 8.19): each face's
+`(sc, tc)` becomes a direction, with the PNG's first row as `t = 0`. The longitude origin is
+three.js' `equirectUv` (`u = atan2(z, x) / 2π + 0.5`), so the panorama's centre faces +X and its
+join sits on −X's centre column. `width / 4` keeps the equator's angular resolution. **Considered
+and rejected:** six attachments per image. `n=4` would return 24 files, and every surface that
+pairs attachment `i` with image `i` would need a second meaning for an index. The cross and grid
+layouts were rejected too, because one named layout is a contract and a layout parameter is a test
+matrix across every viewer.
+
+**D3 — `width`/`height` stay the render's, and `projection: "cubemap"` says the bytes are a strip.**
+`ImageRenderer.Units` meters `size × steps`, and the steps ran on the render. Reporting the strip's
+geometry would bill a 2048×1024 render 25% less because of a header that changed nothing on the
+card. `ImageProjections.Normalise` already keeps an unrecognised value (49 D4), so `cubemap` reaches
+the response, the job document and `X-InferHub-Image-Projection` **with no C# change beyond the
+constant**. *Rejected:* a `delivered_size` field. That is four record members to carry a number
+`projection` already fixes (`6·w/4 × w/4`).
+
+**D4 — The seam first, then the cube.** Render, measure, repair if asked, then cut. `seam_delta` and
+`seam_repair` describe the panorama the faces were cut from, and `blend` + `cubemap` is the useful
+pair. *Rejected:* measuring on the cube. It has twelve edges and no join, and an old field name
+would carry a new meaning.
+
+**D5 — A cut that fails keeps the panorama, declares it `equirectangular`, and warns `reproject`.**
+`equirect_to_cubemap` returns `None` rather than raising, as `seam_delta` does. The per-image
+projection is always the truth about the bytes, and `batch_projection` claims `cubemap` at request
+level only when every image is one. *Rejected:* failing the job, which would throw away two minutes
+of GPU over a numpy error on the last line (49 D5).
+
+**Tested by running the shipped functions, not a C# copy.** `CubemapReprojectionTests` (Node)
+imports this file with `importlib` under a numpy + Pillow interpreter (`PythonNumpyFact`,
+`INFERHUB_TEST_PYTHON` overrides the probe; CI installs both so it runs there) and feeds it a
+**direction-coded panorama**: every pixel's colour is its own view direction, so a cube pixel decodes
+back to where it was sampled from. The tests check each face centre, where each face's top and right
+edges point per the GL table, and the join on −X only. A mirrored +X face fails exactly one of them,
+which was checked by mutation before the test was trusted. The echo worker returns a plain
+strip-shaped raster, so the mesh tests cover the route and never the arithmetic.
+
+> **What was *not* established:** a real `qwen-360` render cut on a card, and a strip opened in a
+> real engine or viewer. The orientation is pinned to the GL table, not checked by eye. The console's
+> 360° viewer shows a `cubemap` job flat, with its "not a panorama" note, which is accurate for a strip.

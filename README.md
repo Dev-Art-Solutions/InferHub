@@ -172,6 +172,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 85 | `Node:OnDemand` — one GPU service at a time (done) | `v3.50.0` |
 | 86 | The hub routes to the node whose card is already warm (done) | `v3.51.0` |
 | 87 | `inferhub-node:all` — chat, speech and diffusion in one image, taking turns on one card (done) | `v3.52.0` |
+| 88 | A 360° panorama back as a six-face cubemap, asked for per request (done) | `v3.53.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -1565,6 +1566,29 @@ original image, the mechanism, and two equal numbers, because a pass that quietl
 worse is the one outcome nobody would ever go looking for. `seam_delta` is always the image you were
 handed; `seam_delta_before` is what it measured first. On the content route the same three facts
 arrive as `X-InferHub-Image-Seam-Repair`, `-Seam-Delta` and `-Seam-Delta-Before`.
+
+**Since v3.53 a panorama can come back as a cubemap**, which is what a game engine, three.js'
+`CubeTextureLoader` or a KTX/DDS cube texture wants instead of a 2:1 sphere:
+
+```bash
+curl http://localhost:5080/v1/images/generations   -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json'   -H 'X-InferHub-Image-Reproject: cubemap'   -d '{"model":"qwen-360","prompt":"a lighthouse at dusk","size":"2048x1024"}'
+
+# → 200  "projection": "cubemap", "size": "2048x1024" — and the PNG is 3072x512
+```
+
+- **One PNG, six square faces in a row, left to right `+X −X +Y −Y +Z −Z`** — the OpenGL cube-map
+  order, which three.js, Babylon, KTX and DDS share — each `width / 4` on a side, oriented as the
+  OpenGL cube-map table defines it. The panorama's centre column faces +X (three.js' own
+  equirectangular origin), so its join lands on the vertical centre line of −X.
+- **`size` stays the render's.** The steps ran on the 2048×1024 render and that is what you are
+  billed for. `"projection": "cubemap"` is what tells you the bytes are a `6·(w/4) × (w/4)` strip.
+- **The seam comes first.** `seam_delta` and a repair describe the panorama the faces were cut from,
+  so `X-InferHub-Image-Seam-Repair: blend` plus `cubemap` closes the join and then cuts the cube.
+- It is about a second of CPU at the largest size, no VRAM and no steps, so there is no operator
+  key: nothing is spent that needs a ceiling. A flat recipe is refused, since a flat picture is not
+  a sphere, and an unknown value is a `400` naming `cubemap`. If the cut itself fails, you get the
+  panorama back declared `equirectangular` with a `reproject` warning, so a two-minute render is
+  never thrown away and the response still says what the bytes are.
 
 **Where the projection turns up:** in the response body per image, on the job document
 (`GET /api/images/jobs/{id}`), and as `X-InferHub-Image-Projection` on the content route — which is

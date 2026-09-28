@@ -32,6 +32,33 @@ public static class ImageProjections
     public const string Equirectangular = "equirectangular";
 
     /// <summary>
+    /// An equirectangular render cut into six square faces, asked for with
+    /// <see cref="ImageExtensions.Reproject"/> (phase 88).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>One PNG, a horizontal strip, faces left to right in <see cref="CubemapFaceOrder"/></b>, each
+    /// oriented as the OpenGL cube-map table (GL 4.6 §8.13, table 8.19) defines it. The panorama's
+    /// centre column faces +X, which is three.js' <c>equirectUv</c> origin, so its join lands on the
+    /// vertical centre line of −X.
+    /// </para>
+    /// <para>
+    /// <b>The image's <c>size</c> stays the render's</b>, <c>w×h</c> with <c>w = 2h</c>, and the PNG is
+    /// <c>6·(w/4) × (w/4)</c>. That is deliberate (D3): <c>size × steps</c> is what the ledger meters,
+    /// the steps ran on the render, and a strip reported as its own geometry would bill the same
+    /// render 25% less because of a header that changed nothing on the card. This value is what
+    /// tells a client the bytes are a strip, and the arithmetic above is all it needs.
+    /// </para>
+    /// </remarks>
+    public const string Cubemap = "cubemap";
+
+    /// <summary>
+    /// The faces of a <see cref="Cubemap"/> strip, left to right: the OpenGL order
+    /// (<c>GL_TEXTURE_CUBE_MAP_POSITIVE_X</c> + 0..5), which three.js, Babylon, KTX and DDS share.
+    /// </summary>
+    public static readonly IReadOnlyList<string> CubemapFaceOrder = ["px", "nx", "py", "ny", "pz", "nz"];
+
+    /// <summary>
     /// On <c>GET /api/images/jobs/{id}/content/{index}</c>, beside the media type.
     /// </summary>
     /// <remarks>

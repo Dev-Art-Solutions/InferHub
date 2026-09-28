@@ -606,6 +606,14 @@ already knew and gets a true answer.
 > honest statement of rule 7 for it is "held for the dispatch and dropped", without the temp-file
 > clause.
 
+### Phase 88 (cubemap re-projection) — the pointer
+
+The decisions are in `python/CLAUDE.md` (phase 88, D1–D5), for phase 55's reason. What lives here is
+`ImageProjections.Cubemap` + `CubemapFaceOrder` and `ImageExtensions.Reproject`, parsed beside
+`SeamRepair` on both request records. **Nothing else in this library changed, on purpose (D3):**
+`Normalise` already keeps a projection it does not know, and `size` stays the render's, so the
+ledger's `size × steps` is still the work the card did.
+
 ### Phase 56 (durable image jobs) — also load-bearing
 
 **D1 — `Images:Jobs:Persistence=file` is rule 4's fourth recorded exception, and the argument lives

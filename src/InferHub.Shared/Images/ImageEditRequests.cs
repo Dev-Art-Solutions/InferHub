@@ -66,7 +66,8 @@ public sealed record ImageEditRequest(
     string MaskConvention,
     ToolAttachment Image,
     ToolAttachment? Mask,
-    string? SeamRepair = null) : IImageRequest
+    string? SeamRepair = null,
+    string? Reproject = null) : IImageRequest
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
@@ -277,6 +278,13 @@ public sealed record ImageEditRequest(
             return null;
         }
 
+        // Phase 88, on this route for the reason the seam header above is: the same loop.
+        if (!ImageExtensions.TryReproject(header, out var reproject, out error))
+        {
+            errorParam = ImageExtensions.Reproject;
+            return null;
+        }
+
         return new ImageEditRequest(
             operation,
             model!.Trim(),
@@ -291,7 +299,8 @@ public sealed record ImageEditRequest(
             convention,
             image,
             mask,
-            seamRepair);
+            seamRepair,
+            reproject);
     }
 
     /// <summary>
@@ -319,7 +328,8 @@ public sealed record ImageEditRequest(
             strength = Strength,
             has_mask = Mask is not null,
             mask_convention = MaskConvention,
-            seam_repair = SeamRepair
+            seam_repair = SeamRepair,
+            reproject = Reproject
         },
         Json);
 

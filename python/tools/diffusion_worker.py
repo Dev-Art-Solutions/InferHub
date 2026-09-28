@@ -95,6 +95,11 @@ default and no threshold ever triggers a repair — a number that decides to spe
 the same overriding, wearing a helpful expression. A repair that did not lower the number is
 DISCARDED and both numbers are reported.
 
+A PANORAMA CAN COME BACK AS A CUBEMAP, AND ONLY BECAUSE SOMEBODY ASKED (phase 88). ``reproject:
+"cubemap"`` cuts the finished panorama, after the seam, into six square faces in one strip in the
+OpenGL order +X -X +Y -Y +Z -Z. The reported width and height stay the render's, because that is
+what was metered, and ``projection: "cubemap"`` is what says the bytes are a strip.
+
 NOTHING IS RETAINED. Images are written into the node's per-request scratch directory and named
 back; the node deletes the whole directory in a ``finally``. The prompt is never logged, at any
 level, by anything here — it is content in exactly the sense design rule 7 means. The recipe's
@@ -1452,6 +1457,158 @@ def repair_seam(image, mechanism: str | None, run) -> tuple[Any, dict[str, Any]]
     }
 
 
+# ---- cubemap re-projection (phase 88) ----------------------------------------------------------
+
+REPROJECT_OFF = "off"
+REPROJECT_CUBEMAP = "cubemap"
+
+# What a re-projected image declares itself to be. ImageProjections.Cubemap on the C# side.
+CUBEMAP = "cubemap"
+
+# The OpenGL cube-map face order (GL_TEXTURE_CUBE_MAP_POSITIVE_X + 0..5), which is also the order
+# three.js, Babylon, KTX and DDS use. Left to right in the strip.
+CUBEMAP_FACES = ("px", "nx", "py", "ny", "pz", "nz")
+
+
+def resolve_reproject(recipe: dict[str, Any], payload: dict[str, Any]) -> str | None:
+    """
+    Whether this request asked for a cubemap, refused before a single step runs (phase-88 D1).
+
+    The edge already refuses an unknown value, so the first refusal is for a caller that reached
+    this worker some other way. The second is the one that matters: a flat picture is not a sphere,
+    and resampling one onto a cube produces something that looks like a cubemap and is not.
+    """
+    asked = str(payload.get("reproject") or "").strip().lower()
+
+    if not asked or asked == REPROJECT_OFF:
+        return None
+
+    if asked != REPROJECT_CUBEMAP:
+        raise ToolError(
+            f"reprojection '{asked}' is not one this worker knows. Use '{REPROJECT_CUBEMAP}' "
+            "(six square faces in one strip, +X -X +Y -Y +Z -Z).",
+            ERROR_INVALID_REQUEST,
+        )
+
+    if projection_of(recipe) != EQUIRECTANGULAR:
+        raise ToolError(
+            f"'{recipe['id']}' renders {projection_of(recipe)} images, which are not 360-degree "
+            "panoramas and therefore cannot be cut into a cubemap.",
+            ERROR_INVALID_REQUEST,
+        )
+
+    return asked
+
+
+def cubemap_directions(edge: int):
+    """
+    The unit view direction through the centre of every pixel of every face, shape (6, edge, edge, 3).
+
+    Straight from the OpenGL cube-map table (GL 4.6 section 8.13, table 8.19), inverted: that table
+    maps a direction to (face, sc, tc), and this maps each face's (sc, tc) back to the direction.
+    ``sc`` runs left to right across a face and ``tc`` top to bottom, both -1..1, and the first row
+    of the PNG is ``t = 0``, which is how every cube-map loader uploads it. The table is the one place
+    the convention is written down rather than implied by some viewer's behaviour (phase-88 D2).
+    """
+    import numpy
+
+    centres = (numpy.arange(edge, dtype=numpy.float32) + 0.5) / edge * 2.0 - 1.0
+    sc, tc = numpy.meshgrid(centres, centres)
+    one = numpy.ones_like(sc)
+
+    faces = [
+        (one, -tc, -sc),    # +X: sc = -rz, tc = -ry
+        (-one, -tc, sc),    # -X: sc = +rz, tc = -ry
+        (sc, one, tc),      # +Y: sc = +rx, tc = +rz
+        (sc, -one, -tc),    # -Y: sc = +rx, tc = -rz
+        (sc, -tc, one),     # +Z: sc = +rx, tc = -ry
+        (-sc, -tc, -one),   # -Z: sc = -rx, tc = -ry
+    ]
+
+    directions = numpy.stack([numpy.stack(face, axis=-1) for face in faces])
+
+    return directions / numpy.linalg.norm(directions, axis=-1, keepdims=True)
+
+
+def equirect_to_cubemap(image):
+    """
+    Cut an equirectangular panorama into six square faces in one horizontal strip (phase-88 D2).
+
+    Each face is ``width / 4`` on a side, which keeps the equator's angular resolution: the panorama
+    has ``width`` pixels per 360 degrees and a face spans 90. The longitude origin is three.js'
+    ``equirectUv`` (``u = atan2(z, x) / 2pi + 0.5``), so the panorama's centre column faces +X and
+    its join lands exactly on the vertical centre line of -X. Bilinear, wrapping across the join
+    horizontally and clamping at the poles vertically.
+
+    numpy on an array the VAE already produced: about a second of CPU at 2048x1024 (0.7-1.4 s measured
+    on a busy box, beside a render measured in minutes), no VRAM, no steps. Returns None rather
+    than raising if anything about the input is unexpected, and the caller keeps the panorama and
+    says so (D5). Failing a two-minute job on its last line would be 49 D5's mistake.
+    """
+    try:
+        import numpy
+        from PIL import Image
+
+        pixels = numpy.asarray(image.convert("RGB"), dtype=numpy.float32)
+
+        if pixels.ndim != 3:
+            return None
+
+        height, width = pixels.shape[0], pixels.shape[1]
+        edge = width // 4
+
+        if edge < 1 or width != height * 2:
+            return None
+
+        directions = cubemap_directions(edge)
+        x, y, z = directions[..., 0], directions[..., 1], directions[..., 2]
+
+        # Continuous pixel coordinates, pixel centres at integers.
+        u = (numpy.arctan2(z, x) / (2.0 * numpy.pi) + 0.5) * width - 0.5
+        v = (0.5 - numpy.arcsin(numpy.clip(y, -1.0, 1.0)) / numpy.pi) * height - 0.5
+
+        u0 = numpy.floor(u)
+        v0 = numpy.floor(v)
+        fu = (u - u0)[..., None]
+        fv = (v - v0)[..., None]
+
+        # Longitude wraps: the column left of 0 is the last one, which is the whole point of a 360.
+        x0 = numpy.mod(u0.astype(numpy.int64), width)
+        x1 = numpy.mod(x0 + 1, width)
+
+        # Latitude does not: above the top row is still the top row.
+        y0 = numpy.clip(v0.astype(numpy.int64), 0, height - 1)
+        y1 = numpy.clip(v0.astype(numpy.int64) + 1, 0, height - 1)
+
+        top = pixels[y0, x0] * (1.0 - fu) + pixels[y0, x1] * fu
+        bottom = pixels[y1, x0] * (1.0 - fu) + pixels[y1, x1] * fu
+        faces = top * (1.0 - fv) + bottom * fv
+
+        # (6, edge, edge, 3) -> (edge, 6 * edge, 3), faces left to right in CUBEMAP_FACES order.
+        strip = numpy.concatenate(list(faces), axis=1)
+
+        return Image.fromarray(numpy.clip(numpy.rint(strip), 0.0, 255.0).astype(numpy.uint8), mode="RGB")
+    except Exception as error:  # noqa: BLE001 - see above
+        log(f"cubemap reprojection failed ({type(error).__name__}); keeping the panorama")
+        return None
+
+
+def batch_projection(recipe: dict[str, Any], images: list[dict[str, Any]]) -> str:
+    """
+    The request-level ``projection``: what every image in the batch is, or the recipe's own.
+
+    Per image is the truth (49 D4). This is the fallback a reader uses when an image says nothing,
+    so it may only claim ``cubemap`` when every image is one. A batch where one reprojection failed
+    (D5) falls back to what the recipe renders.
+    """
+    declared = {str(image.get("projection") or "") for image in images}
+
+    if len(declared) == 1 and "" not in declared:
+        return declared.pop()
+
+    return projection_of(recipe)
+
+
 def resident() -> list[str]:
     with _loaded_lock:
         return list(_loaded)
@@ -1552,6 +1709,7 @@ def run_batch(
     extra: dict[str, Any] | None = None,
     repair: str | None = None,
     repair_steps: int = 0,
+    reproject: str | None = None,
 ) -> tuple[list[Any], list[dict[str, Any]], list[str], float]:
     """
     The per-image loop, shared by ``generate``, ``edit`` and ``variation``.
@@ -1677,6 +1835,20 @@ def run_batch(
                     and threshold > 0 and delta > threshold and "seam" not in warnings:
                 warnings.append("seam")
 
+            # Phase 88, and only AFTER the seam: the seam is the panorama's, it is measured and
+            # repaired on the panorama, and the cube is cut from whatever that left (D4). `width`
+            # and `height` stay the render's, because that is what the steps ran on and what the
+            # ledger meters (D3); `projection` is what tells a client the bytes are a strip.
+            if reproject == REPROJECT_CUBEMAP:
+                cube = equirect_to_cubemap(picture)
+
+                if cube is None:
+                    if "reproject" not in warnings:
+                        warnings.append("reproject")
+                else:
+                    picture = cube
+                    described["projection"] = CUBEMAP
+
         output = request.output(f"image-{index}.png", "image/png")
         picture.save(output.path, format="PNG")
 
@@ -1705,7 +1877,7 @@ def answer(
         "model": request.model,
         "steps": steps,
         "device": _device,
-        "projection": projection_of(recipe),
+        "projection": batch_projection(recipe, images),
         "promptAugmented": prompt_augmented,
         "trigger": trigger,
         "warnings": warnings,
@@ -1743,6 +1915,7 @@ def generate(request: Request):
     # the worst possible place to discover a header the operator never allowed.
     repair = resolve_seam_repair(recipe, payload)
     repair_steps = seam_diffuse_steps(steps) if repair == SEAM_REPAIR_DIFFUSE else 0
+    reproject = resolve_reproject(recipe, payload)
 
     pipe, load_ms, evicted = load(recipe, accepted_licenses())
 
@@ -1761,6 +1934,7 @@ def generate(request: Request):
         height=height,
         repair=repair,
         repair_steps=repair_steps,
+        reproject=reproject,
     )
 
     # The model, the geometry and the seeds. Not the prompt — the node logs this line's *shape*, and
@@ -1771,6 +1945,7 @@ def generate(request: Request):
         f"{steps + repair_steps} steps on {_device}, "
         f"{projection_of(recipe)}{', trigger appended' if prompt_augmented else ''}"
         f"{', seam repair: ' + repair if repair else ''}"
+        f"{', reprojected: ' + reproject if reproject else ''}"
         f"{', warnings: ' + ', '.join(warnings) if warnings else ''} "
         f"(load {load_ms / 1000:.1f}s, generate {generate_ms / 1000:.1f}s)"
     )
@@ -2041,6 +2216,7 @@ def edit(request: Request, operation: str):
 
     repair = resolve_seam_repair(recipe, payload)
     repair_steps = seam_diffuse_steps(steps) if repair == SEAM_REPAIR_DIFFUSE else 0
+    reproject = resolve_reproject(recipe, payload)
 
     guidance = payload.get("guidance")
     guidance = float(guidance) if guidance is not None else float(defaults.get("guidance", 5.0))
@@ -2077,6 +2253,7 @@ def edit(request: Request, operation: str):
         extra=extra,
         repair=repair,
         repair_steps=repair_steps,
+        reproject=reproject,
     )
 
     # The operation, the geometry, the strength and the steps that ran. Never the prompt, and never
@@ -2085,7 +2262,8 @@ def edit(request: Request, operation: str):
     log(
         f"{request.model}: {operation}, {len(images)} image(s) at {width}x{height}, "
         f"strength {strength:.2f} ({effective} of {steps} steps){', masked' if mask is not None else ''}"
-        f"{', seam repair: ' + repair if repair else ''} "
+        f"{', seam repair: ' + repair if repair else ''}"
+        f"{', reprojected: ' + reproject if reproject else ''} "
         f"on {_device} (load {load_ms / 1000:.1f}s, generate {generate_ms / 1000:.1f}s)"
     )
 
