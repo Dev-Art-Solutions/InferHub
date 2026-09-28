@@ -83,3 +83,35 @@ stopped.
 - **Phase 85's `OnDemandToolTests` flaked once again** while a `docker build` was loading the
   machine, and passed three times alone and in a full Mesh rerun. Its 15-second wait on a real
   worker process is still the suspect. Not proven unrelated.
+
+## Addendum — the published image, on a real card (2026-09-28)
+
+`ghcr.io/dev-art-solutions/inferhub-node:3.52.0-all` (digest `sha256:c6c5427c395e…`, 6.45 GB
+compressed, amd64 only; `:latest` still points at the plain multi-arch node) was pulled and run solo
+with `--gpus all` on an RTX 3090 Ti, on an empty volume, with `Node:Vram:BudgetMiB=7000` so that only
+`sd15` was offered. The host's own Ollama model (22 GB, another program's) was unloaded for the run
+and reloaded afterwards.
+
+- **The fetch fix, on the card:** `sd15` was fetched with the worker kept ("still fetching sd15"),
+  was offered, and then the worker was stopped.
+- **One container, four requests, three switches, all on CUDA:**
+
+  | Step | Holder after | Card in use | Time |
+  |---|---|---:|---:|
+  | idle | none | 2.5 GB (the desktop) | |
+  | chat, `qwen2.5:0.5b` | `ollama` | 3.7 GB | 49.5 s (first load) |
+  | image, `sd15` 512×512 | `tool:diffusion` | 6.1 GB | 9.3 s |
+  | transcription, `whisper-tiny` | `tool:whisper` | 3.0 GB | 13.3 s |
+  | chat again | `ollama` | 3.7 GB | 2.7 s |
+
+  Each newcomer waited for the previous holder in the log (`'tool:whisper' is waiting for the GPU,
+  which 'tool:diffusion' holds` → `released` → `takes`). The drop from 6.1 GB to 3.0 GB is the
+  diffusion process and its CUDA context actually going away. The picture was a real red cube on a
+  table. Whisper loaded `on cuda/float16` from the venv it shares with PyTorch.
+
+**This closes v3.50's and v3.51's open item**: a real CUDA tool worker switching under
+`Node:OnDemand`, on the published image. It also answers the D2 question above for this one card:
+`ctranslate2` and PyTorch work side by side in one environment. Other cards remain unchecked.
+
+*Not explained:* the first chat took 49.5 s. That is the container's own Ollama loading a model for
+the first time since the container started, and it was not investigated further.

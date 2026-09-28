@@ -490,10 +490,11 @@ merely occupies it.
 verification day, is parked awaiting vendor keys**: every dialect from v3.29 to v3.35 has been driven
 against stubs and recorded payloads, and the checks that need one real key per vendor have not been
 started — until they are, "the node speaks Anthropic" is a claim about translation, not about a
-conversation anybody has had. Six releases name a live drill still owed: a `wedged` backend end to end
+conversation anybody has had. Five releases name a live drill still owed: a `wedged` backend end to end
 (v3.36), a two-node standby-and-`docker kill` (v3.42), scale-in on a real idle fleet (v3.43), the
-cross-encoder through a full coordinator-plus-node retrieval pipeline (v3.45), a throttled node's
-traffic actually rerouting (v3.47), and a real CUDA worker switching under `Node:OnDemand` (v3.50). A
+cross-encoder through a full coordinator-plus-node retrieval pipeline (v3.45), and a throttled node's
+traffic actually rerouting (v3.47). (v3.50's, a real CUDA worker switching under `Node:OnDemand`,
+was run on v3.52's `:all` image: Ollama, `sd15` and Whisper took a 3090 Ti in turn.) A
 few gaps are design rather than debt: `Dispatcher:TimeoutSeconds` is still one deadline for chat and
 video where a per-capability one is wanted; no shipped tool manifest runs sandboxed until its cache
 directories are audited, and seccomp and UID remapping are out of scope; a standby covers only the
