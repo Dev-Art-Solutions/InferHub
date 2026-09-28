@@ -39,11 +39,13 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
     private int gaveUpFlag;
     private int suspendedFlag;
 
-    // Phase 87. ReleaseWorkersAsync kept a worker because it was still fetching, so the card was
-    // promised back and not yet given. Set there, cleared when that worker says it is done (and
-    // released then) or when a request leases this pool, which hands the lifecycle back to the
-    // arbiter.
-    private int releaseWhenFetchedFlag;
+    // Phase 87. Set by ReleaseWorkersAsync: the card has been given back, so no idle worker should
+    // outlive its next liveness probe unless it is still fetching. Cleared when a request leases
+    // this pool, which hands the lifecycle back to the arbiter. It is checked where the probe
+    // RETURNS a worker, because the re-declaration that ends a fetch is only ever read during that
+    // probe, while the worker is out of the idle stack. A release attempted from the frame handler
+    // raced the probe and found nothing to stop (it failed CI once).
+    private int releasedFlag;
     private bool gaveUpLogged;
     private DateTimeOffset lastRecoveryProbe;
 
@@ -253,6 +255,9 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
         List<ToolWorkerProcess> workers;
         List<ToolWorkerProcess> fetching;
 
+        // Before the snapshot, so a worker a probe is holding right now is caught when it returns.
+        Interlocked.Exchange(ref releasedFlag, 1);
+
         lock (gate)
         {
             fetching = idle.Where(worker => worker.Fetching.Count > 0).ToList();
@@ -267,8 +272,6 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
 
         if (fetching.Count > 0)
         {
-            Interlocked.Exchange(ref releaseWhenFetchedFlag, 1);
-
             logger.LogInformation(
                 "Kept {Count} worker(s) for tool '{ToolId}' although the GPU was released (Node:OnDemand): still fetching {Models}. Stopped when the fetch ends.",
                 fetching.Count,
@@ -373,7 +376,7 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
 
         // A request now owns this pool's turn on the card; the arbiter releases it when the turn
         // ends, so a release deferred by a fetch is no longer this pool's to perform.
-        Interlocked.Exchange(ref releaseWhenFetchedFlag, 0);
+        Interlocked.Exchange(ref releasedFlag, 0);
 
         var budget = TimeSpan.FromSeconds(Math.Max(0, options.QueueMaxWaitSeconds));
 
@@ -551,6 +554,17 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
 
             if (await worker.PingAsync(ProbeTimeout, cancellationToken))
             {
+                // Phase 87: the card was released while this worker was kept for a fetch (or was
+                // out here being probed). Nothing left to fetch means it goes now; the finally
+                // block below stops it.
+                if (Volatile.Read(ref releasedFlag) == 1 && worker.Fetching.Count == 0)
+                {
+                    logger.LogInformation(
+                        "Stopped 1 idle worker(s) for tool '{ToolId}' to free the GPU (Node:OnDemand); its fetch has ended.",
+                        manifest.Id);
+                    return;
+                }
+
                 ReturnToIdle(worker);
                 worker = null;
                 return;
@@ -865,24 +879,6 @@ internal sealed class ToolWorkerPool : IAsyncDisposable
         {
             Capabilities = resolved;
             RaiseCapabilitiesChanged();
-        }
-
-        // Phase 87: the release ReleaseWorkersAsync deferred for this fetch happens now. Off the
-        // worker's reader, because disposing a worker from inside its own frame handler waits on
-        // the very read that is running.
-        if (worker.Fetching.Count == 0 && Interlocked.Exchange(ref releaseWhenFetchedFlag, 0) == 1)
-        {
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await ReleaseWorkersAsync();
-                }
-                catch (Exception exception)
-                {
-                    logger.LogWarning(exception, "Could not stop tool '{ToolId}' after its fetch ended.", manifest.Id);
-                }
-            });
         }
     }
 
