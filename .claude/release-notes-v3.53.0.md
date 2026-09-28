@@ -59,7 +59,7 @@ face on purpose, and it failed exactly the orientation test.
 These tests need numpy and Pillow. CI now installs both, so the tests **run** there instead of being
 skipped. Locally, `INFERHUB_TEST_PYTHON` points the tests at an interpreter that has them.
 
-Test counts: Shared 202, Node 236, Coordinator 798, Mesh 460. Zero new `PackageReference`s.
+Test counts: Shared 202, Node 236, Coordinator 798, Mesh 460, and CI green on the phase commit with the six numpy tests run, not skipped. Zero new `PackageReference`s.
 
 ## Also in this release
 
@@ -70,7 +70,29 @@ Test counts: Shared 202, Node 236, Coordinator 798, Mesh 460. Zero new `PackageR
 
 ## Checked on the published image
 
-_Filled in after the tag, from the image itself._
+Both images carry `org.opencontainers.image.revision` `7f9b526`, the tag commit.
+
+- **`inferhub-node:3.53.0-diffusion`, no GPU.** The worker file that shipped
+  (`/opt/inferhub/tools/diffusion_worker.py`) was imported with the image's own Python, numpy 2.5.3
+  and Pillow 11.3.0, and given direction-coded panoramas. 2048×1024 → 3072×512 in 563 ms,
+  1536×768 → 2304×384 in 274 ms, 1024×512 → 1536×256 in 108 ms. All six face centres decoded to
+  their exact axes (largest error 0.0). The flat-recipe and unknown-value refusals both answered
+  `invalid_request` with their sentences, and a 512×512 input was declined rather than raised.
+- **`inferhub-node:3.53.0`, solo mode.** With no header, `cubemap` and `off`, `/v1/images/generations`
+  answered the same `503 capability_unavailable` (this image has no diffusion tool), so a valid value
+  passes the edge unchanged. `cross` answered `400` with `param: "X-InferHub-Image-Reproject"` and
+  the sentence naming `cubemap`.
+
+**It found one thing, fixed on `main` after the tag.** Pillow 11.3.0, the version the image pins,
+warns that `Image.fromarray(..., mode=...)` is removed in Pillow 13. The new cut used that
+argument, and so did two older lines (seam blend and the seam-repair mask). Nothing is broken in
+v3.53.0: the pin holds, and the warning only goes to the worker's log. But the worker falls back
+quietly when the cut fails (by design, so a render is never lost), so a future Pillow bump would
+have turned every cubemap into a panorama with a `reproject` warning, and no test would have
+noticed. Pillow 12.2, which the tests ran under locally, does not warn at all. The fix drops the
+argument (the array's shape already says RGB or L). The tests now treat a deprecation as an error,
+and CI installs the **pinned** Pillow instead of the newest. The old code fails 4 of 6 tests under
+11.3.0, and the fixed code passes. No v3.53.1 is cut for it, since nothing a caller sees changes.
 
 ## Not established, said out loud
 

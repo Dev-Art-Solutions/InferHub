@@ -1306,7 +1306,7 @@ def seam_blend(image):
         pixels[:, :band, :] += correction
         pixels[:, -band:, :] -= correction[:, ::-1, :]
 
-        return Image.fromarray(numpy.clip(pixels, 0.0, 255.0).astype(numpy.uint8), mode="RGB")
+        return Image.fromarray(numpy.clip(pixels, 0.0, 255.0).astype(numpy.uint8))
     except Exception as error:  # noqa: BLE001
         log(f"seam blend failed ({type(error).__name__}); keeping the original")
         return None
@@ -1355,7 +1355,7 @@ def seam_diffuse(request, recipe, pipe, image, *, prompt, negative, guidance, ge
     arguments: dict[str, Any] = {
         "prompt": prompt,
         "image": rolled,
-        "mask_image": Image.fromarray(mask, mode="L"),
+        "mask_image": Image.fromarray(mask),
         "strength": SEAM_DIFFUSE_STRENGTH,
         "num_inference_steps": steps,
         str(recipe.get("guidanceParameter") or "guidance_scale"): guidance,
@@ -1587,7 +1587,7 @@ def equirect_to_cubemap(image):
         # (6, edge, edge, 3) -> (edge, 6 * edge, 3), faces left to right in CUBEMAP_FACES order.
         strip = numpy.concatenate(list(faces), axis=1)
 
-        return Image.fromarray(numpy.clip(numpy.rint(strip), 0.0, 255.0).astype(numpy.uint8), mode="RGB")
+        return Image.fromarray(numpy.clip(numpy.rint(strip), 0.0, 255.0).astype(numpy.uint8))
     except Exception as error:  # noqa: BLE001 - see above
         log(f"cubemap reprojection failed ({type(error).__name__}); keeping the panorama")
         return None

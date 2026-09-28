@@ -37,7 +37,7 @@ public class CubemapReprojectionTests
             rows = (numpy.arange(height) + 0.5) / height
             lon, lat = numpy.meshgrid((cols - 0.5) * 2 * numpy.pi, (0.5 - rows) * numpy.pi)
             d = numpy.stack([numpy.cos(lat) * numpy.cos(lon), numpy.sin(lat), numpy.cos(lat) * numpy.sin(lon)], -1)
-            return Image.fromarray(numpy.rint((d + 1) / 2 * 255).astype(numpy.uint8), "RGB")
+            return Image.fromarray(numpy.rint((d + 1) / 2 * 255).astype(numpy.uint8))
 
         def faces(cube):
             a = numpy.asarray(cube, dtype=numpy.float64) / 255 * 2 - 1
@@ -103,7 +103,7 @@ public class CubemapReprojectionTests
         a = numpy.zeros((height, width, 3), dtype=numpy.uint8)
         a[3 * height // 8:5 * height // 8, 0] = 255
         a[3 * height // 8:5 * height // 8, -1] = 255
-        f, edge = faces(dw.equirect_to_cubemap(Image.fromarray(a, "RGB")))
+        f, edge = faces(dw.equirect_to_cubemap(Image.fromarray(a)))
         lit = {name: (face > -0.9).any(axis=2) for name, face in f.items()}
         for name in ("px", "py", "ny", "pz", "nz"):
             assert not lit[name].any(), f"the join reached {name}"
@@ -167,6 +167,14 @@ public class CubemapReprojectionTests
 
             start.ArgumentList.Add(script);
             start.ArgumentList.Add(worker);
+
+            // A deprecation is an error here. v3.53.0's image check found the pinned Pillow (11.3.0)
+            // warning that `Image.fromarray(..., mode=...)` goes away in Pillow 13. The worker catches
+            // its own exceptions and falls back quietly (D5), so a removed argument would not fail a
+            // request: it would turn every cubemap into a panorama with a warning. Pillow 12 does NOT
+            // warn about it, so this only bites under the version the image ships, which is why CI
+            // installs the pin from requirements-diffusion.txt rather than the newest Pillow.
+            start.Environment["PYTHONWARNINGS"] = "error::DeprecationWarning";
 
             using var process = Process.Start(start)!;
             var stdout = process.StandardOutput.ReadToEndAsync();
