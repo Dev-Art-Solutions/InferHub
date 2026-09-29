@@ -211,6 +211,9 @@ internal sealed class ImageMesh : IAsyncDisposable
     /// <summary>Who the requests come from. Phase 47's routes are client-scoped and this is the scope.</summary>
     public string ClientId { get; private set; } = "image-client";
 
+    /// <summary>Phase 89: <c>Dispatcher:Deadlines</c> for the hub under test.</summary>
+    private IReadOnlyDictionary<string, int>? deadlines;
+
     public static async Task<ImageMesh> StartAsync(
         long? maxAttachmentBytes = null,
         ClientLimits? limits = null,
@@ -221,10 +224,12 @@ internal sealed class ImageMesh : IAsyncDisposable
         double? seamWarnThreshold = null,
         string? seamRepair = null,
         bool video = false,
+        IReadOnlyDictionary<string, int>? deadlines = null,
         params string[] workerArguments)
     {
         var mesh = new ImageMesh
         {
+            deadlines = deadlines,
             seamRepair = seamRepair,
             manifests = ImageFixture.Manifests(video, workerArguments),
             nodeData = new ToolWorkerFixture.TempDirectory("inferhub-image-node"),
@@ -275,7 +280,13 @@ internal sealed class ImageMesh : IAsyncDisposable
             Admission,
             services.GetRequiredService<ILogger<UsageMeter>>()));
         builder.Services.AddSingleton(services => TestUsage.Queue(services.GetRequiredService<INodeRegistry>()));
-        builder.Services.Configure<DispatcherOptions>(_ => { });
+        builder.Services.Configure<DispatcherOptions>(options =>
+        {
+            foreach (var (capability, seconds) in deadlines ?? new Dictionary<string, int>())
+            {
+                options.Deadlines[capability] = seconds;
+            }
+        });
         builder.Services.Configure<RouterOptions>(_ => { });
         builder.Services.Configure<ToolEdgeOptions>(options =>
         {

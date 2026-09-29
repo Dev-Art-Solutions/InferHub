@@ -43,8 +43,8 @@ public static class AudioEndpoints
 
     public static IEndpointRouteBuilder MapAudioEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/v1/audio/transcriptions", HandleTranscriptionAsync);
-        app.MapPost("/v1/audio/speech", HandleSpeechAsync);
+        app.MapPost("/v1/audio/transcriptions", HandleTranscriptionAsync).AddEndpointFilter(DispatchDeadlineFilter.OpenAi);
+        app.MapPost("/v1/audio/speech", HandleSpeechAsync).AddEndpointFilter(DispatchDeadlineFilter.OpenAi);
         return app;
     }
 

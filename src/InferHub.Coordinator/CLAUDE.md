@@ -1052,3 +1052,42 @@ transitions only, not on the waiter count.
 
 Tests: `OnDemandRoutingTests` (Coordinator), `PrometheusMetricsTests.OnlyAnOnDemandNodeEmitsAGpuHolderSeries`,
 `OnDemandRoutingMeshTests` (Mesh — real SignalR; the pre-3.51 five-field heartbeat routes as before).
+
+### Phase 89 (`Dispatcher:Deadlines` — one dispatch deadline per capability)
+
+**D1, load-bearing — keyed by the capability the job was routed on, empty by default.**
+`DispatcherOptions.DeadlineFor` looks the capability up case-insensitively and falls back to
+`TimeoutSeconds` (still clamped to 1, never refused); nothing ships in `Deadlines`, so a deployment
+that sets nothing times every job exactly as v3.53 did (`TheShippedAppsettingsDeclaresNoDeadline`
+reads the real file). *Rejected:* shipping `video: 3600` as a default — right number, but it changes
+the behaviour of every hub that upgrades without reading the notes; the appsettings comment gives the
+figures instead. *Rejected:* reading the node manifest's `requestTimeoutSeconds` — the hub would be
+trusting a node for how long the hub waits, and a mixed fleet would give one capability two deadlines.
+
+**D2 — inference jobs use the router's own reading, `CapabilityKinds.ForJobKind`.** `generate` is
+`chat`; the hub's internal kinds (`vector-query`, corpus jobs) have no capability and always take
+`TimeoutSeconds`, so a `vector-query` key is not a hidden knob.
+
+**D3 — the expiry names its clock.** `DispatchDeadline.Expired()` says the capability, the seconds
+and the key (`Dispatcher:Deadlines:video` or `Dispatcher:TimeoutSeconds`); one warning log line with
+the same three. It reaches the caller wherever the old text did (a failed image/video job's
+`error.message`, a native stream's error chunk). The blocking chat 504 keeps its fixed text.
+
+**D4 — any capability name is a valid key; a value below 1 fails startup.** Custom tools declare
+their own capabilities (40 D1), so the hub does not decide which names exist.
+
+**D5 — `/api/tools/*` and `/v1/audio/*` answer a timeout with a 504.** Before 89 no handler on those
+routes caught the `TimeoutException`, so the caller got a bodyless 500. `DispatchDeadlineFilter` does
+it once per route family, in that family's error shape (`deadline_exceeded` on OpenAI's), and only
+before the response has started.
+
+**D6 — a blocking job the hub gave up on is a failed request on `Metrics`.** Timed out, cancelled or
+failed to send: the `finally` now calls `RecordRequestFail`. Before 89 only the registry was told, and
+the in-flight gauge climbed by one for every such job; the stream paths always counted it.
+
+**The node's own clocks are separate** (`Ollama:RequestTimeout`, `Upstream:TimeoutSeconds`, a
+manifest's `requestTimeoutSeconds`). A hub deadline longer than the node's gains nothing.
+
+Tests: `DispatchDeadlineTests` (Coordinator — lookup, binding, validator, a real `Dispatcher` whose
+clock runs out), `ToolMeshTests`/`AudioEndpointTests`/`VideoJobTests` (Mesh — the 504s and a video
+job failing on its own deadline; echo worker `--audio-delay-ms`).

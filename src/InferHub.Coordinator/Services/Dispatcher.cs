@@ -77,6 +77,7 @@ public sealed class Dispatcher(
         InferenceJob job,
         CancellationToken cancellationToken)
     {
+        var deadline = options.Value.DeadlineFor(job);
         var tcs = new TaskCompletionSource<InferenceResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         var pending = new PendingResult<InferenceResult>(node.ConnectionId, node.NodeId, tcs);
 
@@ -107,19 +108,24 @@ public sealed class Dispatcher(
 
             await hubContext.Clients.Client(node.ConnectionId).SendAsync("RunJob", job, cancellationToken);
 
-            var timeout = TimeSpan.FromSeconds(Math.Max(1, options.Value.TimeoutSeconds));
-            return await tcs.Task.WaitAsync(timeout, cancellationToken);
+            return await tcs.Task.WaitAsync(deadline.Timeout, cancellationToken);
         }
         catch (TimeoutException)
         {
             SendCancelJob(node.ConnectionId, job.JobId);
-            throw;
+            LogExpired(deadline, job.JobId, node);
+            throw deadline.Expired();
         }
         finally
         {
+            // Still pending here means nobody answered: the deadline ran out, the caller walked away
+            // or the send failed. It is a failed request on the node's counters too — before phase 89
+            // only the registry was told, and the in-flight gauge on /metrics climbed by one for every
+            // blocking job the hub ever gave up on (the stream paths always counted it).
             if (pendingResults.TryRemove(job.JobId, out _))
             {
                 registry.DecrementInFlight(node.ConnectionId);
+                metrics.RecordRequestFail(node.NodeId);
             }
         }
     }
@@ -143,7 +149,7 @@ public sealed class Dispatcher(
                 node.NodeId,
                 node.Name);
 
-            WatchStreamTimeout(job.JobId, node.ConnectionId, pendingStreams);
+            WatchStreamTimeout(job.JobId, node, options.Value.DeadlineFor(job), pendingStreams);
             await hubContext.Clients.Client(node.ConnectionId).SendAsync("RunStreamingJob", job, cancellationToken);
 
             // Wait until either the first chunk arrives (stream is "live") or we get a
@@ -179,6 +185,7 @@ public sealed class Dispatcher(
         IProgress<ToolChunk>? progress,
         CancellationToken cancellationToken)
     {
+        var deadline = options.Value.DeadlineFor(job.Capability);
         var tcs = new TaskCompletionSource<ToolResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         var pending = new PendingResult<ToolResult>(node.ConnectionId, node.NodeId, tcs);
 
@@ -215,13 +222,13 @@ public sealed class Dispatcher(
 
             await hubContext.Clients.Client(node.ConnectionId).SendAsync("ExecuteToolJob", job, cancellationToken);
 
-            var timeout = TimeSpan.FromSeconds(Math.Max(1, options.Value.TimeoutSeconds));
-            return await tcs.Task.WaitAsync(timeout, cancellationToken);
+            return await tcs.Task.WaitAsync(deadline.Timeout, cancellationToken);
         }
         catch (TimeoutException)
         {
             SendCancelJob(node.ConnectionId, job.JobId);
-            throw;
+            LogExpired(deadline, job.JobId, node);
+            throw deadline.Expired();
         }
         finally
         {
@@ -230,6 +237,7 @@ public sealed class Dispatcher(
             if (pendingToolResults.TryRemove(job.JobId, out _))
             {
                 registry.DecrementInFlight(node.ConnectionId);
+                metrics.RecordRequestFail(node.NodeId);
             }
         }
     }
@@ -253,7 +261,7 @@ public sealed class Dispatcher(
                 node.NodeId,
                 node.Name);
 
-            WatchStreamTimeout(job.JobId, node.ConnectionId, pendingToolStreams);
+            WatchStreamTimeout(job.JobId, node, options.Value.DeadlineFor(job.Capability), pendingToolStreams);
             await hubContext.Clients.Client(node.ConnectionId)
                 .SendAsync("ExecuteStreamingToolJob", job, cancellationToken);
 
@@ -485,14 +493,13 @@ public sealed class Dispatcher(
 
     private void WatchStreamTimeout<T>(
         Guid jobId,
-        string connectionId,
+        RoutableNode node,
+        DispatchDeadline deadline,
         ConcurrentDictionary<Guid, PendingStream<T>> pendings)
     {
-        var timeout = TimeSpan.FromSeconds(Math.Max(1, options.Value.TimeoutSeconds));
-
         _ = Task.Run(async () =>
         {
-            await Task.Delay(timeout);
+            await Task.Delay(deadline.Timeout);
 
             if (pendings.TryRemove(jobId, out var pending))
             {
@@ -500,13 +507,27 @@ public sealed class Dispatcher(
                 metrics.RecordRequestFail(pending.NodeId);
                 pending.CancellationRegistration.Dispose();
 
-                var error = new TimeoutException("inference request timed out");
+                LogExpired(deadline, jobId, node);
+                var error = deadline.Expired();
                 pending.StreamReady.TrySetException(error);
                 pending.Channel.Writer.TryComplete(error);
-                SendCancelJob(connectionId, jobId);
+                SendCancelJob(node.ConnectionId, jobId);
             }
         });
     }
+
+    /// <summary>
+    /// Phase 89. The one line an operator greps for when a job dies of the hub's clock rather than
+    /// the node's: the capability, the number and the key that set it — never the payload.
+    /// </summary>
+    private void LogExpired(DispatchDeadline deadline, Guid jobId, RoutableNode node) =>
+        logger.LogWarning(
+            "Dispatch deadline expired for {Capability} job {JobId} on node {NodeId} after {Seconds:0} s ({DeadlineSource})",
+            deadline.Capability ?? "(none)",
+            jobId,
+            node.NodeId,
+            deadline.Timeout.TotalSeconds,
+            deadline.Source);
 
     private void CancelStream<T>(
         ConcurrentDictionary<Guid, PendingStream<T>> pendings,

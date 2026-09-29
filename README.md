@@ -173,6 +173,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 86 | The hub routes to the node whose card is already warm (done) | `v3.51.0` |
 | 87 | `inferhub-node:all` — chat, speech and diffusion in one image, taking turns on one card (done) | `v3.52.0` |
 | 88 | A 360° panorama back as a six-face cubemap, asked for per request (done) | `v3.53.0` |
+| 89 | One dispatch deadline per capability — `Dispatcher:Deadlines` (done) | `v3.54.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -262,7 +263,8 @@ declared `video`, so the operator's ceiling — correctly — threw the worker's
 `ftfy` was missing from the image, and so was `peft`, which meant `qwen-360` could not load at all.
 Every test passed, because the fixtures declared their own manifests. The first clip ever rendered and
 watched was 81 frames at 832×480 in 378 s, and `Dispatcher:TimeoutSeconds` still defaults to 300 —
-documented with the measured figures rather than raised, because one number covers every kind of job.
+documented with the measured figures rather than raised, because one number covered every kind of job
+(until v3.54 split it per capability — `Dispatcher:Deadlines`).
 A green suite describes the fixture; only the artefact describes the release.
 
 **v3.32 speaks Gemini's own `:generateContent`, and reading the docs on the day found it is now the
@@ -496,8 +498,7 @@ conversation anybody has had. Five releases name a live drill still owed: a `wed
 cross-encoder through a full coordinator-plus-node retrieval pipeline (v3.45), and a throttled node's
 traffic actually rerouting (v3.47). (v3.50's, a real CUDA worker switching under `Node:OnDemand`,
 was run on v3.52's `:all` image: Ollama, `sd15` and Whisper took a 3090 Ti in turn.) A
-few gaps are design rather than debt: `Dispatcher:TimeoutSeconds` is still one deadline for chat and
-video where a per-capability one is wanted; no shipped tool manifest runs sandboxed until its cache
+few gaps are design rather than debt: no shipped tool manifest runs sandboxed until its cache
 directories are audited, and seccomp and UID remapping are out of scope; a standby covers only the
 `local` provider; the OTLP exporter skips histograms. Beyond those, the two items the previous list
 carried still stand — **active-active** multi-coordinator load sharing, and a fourth vector backend
@@ -1931,9 +1932,9 @@ it. That is the whole surface.
 
 > **Measured in v3.28, on a 3090 Ti, and worth knowing before you first run one.** A five-second
 > `wan-t2v-1.3b` clip at 832×480 is **~143 s of cold model load plus ~340 s of generation** — 378 s
-> end to end, 81 frames, 982 KB of H.264. Two things follow. **Raise
-> `Dispatcher:TimeoutSeconds` to 1800**: the default of 300 covers tool jobs too and gives up while
-> the model is still loading. And the first pull is **~29 GB**, because "1.3B" names the transformer
+> end to end, 81 frames, 982 KB of H.264. Two things follow. **Set
+> `Dispatcher:Deadlines:video` to 3600** (v3.54; before it, raise `Dispatcher:TimeoutSeconds` for
+> everything): the default of 300 covers tool jobs too and gives up while the model is still loading. And the first pull is **~29 GB**, because "1.3B" names the transformer
 > only — the UMT5 text encoder is ~11B and every weight in that repository is fp32 with no fp16
 > variant.
 
@@ -3140,7 +3141,8 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Urls` | `http://localhost:5080` | Address the coordinator listens on. |
 | `NodeRegistry:TimeoutSeconds` | `30` | Heartbeat-miss window before a node is evicted and its in-flight jobs are failed. |
 | `NodeRegistry:ReaperIntervalSeconds` | `5` | How often the reaper sweeps for stale nodes. |
-| `Dispatcher:TimeoutSeconds` | `300` | Per-job wall-clock timeout (streaming, blocking **and tool jobs, which means video**). A five-second `wan-t2v-1.3b` clip measured ~143 s of cold load + ~330 s of generation on a 3090 Ti, so **raise this to 1800 if you generate video** — at 300 the hub gives up while the model is still loading. |
+| `Dispatcher:TimeoutSeconds` | `300` | Per-job wall-clock timeout (streaming, blocking **and tool jobs, which means video**) for every capability `Dispatcher:Deadlines` does not name. |
+| `Dispatcher:Deadlines` | `{}` | **v3.54.** One deadline in seconds per capability the job was routed on — `chat` (covers `generate`), `embed`, `transcribe`, `speak`, `image`, `image-edit`, `video`, `rerank`, or a custom tool's own name. Empty = `TimeoutSeconds` for everything, as before. A five-second `wan-t2v-1.3b` clip measured ~143 s of cold load + ~330 s of generation on a 3090 Ti, so **set `"video": 3600` if you generate video** — chat keeps its 300. A value below 1 fails startup. See [Dispatch deadlines](#dispatch-deadlines-v354). |
 | `Router:AffinitySlidingMinutes` | `10` | Sticky-conversation idle expiry. |
 | `Router:AffinityLoadBreakThreshold` | `2` | Extra in-flight jobs the sticky node may have before affinity is broken in favour of a less-busy node. |
 | `Router:Strategy` | `least-busy` | How capable nodes are ranked (v2.8): `least-busy` (default, unchanged) or `throughput` (measured tokens/sec, EWMA, load-adjusted). Affinity still wins. See [Fleet operations](#fleet-operations-v28). |
@@ -4149,7 +4151,39 @@ InferHub is built to keep running while nodes come and go.
   **not** retry — the client already has partial output. Instead the stream ends with a
   final error chunk so callers don't hang.
 - **Job timeout.** `Dispatcher:TimeoutSeconds` caps how long any one job can hold a
-  request open.
+  request open; `Dispatcher:Deadlines` sets it per capability (v3.54,
+  [Dispatch deadlines](#dispatch-deadlines-v354)).
+
+### Dispatch deadlines (v3.54)
+
+The hub gives up on a job it dispatched after a deadline, and until v3.54 that was one number for
+everything: a wedged chat request and a six-minute video render waited the same `300` seconds, so a
+hub that generated video had to give chat the longer rope too. `Dispatcher:Deadlines` sets it per
+capability — the one the job was routed on:
+
+```json
+"Dispatcher": {
+  "TimeoutSeconds": 300,
+  "Deadlines": { "video": 3600, "image": 900 }
+}
+```
+
+Chat and embeddings keep `300`; a clip gets an hour; a cold `qwen-360` gets fifteen minutes. Keys are
+capability names (`chat` also covers `/api/generate`) and are case-insensitive; a custom tool's own
+capability is a valid key. Nothing is set by default, so a hub that upgrades without touching config
+times every job exactly as before. A value below 1 stops the hub at startup, naming the key.
+
+A job that runs out says which clock ran out — the capability, the seconds and the key that set them:
+
+```json
+{ "error": "the hub's dispatch deadline for echo (1 s, Dispatcher:Deadlines:echo) expired before the node answered" }
+```
+
+That text is what a failed video job's `error.message` carries, and since v3.54 `/api/tools/*` and
+`/v1/audio/*` answer it with a **504** (`deadline_exceeded` in OpenAI's envelope) instead of the
+bodyless 500 they gave before. **The node's own clocks are separate and still apply**:
+`Ollama:RequestTimeout`, `Upstream:TimeoutSeconds` and a tool manifest's `requestTimeoutSeconds`. A
+hub deadline longer than the node's gains nothing, because the node gives up first.
 
 ### High availability (v3.0+)
 

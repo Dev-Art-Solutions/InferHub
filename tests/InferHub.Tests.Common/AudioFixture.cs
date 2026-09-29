@@ -123,9 +123,17 @@ internal sealed class AudioMesh : IAsyncDisposable
 
     public CapturingLoggerProvider Logs { get; } = new();
 
-    public static async Task<AudioMesh> StartAsync(
+    public static Task<AudioMesh> StartAsync(
         long? maxAttachmentBytes = null,
         ClientLimits? limits = null,
+        params string[] workerArguments)
+        => StartAsync(maxAttachmentBytes, limits, deadlines: null, workerArguments);
+
+    /// <param name="deadlines">Phase 89: <c>Dispatcher:Deadlines</c> for the hub under test.</param>
+    public static async Task<AudioMesh> StartAsync(
+        long? maxAttachmentBytes,
+        ClientLimits? limits,
+        IReadOnlyDictionary<string, int>? deadlines,
         params string[] workerArguments)
     {
         var mesh = new AudioMesh
@@ -134,13 +142,16 @@ internal sealed class AudioMesh : IAsyncDisposable
             scratch = new ToolWorkerFixture.TempDirectory("inferhub-audio-scratch")
         };
 
-        await mesh.StartCoordinatorAsync(maxAttachmentBytes, limits);
+        await mesh.StartCoordinatorAsync(maxAttachmentBytes, limits, deadlines);
         await mesh.StartNodeAsync();
 
         return mesh;
     }
 
-    private async Task StartCoordinatorAsync(long? maxAttachmentBytes, ClientLimits? limits)
+    private async Task StartCoordinatorAsync(
+        long? maxAttachmentBytes,
+        ClientLimits? limits,
+        IReadOnlyDictionary<string, int>? deadlines)
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -171,7 +182,13 @@ internal sealed class AudioMesh : IAsyncDisposable
             Admission,
             services.GetRequiredService<ILogger<UsageMeter>>()));
         builder.Services.AddSingleton(services => TestUsage.Queue(services.GetRequiredService<INodeRegistry>()));
-        builder.Services.Configure<DispatcherOptions>(_ => { });
+        builder.Services.Configure<DispatcherOptions>(options =>
+        {
+            foreach (var (capability, seconds) in deadlines ?? new Dictionary<string, int>())
+            {
+                options.Deadlines[capability] = seconds;
+            }
+        });
         builder.Services.Configure<RouterOptions>(_ => { });
         builder.Services.Configure<ToolEdgeOptions>(options =>
         {

@@ -62,6 +62,36 @@ public class ToolMeshTests
     }
 
     [Fact]
+    public async Task AToolJobPastItsCapabilitysDeadlineIsA504NamingTheDeadline()
+    {
+        // Phase 89 D5. Before it, a TimeoutException from a tool dispatch reached no handler on
+        // /api/tools/{capability} and the caller got a bodyless 500 — the one route family chat's
+        // 504 had never been extended to.
+        await using var mesh = await ToolMesh.StartAsync(deadlines: new Dictionary<string, int> { ["echo"] = 1 });
+
+        var response = await mesh.Client.PostAsync(
+            "/api/tools/echo",
+            JsonContent.Create(new { model = "echo", behaviour = "sleep", seconds = 5 }));
+
+        Assert.Equal(HttpStatusCode.GatewayTimeout, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("Dispatcher:Deadlines:echo", body);
+    }
+
+    [Fact]
+    public async Task AToolJobInsideItsDeadlineIsUntouchedByIt()
+    {
+        await using var mesh = await ToolMesh.StartAsync(deadlines: new Dictionary<string, int> { ["echo"] = 10 });
+
+        var response = await mesh.Client.PostAsync(
+            "/api/tools/echo",
+            JsonContent.Create(new { model = "echo", behaviour = "sleep", seconds = 1.5 }));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("\"slept\":1.5", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task TheNodeDeclaresItsToolCapabilitiesToTheCoordinator()
     {
         await using var mesh = await ToolMesh.StartAsync();
@@ -340,7 +370,8 @@ public class ToolMeshTests
             long? maxAttachmentBytes = null,
             long? maxStreamedBytes = null,
             bool nodeTakesStreamedUploads = true,
-            long? nodeMaxStreamedBytes = null)
+            long? nodeMaxStreamedBytes = null,
+            IReadOnlyDictionary<string, int>? deadlines = null)
         {
             var mesh = new ToolMesh
             {
@@ -357,14 +388,17 @@ public class ToolMeshTests
                 startTimeoutSeconds = 30
             });
 
-            await mesh.StartCoordinatorAsync(maxAttachmentBytes, maxStreamedBytes);
+            await mesh.StartCoordinatorAsync(maxAttachmentBytes, maxStreamedBytes, deadlines);
             await mesh.StartNodeAsync(
                 nodeTakesStreamedUploads ? nodeMaxStreamedBytes ?? maxStreamedBytes : null);
 
             return mesh;
         }
 
-        private async Task StartCoordinatorAsync(long? maxAttachmentBytes, long? maxStreamedBytes)
+        private async Task StartCoordinatorAsync(
+            long? maxAttachmentBytes,
+            long? maxStreamedBytes,
+            IReadOnlyDictionary<string, int>? deadlines)
         {
             var builder = WebApplication.CreateBuilder();
             builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -383,7 +417,13 @@ public class ToolMeshTests
             builder.Services.AddSingleton<INodeConnectionTracker, NodeConnectionTracker>();
             builder.Services.AddSingleton<Metrics>();
             builder.Services.AddSingleton<ThroughputTracker>();
-            builder.Services.Configure<DispatcherOptions>(_ => { });
+            builder.Services.Configure<DispatcherOptions>(options =>
+            {
+                foreach (var (capability, seconds) in deadlines ?? new Dictionary<string, int>())
+                {
+                    options.Deadlines[capability] = seconds;
+                }
+            });
             builder.Services.Configure<RouterOptions>(_ => { });
             builder.Services.Configure<ToolEdgeOptions>(options =>
             {

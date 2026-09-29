@@ -199,6 +199,28 @@ public class VideoJobTests
     }
 
     [Fact]
+    public async Task AVideoPastTheVideoDeadlineFailsAndTheJobNamesTheDeadline()
+    {
+        // Phase 89, v3.28's F5 on a fixture: the clip dies of the hub's clock, and the job says which
+        // clock, instead of "The operation has timed out." at progress 0.
+        await using var mesh = await ImageMesh.StartAsync(
+            video: true,
+            deadlines: new Dictionary<string, int> { ["video"] = 1 },
+            workerArguments: ["--video-step-ms", "200"]);
+
+        var created = await ReadAsync(await mesh.Client.PostAsync("/v1/videos", Body(new
+        {
+            model = ImageFixture.VideoModel,
+            prompt = "a clip longer than its deadline"
+        })));
+
+        var settled = await SettleAsync(mesh.Client, created.GetProperty("id").GetString()!);
+
+        Assert.Equal("failed", settled.GetProperty("status").GetString());
+        Assert.Contains("Dispatcher:Deadlines:video", settled.GetProperty("error").GetProperty("message").GetString());
+    }
+
+    [Fact]
     public async Task AnUnofferedDurationAndAnOffGridSizeAreBothRefusedWithTheListNamed()
     {
         await using var mesh = await ImageMesh.StartAsync(video: true);

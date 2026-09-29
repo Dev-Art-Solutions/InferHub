@@ -35,6 +35,40 @@ public class AudioEndpointTests
     }
 
     [Fact]
+    public async Task ASpeechRequestPastTheSpeakDeadlineIsA504InOpenAisEnvelope()
+    {
+        // Phase 89 D5: before it this was a bodyless 500 — no handler on the audio routes caught the
+        // dispatcher's TimeoutException.
+        await using var mesh = await AudioMesh.StartAsync(
+            maxAttachmentBytes: null,
+            limits: null,
+            deadlines: new Dictionary<string, int> { ["speak"] = 1 },
+            "--audio-delay-ms", "4000");
+
+        var response = await mesh.Client.PostAsync("/v1/audio/speech", Speech());
+
+        Assert.Equal(HttpStatusCode.GatewayTimeout, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var error = document.RootElement.GetProperty("error");
+        Assert.Equal("deadline_exceeded", error.GetProperty("code").GetString());
+        Assert.Contains("Dispatcher:Deadlines:speak", error.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task ATranscriptionIsNotHeldToTheSpeakDeadline()
+    {
+        await using var mesh = await AudioMesh.StartAsync(
+            maxAttachmentBytes: null,
+            limits: null,
+            deadlines: new Dictionary<string, int> { ["speak"] = 1 },
+            "--audio-delay-ms", "1500");
+
+        var response = await mesh.Client.PostAsync("/v1/audio/transcriptions", Upload());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
     public async Task EveryResponseFormatIsProducedInItsOwnShapeAndContentType()
     {
         await using var mesh = await AudioMesh.StartAsync();

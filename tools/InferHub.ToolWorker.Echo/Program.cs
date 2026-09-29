@@ -7,7 +7,7 @@ using System.Text.Json;
 //
 //   inferhub-echo-worker [--no-ready] [--exit-on-start] [--slow-ready <ms>]
 //                        [--capabilities <kind>:<model>,<model>;<kind>:<model>]
-//                        [--audio-fail <code>] [--audio-no-segments]
+//                        [--audio-fail <code>] [--audio-no-segments] [--audio-delay-ms <n>]
 //                        [--speech-chunk-bytes <n>] [--speech-seconds <d>] [--speech-rate-shift]
 //                        [--speech-no-audio]
 //                        [--image-fail <code>] [--image-pad-bytes <n>]
@@ -493,6 +493,13 @@ async Task HandleRequestAsync(JsonElement frame, CancellationToken cancellationT
 
 async Task HandleAudioAsync(string? id, string capability, JsonElement payload, JsonElement frame)
 {
+    // Phase 89. An audio answer that takes real time, so the hub's per-capability dispatch deadline
+    // can run out on the OpenAI audio routes (the payload there is the caller's, not a `behaviour`).
+    if (arguments.AudioDelayMs > 0)
+    {
+        await Task.Delay(arguments.AudioDelayMs);
+    }
+
     if (arguments.AudioFailCode is { } code)
     {
         // A worker naming which *kind* of failure this was. The edge renders a 400 for a client
@@ -1924,7 +1931,8 @@ internal sealed record Args(
     double SpeechSeconds = 0,
     bool SpeechRateShift = false,
     bool SpeechNoAudio = false,
-    string[]? Fetching = null)
+    string[]? Fetching = null,
+    int AudioDelayMs = 0)
 {
     public static Args Parse(string[] args)
     {
@@ -1952,6 +1960,7 @@ internal sealed record Args(
         var speechSeconds = 0d;
         var speechRateShift = false;
         var speechNoAudio = false;
+        var audioDelayMs = 0;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -2029,6 +2038,9 @@ internal sealed record Args(
                 case "--speech-no-audio":
                     speechNoAudio = true;
                     break;
+                case "--audio-delay-ms" when i + 1 < args.Length:
+                    audioDelayMs = int.Parse(args[++i]);
+                    break;
             }
         }
 
@@ -2056,7 +2068,8 @@ internal sealed record Args(
             speechSeconds,
             speechRateShift,
             speechNoAudio,
-            fetching);
+            fetching,
+            audioDelayMs);
     }
 
     /// <summary>"transcribe:a,b;speak:c" → the capability list a ready frame carries.</summary>

@@ -27,7 +27,11 @@ builder.Services.AddSignalR(options =>
             .GetSection(ToolEdgeOptions.SectionName)
             .GetValue("MaxAttachmentBytes", ToolAttachmentLimits.DefaultMaxBytes)));
 builder.Services.AddSingleton<NodeAuthFilter>();
-builder.Services.Configure<DispatcherOptions>(builder.Configuration.GetSection("Dispatcher"));
+// Phase 89: Dispatcher:Deadlines — one deadline per capability, empty by default (89 D1).
+builder.Services.AddOptions<DispatcherOptions>()
+    .Bind(builder.Configuration.GetSection(DispatcherOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<DispatcherOptions>, DispatcherOptionsValidator>();
 builder.Services.Configure<RouterOptions>(builder.Configuration.GetSection("Router"));
 builder.Services.AddSingleton<Metrics>();
 builder.Services.Configure<MetricsOptions>(builder.Configuration.GetSection(MetricsOptions.SectionName));

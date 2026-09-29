@@ -27,7 +27,7 @@ public static class ToolEndpoints
 
     public static IEndpointRouteBuilder MapToolEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/api/tools/{capability}", HandleAsync);
+        app.MapPost("/api/tools/{capability}", HandleAsync).AddEndpointFilter(DispatchDeadlineFilter.Native);
         return app;
     }
 
