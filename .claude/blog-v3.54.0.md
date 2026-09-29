@@ -1,5 +1,5 @@
 slug: inferhub-3-54-a-deadline-for-each-kind-of-work
-id: (not yet created — connector answered HTTP 404 on 2026-09-29; parked, not duplicated)
+id: 6abc183a35593e061e9bea74 (EN-visible, BG-hidden; rendered with real <p>, checked)
 title_en: InferHub 3.54: a deadline for each kind of work
 excerpt_en: A chat answer and a five-second video clip used to share one deadline, so a hub that made video had to give chat half an hour too. InferHub 3.54 sets the deadline per capability, and a job that runs out now says which deadline it hit.
 

@@ -1,4 +1,4 @@
-# v3.54.0 social copy (unposted — Iliya posts)
+# v3.54.0 social copy (unposted — Iliya posts; blog is live)
 
 ## Facebook
 
