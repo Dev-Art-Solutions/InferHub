@@ -82,7 +82,26 @@ Zero new `PackageReference`, and `InferHub.Shared.csproj` is still empty.
 
 ## Checked on the published image
 
-(to be filled in after the tag)
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.54.0` and `inferhub-node:3.54.0`, pulled from
+GHCR, on a Docker network. The node ran the echo tool from the repo (`dotnet
+/echo/inferhub-echo-worker.dll`, mounted with a manifest) against the host's Ollama. No GPU.
+
+| Hub config | Request | Result |
+|---|---|---|
+| `Deadlines__echo=3` | `/api/tools/echo`, sleeps 1 s | **200** in 1.19 s |
+| `Deadlines__echo=3` | `/api/tools/echo`, sleeps 6 s | **504** in 3.007 s, `…for echo (3 s, Dispatcher:Deadlines:echo)…`, one warning line with the same |
+| `Deadlines__echo=2` | `/v1/chat/completions`, `qwen2.5:0.5b`, a 300-word story | **200** in 3.51 s. Chat is not held to echo's deadline |
+| `TimeoutSeconds=3`, no deadlines | `/api/tools/echo`, sleeps 6 s | **504** in 3.03 s, names `Dispatcher:TimeoutSeconds` |
+| `TimeoutSeconds=3`, `Deadlines__SPEAK=2` | `/v1/audio/speech` to a worker that takes 5 s | **504** in 2.01 s, OpenAI envelope, `code: "deadline_exceeded"`, names `Dispatcher:Deadlines:SPEAK` (the key as written; lookup is case-insensitive) |
+| `Deadlines__video=0` | startup | exits: `OptionsValidationException: Dispatcher:Deadlines:video must be >= 1 (got 0).` |
+
+**The metrics leak, watched across the interval rather than read once.** `/metrics` was read before
+the request and then every 3 s for 20 s. The node's late answer arrived at about +5 s, inside that
+window. On 3.54.0 after one timed-out `/api/tools/echo`: `in_flight 0`, `failed_total 1` on every
+reading, and the late answer counted nothing. **The same request against the published
+`coordinator:3.53.0`** (`TimeoutSeconds=3`): **`500` with a 0-byte body**, and
+`inferhub_requests_in_flight 1`, `failed_total 0` seven seconds later. So both bugs are real on the
+previous release, not just in a test.
 
 ## Not established, said out loud
 
