@@ -360,6 +360,47 @@ public class ToolSecurityTests
     }
 
     /// <summary>
+    /// Phase 90. The voices to fetch reach the worker trimmed, de-duplicated and without blanks — and
+    /// stated as empty rather than absent by default, so "nobody named one" is one state.
+    /// </summary>
+    [Fact]
+    public void TheVoicesToFetchAreStatedIntoTheWorkersEnvironment()
+    {
+        var options = new ToolOptions
+        {
+            Speech = { Voices = { " bg_BG-dimitar-medium ", "", "en_US-amy-medium", "bg_BG-dimitar-medium" } }
+        };
+
+        Assert.Equal("bg_BG-dimitar-medium,en_US-amy-medium", options.WorkerEnvironment()["INFERHUB_SPEECH_VOICES"]);
+        Assert.Equal(string.Empty, new ToolOptions().WorkerEnvironment()["INFERHUB_SPEECH_VOICES"]);
+    }
+
+    /// <summary>
+    /// A voice id becomes a file name on the node's volume, so anything that could climb out of the
+    /// voice directory is refused at boot, naming the key. The worker refuses it too.
+    /// </summary>
+    [Theory]
+    [InlineData("../etc/passwd")]
+    [InlineData("voices/bg")]
+    [InlineData("bg_BG-dimitar-medium.onnx")]
+    [InlineData("C:\\voice")]
+    public void AVoiceIdThatIsNotAPlainNameFailsStartup(string voice)
+    {
+        var result = new ToolOptionsValidator().Validate(null, new ToolOptions { Speech = { Voices = { voice } } });
+
+        Assert.True(result.Failed);
+        Assert.Contains("Tools:Speech:Voices", result.FailureMessage);
+        Assert.Contains($"'{voice}'", result.FailureMessage);
+    }
+
+    [Fact]
+    public void ShippedVoiceIdsAndABlankEntryAreAccepted()
+        => Assert.True(new ToolOptionsValidator().Validate(null, new ToolOptions
+        {
+            Speech = { Voices = { "bg_BG-dimitar-medium", "en_US-amy-medium", "" } }
+        }).Succeeded);
+
+    /// <summary>
     /// Phase 60. The VRAM budget travels to the worker too, and unlike the seam ceiling it is
     /// <b>absent</b> rather than zero when nothing was declared — 28 D5, because a worker reading
     /// "0" cannot tell "no card" from "nobody said", and the two answers are opposite.

@@ -33,13 +33,15 @@
 # consent; here the consent is having chosen an image whose entire purpose is this, which is why
 # Tools__AllowModelDownload is true HERE and false everywhere else (D4).
 #
-# VOICES ARE NOT FETCHED, because there is no default voice that is right for everyone and a wrong
-# language is worse than none. Drop a Piper .onnx + .onnx.json pair into /data/tools/voices:
+# NO VOICE IS FETCHED UNLESS YOU NAME ONE, because there is no default voice that is right for
+# everyone and a wrong language is worse than none. Since v3.55 you name it and the worker fetches
+# it from the pinned catalogue in /opt/inferhub/voices, checks both files' sha256, and declares it
+# when it lands — no restart, no curl:
 #
-#   docker exec inferhub sh -c 'mkdir -p /data/tools/voices && cd /data/tools/voices && \
-#     curl -fsSLO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx && \
-#     curl -fsSLO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx.json'
-#   docker restart inferhub
+#   docker run ... -e Tools__Speech__Voices__0=bg_BG-dimitar-medium ghcr.io/dev-art-solutions/inferhub-node:tools
+#
+# A voice that is not in the catalogue still works the old way: drop its .onnx + .onnx.json pair
+# into /data/tools/voices and `docker restart`.
 #
 # BUBBLEWRAP (phase 83) is installed here — same category of dependency as ffmpeg/curl above, a
 # package `apt-get install`s, never a `PackageReference` (rule 5) — but it is INERT unless a manifest
@@ -142,6 +144,9 @@ RUN apt-get update \
 COPY python/inferhub_worker/ /opt/inferhub/inferhub_worker/
 COPY python/tools/           /opt/inferhub/tools/
 COPY python/manifests/       /opt/inferhub/tools/manifests/
+# Phase 90: the voice catalogue — pinned entries only, no voice. Nothing is fetched unless
+# Tools__Speech__Voices names one; the piper worker finds this directory next to its own.
+COPY python/voices/          /opt/inferhub/voices/
 
 # The assertion that makes the failure above impossible to ship again: it runs at BUILD time, in
 # the final image, with the exact interpreter and the exact PYTHONPATH the workers will use. A
@@ -151,7 +156,9 @@ ENV PYTHONPATH=/opt/inferhub
 RUN /opt/inferhub/venv/bin/python -c \
       "import faster_whisper, ctranslate2, piper, onnxruntime, sentence_transformers, inferhub_worker; print('tool venv ok')" \
  && /opt/inferhub/venv/bin/python -c \
-      "import py_compile; py_compile.compile('/opt/inferhub/tools/whisper_worker.py', doraise=True); py_compile.compile('/opt/inferhub/tools/piper_worker.py', doraise=True); py_compile.compile('/opt/inferhub/tools/rerank_worker.py', doraise=True); print('workers compile')"
+      "import py_compile; py_compile.compile('/opt/inferhub/tools/whisper_worker.py', doraise=True); py_compile.compile('/opt/inferhub/tools/piper_worker.py', doraise=True); py_compile.compile('/opt/inferhub/tools/rerank_worker.py', doraise=True); print('workers compile')" \
+ && /opt/inferhub/venv/bin/python -c \
+      "import glob, importlib.util, os; s = importlib.util.spec_from_file_location('pw', '/opt/inferhub/tools/piper_worker.py'); pw = importlib.util.module_from_spec(s); s.loader.exec_module(pw); ids = [pw.catalogue_entry(os.path.basename(p)[:-5])['id'] for p in sorted(glob.glob('/opt/inferhub/voices/*.json'))]; assert ids, 'empty voice catalogue'; print('voice catalogue ok:', ', '.join(ids))"
 
 ENV NVIDIA_VISIBLE_DEVICES=all
 # `compute` is not decoration. The container runtime's default is `utility`, which gives a working

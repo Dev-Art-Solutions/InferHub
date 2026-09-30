@@ -228,7 +228,10 @@ a dropped `--gpus` flag and a silent CPU fallback is an afternoon spent blaming 
 ### `piper_worker.py`
 
 Voices are `.onnx` + `.onnx.json` pairs under `INFERHUB_PIPER_VOICES`; the model name is the file's
-stem. Its manifest declares `"models": []`, which is an **open set**: the worker reports what it
+stem. Since v3.55 a voice named in `INFERHUB_SPEECH_VOICES` (`Tools:Speech:Voices`) is fetched from
+the catalogue in `voices/` — one JSON file per voice, a pinned commit and a sha256 per file — on a
+background thread, installed only once both files match, and declared when it lands.
+`bg_BG-dimitar-medium` is a 63 MB Bulgarian voice that runs on a CPU. Its manifest declares `"models": []`, which is an **open set**: the worker reports what it
 found. That is the one place a worker's report may add a model rather than only remove one, and it
 is bounded — the manifest still decides that this tool may `speak` at all, and every name reported
 is a file the operator put on the box. There is no list anybody could write in advance that would

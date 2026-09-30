@@ -255,6 +255,15 @@ public sealed class ToolOptionsValidator : IValidateOptions<ToolOptions>
                 $"'{options.Image.SeamRepair}'; it must be 'off' (the default), 'blend', 'diffuse' or 'any'.");
         }
 
+        foreach (var voice in options.Speech.RequestedVoices().Where(voice => !SpeechToolOptions.IsVoiceId(voice)))
+        {
+            // Refused at boot rather than skipped in the worker's log: the id becomes a file name,
+            // and '../x' is either a typo or somebody testing whether it does.
+            failures.Add(
+                $"{ToolOptions.SectionName}:Speech:{nameof(SpeechToolOptions.Voices)} contains '{voice}'; a voice id is " +
+                "letters, digits, '_' and '-' only (e.g. bg_BG-dimitar-medium).");
+        }
+
         foreach (var (key, value) in new[]
                  {
                      (nameof(ToolOptions.RestartWindow), options.RestartWindow),

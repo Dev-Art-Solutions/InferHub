@@ -708,3 +708,44 @@ strip-shaped raster, so the mesh tests cover the route and never the arithmetic.
 > **What was *not* established:** a real `qwen-360` render cut on a card, and a strip opened in a
 > real engine or viewer. The orientation is pinned to the GL table, not checked by eye. The console's
 > 360° viewer shows a `cubemap` job flat, with its "not a panorama" note, which is accurate for a strip.
+
+### Phase 90 (a named voice fetches itself, and the first one is Bulgarian on a CPU)
+
+**Asked for: a smaller Bulgarian TTS than 84's.** `rhasspy/piper-voices` now has
+`bg_BG-dimitar-medium`: a 63 MB Piper voice under MIT, trained on CC0 data and fine-tuned from
+`lessac`. It runs in `:tools` on a CPU. On this box it synthesised 5.2 s of speech in 1.5 s, and
+espeak-ng phonemised it as Bulgarian (`z d r a v ˈe j t e`). So the voice needed no engine work,
+only a better way onto the box than 42's `docker exec … curl` of two files from `main`.
+
+**D1 — Nothing is fetched unless it is named.** `Tools:Speech:Voices` → `INFERHUB_SPEECH_VOICES`,
+empty by default, stated even when empty (48 D5's licence-grant shape). Phase 42's refusal to ship a
+default voice is **kept**. A default voice is a default language. `Tools:AllowModelDownload` is
+still the internet consent. With it off, `plan_fetches` logs the two pinned URLs, fetches nothing,
+and the old drop-a-pair route still works for any voice.
+
+**D2 — `python/voices/<id>.json` pins a commit and a byte count plus sha256 per file.** `fetch_voice`
+writes `.part` files, verifies **every** file, and only then renames, `.onnx.json` last. A
+substituted config therefore keeps its correct `.onnx` sibling out too, and a crash mid-rename
+leaves an `.onnx` with no sidecar, which `voices()` already skips. The entry must describe exactly
+`<id>.onnx` and `<id>.onnx.json`, so a catalogue file cannot land a voice under a name nobody asked
+for. *Rejected:* `huggingface_hub`. It would be a dependency for two HTTP GETs, and its cache layout
+is not the flat pair Piper loads. `HF_ENDPOINT` is honoured, because it is the name an operator
+behind a mirror already knows.
+
+**D3 — Declared when it lands, with no restart.** It is `diffusion_worker.py`'s v3.14.1 shape: the
+handshake carries `fetching`, and each landing or failure re-declares. That is also what keeps an
+on-demand node from stopping the worker mid-download (v3.52). A solo caller naming a voice still in
+flight gets `invalid_request` saying so. The hub never routes there, because it is not declared yet.
+
+**D4 — A voice id is a file name.** `[A-Za-z0-9_-]+`, refused at boot by `ToolOptionsValidator`
+naming the key, and again by `catalogue_entry` (48 D5's two locks).
+
+**Tested by running the shipped worker.** `VoiceCatalogueTests` (Mesh, `PythonWorkerFact`, since the
+fetch path is stdlib only) serves made-up pairs from a local `http.server` via `HF_ENDPOINT`. The
+tests cover a matching pair landing, a mismatched config keeping both files out, the plan's refusals
+by reason, and the real worker process declaring `fetching` then the voice. Two mutations were
+checked: renaming before verifying, and not declaring `fetching`. Each turns a test red.
+`Dockerfile.tools` / `Dockerfile.all` run `catalogue_entry` over every shipped entry at build time.
+
+> **What was *not* established:** how the voice sounds to a Bulgarian ear. It is a medium-quality,
+> single-speaker Piper voice, and `bg-tts-v5` (84) remains the better one for a box with a card.

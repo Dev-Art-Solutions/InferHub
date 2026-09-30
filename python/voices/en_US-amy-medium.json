@@ -1,0 +1,26 @@
+{
+  "id": "en_US-amy-medium",
+  "language": "en_US",
+  "quality": "medium",
+  "sampleRate": 22050,
+  "repo": "rhasspy/piper-voices",
+  "revision": "c10ece1aade47bb51c153c893d14e5bf8e5b7117",
+  "files": [
+    {
+      "path": "en/en_US/amy/medium/en_US-amy-medium.onnx",
+      "bytes": 63201294,
+      "sha256": "b3a6e47b57b8c7fbe6a0ce2518161a50f59a9cdd8a50835c02cb02bdd6206c18"
+    },
+    {
+      "path": "en/en_US/amy/medium/en_US-amy-medium.onnx.json",
+      "bytes": 4882,
+      "sha256": "95a23eb4d42909d38df73bb9ac7f45f597dbfcde2d1bf9526fdeaf5466977d77"
+    }
+  ],
+  "license": {
+    "id": "MIT",
+    "url": "https://huggingface.co/rhasspy/piper-voices",
+    "dataset": "see https://github.com/MycroftAI/mimic3-voices",
+    "finetunedFrom": "en_US-lessac-medium"
+  }
+}

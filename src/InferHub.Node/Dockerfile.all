@@ -34,7 +34,7 @@
 # starts Whisper. Each switch costs one model load, and that is the trade 85 names.
 #
 # Everything the two parent files say about weights (never baked in, fetched into /data/tools/hf
-# in the background), voices (never fetched), bubblewrap (inert unless a manifest asks) and
+# in the background), voices (fetched only when Tools__Speech__Voices names one), bubblewrap (inert unless a manifest asks) and
 # RequireGpu applies here unchanged. It is not repeated. Read Dockerfile.tools and
 # Dockerfile.diffusion.
 #
@@ -111,6 +111,9 @@ COPY python/inferhub_worker/ /opt/inferhub/inferhub_worker/
 COPY python/tools/           /opt/inferhub/tools/
 COPY python/recipes/         /opt/inferhub/recipes/
 COPY python/manifests/       /opt/inferhub/tools/manifests/
+# Phase 90: the voice catalogue — pinned entries only, no voice. Nothing is fetched unless
+# Tools__Speech__Voices names one; the piper worker finds this directory next to its own.
+COPY python/voices/          /opt/inferhub/voices/
 
 # BOTH parents' assertions, every one of them. A resolution that satisfies pip but leaves either
 # half unable to import fails `docker build` here, not at the first transcription or the first
@@ -120,6 +123,8 @@ RUN /opt/inferhub/venv/bin/python -c \
       "import faster_whisper, ctranslate2, piper, onnxruntime, sentence_transformers, inferhub_worker; print('tool venv ok')" \
  && /opt/inferhub/venv/bin/python -c \
       "import py_compile; py_compile.compile('/opt/inferhub/tools/whisper_worker.py', doraise=True); py_compile.compile('/opt/inferhub/tools/piper_worker.py', doraise=True); py_compile.compile('/opt/inferhub/tools/rerank_worker.py', doraise=True); print('workers compile')" \
+ && /opt/inferhub/venv/bin/python -c \
+      "import glob, importlib.util, os; s = importlib.util.spec_from_file_location('pw', '/opt/inferhub/tools/piper_worker.py'); pw = importlib.util.module_from_spec(s); s.loader.exec_module(pw); ids = [pw.catalogue_entry(os.path.basename(p)[:-5])['id'] for p in sorted(glob.glob('/opt/inferhub/voices/*.json'))]; assert ids, 'empty voice catalogue'; print('voice catalogue ok:', ', '.join(ids))" \
  && /opt/inferhub/venv/bin/python -c \
       "import torch, diffusers, transformers, PIL, inferhub_worker; print('diffusion venv ok')" \
  && /opt/inferhub/venv/bin/python -c \

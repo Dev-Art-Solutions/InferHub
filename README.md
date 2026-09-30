@@ -174,6 +174,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 87 | `inferhub-node:all` — chat, speech and diffusion in one image, taking turns on one card (done) | `v3.52.0` |
 | 88 | A 360° panorama back as a six-face cubemap, asked for per request (done) | `v3.53.0` |
 | 89 | One dispatch deadline per capability — `Dispatcher:Deadlines` (done) | `v3.54.0` |
+| 90 | A named voice fetches itself from a pinned catalogue; the first is Bulgarian on a CPU (done) | `v3.55.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -1150,14 +1151,39 @@ internet, so it is behind a **third** opt-in: `Tools:AllowModelDownload` (defaul
 that needs missing weights fails the **job** with the exact pre-fetch command in the message, and
 the node keeps serving everything else.
 
-Voices are not fetched, because no default voice is right for everyone and a confident answer in the
-wrong language is worse than a refusal. Drop a Piper `.onnx` + `.onnx.json` pair into
-`/data/tools/voices` and restart; the model name is the file's stem.
+**No voice is fetched until you name one**, because no default voice is right for everyone and a
+confident answer in the wrong language is worse than a refusal. Since v3.55 you name it and the
+worker does the rest:
 
 ```bash
-docker exec inferhub sh -c 'mkdir -p /data/tools/voices && cd /data/tools/voices && \
-  curl -fsSLO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx && \
-  curl -fsSLO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx.json'
+docker run -d -e LocalApi__Enabled=true -e Coordinator__Enabled=false \
+  -e LocalApi__ApiKeys__0="$KEY" -e Tools__Speech__Voices__0=bg_BG-dimitar-medium \
+  -v inferhub:/data -p 5081:8080 ghcr.io/dev-art-solutions/inferhub-node:tools
+```
+
+The id is looked up in the voice catalogue (`python/voices/`, `/opt/inferhub/voices` in the image).
+That is one file per voice, pinning a commit of `rhasspy/piper-voices` plus a byte count and a
+sha256 for each of the voice's two files. The worker downloads in the background, renames the pair
+into `/data/tools/voices` **only once both match**, and offers the voice when it lands. There is no
+restart and no `docker exec`. A mismatch is logged with both hashes and nothing is installed.
+`Tools:AllowModelDownload` still has the last word: with it off, the log names the two URLs to fetch
+by hand. `HF_ENDPOINT` in the manifest's `env` points the fetch at a mirror.
+
+| Voice | Language | Size | Runs on |
+|---|---|---|---|
+| `bg_BG-dimitar-medium` | Bulgarian, one speaker, 22.05 kHz | 63 MB | a CPU — 5.2 s of speech in 1.5 s here |
+| `en_US-amy-medium` | US English, one speaker, 22.05 kHz | 63 MB | a CPU |
+
+`bg_BG-dimitar-medium` is the small Bulgarian voice. `bg-tts-v5` (v3.49, the `:tts-bg` image) is
+still the better-sounding one with two speakers, and it wants a card. Any other Piper voice works
+the old way: drop its `.onnx` + `.onnx.json` pair into `/data/tools/voices` and restart. The model
+name is the file's stem.
+
+```bash
+curl http://localhost:5081/v1/audio/speech \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"bg_BG-dimitar-medium","input":"Здравейте! Това е InferHub.","response_format":"wav"}' \
+  --output bg.wav
 ```
 
 ### None of it is kept
@@ -3273,6 +3299,7 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `Tools:StreamChunkBytes` | `65536` | v3.21. Coordinator-side. How much of a streamed attachment travels in one frame. |
 | `Tools:QueueMaxWaitSeconds` | `30` | How long a request waits for a free worker before `503` + `Retry-After`. |
 | `Tools:CancelGraceSeconds` | `20` | v3.15. How long a worker gets to honour a `cancel` frame before it is terminated and restarted. Killing it immediately would be simpler and is wrong: a diffusion worker holds weights that took tens of seconds to load, so killing it to abandon **one** job punishes the **next** caller, and it gets worse with every model your catalogue gains. See [A job that takes two minutes](#a-job-that-takes-two-minutes-v315). |
+| `Tools:Speech:Voices` | `[]` | v3.55. Voice ids from the catalogue (`python/voices/`) to fetch when missing, e.g. `bg_BG-dimitar-medium`. Nothing is fetched unless named. Each file is checked against its pinned sha256 before it is installed, and the voice is offered when it lands, without a restart. Needs `Tools:AllowModelDownload`. An id that is not letters, digits, `_` and `-` fails startup. |
 | `Tools:AllowModelDownload` | `false` | v3.10. May a worker fetch weights it does not have? The **third** consent — `Enabled` is the feature, `Allowed` is these tools, this is reaching the internet from a box you may have air-gapped. `true` in the `:tools` image. With it off, a worker that needs missing weights fails the **job** naming this key and the pre-fetch command. |
 | `Tools:MaxStartAttempts` | `3` | Start attempts per `RestartWindow` before a tool's pool gives up, withdraws its capabilities and drops to probing. |
 | `Tools:RestartWindow` | `00:10:00` | The budget's window. |

@@ -110,6 +110,9 @@ public sealed class ToolOptions
     /// <summary>Image generation (phase 46). Inert unless an image worker is loaded.</summary>
     public ImageToolOptions Image { get; set; } = new();
 
+    /// <summary>Speech voices to fetch (phase 90). Inert unless the piper worker is loaded.</summary>
+    public SpeechToolOptions Speech { get; set; } = new();
+
     /// <summary>
     /// What the node tells every worker about itself. Stated into the child's environment rather
     /// than inherited — the environment is cleared first (phase-41 D3), so this is the only way a
@@ -178,7 +181,11 @@ public sealed class ToolOptions
         // Phase 55. The ceiling the request chooses within, stated into the environment for the same
         // reason the licence grant is: this is the process that would actually spend the steps, and
         // a consent that never reaches it is not enforced anywhere that counts.
-        ["INFERHUB_IMAGE_SEAM_REPAIR"] = SeamRepairModes.Normalise(Image.SeamRepair)
+        ["INFERHUB_IMAGE_SEAM_REPAIR"] = SeamRepairModes.Normalise(Image.SeamRepair),
+
+        // Phase 90. Stated even when empty, like the licence grant: "nobody named a voice" is the
+        // default, and a worker must not be able to tell it apart from a variable that got lost.
+        ["INFERHUB_SPEECH_VOICES"] = string.Join(",", Speech.RequestedVoices())
     };
 
     /// <summary>
@@ -396,4 +403,35 @@ public sealed class ImageToolOptions
     /// for.
     /// </remarks>
     public string? RecipeDirectory { get; set; }
+}
+
+/// <summary>
+/// <c>Tools:Speech</c> — the voices the piper worker fetches (phase 90). Read by the worker; the
+/// node states them into the child's environment and validates their shape, nothing more.
+/// </summary>
+public sealed class SpeechToolOptions
+{
+    /// <summary>
+    /// Catalogue ids (<c>python/voices/*.json</c>) to fetch into the voice directory when they are
+    /// missing. Empty by default, and that is the phase-42 decision kept: <b>no voice is fetched
+    /// unless it is named</b>, because a default voice is a default language.
+    /// </summary>
+    /// <remarks>
+    /// Naming a voice says <em>which</em>; <c>Tools:AllowModelDownload</c> still says whether this
+    /// box may reach the internet at all, and with it off the worker logs the two URLs instead of
+    /// fetching. Every file is checked against the sha256 its catalogue entry pins before it is
+    /// renamed into place, so a truncated or substituted download never becomes a voice.
+    /// </remarks>
+    public List<string> Voices { get; set; } = new();
+
+    /// <summary>Trimmed, blanks dropped (an image's list can only be cleared by setting "").</summary>
+    public IEnumerable<string> RequestedVoices() =>
+        Voices.Where(voice => !string.IsNullOrWhiteSpace(voice)).Select(voice => voice.Trim()).Distinct(StringComparer.Ordinal);
+
+    /// <summary>
+    /// A voice id becomes a file name on the volume, so it is held to the shape Piper's ids have.
+    /// The worker checks the same thing; this is the refusal the operator sees at boot.
+    /// </summary>
+    public static bool IsVoiceId(string voice) =>
+        voice.Length > 0 && voice.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-');
 }
