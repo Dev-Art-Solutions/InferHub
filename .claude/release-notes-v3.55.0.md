@@ -70,7 +70,19 @@ the fetch is Python's standard library.
 
 ## Checked on the published image
 
-*Pending: this section is filled in once the tag's images are published and pulled.*
+`ghcr.io/dev-art-solutions/inferhub-node:3.55.0-tools`, pulled from GHCR and run in solo mode on an
+empty volume, with no GPU. It was configured by environment variables only: no `docker exec`, no
+restart, no files put in by hand.
+
+| Step | Result |
+|---|---|
+| `Tools__Speech__Voices__0=../evil` | the node exits at startup: `Tools:Speech:Voices contains '../evil'; a voice id is letters, digits, '_' and '-' only` |
+| `Tools__Speech__Voices__0=bg_BG-dimitar-medium`, empty volume | worker logs `offering voices: none yet … fetching: bg_BG-dimitar-medium`, then `fetching … from rhasspy/piper-voices@c10ece1aade4`, then `is ready` within seconds. `/data/tools/voices` holds exactly the pair (63 221 984 + 5 123 bytes, owned by `app`), no `.part` left behind |
+| `/v1/audio/speech`, 79 Bulgarian characters, `wav` | **200**, 5.11 s of 22.05 kHz audio, real signal (RMS 2946). The first call took 1.24 s (voice load), the second 0.24 s |
+| the same, `stream_format: audio`, `pcm` | **200**, first byte at **0.11 s**, `X-InferHub-Audio-Sample-Rate: 22050` |
+| `docker restart` | the voice is offered at once and nothing is fetched again |
+
+The build-time catalogue assertion ran in CI for both `:tools` and `:all` (the publish jobs succeeded).
 
 ## Not established, said out loud
 
