@@ -1369,14 +1369,8 @@ def seam_diffuse(request, recipe, pipe, image, *, prompt, negative, guidance, ge
     try:
         result = inpaint(**arguments)
     except TypeError as error:
-        # The same retry run_batch makes: the picture is what was asked for and the progress bar is
-        # not. Anything else is a real failure and is raised.
-        if "callback_on_step_end" not in str(error) and "negative_prompt" not in str(error):
-            raise
-
-        arguments.pop("callback_on_step_end", None)
-        arguments.pop("negative_prompt", None)
-        result = inpaint(**arguments)
+        # The same retry run_batch makes: the progress bar is optional, the negative prompt is not.
+        result = inpaint(**without_unsupported(error, arguments))
 
     return Image.fromarray(numpy.roll(numpy.asarray(result.images[0].convert("RGB")), -shift, axis=1))
 
@@ -1468,6 +1462,72 @@ CUBEMAP = "cubemap"
 # The OpenGL cube-map face order (GL_TEXTURE_CUBE_MAP_POSITIVE_X + 0..5), which is also the order
 # three.js, Babylon, KTX and DDS use. Left to right in the strip.
 CUBEMAP_FACES = ("px", "nx", "py", "ny", "pz", "nz")
+
+
+def resolve_negative(recipe: dict[str, Any], payload: dict[str, Any], guidance: float) -> str | None:
+    """
+    The caller's negative prompt, or a refusal before anything loads (phase-91 D2).
+
+    A negative prompt only acts through classifier-free guidance, and a pipeline that is not running
+    it ignores the argument **without saying so**. Two cases, both measured on the pinned wheel:
+
+    * The recipe says the model has no negative prompt at all (``"negativePrompt": false``). An LCM
+      distils guidance into the UNet and its ``__call__`` swallows the argument through
+      ``**kwargs``; FLUX.1-schnell is guidance-distilled and only uses one under ``true_cfg_scale``,
+      which its recipe never sets.
+    * The request's guidance is 1 or less. Every other pipeline in the catalogue gates its
+      unconditional pass on ``guidance > 1`` (``do_classifier_free_guidance``, or
+      ``true_cfg_scale > 1`` for Qwen) — so ``sdxl-turbo`` at its default 0.0 drops it.
+
+    Ignoring it hands back a picture of exactly what the caller said they did not want, with a 200
+    on it. The refusal names the recipe and what would make it act.
+    """
+    negative = payload.get("negative_prompt") or None
+
+    if not negative:
+        return None
+
+    if recipe.get("negativePrompt") is False:
+        raise ToolError(
+            f"'{recipe['id']}' cannot take a negative_prompt: its pipeline "
+            f"({recipe.get('pipeline')}) has no unconditional pass to steer away from, and would "
+            "ignore it. Send the request without one, or use a recipe that takes it.",
+            ERROR_INVALID_REQUEST,
+        )
+
+    if guidance <= 1:
+        raise ToolError(
+            f"a negative_prompt only acts when guidance is above 1, and this request's guidance is "
+            f"{guidance:g} ('{recipe['id']}' defaults to "
+            f"{(recipe.get('defaults') or {}).get('guidance', 5.0):g}). Raise guidance or drop the "
+            "negative prompt; it would otherwise be ignored.",
+            ERROR_INVALID_REQUEST,
+        )
+
+    return negative
+
+
+def without_unsupported(error: TypeError, arguments: dict[str, Any]) -> dict[str, Any]:
+    """
+    Drop the progress callback a pipeline does not take; never the negative prompt.
+
+    Before phase 91 both were dropped on the same retry, which made a negative prompt a pipeline
+    could not honour disappear with nothing but a log line to say so. The progress bar is optional;
+    what the caller asked the picture not to contain is not.
+    """
+    if "negative_prompt" in str(error) and "negative_prompt" in arguments:
+        raise ToolError(
+            f"this model's pipeline does not take a negative_prompt ({error}). Send the request "
+            "without one.",
+            ERROR_INVALID_REQUEST,
+        )
+
+    if "callback_on_step_end" not in str(error):
+        raise error
+
+    retry = dict(arguments)
+    retry.pop("callback_on_step_end", None)
+    return retry
 
 
 def resolve_reproject(recipe: dict[str, Any], payload: dict[str, Any]) -> str | None:
@@ -1781,15 +1841,11 @@ def run_batch(
         try:
             result = pipe(**arguments)
         except TypeError as error:
-            # A pipeline class that takes neither callback nor negative prompt. Retry once without
-            # the optional arguments rather than failing the job: the picture is what was asked for
-            # and the progress bar is not.
-            if "callback_on_step_end" not in str(error) and "negative_prompt" not in str(error):
-                raise
-
-            log(f"{request.model}: {type(pipe).__name__} does not take {error}; retrying without it")
-            arguments.pop("callback_on_step_end", None)
-            arguments.pop("negative_prompt", None)
+            # A pipeline class that takes no progress callback. Retry once without it rather than
+            # failing the job: the picture is what was asked for and the progress bar is not. A
+            # negative prompt it cannot take is refused instead (phase-91 D2), never dropped.
+            arguments = without_unsupported(error, arguments)
+            log(f"{request.model}: {type(pipe).__name__} does not take a progress callback; retrying without it")
             result = pipe(**arguments)
 
         picture = result.images[0]
@@ -1910,6 +1966,7 @@ def generate(request: Request):
 
     guidance = payload.get("guidance")
     guidance = float(guidance) if guidance is not None else float(defaults.get("guidance", 5.0))
+    negative = resolve_negative(recipe, payload, guidance)
 
     # Asked for, and permitted, before a single step runs — a refusal after two minutes of GPU is
     # the worst possible place to discover a header the operator never allowed.
@@ -1924,7 +1981,7 @@ def generate(request: Request):
         recipe,
         pipe,
         prompt=prompt,
-        negative=payload.get("negative_prompt"),
+        negative=negative,
         count=int(payload.get("n") or 1),
         seed=payload.get("seed"),
         steps=steps,
@@ -2003,6 +2060,7 @@ def generate_video(request: Request):
 
     guidance = payload.get("guidance")
     guidance = float(guidance) if guidance is not None else float(defaults.get("guidance", 5.0))
+    negative = resolve_negative(recipe, payload, guidance)
 
     seed = payload.get("seed")
     seed = int(seed) if seed is not None else int(torch.seed() % (2 ** 31))
@@ -2026,8 +2084,8 @@ def generate_video(request: Request):
         "callback_on_step_end": on_step,
     }
 
-    if payload.get("negative_prompt"):
-        arguments["negative_prompt"] = payload["negative_prompt"]
+    if negative:
+        arguments["negative_prompt"] = negative
 
     result = pipe(**arguments)
     produced = result.frames[0]
@@ -2220,6 +2278,7 @@ def edit(request: Request, operation: str):
 
     guidance = payload.get("guidance")
     guidance = float(guidance) if guidance is not None else float(defaults.get("guidance", 5.0))
+    negative = resolve_negative(recipe, payload, guidance)
 
     prompt = "" if operation == VARIATION else (payload.get("prompt") or "")
 
@@ -2241,7 +2300,7 @@ def edit(request: Request, operation: str):
         recipe,
         working,
         prompt=prompt,
-        negative=payload.get("negative_prompt"),
+        negative=negative,
         count=int(payload.get("n") or 1),
         seed=payload.get("seed"),
         steps=steps,
@@ -2604,7 +2663,7 @@ def main() -> None:
         raise SystemExit(
             f"[{TOOL_ID}] no CUDA device is reachable and Tools:Image:RequireGpu is true, so this "
             "worker will not start. Set Tools:Image:RequireGpu=false to run on the CPU "
-            "(sd15 at 512x512 is tens of seconds; sdxl at 1024x1024 is minutes)."
+            "(lcm-dreamshaper at 512x512 is seconds, sd15 tens of seconds; sdxl at 1024x1024 is minutes)."
         )
 
     _offerable = offered(recipes, _device)

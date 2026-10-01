@@ -1256,7 +1256,8 @@ capability kind, and the router already knew how to find `(capability, model)`.
 | Recipe | Params | Steps | VRAM | Unquantized | Licence | Out of the box? |
 |---|---|---:|---:|---:|---|---|
 | `sdxl` | 2.6B UNet | 30 | ~8 GB fp16 | — | CreativeML OpenRAIL++-M | yes |
-| `sd15` | 0.9B | 30 | ~4 GB fp16 | — | CreativeML OpenRAIL-M | yes — the only CPU-viable one |
+| `sd15` | 0.9B | 30 | ~4 GB fp16 | — | CreativeML OpenRAIL-M | yes — CPU-viable |
+| `lcm-dreamshaper` | 0.9B, an LCM of Dreamshaper 7 | **4** | ~3.5 GB fp16 | — | CreativeML OpenRAIL-M (inherited) | yes — **the fast one on a CPU**, see [below](#a-picture-on-a-cpu-in-seconds-v356) |
 | `flux-schnell` | 12B | **4** | ~12 GB nf4 | **~33 GB** | Apache-2.0 | **needs an HF token** — gated repo |
 | `qwen-image` | 20B + 8.3B encoder | 30 | ~19 GB nf4 | **~60 GB** | Apache-2.0 | yes |
 | `sd35-medium` | 2.5B MMDiT | 40 | ~16 GB bf16 | — | Stability AI Community | **licence + HF token** |
@@ -1293,6 +1294,52 @@ Recipes are `python/recipes/*.json` — a repo, a **pinned commit sha**, the var
 class, the aspect buckets, the VRAM figure, the licence and the quantization. Drop one in and restart
 the tool. A recipe with no pinned revision is skipped and logged, because "which weights were in
 3.16.0" has to have an answer.
+
+### A picture on a CPU in seconds (v3.56)
+
+`lcm-dreamshaper` is `SimianLuo/LCM_Dreamshaper_v7`, a Latent Consistency Model distilled from
+Dreamshaper 7 (an SD 1.5 fine-tune). It has the same 0.9B UNet as `sd15` and needs **4 steps instead
+of 30**. On a CPU-only node (`Tools:Image:RequireGpu=false`) it is offered with no other setting:
+
+```json
+{ "model": "lcm-dreamshaper", "prompt": "a lighthouse on a rocky coast at sunset, oil painting", "size": "512x512" }
+```
+
+Measured on a 64-core box, through the worker's own fetch and load code under the pinned
+`torch 2.9.1+cpu`:
+
+| Threads | 512×512, 4 steps |
+|---:|---:|
+| 4 (what `diffusion.json`'s `OMP_NUM_THREADS=4` gives) | 27 s |
+| 16 | 9.2 s |
+| 32 | 5.9 s |
+
+768×768 took 36 s at 8 threads. The download is ~4.3 GB: the repo has no fp16 files, and its ONNX
+copies and single-file checkpoint are never fetched. The licence is declared as **CreativeML
+OpenRAIL-M**, inherited from Dreamshaper 7 and SD 1.5, even though the repo is tagged MIT. It is the
+stricter of the two readings. Both are permissive here, so nothing is gated.
+
+**It has no negative prompt, and it would not tell you.** An LCM distils guidance into the model,
+and its pipeline accepts `negative_prompt` through `**kwargs` and ignores it. So a request to
+`lcm-dreamshaper` that carries one is a **400** naming the recipe.
+
+### A negative prompt that would be ignored is refused (v3.56)
+
+A negative prompt only does anything through classifier-free guidance, and a pipeline that is not
+running guidance drops it without a word. Until v3.56 that meant a `200` and a picture of exactly
+what you asked it to leave out. Now it is a **400** that says why, before the model loads, in two
+cases:
+
+- **The model has none.** `lcm-dreamshaper` and `flux-schnell` (guidance-distilled; its pipeline
+  only uses one under `true_cfg_scale`, which the recipe does not set). Recipes say so with
+  `"negativePrompt": false`.
+- **This request's guidance is 1 or less.** Every other pipeline in the catalogue skips the
+  unconditional pass at `guidance <= 1` (read from the pinned `diffusers==0.36.0`), so `sdxl-turbo`
+  at its default 0.0 ignored every negative prompt it was sent. Raise
+  `X-InferHub-Image-Guidance` above 1, or drop the negative prompt.
+
+The worker's retry for a pipeline that rejects an argument also stopped dropping `negative_prompt`
+along with the progress callback. The callback may go; the negative prompt is refused instead.
 
 ### Quantization is a property of the model, not of the request
 

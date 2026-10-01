@@ -1,0 +1,21 @@
+{
+  "id": "lcm-dreamshaper",
+  "notes": "Phase 91, the small and fast one: a picture on a CPU in seconds rather than minutes. SimianLuo/LCM_Dreamshaper_v7 is a Latent Consistency Model distilled from Dreamshaper 7, itself a fine-tune of Stable Diffusion 1.5 — so it is sd15-sized (0.86B UNet) and needs 4 steps where sd15 needs 30. FOUR FACTS, READ RATHER THAN GUESSED. (a) THE LICENCE DECLARED HERE IS THE INHERITED ONE. The repo is tagged MIT, but its weights are distilled from Dreamshaper 7 and SD 1.5, both CreativeML OpenRAIL-M, whose use restrictions travel with derivatives. Declaring the stricter of the two is the conservative reading; it is permissive in this catalogue's sense either way, so nothing is gated. (b) GUIDANCE IS NOT CLASSIFIER-FREE GUIDANCE HERE. LCM distils CFG into the UNet's input as a w-embedding; `guidance_scale` selects which w the model was asked to imitate (8.0 is upstream's example), and there is no unconditional pass, so a bigger number does not cost a second forward pass the way it does on sd15. (c) THERE IS NO NEGATIVE PROMPT, AND THE PIPELINE DOES NOT SAY SO. LatentConsistencyModelPipeline.__call__ in the pinned diffusers==0.36.0 has no negative_prompt parameter but does take **kwargs, so a negative_prompt is ACCEPTED AND IGNORED: no TypeError, no warning, and its own source says 'LCMs currently do not support negative prompts' before calling encode_prompt with negative_prompt=None. Measured on the pinned wheel, not read. `negativePrompt: false` is therefore the only thing between a caller's 'no text in the picture' and a 200 that ignored it: the worker refuses the request, naming this recipe (phase-91 D2). (d) NO fp16 FILES EXIST, so there is no `variant`: the UNet is 3.4 GB of fp32 and the download is ~4.3 GB (the repo's ONNX copies and its single-file checkpoint are not component folders and are never fetched). On a card it is cast to float16 and vramMiB is that figure plus activations at 768x768 (ARITHMETIC, not measured on a card). On a CPU it runs at float32, MEASURED with the worker's own fetch and _from_pretrained under the pinned torch 2.9.1+cpu: 4.27 GB on disk, a 512x512 picture in 27 s at 4 threads (what diffusion.json's OMP_NUM_THREADS=4 gives), 9.2 s at 16 and 5.9 s at 32; 768x768 in 36 s at 8 threads.",
+  "repo": "SimianLuo/LCM_Dreamshaper_v7",
+  "revision": "a85df6a8bd976cdd08b4fd8f3b73f229c9e54df5",
+  "pipeline": "LatentConsistencyModelPipeline",
+  "license": {
+    "id": "CreativeML-OpenRAIL-M",
+    "permissive": true,
+    "url": "https://huggingface.co/SimianLuo/LCM_Dreamshaper_v7"
+  },
+  "operations": ["generate"],
+  "defaults": { "steps": 4, "guidance": 8.0, "size": "512x512" },
+  "sizes": ["512x512", "768x768"],
+  "maxSteps": 8,
+  "negativePrompt": false,
+  "vramMiB": 3500,
+  "dtype": "float16",
+  "quantization": "none",
+  "cpuViable": true
+}

@@ -284,8 +284,8 @@ public class RecipeCatalogueTests : IDisposable
 
         Assert.Equal(
             [
-                "cogvideox-2b", "flux-schnell", "qwen-360", "qwen-image", "sd15", "sd35-medium",
-                "sdxl", "sdxl-turbo", "wan-t2v-1.3b", "wan-t2v-14b-720p"
+                "cogvideox-2b", "flux-schnell", "lcm-dreamshaper", "qwen-360", "qwen-image", "sd15",
+                "sd35-medium", "sdxl", "sdxl-turbo", "wan-t2v-1.3b", "wan-t2v-14b-720p"
             ],
             shipped.Keys.OrderBy(id => id, StringComparer.Ordinal).ToArray());
 

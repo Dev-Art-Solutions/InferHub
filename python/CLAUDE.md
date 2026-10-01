@@ -749,3 +749,43 @@ checked: renaming before verifying, and not declaring `fetching`. Each turns a t
 
 > **What was *not* established:** how the voice sounds to a Bulgarian ear. It is a medium-quality,
 > single-speaker Piper voice, and `bg-tts-v5` (84) remains the better one for a box with a card.
+
+### Phase 91 (a picture on a CPU in seconds, and a negative prompt that would be ignored is refused)
+
+**Asked for: "something small for text to image".** `lcm-dreamshaper` is
+`SimianLuo/LCM_Dreamshaper_v7`, a Latent Consistency Model of Dreamshaper 7 (an SD 1.5 fine-tune).
+It has `sd15`'s 0.86B UNet, needs 4 steps, and runs with no unconditional pass. It was measured
+through this worker's own `fetch` and `_from_pretrained` under the pinned `torch 2.9.1+cpu`: 4.27 GB
+on disk, 512² in 27 s at the manifest's 4 threads, 9.2 s at 16 and 5.9 s at 32. The picture was
+looked at, and it was the lighthouse that was asked for.
+
+**D1 — The licence declared is the inherited one.** The repo is tagged MIT; the weights are
+distilled from two CreativeML OpenRAIL-M models whose use restrictions travel with derivatives. The
+stricter reading is the true description. Both are permissive here, so nothing is gated.
+
+**D2 — A negative prompt that cannot act is refused, never ignored. This is the load-bearing one,
+and it was found by running the model, not by reading it.** The first draft assumed LCM's pipeline
+would raise `TypeError` on `negative_prompt`, which the worker's retry then *dropped* along with the
+progress callback. The pinned wheel showed something worse: LCM's `__call__` takes `**kwargs` and
+**swallows it with no error at all**. Then the same question was asked of the rest of the catalogue,
+and every pipeline gates its unconditional pass on `guidance > 1` (`do_classifier_free_guidance`;
+`true_cfg_scale > 1` for Qwen and FLUX). So **`sdxl-turbo` at its default 0.0 had ignored every
+negative prompt since v3.16**, and `flux-schnell`, whose recipe never sets `true_cfg_scale`, always
+had. `resolve_negative(recipe, payload, guidance)` refuses before the model loads, on generate,
+edit and video. It refuses on `"negativePrompt": false` (`lcm-dreamshaper`, `flux-schnell`) or on
+`guidance <= 1`, and the refusal says what would make it act. `without_unsupported` replaces both
+retries and drops only the callback. *Rejected:* inspecting the pipeline's signature. LCM's says
+yes through `**kwargs`, so the recipe is the only place the fact can live.
+
+**D3 — `guidance` keeps its name on an LCM and changes its meaning.** It selects the distilled
+w-embedding (8.0 is upstream's); there is no second forward pass behind it. The recipe's notes say
+so, and `guidanceParameter` stays absent because the argument is still `guidance_scale`.
+
+**Tested by running the shipped worker's functions.** `NegativePromptTests` (Node,
+`PythonNumpyFact`) cover both refusals, the turbo default, Qwen passing at 4.0, the retry that
+keeps the negative prompt, and the CPU offer. Three mutations turn a test red: removing the recipe
+check, removing the retry's refusal, and loosening `<= 1`.
+
+> **What was *not* established:** `lcm-dreamshaper` on a card (`vramMiB` 3500 is arithmetic), a
+> run through the published `:diffusion` image, and `sdxl-turbo` / `flux-schnell` actually ignoring a
+> negative prompt in a render. Those two were read from the pinned source, not generated.

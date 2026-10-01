@@ -269,8 +269,8 @@ public sealed class ImageToolOptions
     /// A refusal at startup costs one log line and is read by the person who can fix it.
     /// </para>
     /// <para>
-    /// Unset it and only recipes the worker marks <c>cpuViable</c> are declared — SD 1.5 at 512², and
-    /// not SDXL at 1024². <see cref="AllowSlowCpu"/> is the third step for an operator who has read
+    /// Unset it and only recipes the worker marks <c>cpuViable</c> are declared — SD 1.5 and its 4-step
+    /// LCM (v3.56) at 512², and not SDXL at 1024². <see cref="AllowSlowCpu"/> is the third step for an operator who has read
     /// both numbers and wants the slow one anyway: their hardware, their call, with a warning per
     /// job.
     /// </para>

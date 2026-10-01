@@ -16,7 +16,7 @@ is for.
 | Recipe | Params | Steps | VRAM | Licence | Operations | Runs out of the box? |
 |---|---|---|---|---|---|---|
 | `sdxl` | 2.6B UNet | 30 | ~8 GB, fp16 | CreativeML OpenRAIL++-M | generate, **edit, variation** | yes |
-| `sd15` | 0.9B | 30 | ~4 GB, fp16 | CreativeML OpenRAIL-M | generate, **edit, variation** | yes — and the only CPU-viable one |
+| `sd15` | 0.9B | 30 | ~4 GB, fp16 | CreativeML OpenRAIL-M | generate, **edit, variation** | yes — CPU-viable (30 steps; `lcm-dreamshaper` is the fast one) |
 | `flux-schnell` | 12B | **4** | ~12 GB at nf4 (**~33 GB** at bf16) | Apache-2.0 | generate | **no — HF token**, gated repo |
 | `qwen-image` | 20B + 8.3B text encoder | 30 | ~19 GB at nf4 (**~60 GB** at bf16) | Apache-2.0 | generate | yes |
 | `sd35-medium` | 2.5B MMDiT | 40 | ~16 GB, bf16 | Stability AI Community | generate | **no — licence + HF token** |
@@ -25,6 +25,7 @@ is for.
 | `wan-t2v-1.3b` | 1.3B DiT + **11B text encoder** | 30 | ~15.5 GB, bf16 | Apache-2.0 | generate (**video**) | yes — 480p, 2–5 s, ~29 GB to download |
 | `wan-t2v-14b-720p` | 14B DiT + the same encoder | 30 | **~24 GB at nf4** (~50 GB at bf16) | Apache-2.0 | generate (**video**) | **not on a 24 GB card** — 720p, 2–5 s, ~75 GB to download |
 | `cogvideox-2b` | 1.6B DiT + 4.7B T5 | 50 | ~16 GB, fp16 | Apache-2.0 | generate (**video**) | yes — 720×480, **8 fps**, one 6 s offer, ~13 GB to download |
+| `lcm-dreamshaper` | 0.9B UNet (an LCM of Dreamshaper 7 / SD 1.5) | **4** | ~3.5 GB, fp16 | CreativeML OpenRAIL-M (inherited; the repo says MIT) | generate | yes — **CPU-viable**, no negative prompt, ~4.3 GB to download |
 
 **`wan-t2v-14b-720p` is the first recipe this project ships that does not fit a 24 GB card**, and
 that is the VRAM gate working rather than a packaging mistake: a node with 24 GB does not declare it,
@@ -85,6 +86,11 @@ bare `401` that reads as "the model is gone".
   "trigger": "360 degree panorama with equirectangular projection",
   "autoTrigger": true,             // append the trigger when the prompt lacks it
   "guidanceParameter": "true_cfg_scale",  // default: guidance_scale
+
+  // Phase 91, optional. false = the pipeline has no negative prompt (an LCM distils guidance into
+  // the model), so a request that carries one is REFUSED naming the recipe, before anything loads.
+  // Absent = true. Before 91 a pipeline that rejected the argument had it silently dropped.
+  "negativePrompt": false,
 
   // Phase 57, and all six are optional. Absent `media` means `image`, which is why the seven
   // recipes that predate video did not change by a byte.
