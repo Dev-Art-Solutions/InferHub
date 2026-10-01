@@ -79,7 +79,23 @@ Zero new `PackageReference`, `InferHub.Shared.csproj` is still empty, and no new
 
 ## Checked on the published image
 
-*Pending: this section is filled in once the tag's images are published and pulled.*
+`ghcr.io/dev-art-solutions/inferhub-node:3.56.0-diffusion`, pulled from GHCR and run as a solo node
+with no GPU (`Tools__Image__RequireGpu=false`), on an empty volume.
+
+| Step | Result |
+|---|---|
+| startup | `device: cpu`; of 11 recipes, `lcm-dreamshaper` and `sd15` offered; `lcm-dreamshaper` fetched in the background and declared `ready` |
+| `/v1/images/generations`, `lcm-dreamshaper`, 512×512, seed 7 | **200** in 20.0 s and 19.1 s. The worker logged `4 steps on cpu … generate 19.6s` / `19.1s` at the manifest's 4 threads |
+| the same, compared with the run outside the container | the same lighthouse: largest pixel difference **1/255**, mean 0.000 |
+| `negative_prompt` to `lcm-dreamshaper` | **400** in 15 ms, `invalid_request`: `'lcm-dreamshaper' cannot take a negative_prompt: its pipeline (LatentConsistencyModelPipeline) has no unconditional pass…` |
+| `negative_prompt` to `sd15` with `X-InferHub-Image-Guidance: 1` | **400** in 9 ms: `a negative_prompt only acts when guidance is above 1, and this request's guidance is 1 ('sd15' defaults to 7.5)…`, refused before any weights are touched |
+
+19 s in the container against 27 s outside at the same thread count: same code, a different OS
+and thread scheduler. Both are recorded rather than averaged.
+
+**Found while doing this, not an InferHub bug:** Docker Desktop's Resource Saver stopped its VM after
+5 idle minutes and the VM did not come back (`connect tcp 192.168.65.7:2375: no route to host`).
+That is why every check this week needed a Docker restart.
 
 ## Not established, said out loud
 
