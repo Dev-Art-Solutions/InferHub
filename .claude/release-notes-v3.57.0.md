@@ -72,8 +72,36 @@ Two new optional recipe fields, both documented in `python/recipes/README.md`:
 Zero new `PackageReference`, `InferHub.Shared.csproj` is still empty, no new pip requirement, and
 no C# changed.
 
+## Checked on the published image
+
+`ghcr.io/dev-art-solutions/inferhub-node:3.57.0-diffusion` was pulled from GHCR and checked first:
+it carries `edit_steps` in the worker and `"inpaint": false` / `"strengthKeepsSteps": true` in the
+recipe. It was then run as a solo node with no GPU (`Tools__Image__RequireGpu=false`) on an empty
+volume, and called over HTTP.
+
+| Step | Result |
+|---|---|
+| startup | `device: cpu`; `lcm-dreamshaper` fetched in the background, then `offering recipes: lcm-dreamshaper (editing: lcm-dreamshaper; …)`. It is declared for editing, so routing reaches it |
+| `/v1/images/edits`, strength 0.5, seed 7 | **200** in 24.1 s; worker: `strength 0.50 (4 of 4 steps) … generate 23.5s` |
+| `/v1/images/edits`, no strength header (default), seed 7 | **200** in 23.3 s; `strength 0.75 (4 of 4 steps)` |
+| `/v1/images/edits`, strength 0.25 | **200**; `strength 0.25 (4 of 4 steps)` |
+| `/v1/images/variations`, seed 7 | **200** in 22.6 s; `variation … strength 0.75 (4 of 4 steps)` |
+| the three seeded pictures, compared with the run outside the container | the same pictures: largest pixel difference **1/255**, mean 0.000 |
+| an edit with a `mask` | **400** in 32 ms: `'lcm-dreamshaper' edits without a mask only: its pipeline (LatentConsistencyModelPipeline) has no inpainting variant…` |
+| an edit with a `negative_prompt` | **400** in 17 ms (the v3.56 refusal, now on the edit route too) |
+| `STEP COUNT MISMATCH` in the node log | **none**, across all four runs |
+
+About 23 s per edit in the container is at the shipped manifest's 4 threads. The ~10 s above is at
+16 threads.
+
+**Found while doing this, not an InferHub bug:** Docker Desktop's engine died twice during the
+check, the second time with the keepalive loop running, and needed a full restart each time.
+
 ## Not established, said out loud
 
+- **The hub's usage ledger for an LCM edit.** The check ran on a solo node, which keeps no ledger.
+  The `steps` that the hub meters come from the worker's result frame, which said 4, and the tests
+  cover that path. A coordinator was not in the loop.
 - **An `lcm-dreamshaper` edit on a graphics card.**
 - **Variation quality** beyond the one picture looked at. A lower default strength for variations
   was considered and not made.
