@@ -789,3 +789,44 @@ check, removing the retry's refusal, and loosening `<= 1`.
 > **What was *not* established:** `lcm-dreamshaper` on a card (`vramMiB` 3500 is arithmetic), a
 > run through the published `:diffusion` image, and `sdxl-turbo` / `flux-schnell` actually ignoring a
 > negative prompt in a render. Those two were read from the pinned source, not generated.
+
+### Phase 92 (editing on a CPU: an LCM edits without a mask, and is billed for every step it runs)
+
+**The follow-on 91 named as a non-goal.** `lcm-dreamshaper` declares `edit` and `variation`.
+`AutoPipelineForImage2Image.from_pipe` derives `LatentConsistencyModelImg2ImgPipeline` over the
+same UNet (`i2i.unet is pipe.unet`), so there is no second load. It was run through the worker's
+own `edit()` on the pinned wheel at 16 threads: a 512² edit or variation took ~10 s, and the
+pictures were looked at. The default strength 0.75 was chosen from them.
+
+**D1 — `edit` covers both inpainting and img2img, and an LCM has only the second.**
+`AutoPipelineForInpainting` has no `lcm` entry, and `from_pipe` raises `ValueError`. The recipe
+says `"inpaint": false`, and `require_inpaint` refuses a masked edit **before `load()`** (8 ms,
+against `derived_pipeline`'s refusal after a 4 GB read). *Rejected:* a third capability kind for
+inpainting. The router would then need to know about masks, and `capability_frames`' one-split
+argument (50 D1) holds only while the split is about what a model *is*, not what a request carries.
+
+**D2 — The bill is what ran, and an LCM runs every step. This is the load-bearing one, found by
+counting callbacks.** `edit()` billed `int(steps × strength)` (50 D3), which is right for every
+SD-family scheduler. `LCMScheduler.set_timesteps` uses strength to pick the *start* (timesteps
+499→139 at 0.5, 239→59 at 0.25) and runs all of `steps`. The old arithmetic billed 2 for 4 and
+sent progress frames reading 3 of 2. That was reproduced on the real pipeline by turning the flag
+off. `"strengthKeepsSteps": true` → `edit_steps()` returns `steps`. *Rejected:* keying on
+`recipe["pipeline"]`. A fact about a scheduler is a recipe fact, the same way 91 D2 put
+`negativePrompt` there.
+
+**D3 — `run_batch` counts the callbacks and logs a mismatch; it does not correct the bill.**
+The first progress frame already carried the total (55 D6), so a corrected payload would disagree
+with the frames the client watched. The log (`STEP COUNT MISMATCH`, naming the pipeline class) is
+what turns the next unmeasured family into a line in the node's log rather than twelve releases of
+wrong metering.
+
+**Tested** by `CpuImageEditTests` (Node, `PythonNumpyFact`), which drives `edit()` and `run_batch()`
+with a stand-in `torch` and a pipeline that fires a chosen number of callbacks. Three mutations each
+turn exactly one test red: ignoring the flag, skipping `require_inpaint`, and silencing the
+mismatch check.
+
+> **What was *not* established:** an LCM edit on a card, and the published `:diffusion` image doing
+> one. Both are checked in the release notes, not here. **Looked at, not fixed:** a variation at the
+> default 0.75 keeps the palette and the coastline and *replaces the subject*. The test lighthouse
+> came back as a castle. With no prompt to hold it, strength alone decides how much survives.
+> Callers who want the same subject should send a lower `X-InferHub-Image-Strength`.

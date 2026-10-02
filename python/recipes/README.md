@@ -1,4 +1,4 @@
-# Image recipes (phase 46, catalogued in phase 48, adapters in phase 49, editing in phase 50)
+# Image recipes (phase 46, catalogued in phase 48, adapters in phase 49, editing in phase 50, CPU editing in phase 92)
 
 A **recipe** is a model the diffusion worker can run. A **manifest** (`../manifests/diffusion.json`)
 is the *tool* — the argv, the environment, the timeouts, and the thing `Tools:Allowed` names.
@@ -25,7 +25,7 @@ is for.
 | `wan-t2v-1.3b` | 1.3B DiT + **11B text encoder** | 30 | ~15.5 GB, bf16 | Apache-2.0 | generate (**video**) | yes — 480p, 2–5 s, ~29 GB to download |
 | `wan-t2v-14b-720p` | 14B DiT + the same encoder | 30 | **~24 GB at nf4** (~50 GB at bf16) | Apache-2.0 | generate (**video**) | **not on a 24 GB card** — 720p, 2–5 s, ~75 GB to download |
 | `cogvideox-2b` | 1.6B DiT + 4.7B T5 | 50 | ~16 GB, fp16 | Apache-2.0 | generate (**video**) | yes — 720×480, **8 fps**, one 6 s offer, ~13 GB to download |
-| `lcm-dreamshaper` | 0.9B UNet (an LCM of Dreamshaper 7 / SD 1.5) | **4** | ~3.5 GB, fp16 | CreativeML OpenRAIL-M (inherited; the repo says MIT) | generate | yes — **CPU-viable**, no negative prompt, ~4.3 GB to download |
+| `lcm-dreamshaper` | 0.9B UNet (an LCM of Dreamshaper 7 / SD 1.5) | **4** | ~3.5 GB, fp16 | CreativeML OpenRAIL-M (inherited; the repo says MIT) | generate, **edit (no mask), variation** | yes — **CPU-viable**, no negative prompt, ~4.3 GB to download |
 
 **`wan-t2v-14b-720p` is the first recipe this project ships that does not fit a 24 GB card**, and
 that is the VRAM gate working rather than a packaging mistake: a node with 24 GB does not declare it,
@@ -91,6 +91,12 @@ bare `401` that reads as "the model is gone".
   // the model), so a request that carries one is REFUSED naming the recipe, before anything loads.
   // Absent = true. Before 91 a pipeline that rejected the argument had it silently dropped.
   "negativePrompt": false,
+
+  // Phase 92, both optional and both about `edit`. Absent = what every SD-family recipe does.
+  "inpaint": false,                // no inpainting pipeline for this family: a MASKED edit is refused
+                                   // naming the recipe, before the load. Unmasked edits still run.
+  "strengthKeepsSteps": true,      // strength picks WHERE the schedule starts, not how many steps
+                                   // run (an LCM). The bill is `steps`, not int(steps × strength).
 
   // Phase 57, and all six are optional. Absent `media` means `image`, which is why the seven
   // recipes that predate video did not change by a byte.
@@ -416,10 +422,31 @@ encoders rather than loading a second copy — so editing costs no extra VRAM an
 and needs no second entry in the residency budget.
 
 **`defaults.strength` is what an edit uses when the caller sends no
-`X-InferHub-Image-Strength`.** 0 keeps the input, 1 ignores it; 0.75 is the shipped default for both
-editable recipes. It matters for the bill as well as the picture: `diffusers` enters the schedule at
+`X-InferHub-Image-Strength`.** 0 keeps the input, 1 ignores it; 0.75 is the shipped default for every
+editable recipe. It matters for the bill as well as the picture: `diffusers` enters the schedule at
 `int(steps × strength)`, so 30 steps at 0.6 denoises for 18 — and 18 is what the result frame
 reports and what the fleet meters, because metering the asked-for 30 would bill for work nobody did.
+
+### An LCM edits without a mask, and runs every step it is given (phase 92)
+
+`lcm-dreamshaper` declares `edit` and `variation`: `AutoPipelineForImage2Image.from_pipe` derives
+`LatentConsistencyModelImg2ImgPipeline` over the same UNet. Two things are different, and both were
+measured on the pinned `diffusers==0.36.0` rather than read:
+
+- **There is no LCM inpainting pipeline.** `AutoPipelineForInpainting.from_pipe` raises
+  `ValueError`. `"inpaint": false` makes a masked edit a `400` naming the recipe **before** the
+  4 GB load, instead of the same refusal a minute later out of `derived_pipeline`. The router
+  cannot do this: a mask is a part of the body, not a capability.
+- **Strength does not skip steps.** An SD pipeline enters at `int(steps × strength)`. An LCM's
+  scheduler uses strength to choose the starting timestep and still runs all of `steps`. Counted by
+  callback: 4 steps at strength 0.25, 0.5, 0.75 and 1.0 all ran 4. `"strengthKeepsSteps": true`
+  makes the bill and the progress total 4; the SD arithmetic would have billed 2 at 0.5 and sent a
+  progress bar reading 3 of 2.
+
+**`run_batch` now counts the callbacks** and logs `STEP COUNT MISMATCH` naming the pipeline when a
+run differs from what was billed. It logs rather than corrects, because the progress frames already
+carried the total. A new recipe family whose arithmetic nobody measured shows up in the node's log
+on its first edit.
 
 ### The mask convention is inverted, and it is the one thing here a paragraph cannot fix
 

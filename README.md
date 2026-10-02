@@ -1257,7 +1257,7 @@ capability kind, and the router already knew how to find `(capability, model)`.
 |---|---|---:|---:|---:|---|---|
 | `sdxl` | 2.6B UNet | 30 | ~8 GB fp16 | — | CreativeML OpenRAIL++-M | yes |
 | `sd15` | 0.9B | 30 | ~4 GB fp16 | — | CreativeML OpenRAIL-M | yes — CPU-viable |
-| `lcm-dreamshaper` | 0.9B, an LCM of Dreamshaper 7 | **4** | ~3.5 GB fp16 | — | CreativeML OpenRAIL-M (inherited) | yes — **the fast one on a CPU**, see [below](#a-picture-on-a-cpu-in-seconds-v356) |
+| `lcm-dreamshaper` | 0.9B, an LCM of Dreamshaper 7 | **4** | ~3.5 GB fp16 | — | CreativeML OpenRAIL-M (inherited) | yes — **the fast one on a CPU**, and it [edits there too](#editing-on-a-cpu-v357) |
 | `flux-schnell` | 12B | **4** | ~12 GB nf4 | **~33 GB** | Apache-2.0 | **needs an HF token** — gated repo |
 | `qwen-image` | 20B + 8.3B encoder | 30 | ~19 GB nf4 | **~60 GB** | Apache-2.0 | yes |
 | `sd35-medium` | 2.5B MMDiT | 40 | ~16 GB bf16 | — | Stability AI Community | **licence + HF token** |
@@ -1322,6 +1322,34 @@ stricter of the two readings. Both are permissive here, so nothing is gated.
 **It has no negative prompt, and it would not tell you.** An LCM distils guidance into the model,
 and its pipeline accepts `negative_prompt` through `**kwargs` and ignores it. So a request to
 `lcm-dreamshaper` that carries one is a **400** naming the recipe.
+
+### Editing on a CPU (v3.57)
+
+`lcm-dreamshaper` also takes [`/v1/images/edits` and `/variations`](#editing-a-picture-v318), so a
+CPU-only node can change a picture as well as draw one:
+
+```bash
+curl http://localhost:5080/v1/images/edits -H "Authorization: Bearer $KEY" \
+  -F model=lcm-dreamshaper -F image=@lighthouse.png \
+  -F prompt="the same lighthouse in winter, snow" \
+  -H 'X-InferHub-Image-Strength: 0.75'
+```
+
+A 512×512 edit took about 10 s at 16 threads, and the edit pipeline is derived from the loaded
+one, so it needs no second load. 0.75 is the default. At 0.5 the picture keeps its composition and only
+starts to follow the prompt, and at 1.0 you get a new picture. **A variation has no prompt to hold
+the subject**: at 0.75 our test lighthouse kept its sunset and its coast and came back as a castle.
+Send a lower strength if you want more of the same thing.
+
+**Without a mask.** There is no inpainting pipeline for an LCM in `diffusers`, so an edit that sends
+a `mask` is a **400** naming the recipe. It is refused before the model loads, not a minute later.
+`sd15` inpaints on a CPU, at 30 steps.
+
+**It is billed 4 steps at any strength.** An SD pipeline skips to `int(steps × strength)` and is
+billed for that. An LCM uses strength to pick where in the schedule to start, then runs all 4 steps.
+Billing it the SD way would have charged 2 at 0.5 and shown a progress bar reading 3 of 2. The
+worker now counts the steps a pipeline actually runs. If that differs from what was billed, the node
+logs `STEP COUNT MISMATCH` with the pipeline's name.
 
 ### A negative prompt that would be ignored is refused (v3.56)
 
@@ -1799,13 +1827,15 @@ OpenAI's edits API has no `strength`, and image-to-image without one is meaningl
 X-InferHub-Image-Strength: 0.75      # 0 keeps your picture, 1 ignores it
 ```
 
-Absent, the recipe's `defaults.strength` applies (0.75 for both editable recipes). Out of range is a
+Absent, the recipe's `defaults.strength` applies (0.75 for every editable recipe). Out of range is a
 `400`. It is a header rather than a body field for the same reason `steps` and `guidance` are:
 additive by construction, so it cannot collide with whatever OpenAI adds next.
 
 **What gets metered is the steps that actually ran.** `diffusers` enters the schedule at
 `int(steps × strength)`, so 30 steps at 0.6 denoises for 18 — and 18 is what the ledger gets. Billing
-the asked-for 30 would charge for work nobody did.
+the asked-for 30 would charge for work nobody did. **`lcm-dreamshaper` is the exception, and it runs
+more, not less:** its scheduler uses strength to pick where to start and still runs all 4 steps, so 4
+is what it reports at any strength ([v3.57](#editing-on-a-cpu-v357)).
 
 ### Not every model can edit
 
@@ -1814,6 +1844,7 @@ Editing is its own capability, `image-edit`, declared per recipe from its `opera
 | Recipe | `operations` |
 |---|---|
 | `sdxl`, `sd15` | `generate`, `edit`, `variation` |
+| `lcm-dreamshaper` | `generate`, `edit` **without a mask**, `variation` (v3.57) |
 | everything else | `generate` |
 
 FLUX.1-schnell has no official inpainting pipeline; SDXL does. So an edit against a generate-only

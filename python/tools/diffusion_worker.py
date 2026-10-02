@@ -1736,6 +1736,48 @@ def require_operation(recipe: dict[str, Any], operation: str) -> None:
     )
 
 
+def require_inpaint(recipe: dict[str, Any]) -> None:
+    """
+    Refuse a MASKED edit on a recipe that can only do image-to-image, before the model loads
+    (phase-92 D2).
+
+    ``edit`` covers both, and the router cannot tell them apart — the mask is a part of the body, not
+    a capability. ``derived_pipeline`` would refuse it too, but only after the load: on a CPU that is
+    the whole 4 GB read and the caller learns the answer a minute later. Measured on the pinned
+    ``diffusers==0.36.0``: ``AutoPipelineForInpainting`` has no entry for ``lcm`` and raises
+    ``ValueError`` from ``from_pipe``. ``"inpaint": false`` is where that fact lives; absent means
+    the recipe can, which is what every recipe declaring ``edit`` before v3.57 meant.
+    """
+    if recipe.get("inpaint") is not False:
+        return
+
+    raise ToolError(
+        f"'{recipe['id']}' edits without a mask only: its pipeline ({recipe.get('pipeline')}) has no "
+        "inpainting variant. Send the edit without a mask (the whole picture follows the prompt, "
+        "as far as X-InferHub-Image-Strength lets it), or use a recipe that inpaints, such as sd15.",
+        ERROR_INVALID_REQUEST,
+    )
+
+
+def edit_steps(recipe: dict[str, Any], steps: int, strength: float) -> int:
+    """
+    How many denoising steps an image-to-image run ACTUALLY executes — what the progress frames
+    count up to and what the fleet meters (phase-50 D3, corrected by phase-92 D3).
+
+    The SD-family pipelines enter the schedule at ``int(steps * strength)`` and skip the rest. An
+    LCM does not: ``LCMScheduler.set_timesteps`` uses ``strength`` to choose WHERE in the schedule
+    the run starts and still runs every one of ``steps``. Measured on the pinned wheel by counting
+    callbacks: 4 steps at strength 0.25, 0.5, 0.75 and 1.0 all ran 4 (timesteps 239→59, 499→139,
+    739→199, 999→259). Reading it the SD way would bill half the work at 0.5 and send a progress bar
+    that ends at 2 of 2 while two more steps run. ``"strengthKeepsSteps": true`` is where that fact
+    lives; ``run_batch`` counts the callbacks and logs any recipe this function is wrong about.
+    """
+    if recipe.get("strengthKeepsSteps") is True:
+        return steps
+
+    return max(1, int(steps * strength))
+
+
 def clamped_steps(recipe: dict[str, Any], payload: dict[str, Any]) -> int:
     defaults = recipe.get("defaults") or {}
     steps = int(payload.get("steps") or defaults.get("steps") or 30)
@@ -1809,7 +1851,10 @@ def run_batch(
         #
         # Deliberately NOT decoding the latents to send a preview: that is a VAE decode per step
         # (10-15% of the run) producing intermediate *content*, which nothing here retains.
+        ran = [0]
+
         def on_step(_pipe, step, _timestep, kwargs, _total=reported_steps, _offset=0):
+            ran[0] += 1
             request.progress(_offset + step + 1, total_steps=_total)
             request.raise_if_cancelled()
             return kwargs
@@ -1847,6 +1892,17 @@ def run_batch(
             arguments = without_unsupported(error, arguments)
             log(f"{request.model}: {type(pipe).__name__} does not take a progress callback; retrying without it")
             result = pipe(**arguments)
+
+        # The bill is computed before the run (it has to be: the first progress frame carries it),
+        # so check it against what the pipeline actually did. A mismatch means a recipe whose step
+        # arithmetic nobody measured — the way the SD reading was wrong for an LCM (phase-92 D3).
+        # Logged rather than corrected: the frames that already went out carried the old total.
+        if "callback_on_step_end" in arguments and ran[0] != reported_steps - repair_steps:
+            log(
+                f"{request.model}: STEP COUNT MISMATCH: {type(pipe).__name__} ran {ran[0]} steps and "
+                f"{reported_steps - repair_steps} were reported. The recipe's step arithmetic is wrong "
+                "for this pipeline (see strengthKeepsSteps in python/recipes/README.md)."
+            )
 
         picture = result.images[0]
 
@@ -2234,6 +2290,7 @@ def edit(request: Request, operation: str):
     mask = None
 
     if payload.get("has_mask"):
+        require_inpaint(recipe)
         raw_mask = input_image(request, "mask", 1)
 
         if raw_mask is None:
@@ -2268,9 +2325,9 @@ def edit(request: Request, operation: str):
     strength = float(strength)
     steps = clamped_steps(recipe, payload)
 
-    # What actually runs. `diffusers` enters the schedule at `int(steps * strength)`, so this is
-    # both what the progress frames count up to and what the fleet meters (phase-50 D3).
-    effective = max(1, int(steps * strength))
+    # What actually runs: both what the progress frames count up to and what the fleet meters
+    # (phase-50 D3). Not always `int(steps * strength)` — an LCM runs every step (phase-92 D3).
+    effective = edit_steps(recipe, steps, strength)
 
     repair = resolve_seam_repair(recipe, payload)
     repair_steps = seam_diffuse_steps(steps) if repair == SEAM_REPAIR_DIFFUSE else 0
