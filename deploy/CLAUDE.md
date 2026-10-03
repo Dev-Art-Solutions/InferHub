@@ -16,6 +16,7 @@ and the one trap this repository has fallen into five separate times.
 | `inferhub-node:diffusion` | ~12 GB | amd64 | + PyTorch, `diffusers`, `bitsandbytes`, seven recipes |
 | `inferhub-node:tts-bg` | ~9 GB | amd64 | + PyTorch, `nemo_toolkit`, for `bg-tts-v5` (84). Stacks on nothing |
 | `inferhub-node:all` | ~11 GB | amd64 | `:tools` + `:diffusion` in one node, `Node:OnDemand` on (87) |
+| `inferhub-node:colibri` | ~410 MB | amd64 | the plain node + python3, libgomp1 and colibri v1.12.1's CPU engine, launched by the node (93) |
 
 **`:diffusion` deliberately does not stack** — it is built from the *plain* node, with no Ollama, no
 Whisper and no Piper in it (46 D9). Stacking reaches ~15 GB and every pull pays for it, and a card
@@ -43,6 +44,14 @@ that means two arbiters, each sure it owns the card. So the box with **one card 
   (the matrix builds in parallel, so it would get the *previous* release's). The tests pin the same
   Ollama version + sha, every import either parent asserts, and OnDemand on in `:all` and nowhere
   else.
+
+**`:colibri` is the plain node plus a few hundred KB of C** (93 D6): the engine and its stdlib-only
+gateway, pinned and sha-checked like Ollama (39 D9), no weights (39 D7) — the operator mounts a
+converted model at `/models/colibri`. Both runtime packages are measured, not guessed: the aspnet
+base is Ubuntu 24.04 and carries neither `python3` nor `libgomp1`, and without the latter every
+engine binary fails to load. **The model directory must be readable and writable by uid 1654**:
+colibri writes `.coli_usage`/`.coli_kv` beside the weights, and its own converter, run as root,
+writes the shards `0600` — found by mounting one (`chown -R 1654:1654 <dir>` is the fix).
 
 ## The permissions trap, five times found and seven paths headed off
 

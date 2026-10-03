@@ -1,4 +1,5 @@
 using InferHub.Node.Backends;
+using InferHub.Node.Backends.Colibri;
 using InferHub.Node.Backends.Supervision;
 using InferHub.Node.Configuration;
 using InferHub.Node.LocalApi;
@@ -112,6 +113,8 @@ public static class NodeHostBuilderExtensions
             .Bind(builder.Configuration.GetSection(UpstreamBackendOptions.SectionName))
             .ValidateOnStart();
         builder.Services.AddSingleton<IValidateOptions<UpstreamBackendOptions>, UpstreamBackendOptionsValidator>();
+
+        AddColibri(builder);
 
         builder.Services
             .AddOptions<VectorReplicaOptions>()
@@ -326,8 +329,9 @@ public static class NodeHostBuilderExtensions
             .Get<NodeOptions>() ?? new NodeOptions();
 
         // Unbounded means no gate object at all rather than a gate nobody can exhaust: a semaphore
-        // with an infinite count is still a lock every request takes (phase-37 D9).
-        if (node.MaxConcurrency is not null)
+        // with an infinite count is still a lock every request takes (phase-37 D9). A colibri node
+        // always has a number — its KV slots (93 D3) — so it always has the gate.
+        if (node.MaxConcurrency is not null || IsColibri(builder.Configuration))
         {
             builder.Services.AddSingleton<LocalConcurrencyGate>();
         }
@@ -373,6 +377,12 @@ public static class NodeHostBuilderExtensions
         // one is a cheap GET to a server this node already sends inference to, while a vendor-typed
         // upstream has no free liveness endpoint we may assume and would be a billed request.
         var isOllama = backendType == BackendOptions.Ollama;
+
+        // Phase 93 D4: colibri watches its own /health and restarts nothing; AddColibri owns it.
+        if (backendType == BackendOptions.Colibri)
+        {
+            return;
+        }
 
         var reason = !isOllama
             ? $"{BackendOptions.SectionName}:{nameof(BackendOptions.Type)} is '{backendType}', and an OpenAI-compatible upstream is somebody else's server to restart"
@@ -423,6 +433,81 @@ public static class NodeHostBuilderExtensions
         builder.Services.AddSingleton<IBackendSupervisor>(services => services.GetRequiredService<OllamaSupervisor>());
         builder.Services.AddSingleton<IHostedService>(services => services.GetRequiredService<OllamaSupervisor>());
     }
+
+    /// <summary>
+    /// Phase 93. Everything a <c>Backend:Type=colibri</c> node adds, and nothing on any other type
+    /// beyond binding an options section nobody reads.
+    /// </summary>
+    private static void AddColibri(IHostApplicationBuilder builder)
+    {
+        builder.Services
+            .AddOptions<ColibriOptions>()
+            .Bind(builder.Configuration.GetSection(ColibriOptions.SectionName))
+            .ValidateOnStart();
+        builder.Services.AddSingleton<IValidateOptions<ColibriOptions>, ColibriOptionsValidator>();
+
+        // D2. The pooled upstream client plus the handler that pins a conversation to its slot.
+        builder.Services
+            .AddHttpClient(UpstreamBackend.ColibriHttpClientName)
+            .AddHttpMessageHandler(services =>
+                new ColibriRequestHandler(services.GetRequiredService<IOptions<ColibriOptions>>().Value.KvSlots));
+
+        if (!IsColibri(builder.Configuration))
+        {
+            return;
+        }
+
+        var colibri = builder.Configuration
+            .GetSection(ColibriOptions.SectionName)
+            .Get<ColibriOptions>() ?? new ColibriOptions();
+
+        // D5. A launched engine is where prompts go; the validator has already refused a BaseUrl
+        // written beside it, so this only ever fills a blank.
+        if (colibri.Serve.IsEnabled)
+        {
+            builder.Services.PostConfigure<UpstreamBackendOptions>(options =>
+            {
+                if (string.IsNullOrWhiteSpace(options.BaseUrl))
+                {
+                    options.BaseUrl = colibri.LaunchedBaseUrl();
+                }
+            });
+
+            builder.Services.TryAddSingleton(TimeProvider.System);
+            builder.Services.AddHostedService<ColibriServe>();
+        }
+
+        // D3. The engine admits one generation per KV slot and 429s past its own queue; the hub's
+        // queue only needs the number. Node:MaxConcurrency wins whenever it is written.
+        builder.Services.PostConfigure<NodeOptions>(options =>
+        {
+            options.MaxConcurrency ??= colibri.KvSlots;
+        });
+
+        if (!colibri.Watch)
+        {
+            NoSupervision(builder);
+            return;
+        }
+
+        // The probe's own short-deadline client over the handler that tells unreachable from
+        // wedged — 36's reason for a second client, and 69's classification, reused.
+        // RemoveAllLoggers: the factory's own handlers log every probe at Information, and every
+        // refused connect with a stack trace — four lines every fifteen seconds while an engine
+        // loads. The watcher logs transitions, which is what an operator reads.
+        builder.Services.AddHttpClient(ColibriWatcher.HttpClientName, http => http.Timeout = colibri.ProbeTimeout)
+            .ConfigurePrimaryHttpMessageHandler(() => OllamaProbe.CreateHandler(colibri.ProbeTimeout))
+            .RemoveAllLoggers();
+
+        builder.Services.TryAddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<ColibriWatcher>();
+        builder.Services.AddSingleton<IBackendSupervisor>(services => services.GetRequiredService<ColibriWatcher>());
+        builder.Services.AddSingleton<IHostedService>(services => services.GetRequiredService<ColibriWatcher>());
+    }
+
+    private static bool IsColibri(IConfiguration configuration)
+        => (configuration.GetSection(BackendOptions.SectionName).Get<BackendOptions>() ?? new BackendOptions())
+            .Normalized() == BackendOptions.Colibri;
 
     /// <summary>The always-present stand-in, so nothing downstream has to know the feature exists.</summary>
     private static void NoSupervision(IHostApplicationBuilder builder)

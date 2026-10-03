@@ -78,11 +78,18 @@ public sealed class OllamaProbe(IHttpClientFactory httpClientFactory) : IOllamaP
         return handler;
     }
 
-    public async Task<BackendHealth> CheckAsync(CancellationToken cancellationToken)
-    {
-        var http = httpClientFactory.CreateClient(HttpClientName);
+    public Task<BackendHealth> CheckAsync(CancellationToken cancellationToken)
+        => ClassifyAsync(httpClientFactory.CreateClient(HttpClientName), "api/version", cancellationToken);
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, "api/version");
+    /// <summary>
+    /// One GET, classified. Public since phase 93 so colibri's <c>/health</c> is read by the same
+    /// unreachable-versus-wedged logic rather than a second copy of it — the Windows connect quirk
+    /// in <see cref="CreateHandler"/> is not something to rediscover per backend. The client must
+    /// have been built over <see cref="CreateHandler"/>, or every failure reads as unreachable.
+    /// </summary>
+    public static async Task<BackendHealth> ClassifyAsync(HttpClient http, string path, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
 
         try
         {

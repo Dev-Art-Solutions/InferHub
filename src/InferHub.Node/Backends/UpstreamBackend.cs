@@ -41,6 +41,9 @@ public sealed class UpstreamBackend(
 {
     public const string HttpClientName = "openai-upstream";
 
+    /// <summary>The same pooled client plus <c>ColibriRequestHandler</c> (93 D2).</summary>
+    public const string ColibriHttpClientName = "colibri-upstream";
+
     private static readonly string[] ChatAndEmbed = [CapabilityKinds.Chat, CapabilityKinds.Embed];
 
     private static readonly string[] ChatOnly = [CapabilityKinds.Chat];
@@ -64,9 +67,10 @@ public sealed class UpstreamBackend(
     /// This is <see cref="SupportsModelManagement"/>'s own argument, one member down: a backend that
     /// throws when asked to do the impossible is a seam nobody trusts twice. It is deliberately not
     /// derived inside <c>BackendCapabilities</c> — that file's whole point (40 D2) is that nothing
-    /// there guesses what a model is for.
+    /// there guesses what a model is for. colibri declares <c>chat</c> alone for Anthropic's reason
+    /// (93 D1): <c>coli serve</c> has no <c>/v1/embeddings</c>.
     /// </remarks>
-    public IReadOnlyList<string> Kinds => Type == BackendOptions.Anthropic ? ChatOnly : ChatAndEmbed;
+    public IReadOnlyList<string> Kinds => Type is BackendOptions.Anthropic or BackendOptions.Colibri ? ChatOnly : ChatAndEmbed;
 
     private string Type => backend.Value.Normalized();
 
@@ -159,7 +163,7 @@ public sealed class UpstreamBackend(
         {
             // OpenRouter *is* the OpenAI dialect — the identity is the claim (62 D1). What its type
             // buys is configuration, one method down.
-            BackendOptions.OpenAi or BackendOptions.OpenRouter => new OpenAiUpstreamClient(http),
+            BackendOptions.OpenAi or BackendOptions.OpenRouter or BackendOptions.Colibri => new OpenAiUpstreamClient(http),
             BackendOptions.Anthropic => new AnthropicUpstreamClient(http, options.MaxTokens),
             BackendOptions.Gemini => new GeminiUpstreamClient(http, options.ThinkingBudget),
             var type => throw new InvalidOperationException($"backend type '{type}' has no upstream dialect")
@@ -175,7 +179,7 @@ public sealed class UpstreamBackend(
 
         // The factory owns the pooled handler; the base address, key and timeout come from
         // options on every call, so a config reload lands without a restart.
-        var pooled = httpClientFactory.CreateClient(HttpClientName);
+        var pooled = httpClientFactory.CreateClient(type == BackendOptions.Colibri ? ColibriHttpClientName : HttpClientName);
 
         if (type == BackendOptions.Anthropic)
         {

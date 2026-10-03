@@ -175,6 +175,9 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 88 | A 360° panorama back as a six-face cubemap, asked for per request (done) | `v3.53.0` |
 | 89 | One dispatch deadline per capability — `Dispatcher:Deadlines` (done) | `v3.54.0` |
 | 90 | A named voice fetches itself from a pinned catalogue; the first is Bulgarian on a CPU (done) | `v3.55.0` |
+| 91 | A picture on a CPU in seconds (`lcm-dreamshaper`), and a negative prompt a model cannot take is refused (done) | `v3.56.0` |
+| 92 | A CPU-only node edits a picture, and an LCM edit is billed for the steps it runs (done) | `v3.57.0` |
+| 93 | [colibri](#colibri--a-model-bigger-than-your-ram-v358) — a node drives the disk-streaming MoE engine, and a refused OpenAI stream is a refusal (done) | `v3.58.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -536,6 +539,7 @@ small one and wonders where the audio went. All tags are under
 | `inferhub-node:tools` | ~6 GB | amd64 | The above, **plus speech**: Python, `faster-whisper` and `piper`, so `/v1/audio/transcriptions` and `/v1/audio/speech` work out of the box. |
 | `inferhub-node:diffusion` | ~12 GB | amd64 | **Text to image** (v3.14+) and **editing** (v3.18+): PyTorch, `diffusers`, `bitsandbytes` and seven recipes — SDXL, SD 1.5, FLUX.1-schnell, Qwen-Image, SD 3.5 Medium, SDXL-Turbo and [`qwen-360`](#360-panoramas-v317) — so `/v1/images/generations`, [`/edits` and `/variations`](#editing-a-picture-v318) work out of the box. **You need a card.** |
 | `inferhub-node:tts-bg` | — | amd64 | **Bulgarian speech** (v3.49+): PyTorch and NeMo's NanoCodec for [`bg-tts-v5`](https://huggingface.co/beleata74/bg-tts-v5), served on `/v1/audio/speech` as `bg-tts-v5-spk0` / `-spk1`. Does not stack on the others. **GPU, and the 2.9 GB checkpoint is placed by hand.** |
+| `inferhub-node:colibri` | ~410 MB | amd64 | **A Mixture-of-Experts model bigger than your RAM, on a CPU** (v3.58+): the plain node plus [colibri](#colibri--a-model-bigger-than-your-ram-v358)'s engine, which the node launches. No card needed; mount a converted model at `/models/colibri`. |
 | `inferhub-node:all` | ~11 GB | amd64 | **Everything on one card** (v3.52+): `:tools` and `:diffusion` in one node, with [on-demand](#a-card-that-is-also-your-desktop-gpu-v350) turned on, so chat, speech, images and video take turns on the card instead of fighting over it. For a box with **one card and no mesh**. **You need a card.** |
 
 Three rules of thumb that save the mistake each way:
@@ -2673,6 +2677,52 @@ accepts.
 Errors on `/v1/*` use the OpenAI envelope (`{"error": {"message", "type", "param", "code"}}`),
 because an SDK reads `error.message` and would otherwise surface a useless "unknown error".
 
+## colibri — a model bigger than your RAM (v3.58)
+
+[colibri](https://github.com/JustVugg/colibri) (Apache-2.0) runs Mixture-of-Experts models that do
+not fit in memory: the dense part stays in RAM and the routed experts are streamed from disk as the
+router asks for them. A 7B OLMoE runs in 8 GB; a 744B GLM-5.2 runs in ~25 GB of RAM from a 372 GB
+directory on an NVMe. No GPU needed — a card only makes it faster. v3.58 makes it a node backend:
+
+```bash
+# convert a model once with colibri's own tools, then:
+docker run -d --name inferhub-colibri \
+  -e LocalApi__Enabled=true -e Coordinator__Enabled=false -e LocalApi__ApiKeys__0=your-key \
+  -e Colibri__Serve__ModelId=olmoe \
+  -v /nvme/olmoe:/models/colibri \
+  -p 5081:8080 ghcr.io/dev-art-solutions/inferhub-node:colibri
+```
+
+The node launches `coli serve` on loopback inside the container, relaunches it if it exits, watches
+its `/health`, and reports the model to the hub when it is up. Or drive an engine you started
+yourself: `Backend:Type=colibri` and `Upstream:BaseUrl` (default `http://127.0.0.1:8000/v1`).
+
+What is different from pointing `Backend:Type=openai` at it — each one measured against a real engine:
+
+- **It declares `chat` only.** colibri has no embeddings endpoint, so the hub refuses an embedding
+  request before the hop instead of routing it to a box that will fail it.
+- **It declares its KV slots as its concurrency.** The engine runs one generation per slot. Twelve
+  parallel requests sent straight at it got seven answers and five dropped connections; through a
+  node the hub queues them and all of them answer.
+- **Every request body carries a `Content-Length`.** The gateway is Python's `http.server` and answers
+  a chunked body with a 400 — which is every request a generic OpenAI client sends.
+- **`Colibri:KvSlots` > 1 pins each conversation to a slot** by a hash of its opening, so the engine can
+  reuse its KV prefix. Only the GLM-5.2/5.3 engines accept more than one slot (colibri v1.12.1); we
+  could not run one, so this is shipped and **not measured**. The default is one slot.
+- **`COLI_DEBUG` is not passed to the engine**: it tees prompts to stderr, and the node logs that
+  stream. Every other `COLI_*` variable passes through.
+
+**The model directory must be readable and writable by uid 1654**: colibri writes its learned expert
+usage and KV files beside the weights, and its converter, run as root, writes the shards `0600`
+(`chown -R 1654:1654 /nvme/olmoe`). Expect CPU speeds: on a 32-core box OLMoE answered at ~26
+tokens/s, and a 3 300-token prompt took about a minute to prefill. Brio (colibri's closed-set
+scoring) is not exposed yet — it needs its own API, not a field on chat.
+
+**Also in v3.58, for every backend:** a streamed request on the OpenAI surface (`/v1/chat/completions`,
+`/v1/completions`) that the backend refuses now answers **502 with the backend's sentence** — before
+v3.58 it answered 200 and an empty `finish_reason: "stop"`, which reads as an empty answer. A refusal
+after the first token arrives as an `error` event, which the OpenAI SDKs raise on.
+
 ## Inference backends
 
 A node runs one inference backend behind the `IInferenceBackend` seam. The coordinator does
@@ -2686,6 +2736,7 @@ response back, whatever ran it.
 | `openrouter` (v3.35) | **OpenRouter** | The OpenAI dialect with its own base URL and optional attribution headers. |
 | `anthropic` (v3.35) | **Anthropic** `/v1/messages` | The vendor's own dialect. Declares `chat` and **not** `embed`. |
 | `gemini` (v3.35) | **Gemini** `:generateContent` | The vendor's own dialect. The model is a path segment. |
+| `colibri` (v3.58) | **[colibri](#colibri--a-model-bigger-than-your-ram-v358)** `coli serve` | The OpenAI dialect, `chat` only, `/health` watched, KV slots. The node can launch it. |
 
 `openai` is one implementation covering all the self-hosted servers, because they all converged
 on the same dialect. For anyone serving more than a couple of users off one GPU, vLLM's

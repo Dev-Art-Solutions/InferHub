@@ -168,6 +168,21 @@ jobs:
             extra-tags: type=raw,value=all,suffix=
             reclaim-disk: true
 
+          # The colibri image (phase 93): the PLAIN node plus python3, libgomp1 and colibri's CPU
+          # engine (v1.12.1, pinned by sha256 in the Dockerfile), launched by the node itself. ~410
+          # MB, so `cache: min` and no reclaim. amd64 only because colibri publishes its Linux
+          # engine for x86_64 alone. `latest=false` — read the node-ollama comment first.
+          - name: inferhub-node
+            scope: node-colibri
+            dockerfile: src/InferHub.Node/Dockerfile.colibri
+            platforms: linux/amd64
+            cache: min
+            flavor: |
+              suffix=-colibri
+              latest=false
+            extra-tags: type=raw,value=colibri,suffix=
+            reclaim-disk: false
+
     steps:
       - uses: actions/checkout@v4
 

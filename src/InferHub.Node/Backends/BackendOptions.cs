@@ -27,11 +27,18 @@ public sealed class BackendOptions
     public const string Gemini = "gemini";
 
     /// <summary>
-    /// The four types driven by <see cref="UpstreamBackend"/> — everything that is not the local
+    /// colibri's <c>coli serve</c> (phase 93): the OpenAI dialect, chat only, a free <c>/health</c>
+    /// and KV slots. Its own type because <c>openai</c> pointed at it is wrong in three ways nobody
+    /// would find from the config (93 D1).
+    /// </summary>
+    public const string Colibri = "colibri";
+
+    /// <summary>
+    /// The five types driven by <see cref="UpstreamBackend"/> — everything that is not the local
     /// Ollama. Kept as a list so the validator, the composition root and the supervisor guard all
     /// ask the same question rather than each writing their own <c>!= ollama</c>.
     /// </summary>
-    public static readonly string[] UpstreamTypes = [OpenAi, OpenRouter, Anthropic, Gemini];
+    public static readonly string[] UpstreamTypes = [OpenAi, OpenRouter, Anthropic, Gemini, Colibri];
 
     public string Type { get; set; } = Ollama;
 
@@ -150,6 +157,9 @@ public sealed class UpstreamBackendOptions
             BackendOptions.OpenRouter => UpstreamDefaults.OpenRouterBaseUrl,
             BackendOptions.Anthropic => UpstreamDefaults.AnthropicBaseUrl,
             BackendOptions.Gemini => UpstreamDefaults.GeminiBaseUrl,
+
+            // colibri's own default; a node that launches the engine points this at its port (93 D5).
+            BackendOptions.Colibri => $"http://127.0.0.1:{Colibri.ColibriOptions.DefaultPort}/v1",
             _ => null
         };
     }

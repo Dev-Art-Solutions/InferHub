@@ -147,6 +147,53 @@ public static class OpenAiSse
     public const string DoneFrame = "data: [DONE]\n\n";
 
     public static string Frame(string json) => $"data: {json}\n\n";
+
+    private static readonly JsonSerializerOptions ErrorJsonOptions = new(JsonSerializerDefaults.Web);
+
+    /// <summary>
+    /// The node's failed-job chunk (<c>{"error": "...", "done": true}</c>, the Ollama shape every
+    /// node sends) read as what it is (phase 93). The chat and completion formatters render any
+    /// terminal chunk as an empty <c>finish_reason=stop</c>, so before this a refusal reached an
+    /// OpenAI client as a successful empty answer, on both hosts, from every backend — the Ollama
+    /// surface passes the same line through and was right all along.
+    /// </summary>
+    public static bool TryReadFailure(string ollamaJson, out string message)
+    {
+        message = "";
+
+        if (!ollamaJson.Contains("\"error\"", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(ollamaJson);
+
+            if (document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("error", out var error)
+                || error.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            {
+                return false;
+            }
+
+            message = Contracts.NodeErrorText.Readable(
+                error.ValueKind == JsonValueKind.String ? error.GetString() : document.RootElement.GetRawText());
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The OpenAI error envelope as one SSE frame, for a failure after the client already holds a
+    /// 200: the OpenAI SDKs raise on a stream event carrying <c>error</c>, where an empty
+    /// <c>stop</c> reads as an answer.
+    /// </summary>
+    public static string ErrorFrame(string message)
+        => Frame(JsonSerializer.Serialize(OpenAiErrorEnvelope.Create(message, OpenAiErrorTypes.ApiError), ErrorJsonOptions));
 }
 
 /// <summary>

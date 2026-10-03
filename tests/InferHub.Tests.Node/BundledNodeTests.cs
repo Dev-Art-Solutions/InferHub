@@ -723,6 +723,59 @@ public class BundledNodeTests
             '\n',
             TtsBgDockerfile().Split('\n').Where(line => !line.TrimStart().StartsWith('#')));
 
+    // ---- the colibri image (phase 93) ----------------------------------------------------------
+
+    [Fact]
+    public void TheColibriImagePinsAndVerifiesItsEngine()
+    {
+        // 39 D9's rule for a second engine: two builds of one InferHub tag carry the same colibri.
+        var dockerfile = ColibriInstructions();
+
+        Assert.Matches(@"ARG COLIBRI_VERSION=\d+\.\d+\.\d+", dockerfile);
+        Assert.Matches(@"ARG COLIBRI_SHA256=[0-9a-f]{64}", dockerfile);
+        Assert.Contains("sha256sum -c -", dockerfile);
+        Assert.DoesNotContain("releases/latest", dockerfile);
+    }
+
+    [Fact]
+    public void TheColibriImageCarriesWhatTheEngineLoadsAndNothingHeavier()
+    {
+        var dockerfile = ColibriInstructions();
+
+        // Measured: without libgomp1 every engine binary fails to load on the aspnet base, and the
+        // gateway reports it as a model that never became ready.
+        Assert.Contains("libgomp1", dockerfile);
+        Assert.Contains("python3", dockerfile);
+        Assert.DoesNotContain("ollama", dockerfile, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("torch", dockerfile, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("pip install", dockerfile);
+
+        // The node launches the engine; the container's surface is InferHub's API (37 D4).
+        Assert.Contains("ENV Backend__Type=colibri", dockerfile);
+        Assert.Contains("ENV Colibri__Serve__Model=/models/colibri", dockerfile);
+        Assert.DoesNotContain("EXPOSE", dockerfile);
+    }
+
+    [Fact]
+    public void TheColibriImageIsPublishedUnderItsOwnSuffixAndNeverAsLatest()
+    {
+        var workflow = File.ReadAllText(Path.Combine(RepoRoot(), ".github", "workflows", "docker-publish.yml"));
+        var entry = workflow[workflow.IndexOf("scope: node-colibri", StringComparison.Ordinal)..];
+        entry = entry[..entry.IndexOf("reclaim-disk", StringComparison.Ordinal)];
+
+        Assert.Contains("dockerfile: src/InferHub.Node/Dockerfile.colibri", entry);
+        Assert.Contains("platforms: linux/amd64", entry);
+        Assert.Contains("suffix=-colibri", entry);
+        Assert.Contains("latest=false", entry);
+    }
+
+    private static string ColibriInstructions()
+        => string.Join(
+            '\n',
+            File.ReadAllText(Path.Combine(RepoRoot(), "src", "InferHub.Node", "Dockerfile.colibri"))
+                .Split('\n')
+                .Where(line => !line.TrimStart().StartsWith('#')));
+
     private static string AllDockerfile()
         => File.ReadAllText(Path.Combine(RepoRoot(), "src", "InferHub.Node", "Dockerfile.all"));
 

@@ -1,0 +1,103 @@
+# The colibri node image (phase 93): the plain node, plus colibri's CPU engine and its stdlib-only
+# OpenAI gateway, launched by the node as its own child.
+#
+#   docker build -f src/InferHub.Node/Dockerfile.colibri -t inferhub-node:colibri .
+#
+# colibri (https://github.com/JustVugg/colibri, Apache-2.0) runs Mixture-of-Experts models that do
+# not fit in memory: the dense part stays in RAM and the routed experts are streamed from disk. A
+# 7B OLMoE runs in 8 GB; a 744B GLM-5.2 runs in ~25 GB of RAM from a 372 GB directory on an NVMe.
+#
+# Weights are NOT in the image (39 D7). Convert a model with colibri's own tools, mount it, done:
+#
+#   docker run -d --name inferhub-colibri \
+#     -e LocalApi__Enabled=true -e Coordinator__Enabled=false \
+#     -e LocalApi__ApiKeys__0=your-key \
+#     -v /nvme/olmoe:/models/colibri \
+#     -p 5081:8080 ghcr.io/dev-art-solutions/inferhub-node:colibri
+#
+# The model directory must be WRITABLE by uid 1654 (`app`): the engine keeps its learned expert
+# usage (.coli_usage) and its per-slot KV files (.coli_kv, .coli_kv.1, ...) beside the weights.
+#
+# The node launches `coli serve` on 127.0.0.1:8000 inside the container and never publishes it: the
+# container's surface is InferHub's API, which refuses to start keyless on a wildcard (37 D4).
+# Every COLI_* variable passes through to the engine (COLI_THREADS, COLI_MAX_QUEUE, ...) EXCEPT
+# COLI_DEBUG, which tees prompts to stderr and the node logs that stream (rule 7, 93 D5).
+#
+# amd64 only: colibri publishes its Linux engine for x86_64 alone. CPU only: the release archive is
+# the CPU build; a CUDA tier is a different artifact (see the phase-93 non-goals).
+
+ARG COLIBRI_VERSION=1.12.1
+
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+ARG TARGETARCH
+WORKDIR /src
+
+COPY Directory.Build.props nuget.config ./
+COPY src/InferHub.Shared/InferHub.Shared.csproj           src/InferHub.Shared/
+COPY src/InferHub.Shared.Postgres/InferHub.Shared.Postgres.csproj src/InferHub.Shared.Postgres/
+COPY src/InferHub.Node/InferHub.Node.csproj               src/InferHub.Node/
+RUN dotnet restore src/InferHub.Node/InferHub.Node.csproj -a "$TARGETARCH"
+
+COPY src/InferHub.Shared/          src/InferHub.Shared/
+COPY src/InferHub.Shared.Postgres/ src/InferHub.Shared.Postgres/
+COPY src/InferHub.Node/            src/InferHub.Node/
+RUN dotnet publish src/InferHub.Node/InferHub.Node.csproj \
+        -c Release -a "$TARGETARCH" --no-restore -o /app
+
+# ---------------------------------------------------------------------------------------------
+# colibri, PINNED and CHECKSUMMED (39 D9's rule): two builds of one InferHub tag must contain the
+# same engine. Bumping it: change COLIBRI_VERSION above and COLIBRI_SHA256 below, from
+# https://github.com/JustVugg/colibri/releases/download/v<version>/SHA256SUMS.txt
+# ---------------------------------------------------------------------------------------------
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS colibri
+ARG COLIBRI_VERSION
+ARG COLIBRI_SHA256=9d5afd587d7c429b2cf0ce0c520d42f4c2883bdc9c560ed9fb5afa0b2c2e0d12
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp/colibri
+RUN curl -fsSL --retry 5 --retry-all-errors -o colibri.tar.gz \
+        "https://github.com/JustVugg/colibri/releases/download/v${COLIBRI_VERSION}/colibri-v${COLIBRI_VERSION}-linux-x86_64.tar.gz" \
+ && echo "${COLIBRI_SHA256}  colibri.tar.gz" | sha256sum -c - \
+ && mkdir -p /opt/colibri \
+ && tar -xzf colibri.tar.gz -C /opt/colibri \
+ && rm colibri.tar.gz
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
+
+# python3: the launcher and the gateway (stdlib only). libgomp1: the engines are built with OpenMP
+# and the aspnet base does not carry it — without it every engine binary fails to load, and the
+# gateway reports that as a model that never became ready.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=build /app .
+COPY --from=colibri /opt/colibri/ /opt/colibri/
+
+# The /app-is-not-writable trap, as in every node image: everything the node writes lives on /data,
+# and /models/colibri exists in the image owned by app so a fresh named volume mounted there is
+# seeded writable (a bind mount keeps the host's ownership — see the note at the top).
+RUN mkdir -p /data /models/colibri && chown -R app:app /data /models
+ENV Vector__ReplicaDirectory=/data/vector-replicas
+ENV Node__DataDirectory=/data
+ENV LocalApi__Urls=http://+:8080
+ENV LocalApi__Retrieval__DataDirectory=/data/retrieval
+ENV Tools__ScratchDirectory=/data/tools/scratch
+ENV Images__Jobs__DataDirectory=/data/images
+
+ENV Backend__Type=colibri
+ENV Colibri__Serve__Model=/models/colibri
+ENV Colibri__Serve__Python=python3
+ENV Colibri__Serve__Launcher=/opt/colibri/coli
+
+# The served model id defaults to the directory name, which in this image is always "colibri".
+# Name it after the model: -e Colibri__Serve__ModelId=olmoe. Slots: -e Colibri__KvSlots=4 (each
+# costs hundreds of MB at the default context, and becomes this node's MaxConcurrency, 93 D3).
+
+USER app
+
+ENTRYPOINT ["dotnet", "InferHub.Node.dll"]

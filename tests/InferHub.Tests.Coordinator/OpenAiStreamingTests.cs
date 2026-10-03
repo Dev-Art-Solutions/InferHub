@@ -289,4 +289,66 @@ public class OpenAiStreamingTests
 
         Assert.Equal("partial", string.Concat(content));
     }
+
+    // ---- phase 93: a node's failed-job chunk is a refusal, not an empty stop -------------
+
+    private static InferenceChunk FailureChunk(string message)
+        => new(Guid.NewGuid(), JsonSerializer.Serialize(new { error = message, done = true }), true);
+
+    /// <summary>
+    /// Found against a real colibri: a node refuses a streamed job by sending
+    /// <c>{"error": "...", "done": true}</c>, and the formatter rendered that terminal chunk as an
+    /// empty <c>finish_reason=stop</c> under a 200 — a refusal the client reads as an empty answer.
+    /// Nothing has been written yet, so it is the blocking path's 502.
+    /// </summary>
+    [Fact]
+    public async Task ARefusalBeforeAnyFrameIsA502CarryingTheNodesSentence()
+    {
+        var channel = Channel.CreateUnbounded<InferenceChunk>();
+        await channel.Writer.WriteAsync(FailureChunk("Token penalties are not supported yet."));
+        channel.Writer.TryComplete();
+
+        var context = new DefaultHttpContext();
+        var body = new MemoryStream();
+        context.Response.Body = body;
+
+        await new OpenAiStreamingResult(channel.Reader, new ChatStreamFormatter(Id, 0, Model, false), NullLogger.Instance)
+            .ExecuteAsync(context);
+
+        Assert.Equal(StatusCodes.Status502BadGateway, context.Response.StatusCode);
+
+        var error = JsonDocument.Parse(body.ToArray()).RootElement.GetProperty("error");
+        Assert.Equal("Token penalties are not supported yet.", error.GetProperty("message").GetString());
+        Assert.Equal("api_error", error.GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public async Task ARefusalAfterAFrameIsAnErrorFrameAndNotAStop()
+    {
+        // DefaultHttpContext never reports HasStarted, so this drives the started branch through
+        // a feature that does once a byte has been written — what Kestrel does.
+        var channel = Channel.CreateUnbounded<InferenceChunk>();
+        await channel.Writer.WriteAsync(Chunk("Sof"));
+        await channel.Writer.WriteAsync(FailureChunk("engine exited"));
+        channel.Writer.TryComplete();
+
+        var context = new DefaultHttpContext();
+        var body = new MemoryStream();
+        context.Response.Body = body;
+        context.Features.Set<Microsoft.AspNetCore.Http.Features.IHttpResponseFeature>(new StartedOnceWritten(body));
+
+        await new OpenAiStreamingResult(channel.Reader, new ChatStreamFormatter(Id, 0, Model, false), NullLogger.Instance)
+            .ExecuteAsync(context);
+
+        var frames = DataFrames(Encoding.UTF8.GetString(body.ToArray()));
+
+        Assert.Equal("[DONE]", frames[^1]);
+        Assert.Equal("engine exited", JsonDocument.Parse(frames[^2]).RootElement.GetProperty("error").GetProperty("message").GetString());
+        Assert.DoesNotContain(frames, frame => frame.Contains("\"finish_reason\":\"stop\"", StringComparison.Ordinal));
+    }
+
+    private sealed class StartedOnceWritten(MemoryStream body) : Microsoft.AspNetCore.Http.Features.HttpResponseFeature
+    {
+        public override bool HasStarted => body.Length > 0;
+    }
 }

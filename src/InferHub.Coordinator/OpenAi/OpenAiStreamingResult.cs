@@ -35,6 +35,15 @@ internal sealed class OpenAiStreamingResult(
         {
             await foreach (var chunk in chunks.ReadAllAsync(httpContext.RequestAborted))
             {
+                // Phase 93: a node's failed-job chunk is a refusal, not a terminal chunk to format
+                // as an empty stop. See FailAsync.
+                if (chunk.Done && OpenAiSse.TryReadFailure(chunk.ResponseJson, out var failure))
+                {
+                    logger.LogWarning("Node failed the streamed job; answering the OpenAI client with the error");
+                    await FailAsync(httpContext, failure);
+                    return;
+                }
+
                 var frame = formatter.FormatChunk(chunk.ResponseJson, isFirst);
                 isFirst = false;
 
@@ -74,6 +83,37 @@ internal sealed class OpenAiStreamingResult(
 
         await FinishAsync(httpContext);
     }
+
+    /// <summary>
+    /// Phase 93, found against a real colibri through a solo node and true here as well: a refused
+    /// job reached an OpenAI client as a 200 and an empty <c>finish_reason=stop</c>, which reads as
+    /// an empty answer. Before the first byte, the blocking path's own 502; after it, an error frame
+    /// the OpenAI SDKs raise on. The node's writer does the same (37 D6).
+    /// </summary>
+    private static async Task FailAsync(HttpContext httpContext, string message)
+    {
+        try
+        {
+            if (!httpContext.Response.HasStarted)
+            {
+                httpContext.Response.StatusCode = StatusCodes.Status502BadGateway;
+                await httpContext.Response.WriteAsJsonAsync(
+                    OpenAiErrorEnvelope.Create(message, OpenAiErrorTypes.ApiError),
+                    ErrorJsonOptions,
+                    httpContext.RequestAborted);
+                return;
+            }
+
+            await httpContext.Response.WriteAsync(OpenAiSse.ErrorFrame(message), httpContext.RequestAborted);
+            await httpContext.Response.WriteAsync(OpenAiSse.DoneFrame, httpContext.RequestAborted);
+            await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private static readonly JsonSerializerOptions ErrorJsonOptions = new(JsonSerializerDefaults.Web);
 
     private static async Task WriteFrameAsync(HttpContext httpContext, string json)
     {

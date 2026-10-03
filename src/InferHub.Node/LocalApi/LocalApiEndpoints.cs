@@ -468,6 +468,12 @@ public static class LocalApiEndpoints
                 {
                     await foreach (var chunk in chunks.WithCancellation(httpContext.RequestAborted))
                     {
+                        if (chunk.Done && OpenAiSse.TryReadFailure(chunk.ResponseJson, out var failure))
+                        {
+                            await FailAsync(httpContext, failure);
+                            return;
+                        }
+
                         var frame = formatter.FormatChunk(chunk.ResponseJson, isFirst);
                         isFirst = false;
 
@@ -485,6 +491,12 @@ public static class LocalApiEndpoints
                 }
                 catch (OperationCanceledException)
                 {
+                    return;
+                }
+                catch (Exception ex) when (!httpContext.Response.HasStarted)
+                {
+                    logger.LogWarning(ex, "Backend failed before the first frame; answering 502");
+                    await FailAsync(httpContext, NodeErrorText.Readable(ex.Message));
                     return;
                 }
                 catch (Exception ex)
@@ -505,6 +517,36 @@ public static class LocalApiEndpoints
             finally
             {
                 slot?.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// Phase 93, found against a real colibri: a refused job used to reach the client as a 200
+        /// and an empty <c>finish_reason=stop</c> — a refusal that reads as an empty answer. Before
+        /// the first byte the honest option is still open: the blocking path's own 502. After it, an
+        /// error frame, which the OpenAI SDKs raise on. The hub's writer does the same (37 D6: the
+        /// text is shared, each host writes it).
+        /// </summary>
+        private static async Task FailAsync(HttpContext httpContext, string message)
+        {
+            try
+            {
+                if (!httpContext.Response.HasStarted)
+                {
+                    httpContext.Response.StatusCode = StatusCodes.Status502BadGateway;
+                    await httpContext.Response.WriteAsJsonAsync(
+                        OpenAiErrorEnvelope.Create(message, OpenAiErrorTypes.ApiError),
+                        JsonOptions,
+                        httpContext.RequestAborted);
+                    return;
+                }
+
+                await httpContext.Response.WriteAsync(OpenAiSse.ErrorFrame(message), httpContext.RequestAborted);
+                await httpContext.Response.WriteAsync(OpenAiSse.DoneFrame, httpContext.RequestAborted);
+                await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted);
+            }
+            catch (OperationCanceledException)
+            {
             }
         }
 

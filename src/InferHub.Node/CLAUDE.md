@@ -36,7 +36,8 @@ to `src/InferHub.Node/Tools/CLAUDE.md` in phase 67** (D6).
   [OllamaClient](https://github.com/Dev-Art-Solutions/OllamaClient) NuGet package.
   `UpstreamBackend` (phase 22 as `OpenAiBackend`, renamed and widened in 67) drives everything
   else through an `IUpstreamDialect` from `InferHub.Shared`: `Backend:Type` is `openai`
-  (vLLM, llama.cpp's server, LM Studio, TGI), `openrouter`, `anthropic` or `gemini`.
+  (vLLM, llama.cpp's server, LM Studio, TGI), `openrouter`, `anthropic`, `gemini` or (phase 93)
+  `colibri`, whose own pieces live in `Backends/Colibri/`.
   `IInferenceBackend.Endpoint` is what the node reports at registration: before phase 22 it
   hard-coded `Ollama:Endpoint`, so an OpenAI-backed node would have advertised `localhost:11434`
   while talking to something else entirely. `IInferenceBackend.Kinds` is phase 67's second member,
@@ -982,3 +983,64 @@ process is gone after the request, the capability is still declared, and the nex
 > differs, and `OnDemandOptions.Enabled` itself stays `false`. It exists because two containers on
 > one card are two arbiters. The image decisions are in `deploy/CLAUDE.md`.
 > Running it on a fresh volume is what found the killed-fetch bug in D2 above.
+
+### Phase 93 (`Backend:Type=colibri` — a disk-streaming MoE engine, launched and watched by the node)
+
+Files: `Backends/Colibri/` (`ColibriOptions`, `ColibriSlot` + `ColibriRequestHandler`,
+`ColibriWatcher`, `ColibriServe`), `UpstreamBackend.cs`, `NodeHostBuilderExtensions.cs` (`AddColibri`),
+`Dockerfile.colibri`. [colibri](https://github.com/JustVugg/colibri) (Apache-2.0) keeps an MoE's dense
+part in RAM and streams the routed experts from disk; `coli serve` is its OpenAI gateway.
+
+**D1 — its own type, not `openai` pointed at it.** That node would declare `embed` (colibri has no
+`/v1/embeddings`, so a job fails after the hop — 67 D4), watch nothing (69 D4 exempts `openai`) and
+use one KV slot. `colibri` is the OpenAI dialect, `[chat]`, base URL defaulting to colibri's
+`127.0.0.1:8000/v1`. Two arms in `UpstreamBackend`'s switches (67 D2). *Measured:* the hub refuses an
+embedding before the hop — as a **404** ("no node is advertising embedding model"), not the 503 the
+brief predicted, because the model is known for chat.
+
+**D2 — a conversation's KV slot is a function of its opening.** With `Colibri:KvSlots > 1`,
+`cache_slot = FNV-1a(messages through the first user turn, or a prompt's first 512 chars) mod
+KvSlots`. Every turn re-sends its opening (rule 7), so it lands on its slot with no table, and a hash
+survives a restart as colibri's `.coli_kv` does. A collision costs a re-prefill, never an answer.
+*Rejected:* the hub's conversation key on `InferenceJob` (rule 6); a node-side LRU (state a restart
+loses). **Not established on a real engine:** only GLM-5.2/5.3 accept more than one slot (v1.12.1's
+family registry; 372 GB+), and the engine we ran, OLMoE, keeps nothing between requests at all
+(`[PREFIX] no reuse: held=0`, identical request twice: ~63 s each). Default `KvSlots=1` sends nothing.
+
+**D3 — `KvSlots` is the node's `MaxConcurrency` unless `Node:MaxConcurrency` is written.** The hub
+queues on that number (phase 9); without it the hub fans out and colibri's gateway — *measured*,
+12 parallel requests straight at it — answered 7 and **dropped 5 connections**, never the documented
+429. Through a node: serialized, all 200. Solo gets the `LocalConcurrencyGate` for the same reason.
+
+**D4 — the watcher declares on 69's threshold and never restarts.** `GET /health` at the gateway's
+root, classified by `OllamaProbe.ClassifyAsync` (now public — the Windows connect quirk is not to be
+rediscovered per backend), factory logging removed from the probe client. A 744B prefill is
+indistinguishable from a wedge. **Widened by a real boot:** `Recovered` also fires when a healthy
+probe follows *any* failure, not only a declared outage — the launched engine is still loading when
+the node registers, its listing is "could not ask", and the node sat unroutable until the 60 s
+refresh. Measured after: routable 15 s after `docker run`.
+
+**D5 — the node launches `coli serve` only when `Colibri:Serve:Model` is set**, loopback, relaunching
+on exit (2 s doubling to 60 s, reset after a minute up) and never because it is slow. A missing
+directory is one warning and no process. `Serve:Model` + `Upstream:BaseUrl` fails startup naming
+both. The child inherits `COLI_*` **except `COLI_DEBUG`**, which tees the rendered prompt to stderr —
+and this node logs that stream (rule 7; verified with `COLI_DEBUG=2`: a warning, no prompt in the log).
+The gateway's own access-log line for the watcher's probe is dropped; everything else is pumped.
+
+**D6 — every body carries a `Content-Length` (found against the real gateway, invisible to stubs).**
+The shared client's `JsonContent` goes chunked; Python's `http.server` answers that with `400 Request
+body must be between 1 and 4194304 bytes` — every chat, every stream. `ColibriRequestHandler`
+re-sends each POST as a sized `StringContent` (and adds D2's slot). *Rejected:* changing the shared
+client — a wire change to every vendor and the hub's providers to fix one gateway.
+
+**D7 — a refused stream is a refusal on the OpenAI surface, on both hosts.** Found here, true of every
+backend: a node fails a streamed job with `{"error":…,"done":true}`, and the chat/completion formatters
+rendered that terminal chunk as an empty `finish_reason=stop` under a 200 — a refusal a client reads
+as an empty answer (the Ollama surface passed the line through and was right). `OpenAiSse.TryReadFailure`
+now catches it in `LocalSseResult` and the hub's `OpenAiStreamingResult`: **before the first byte, the
+blocking path's own 502 with the OpenAI envelope; after it, an `error` frame** the OpenAI SDKs raise
+on. A node *disconnect* mid-stream still truncates with `stop` — it carries no sentence to report.
+
+Tests: `ColibriBackendTests`, `SoloStreamRefusalTests` (Node), `OpenAiStreamingTests` (Coordinator),
+`BundledNodeTests` (pin, checksum, matrix entry). Measurements: `.claude/release-notes-v3.58.0.md`.
+
