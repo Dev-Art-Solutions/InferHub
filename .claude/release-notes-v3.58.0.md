@@ -94,7 +94,26 @@ container, 7.4 GB; AMD Threadripper PRO 5975WX, CPU only):
 
 ## Checked on the published image
 
-*(filled in after the tag builds)*
+`ghcr.io/dev-art-solutions/inferhub-node:3.58.0-colibri` pulled from GHCR, label
+`org.opencontainers.image.revision=e2da84e` (the tagged commit), meshed with a v3.58 hub and also
+serving solo on the same container, with the same OLMoE directory mounted:
+
+| Check | Result |
+|---|---|
+| `docker run` → model routable at the hub | **17 s** |
+| Hub status | `capabilities: [chat]`, `maxConcurrency: 1`, `backendHealth: healthy` |
+| Chat via hub | 200, *"The capital of Bulgaria is Sofia."* (28 s, cold) |
+| OpenAI stream via hub | 200 |
+| Streamed `frequency_penalty` via hub and via solo | **502** *"Token penalties are not supported yet."*, both |
+| Embedding via hub | 404 at the hub, never dispatched |
+| 4 parallel via hub | colibri `active 1, queued 0`; all 200 (4.6 / 6.3 / 8.2 / 9.6 s) |
+| SIGKILL the gateway | `exited (137)`, relaunched in 2 s, listening, next chat 200 (*"Blue"*) |
+| Prompt text in the node's log | 0 matches |
+
+Then the hub was replaced by the published **`inferhub-coordinator:3.58.0`** (revision `e2da84e`) in
+front of the same node: chat 200 (*"…Sofia."*), a normal OpenAI stream unchanged (`1, 2, 3, 4, 5`),
+and the streamed `frequency_penalty` request **502** with colibri's sentence — the hub half of the
+fix, on the artifact.
 
 ## Not established, said out loud
 
