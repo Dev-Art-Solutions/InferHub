@@ -119,3 +119,26 @@ runs its engines by `Autostart` (the hub has no `ReportBackendState` and no star
 older node against a v3.60 hub shows no `engines` block, and the start/stop routes answer 409.
 
 Tests: 1 832 passed, 61 skipped (`EngineTests` 27, `EngineMeshTests` 2 new).
+
+## The published-image check
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.60.0` and `inferhub-node:3.60.0-colibri`, both with
+`org.opencontainers.image.revision` = `088afc5` (the tag), on a Docker network. The node had three
+engines: the host's Ollama (`host.docker.internal`), a `llama-server` b11417 (official Ubuntu x64
+build, mounted read-only) **launched by the node inside the container**, and colibri launched through
+the image's own `Colibri:Serve:Model` with OLMoE mounted at `/models/colibri`.
+
+- Left in place, the image's `Backend__Type=colibri` next to `Backend:Engines` refused startup with
+  the documented sentence ("… clear Backend:Type (in a container: Backend__Type=)"). With
+  `-e Backend__Type=` the node started.
+- Chat through the hub to the Ollama model and to the `llama-server` model: both 200.
+- `…/backends/qwen/stop` → `llama-server` gone from the container's process list; chat to its model
+  → 404. `…/backends/colibri/start` → `coli serve` launched; Brio 200 with the same probabilities as
+  the from-source run (p("no") = 0.9298). Without the admin key the start route answers 401.
+- `docker restart` of the node: it applied the stored profile and launched **only** colibri — the
+  stopped `llama-server` was not started on boot (the Linux side of the boot fix).
+- No prompt text in either container's log.
+
+One thing to know when you try this: a colibri engine launched by the node serves its model under
+the **directory's name** (`colibri` for `/models/colibri`), as in v3.58. Set
+`Colibri__Serve__ModelId` to choose the name.
