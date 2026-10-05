@@ -477,6 +477,10 @@ public static class NodeHostBuilderExtensions
             builder.Services.AddHostedService<ColibriServe>();
         }
 
+        // Phase 94 D1. Brio: a `score` job goes to the engine's /v1/brio. Registered here and
+        // nowhere else, so every other node has no scorer rather than one that refuses.
+        builder.Services.AddSingleton<IClosedSetScorer>(services => services.GetRequiredService<UpstreamBackend>());
+
         // D3. The engine admits one generation per KV slot and 429s past its own queue; the hub's
         // queue only needs the number. Node:MaxConcurrency wins whenever it is written.
         builder.Services.PostConfigure<NodeOptions>(options =>

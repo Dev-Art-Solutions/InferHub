@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using InferHub.Node.Backends.Colibri;
 using InferHub.Node.Configuration;
 using InferHub.Shared.Anthropic;
 using InferHub.Shared.Contracts;
@@ -37,7 +38,7 @@ public sealed class UpstreamBackend(
     IHttpClientFactory httpClientFactory,
     IOptions<BackendOptions> backend,
     IOptions<UpstreamBackendOptions> options,
-    ILogger<UpstreamBackend> logger) : IInferenceBackend
+    ILogger<UpstreamBackend> logger) : IInferenceBackend, IClosedSetScorer
 {
     public const string HttpClientName = "openai-upstream";
 
@@ -47,6 +48,8 @@ public sealed class UpstreamBackend(
     private static readonly string[] ChatAndEmbed = [CapabilityKinds.Chat, CapabilityKinds.Embed];
 
     private static readonly string[] ChatOnly = [CapabilityKinds.Chat];
+
+    private static readonly string[] ChatAndScore = [CapabilityKinds.Chat, CapabilityKinds.Score];
 
     private readonly UpstreamBackendOptions options = options.Value;
 
@@ -68,9 +71,15 @@ public sealed class UpstreamBackend(
     /// throws when asked to do the impossible is a seam nobody trusts twice. It is deliberately not
     /// derived inside <c>BackendCapabilities</c> — that file's whole point (40 D2) is that nothing
     /// there guesses what a model is for. colibri declares <c>chat</c> alone for Anthropic's reason
-    /// (93 D1): <c>coli serve</c> has no <c>/v1/embeddings</c>.
+    /// (93 D1): <c>coli serve</c> has no <c>/v1/embeddings</c> — and it adds <c>score</c> (94 D1),
+    /// because <c>/v1/brio</c> is a route no other engine here has.
     /// </remarks>
-    public IReadOnlyList<string> Kinds => Type is BackendOptions.Anthropic or BackendOptions.Colibri ? ChatOnly : ChatAndEmbed;
+    public IReadOnlyList<string> Kinds => Type switch
+    {
+        BackendOptions.Colibri => ChatAndScore,
+        BackendOptions.Anthropic => ChatOnly,
+        _ => ChatAndEmbed
+    };
 
     private string Type => backend.Value.Normalized();
 
@@ -135,6 +144,21 @@ public sealed class UpstreamBackend(
         {
             yield return chunk;
         }
+    }
+
+    /// <summary>
+    /// Brio (94 D1). Only a colibri node registers this class as its <see cref="IClosedSetScorer"/>;
+    /// the refusal below is the defensive backstop for a caller that reached it some other way.
+    /// </summary>
+    public async Task<ToolResult> ScoreAsync(ToolJob job, CancellationToken cancellationToken)
+    {
+        if (Type != BackendOptions.Colibri)
+        {
+            return ToolResult.Failed(job.JobId, $"the {Type} backend cannot score a closed set; only colibri can");
+        }
+
+        using var http = CreateHttpClient();
+        return await BrioClient.ScoreAsync(http, job, cancellationToken);
     }
 
     // A vLLM / llama.cpp / hosted upstream has its served model fixed at launch, and a cloud vendor

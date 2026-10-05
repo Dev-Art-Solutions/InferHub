@@ -93,11 +93,19 @@ public static class CapabilityKinds
     public const string Rerank = "rerank";
 
     /// <summary>
+    /// Scoring a closed set of answers (phase 94): colibri's Brio, where the engine reads the
+    /// log-probability of each allowed option instead of generating, and answers with a
+    /// distribution. Declared by the colibri <em>backend</em> (67 D4), not a tool runtime, and it
+    /// travels as a <see cref="ToolJob"/> because it has no Ollama shape (40 D3).
+    /// </summary>
+    public const string Score = "score";
+
+    /// <summary>
     /// Only used at the client edge, for error messages. The mesh carries any string — see the
     /// remarks on <see cref="NodeCapability"/>.
     /// </summary>
     public static bool IsWellKnown(string? kind) =>
-        kind is Chat or Embed or Transcribe or Speak or Image or ImageEdit or Video or Rerank;
+        kind is Chat or Embed or Transcribe or Speak or Image or ImageEdit or Video or Rerank or Score;
 
     /// <summary>
     /// Either image kind — the question everything that reasons about a <em>recipe</em> asks.

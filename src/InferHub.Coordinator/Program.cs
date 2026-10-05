@@ -293,6 +293,9 @@ app.MapToolEndpoints();
 // SDK needs the route that SDK already calls.
 app.MapAudioEndpoints();
 
+// Phase 94. colibri's Brio, on the route its own clients already call; /api/tools/score works too.
+app.MapBrioEndpoints();
+
 // Phase 46. The same reasoning one modality over: /api/tools/image works and is generic, and a
 // client holding an OpenAI SDK calls /v1/images/generations.
 app.MapImageEndpoints();

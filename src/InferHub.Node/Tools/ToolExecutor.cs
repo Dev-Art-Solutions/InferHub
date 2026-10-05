@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using InferHub.Node.Backends;
 using InferHub.Node.Configuration;
 using InferHub.Shared.Contracts;
 using Microsoft.Extensions.Options;
@@ -31,19 +32,32 @@ public sealed record ToolModelProgress(string Model, string Status, string? Erro
 /// literal sense design rule 7 has met so far: a transcription request is a recording of somebody's
 /// voice. Nothing here retains a byte of it past the request.
 /// </para>
+/// <para>
+/// <b>A <c>score</c> job is not a tool's</b> (phase 94, D1): it goes to the backend's
+/// <see cref="IClosedSetScorer"/> — colibri's Brio — which is registered on a colibri node and
+/// nowhere else. It arrives here because it is a <see cref="ToolJob"/>, so the mesh path and the solo
+/// path both reach it without learning that it exists.
+/// </para>
 /// </remarks>
 public sealed class ToolExecutor(
     IToolRuntime runtime,
     IOptions<ToolOptions> toolOptions,
-    ILogger<ToolExecutor> logger)
+    ILogger<ToolExecutor> logger,
+    IClosedSetScorer? scorer = null)
 {
     private readonly ToolOptions options = toolOptions.Value;
 
     /// <summary>Whether this node can serve the pair at all — the question the edge asks first.</summary>
+    /// <remarks>
+    /// For <c>score</c> the answer is "this node has a scorer": colibri serves one model and says
+    /// <c>model_not_found</c> for any other, which the edge renders as the 404 it is.
+    /// </remarks>
     public bool Provides(string capability, string model) =>
-        runtime.Capabilities.Any(c =>
-            string.Equals(c.Kind, capability, StringComparison.OrdinalIgnoreCase)
-            && c.Models.Any(m => string.Equals(m, model, StringComparison.OrdinalIgnoreCase)));
+        IsScore(capability)
+            ? scorer is not null
+            : runtime.Capabilities.Any(c =>
+                string.Equals(c.Kind, capability, StringComparison.OrdinalIgnoreCase)
+                && c.Models.Any(m => string.Equals(m, model, StringComparison.OrdinalIgnoreCase)));
 
     /// <param name="progress">
     /// Where per-step <c>progress</c> frames go (phase 47, D2). Null is the pre-3.15 behaviour and
@@ -67,6 +81,21 @@ public sealed class ToolExecutor(
         IStreamedAttachmentSource? upload,
         CancellationToken cancellationToken)
     {
+        if (scorer is not null && IsScore(job.Capability))
+        {
+            // The model and the outcome, never the payload: a `state` is a document somebody
+            // wanted judged (rule 7).
+            var scored = await scorer.ScoreAsync(job, cancellationToken);
+
+            logger.LogInformation(
+                "Scored job {JobId} with model {Model}: success={Success}",
+                job.JobId,
+                job.Model,
+                scored.Success);
+
+            return scored;
+        }
+
         var scratch = CreateScratch(job.JobId);
 
         // The read loop is NOT driven by the caller's token. Cancellation is cooperative first
@@ -253,6 +282,13 @@ public sealed class ToolExecutor(
         ToolJob job,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        if (IsScore(job.Capability))
+        {
+            // One object is the whole answer; there is nothing to stream (94's non-goals).
+            yield return Terminal(job.JobId, "a score is answered once; send the request without stream");
+            yield break;
+        }
+
         var scratch = CreateScratch(job.JobId);
         ToolWorkerLease? lease = null;
 
@@ -561,6 +597,9 @@ public sealed class ToolExecutor(
 
     /// <summary>Matches the hub's capability refusal (phase-40 D5), so backoff is the same everywhere.</summary>
     internal const int CapabilityRetryAfterSeconds = 30;
+
+    private static bool IsScore(string? capability) =>
+        string.Equals(capability, CapabilityKinds.Score, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// A <c>progress</c> frame as it travels to the hub: a <see cref="ToolChunk"/> on the transport

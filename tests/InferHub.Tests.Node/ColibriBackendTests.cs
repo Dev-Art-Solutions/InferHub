@@ -33,13 +33,14 @@ public class ColibriBackendTests
     // ---- D1: the type ------------------------------------------------------------------
 
     [Fact]
-    public void AColibriNodeDeclaresChatAloneAndDefaultsToTheEnginesOwnAddress()
+    public void AColibriNodeDeclaresChatAndScoreAndDefaultsToTheEnginesOwnAddress()
     {
         // coli serve has no /v1/embeddings: a node that declared embed would have the hub route an
-        // embedding job here and the client read the failure after the hop (67 D4).
+        // embedding job here and the client read the failure after the hop (67 D4). It has
+        // /v1/brio, which no other engine here has (94 D1).
         var backend = Backend(new Stub(ChatReply), slots: 1, new UpstreamBackendOptions());
 
-        Assert.Equal(["chat"], backend.Kinds);
+        Assert.Equal(["chat", "score"], backend.Kinds);
         Assert.Equal("colibri", backend.Name);
         Assert.Equal("http://127.0.0.1:8000/v1", backend.Endpoint);
         Assert.False(backend.SupportsModelManagement);

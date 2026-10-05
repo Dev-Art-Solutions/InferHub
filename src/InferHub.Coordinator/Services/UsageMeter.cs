@@ -129,6 +129,20 @@ public sealed class UsageMeter(
         Write(client, UsageRecord.ForUnits(client.Id, model, kind, units, unitKind, now));
     }
 
+    /// <summary>
+    /// Meter token counts that did not arrive in an Ollama body (phase 94, D3): Brio reads and never
+    /// generates, so everything the engine read is prompt tokens and the completion is zero.
+    /// </summary>
+    public void RecordTokens(ResolvedClient client, string kind, string model, long promptTokens, long completionTokens)
+    {
+        if (promptTokens <= 0 && completionTokens <= 0)
+        {
+            return;
+        }
+
+        Record(client, kind, model, Math.Max(0, promptTokens), Math.Max(0, completionTokens), fallback: false);
+    }
+
     private void Record(ResolvedClient client, string kind, string model, long promptTokens, long completionTokens, bool fallback)
     {
         var now = DateTimeOffset.UtcNow;

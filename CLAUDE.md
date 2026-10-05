@@ -96,7 +96,7 @@ longer pays for the Qdrant connector's UUID mapping and the cluster lease's spli
 | `src/InferHub.Coordinator/Vector/` | `src/InferHub.Coordinator/Vector/CLAUDE.md` | the three vector providers, replication and healing, collection ownership, cross-provider migration, federated retrieval · phases 31, 35, 44, 75 (split out in phase 62) |
 | `src/InferHub.Coordinator/Observability/` | `src/InferHub.Coordinator/Observability/CLAUDE.md` | `/metrics`, the `Metrics` registry, the OTLP push exporter · phases 28, 66, 81 (split out in phase 81) |
 | `src/InferHub.Coordinator/Cluster/` | `src/InferHub.Coordinator/Cluster/CLAUDE.md` | the multi-coordinator lease, the split-brain fence, the standby's refusal set · phase 32 (split out in phase 69) |
-| `src/InferHub.Node/` | `src/InferHub.Node/CLAUDE.md` | backends and the upstream dialects a node can drive, the Ollama supervisor, solo mode, profiles, colibri · phases 36–39, 43, 53, 67, 93 |
+| `src/InferHub.Node/` | `src/InferHub.Node/CLAUDE.md` | backends and the upstream dialects a node can drive, the Ollama supervisor, solo mode, profiles, colibri and its Brio · phases 36–39, 43, 53, 67, 93, 94 |
 | `src/InferHub.Node/Tools/` | `src/InferHub.Node/Tools/CLAUDE.md` | the tool runtime, STT/TTS, the image and video catalogues, the VRAM budget and the licence gate · phases 41, 42, 48, 55–58, 70 (split out in phase 67) |
 | `python/` | `python/CLAUDE.md` | the worker protocol, recipes, the diffusion worker · phases 49, 50, 55, 57, 58, 70 |
 | `tests/` | `tests/CLAUDE.md` | the four test projects and the testing discipline |

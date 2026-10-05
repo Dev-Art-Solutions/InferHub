@@ -1044,3 +1044,36 @@ on. A node *disconnect* mid-stream still truncates with `stop` — it carries no
 Tests: `ColibriBackendTests`, `SoloStreamRefusalTests` (Node), `OpenAiStreamingTests` (Coordinator),
 `BundledNodeTests` (pin, checksum, matrix entry). Measurements: `.claude/release-notes-v3.58.0.md`.
 
+
+### Phase 94 (Brio — a closed question answered with a distribution, through `/v1/brio`)
+
+Files: `Backends/IClosedSetScorer.cs`, `Backends/Colibri/BrioClient.cs`, `UpstreamBackend.cs`,
+`Tools/ToolExecutor.cs`, `LocalApi/LocalBrioEndpoints.cs`; the hub's half is
+`src/InferHub.Coordinator/OpenAi/BrioEndpoints.cs`, the renderer both call `src/InferHub.Shared/Brio/`.
+colibri's Brio reads each allowed option's log-probability after a shared prefix and answers with a
+distribution and an entropy — "I don't know" is a number. Forms: `options`, `questions`, `schema`.
+
+**D1 — a `ToolJob` with capability `score`, declared by the colibri backend.** No Ollama shape, so
+40 D3; `ToolJob` already is that contract. colibri declares `[chat, score]` (amends 93 D1's `[chat]`);
+`Node:Capabilities:Disabled: ["score"]` turns it off. `IClosedSetScorer` is registered on a colibri
+node only, and `ToolExecutor` sends a `score` job there before any tool runtime is asked — so the
+mesh path and solo reach it without learning it exists. *Rejected:* an `InferenceJob.Kind` (40 D3);
+a tool worker (a second client of the engine's one slot).
+
+**D2 — the surface is colibri's own `/v1/brio`, passed through.** The edge (`BrioRequest`) reads the
+model and that exactly one form is present; the engine validates the rest and its 400 keeps its
+sentence. `/api/tools/score` works too, unmetered like every generic tool call.
+
+**D3 — billed in tokens: `usage.total_tokens` as prompt, completion 0, kind `score`**, against the
+chat quota (same engine). Admission before routing; a failed job and a 200 with no `usage` (→ 502)
+are never billed. Solo takes a `LocalConcurrencyGate` slot like a chat (37 D9).
+
+**D4 — the node adds nothing to the body.** With no `cache_slot` the gateway hashes `state` into a
+slot itself — 93 D2 keyed on what does not change, where the KV lives. 93 D6's `Content-Length` holds.
+
+**D5 — the node states the failure, the edge renders it.** 429 → `Retry` (503 + `Retry-After`, not
+retried here, 93 D3); 404 → `model_not_found` (404); other 4xx → `invalid_request` (400); 5xx,
+unreachable, timeout → 502. Logs carry model, form, count, tokens — never state, question or option.
+
+Tests: `BrioContractTests` (Shared), `BrioScorerTests` (Node), `BrioMeshTests` (Mesh — real hub,
+SignalR, node, and a gateway over a socket; solo too). Measurements: `.claude/release-notes-v3.59.0.md`.
