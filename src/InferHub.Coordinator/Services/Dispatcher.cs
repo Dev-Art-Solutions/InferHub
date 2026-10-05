@@ -507,11 +507,13 @@ public sealed class Dispatcher(
                 metrics.RecordRequestFail(pending.NodeId);
                 pending.CancellationRegistration.Dispose();
 
+                // The node is told before the waiter wakes, as on the blocking path: once the
+                // caller has its exception it may already be asserting that the node was told.
+                SendCancelJob(node.ConnectionId, jobId);
                 LogExpired(deadline, jobId, node);
                 var error = deadline.Expired();
                 pending.StreamReady.TrySetException(error);
                 pending.Channel.Writer.TryComplete(error);
-                SendCancelJob(node.ConnectionId, jobId);
             }
         });
     }
@@ -540,9 +542,9 @@ public sealed class Dispatcher(
             registry.DecrementInFlight(pending.ConnectionId);
             metrics.RecordRequestFail(pending.NodeId);
             pending.CancellationRegistration.Dispose();
+            SendCancelJob(connectionId, jobId);
             pending.StreamReady.TrySetException(exception);
             pending.Channel.Writer.TryComplete(exception);
-            SendCancelJob(connectionId, jobId);
         }
     }
 

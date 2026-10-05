@@ -86,6 +86,35 @@ in its own harness: a fake gateway written as `Task<IResult> Handler(HttpContext
 `RequestDelegate`, and its result was dropped for an empty 200. The renderer refused that empty 200
 as "not a Brio answer". That refusal is the reason the guard exists.
 
+## The published image
+
+`inferhub-node:3.59.0-colibri` pulled from GHCR. Its revision label is `32e80c9`, the commit the
+`v3.59.0` tag points at. It ran as a solo node with OLMoE mounted and nothing else configured, so
+the node launched `coli serve` itself:
+
+| What | Result |
+|---|---|
+| `/api/status` | `"nodeVersion":"3.59.0"`, `"capabilities":["chat","score"]`, 5 s after `docker run` |
+| `options` | 200 in 26 s (cold engine), `request changes` p=0.8817 / 0.0851 / 0.0332, 36 tokens: the same numbers as before release |
+| `questions` | 200 in 10.6 s, 77 tokens, the same three answers |
+| `schema` | 200 in 2.5 s, `{"sentiment":"negative","intent":"refund","urgency":"high"}`, 64 tokens |
+| No API key | 401 |
+| Duplicate option | 400, the engine's *"Duplicate option in `options`: 'a'."* |
+| Container log | none of the state, question or option phrases appear |
+
+All seven images (`coordinator`, and `node` plain, `-tools`, `-ollama`, `-diffusion`, `-all`,
+`-tts-bg`, `-colibri`) are published.
+
+## Found after the tag
+
+The `build-and-test` run on the release commit failed once, on
+`DispatchDeadlineTests.AStreamThatNeverStartsDiesAtItsCapabilitysDeadline`. That is a phase-89 test,
+and this release did not touch that code. When a stream ran out its deadline, the hub woke the
+waiting caller *before* it sent the node `CancelJob`. So a caller, or a test, could see the timeout
+before the node had been told to stop. The blocking path already did it in the right order. The two
+stream paths now tell the node first. Nothing a client can see changed, and the fix is on `main`.
+There is no v3.59.1.
+
 ## What was not established
 
 - **Brio across more than one KV slot.** OLMoE accepts one slot. Only GLM-5.2/5.3 accept more
