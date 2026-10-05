@@ -32,7 +32,8 @@ public sealed class CoordinatorConnection(
     IBackendSupervisor supervisor,
     Resources.IResourceGovernor resourceGovernor,
     ILogger<CoordinatorConnection> logger,
-    Resources.GpuArbiter? gpuArbiter = null) : IAsyncDisposable
+    Resources.GpuArbiter? gpuArbiter = null,
+    IEngineControl? engines = null) : IAsyncDisposable
 {
     private readonly CoordinatorOptions coordinator = coordinatorOptions.Value;
     private readonly NodeOptions node = nodeOptions.Value;
@@ -51,6 +52,7 @@ public sealed class CoordinatorConnection(
     private bool subscribedToSupervisor;
     private bool subscribedToTools;
     private bool subscribedToArbiter;
+    private bool subscribedToEngines;
     private int onDemandBeatQueued;
     private LocalVectorStore? tailedStore;
 
@@ -59,6 +61,7 @@ public sealed class CoordinatorConnection(
         SubscribeToSupervisor();
         SubscribeToTools();
         SubscribeToArbiter();
+        SubscribeToEngines();
         retrieval.CorpusChanged += OnCorpusChanged;
         return ConnectUntilSuccessfulAsync(cancellationToken);
     }
@@ -68,6 +71,7 @@ public sealed class CoordinatorConnection(
         UnsubscribeFromSupervisor();
         UnsubscribeFromTools();
         UnsubscribeFromArbiter();
+        UnsubscribeFromEngines();
         retrieval.CorpusChanged -= OnCorpusChanged;
         UnsubscribeFromTailedStore();
         await lifetime.CancelAsync();
@@ -107,6 +111,7 @@ public sealed class CoordinatorConnection(
         UnsubscribeFromSupervisor();
         UnsubscribeFromTools();
         UnsubscribeFromArbiter();
+        UnsubscribeFromEngines();
         retrieval.CorpusChanged -= OnCorpusChanged;
         UnsubscribeFromTailedStore();
         await lifetime.CancelAsync();
@@ -152,6 +157,52 @@ public sealed class CoordinatorConnection(
 
         subscribedToTools = true;
         toolRuntime.CapabilitiesChanged += OnToolCapabilitiesChanged;
+    }
+
+    /// <summary>
+    /// Phase 95. An engine came up, was stopped, or could not be launched: what this node serves
+    /// changed, so the hub hears it now rather than a model refresh later — phase-36 D7's
+    /// <c>Recovered</c> mechanism for the fourth reason.
+    /// </summary>
+    private void SubscribeToEngines()
+    {
+        if (engines is null || subscribedToEngines)
+        {
+            return;
+        }
+
+        subscribedToEngines = true;
+        engines.Changed += OnEnginesChanged;
+    }
+
+    private void UnsubscribeFromEngines()
+    {
+        if (!subscribedToEngines || engines is null)
+        {
+            return;
+        }
+
+        subscribedToEngines = false;
+        engines.Changed -= OnEnginesChanged;
+    }
+
+    private void OnEnginesChanged()
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ReportModelsAsync(lifetime.Token);
+                await ReportBackendStateAsync(lifetime.Token);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Could not re-report after an engine changed state");
+            }
+        });
     }
 
     private void SubscribeToArbiter()
@@ -598,6 +649,9 @@ public sealed class CoordinatorConnection(
         // Phase 45, and a profile is the *most* likely thing to have just suspended a pool — so the
         // console shows `suspended` rather than `running` for the next refresh interval.
         await ReportToolStateAsync(cancellationToken);
+
+        // Phase 95: a profile that stopped an engine is looked at right away, same as a tool.
+        await ReportBackendStateAsync(cancellationToken);
 
         if (application.Changed)
         {
@@ -1238,6 +1292,9 @@ public sealed class CoordinatorConnection(
         // carries the health verdict within a probe or two — is what unroutes this node.
         if (models is null)
         {
+            // The engines block still goes out: "every engine is down" is exactly when it is read.
+            await ReportBackendStateAsync(cancellationToken);
+
             logger.LogWarning(
                 "Could not list models from the {Backend} backend; leaving the coordinator's inventory alone rather than reporting zero. The heartbeat carries this backend's health.",
                 backend.Name);
@@ -1274,7 +1331,8 @@ public sealed class CoordinatorConnection(
             node.Capabilities,
             toolRuntime.Capabilities,
             profiles.Effective.DisabledCapabilities,
-            profiles.Effective.DisabledModels);
+            profiles.Effective.DisabledModels,
+            backend as IModelKinds);
         // Re-declared on every report as well as at registration (phase-53 D5): a hub that learned
         // it once would keep believing it after an operator turned the key off and restarted.
         var report = new NodeModels(
@@ -1316,6 +1374,33 @@ public sealed class CoordinatorConnection(
         // *what* this node will serve; this says which manifest is behind it and which one is not
         // running, which is the difference between "nothing happened" and a reason.
         await ReportToolStateAsync(cancellationToken);
+
+        // Phase 95, the same loop again: which engines are running and which could be.
+        await ReportBackendStateAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Tells the hub what each engine is doing (phase 95). Sent only by a node that runs several —
+    /// a single-backend node has no engines block and sends nothing. A hub older than v3.60 has no
+    /// such method: a debug line and a node that carries on (40 D1's mixed-fleet rule, again).
+    /// </summary>
+    private async Task ReportBackendStateAsync(CancellationToken cancellationToken)
+    {
+        var activeConnection = connection;
+
+        if (engines is null || activeConnection is not { State: HubConnectionState.Connected })
+        {
+            return;
+        }
+
+        try
+        {
+            await activeConnection.InvokeAsync("ReportBackendState", engines.State(nodeId), cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "This coordinator did not accept a backend report");
+        }
     }
 
     /// <summary>

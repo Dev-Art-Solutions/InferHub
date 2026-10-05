@@ -272,6 +272,33 @@
   </section>
 
   <!--
+    Phase 95. The engines a Backend:Engines node may run — ollama, llama.cpp, colibri — and which of
+    them are running. Start and Stop write the node's profile; the node's own list is the ceiling,
+    so an engine it never configured never appears here to be started.
+  -->
+  <section>
+    <h2>Engines</h2>
+    <div class="table-wrap">
+      <table id="engines-table">
+        <thead>
+          <tr>
+            <th>Node</th>
+            <th>Engine</th>
+            <th>Type</th>
+            <th>State</th>
+            <th>Serves</th>
+            <th>Models</th>
+            <th>In flight</th>
+            <th>Last error</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="engines"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!--
     Phase 41/45. Desired vs effective for the tool runtime: what the operator allowed, what the box
     loaded, what is actually running and what went wrong last. A manifest that is present but not in
     Tools:Allowed is the commonest "nothing happened", and it is a row here rather than a log line

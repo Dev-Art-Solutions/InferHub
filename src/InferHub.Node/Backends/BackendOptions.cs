@@ -34,13 +34,46 @@ public sealed class BackendOptions
     public const string Colibri = "colibri";
 
     /// <summary>
-    /// The five types driven by <see cref="UpstreamBackend"/> — everything that is not the local
+    /// llama.cpp's <c>llama-server</c> (phase 95): the OpenAI dialect, chat and embed, a free
+    /// <c>/health</c>, and its own default port. <c>openai</c> pointed at it still works; this type
+    /// exists so a node under <see cref="Engines"/> can <em>launch</em> one (95 D3) and so the fleet
+    /// list says what is actually serving.
+    /// </summary>
+    public const string LlamaCpp = "llamacpp";
+
+    /// <summary>
+    /// The six types driven by <see cref="UpstreamBackend"/> — everything that is not the local
     /// Ollama. Kept as a list so the validator, the composition root and the supervisor guard all
     /// ask the same question rather than each writing their own <c>!= ollama</c>.
     /// </summary>
-    public static readonly string[] UpstreamTypes = [OpenAi, OpenRouter, Anthropic, Gemini, Colibri];
+    public static readonly string[] UpstreamTypes = [OpenAi, OpenRouter, Anthropic, Gemini, Colibri, LlamaCpp];
+
+    /// <summary>
+    /// The types an entry under <see cref="Engines"/> may name (95 D2): the local engines a node can
+    /// start, stop and route between, plus <c>openai</c> for one already running beside it. A cloud
+    /// vendor is not an engine anybody starts or stops, so it stays a single-backend type.
+    /// </summary>
+    public static readonly string[] EngineTypes = [Ollama, LlamaCpp, Colibri, OpenAi];
 
     public string Type { get; set; } = Ollama;
+
+    /// <summary>
+    /// Phase 95. Several engines on one node, by name — <c>{"ollama": {"Type": "ollama"},
+    /// "qwen": {"Type": "llamacpp", "Serve": {...}}}</c>. <b>Empty is the single-backend node every
+    /// release before v3.60 was, byte for byte</b>; non-empty replaces <see cref="Type"/>, and writing
+    /// both is a startup failure (95 D1). The names are what a coordinator starts and stops, and the
+    /// list is the ceiling it cannot raise (95 D4, 43 D1).
+    /// </summary>
+    public Dictionary<string, EngineOptions> Engines { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// How long a stopped engine's in-flight requests may finish before a launched process is killed
+    /// under them (95 D5). New work stops being routed to it at once either way.
+    /// </summary>
+    public TimeSpan StopDrain { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>Whether this node runs several engines rather than one backend.</summary>
+    public bool IsMulti => Engines.Count > 0;
 
     public string Normalized()
         => string.IsNullOrWhiteSpace(Type) ? Ollama : Type.Trim().ToLowerInvariant();
@@ -160,6 +193,7 @@ public sealed class UpstreamBackendOptions
 
             // colibri's own default; a node that launches the engine points this at its port (93 D5).
             BackendOptions.Colibri => $"http://127.0.0.1:{Colibri.ColibriOptions.DefaultPort}/v1",
+            BackendOptions.LlamaCpp => $"http://127.0.0.1:{EngineServeOptions.LlamaCppDefaultPort}/v1",
             _ => null
         };
     }

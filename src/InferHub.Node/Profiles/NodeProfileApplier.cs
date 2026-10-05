@@ -30,7 +30,8 @@ public sealed class NodeProfileApplier(
     IInferenceBackend backend,
     IToolRuntime toolRuntime,
     RetrievalHost retrieval,
-    ILogger<NodeProfileApplier> logger)
+    ILogger<NodeProfileApplier> logger,
+    IEngineControl? engines = null)
 {
     private readonly NodeOptions node = nodeOptions.Value;
     private readonly ToolOptions tools = toolOptions.Value;
@@ -96,6 +97,12 @@ public sealed class NodeProfileApplier(
 
             Volatile.Write(ref effective, result.Effective);
 
+            // Phase 95. Engines are started and stopped in place, never by restarting the node
+            // (43 D6). No profile, or one that names no engine, converges on each one's Autostart.
+            var engineChanges = engines is null
+                ? Array.Empty<string>()
+                : await engines.ApplyAsync(result.Effective.Backends, cancellationToken);
+
             // Phase 44. The corpus is the one part of a profile whose application can fail against the
             // world rather than against the clamp — an engine that is not there, a credential this box
             // does not have — so its refusal joins the others rather than throwing. Refusals are per
@@ -134,7 +141,7 @@ public sealed class NodeProfileApplier(
             return new ProfileApplication(
                 state,
                 commands,
-                Changed: !SameCapabilityNarrowing(previous, result.Effective) || commands.Length > 0);
+                Changed: !SameCapabilityNarrowing(previous, result.Effective) || commands.Length > 0 || engineChanges.Count > 0);
         }
         finally
         {
@@ -203,7 +210,8 @@ public sealed class NodeProfileApplier(
             .Select(id => id.Trim())
             .ToArray(),
         node.Vram.BudgetMiB,
-        node.Vram.ReserveMiB);
+        node.Vram.ReserveMiB,
+        engines?.EngineNames);
 
     private void Log(NodeProfile? profile, NodeProfileState state)
     {

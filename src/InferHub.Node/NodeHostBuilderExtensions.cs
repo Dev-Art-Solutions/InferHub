@@ -101,7 +101,14 @@ public static class NodeHostBuilderExtensions
                     .CreateLogger("InferHub.Images.Archive")
                     .LogWarning(ex, "{Message}", message)));
 
-        builder.Services.Configure<BackendOptions>(builder.Configuration.GetSection(BackendOptions.SectionName));
+        // Phase 95 gave this section a validator: Backend:Engines is refused at startup rather than
+        // discovered in front of a user. A single-backend node is success without reading anything.
+        builder.Services
+            .AddOptions<BackendOptions>()
+            .Bind(builder.Configuration.GetSection(BackendOptions.SectionName))
+            .ValidateOnStart();
+        builder.Services.AddSingleton<IValidateOptions<BackendOptions>>(
+            _ => new BackendOptionsValidator(builder.Configuration));
 
         // Phase 67, D3. Two sections, one options object, `Upstream:` layered second so it wins a
         // key both of them set — and a *disagreement* between them is a startup failure naming both
@@ -148,6 +155,12 @@ public static class NodeHostBuilderExtensions
 
             // Phase 67. Four of the five types are one class over one seam (D2) — the dialect is
             // chosen inside it, from the same options, so adding a vendor never adds a branch here.
+            // Phase 95. Several engines behind one backend; everything downstream holds one shape.
+            if (options.IsMulti)
+            {
+                return services.GetRequiredService<MultiBackend>();
+            }
+
             return options.Normalized() switch
             {
                 // Phase 85. Only a local Ollama holds this box's VRAM; an upstream is somebody
@@ -178,6 +191,7 @@ public static class NodeHostBuilderExtensions
         // see a GPU is a supported deployment; a node that cannot *tell you* is the bug.
         builder.Services.AddHostedService<GpuReport>();
 
+        AddEngines(builder);
         AddOllamaSupervision(builder, ollamaOptions);
         AddToolRuntime(builder);
         AddRetrieval(builder);
@@ -368,9 +382,19 @@ public static class NodeHostBuilderExtensions
             .GetSection(OllamaSupervisorOptions.SectionName)
             .Get<OllamaSupervisorOptions>() ?? new OllamaSupervisorOptions();
 
-        var backendType = (builder.Configuration
+        var backendOptions = builder.Configuration
             .GetSection(BackendOptions.SectionName)
-            .Get<BackendOptions>() ?? new BackendOptions()).Normalized();
+            .Get<BackendOptions>() ?? new BackendOptions();
+        var backendType = backendOptions.Normalized();
+
+        // Phase 95 D6. A node running several engines declares no single backend health: phase 69
+        // routes a whole node on that verdict, and one engine down must not unroute the others. Each
+        // engine's state rides its own report instead, and a dead one withdraws only its models.
+        if (backendOptions.IsMulti)
+        {
+            NoSupervision(builder);
+            return;
+        }
 
         // Phase 69 D4 splits this in two. Restarting keeps every gate phase 36 gave it — consent,
         // an Ollama backend, and loopback. Watching needs only an Ollama backend: probing a remote
@@ -507,6 +531,33 @@ public static class NodeHostBuilderExtensions
         builder.Services.AddSingleton<ColibriWatcher>();
         builder.Services.AddSingleton<IBackendSupervisor>(services => services.GetRequiredService<ColibriWatcher>());
         builder.Services.AddSingleton<IHostedService>(services => services.GetRequiredService<ColibriWatcher>());
+    }
+
+    /// <summary>
+    /// Phase 95. <c>Backend:Engines</c>: the composite backend, its start/stop seam and its host.
+    /// Nothing at all on a single-backend node.
+    /// </summary>
+    private static void AddEngines(IHostApplicationBuilder builder)
+    {
+        var backend = builder.Configuration
+            .GetSection(BackendOptions.SectionName)
+            .Get<BackendOptions>() ?? new BackendOptions();
+
+        if (!backend.IsMulti)
+        {
+            return;
+        }
+
+        builder.Services.TryAddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton(MultiBackendComposition.Create);
+        builder.Services.AddSingleton<IEngineControl>(services => services.GetRequiredService<MultiBackend>());
+        builder.Services.AddHostedService<MultiBackendHost>();
+
+        // Brio (94 D1) is colibri's route, so a node only has a scorer when one of its engines is colibri.
+        if (backend.Engines.Values.Any(e => e.NormalizedType() == BackendOptions.Colibri))
+        {
+            builder.Services.AddSingleton<IClosedSetScorer>(services => services.GetRequiredService<MultiBackend>());
+        }
     }
 
     private static bool IsColibri(IConfiguration configuration)

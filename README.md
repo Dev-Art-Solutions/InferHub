@@ -179,6 +179,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 92 | A CPU-only node edits a picture, and an LCM edit is billed for the steps it runs (done) | `v3.57.0` |
 | 93 | [colibri](#colibri--a-model-bigger-than-your-ram-v358) — a node drives the disk-streaming MoE engine, and a refused OpenAI stream is a refusal (done) | `v3.58.0` |
 | 94 | [Brio](#brio--a-closed-question-answered-with-a-distribution-v359) — a closed question answered with a distribution, not a sentence: `POST /v1/brio` on a colibri fleet (done) | `v3.59.0` |
+| 95 | [Several engines on one node](#several-engines-on-one-node--ollama-llamacpp-and-colibri-v360) — ollama, llama.cpp and colibri side by side, started and stopped by the coordinator (done) | `v3.60.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -2767,9 +2768,53 @@ own refusals come back as a 400 in its own words.
 - **Privacy.** Nothing logs the `state`, a question or an option, on either host — the log line
   carries the model, the form, the count and the tokens.
 
+## Several engines on one node — ollama, llama.cpp and colibri (v3.60)
+
+Until v3.59 a node ran exactly one backend. From v3.60 it can run **several at once**, by name, and the
+coordinator decides which of them are running:
+
+```jsonc
+// the node's appsettings.json (or Backend__Engines__qwen__Type=llamacpp … in the environment)
+"Backend": {
+  "Engines": {
+    "ollama":  { "Type": "ollama" },
+    "qwen":    { "Type": "llamacpp",
+                 "Serve": { "Executable": "/opt/llama/llama-server",
+                            "Model": "/models/qwen2.5-7b-instruct.Q4_K_M.gguf", "Port": 8080 } },
+    "nomic":   { "Type": "llamacpp", "Embeddings": true, "Autostart": false,
+                 "Serve": { "Executable": "/opt/llama/llama-server",
+                            "Model": "/models/nomic-embed-text.gguf", "Port": 8081 } },
+    "colibri": { "Type": "colibri", "Autostart": false }
+  }
+}
+```
+
+- **One node, one hub entry, every engine's models.** Each request goes to the engine that reported
+  its model — `qwen2.5:0.5b` to Ollama, `qwen2.5-7b-instruct.Q4_K_M` to `llama-server`, `olmoe` to
+  colibri — and each model is declared under its own engine's capabilities: a colibri model `chat` +
+  `score`, an embedding `llama-server` only `embed`. Clients change nothing.
+- **The node launches `llama-server`** when `Serve:Model` names a GGUF (loopback, `--alias` = the file
+  name, relaunched if it exits) and colibri through `Colibri:Serve:Model`, as in v3.58. An engine with a
+  `BaseUrl` instead is one already running beside the node.
+- **The coordinator starts and stops them.** `POST /api/admin/nodes/{id}/backends/{name}/start` and
+  `…/stop`, or the **Engines** panel on `/console.html`. A stop withdraws the engine's models from routing
+  at once, lets in-flight requests finish (`Backend:StopDrain`, 30 s), then kills a launched process —
+  or unloads, from Ollama, only the models this node loaded. It is written to the node's profile, so a
+  stopped engine stays stopped across a reboot of either side.
+- **The node's list is the ceiling.** The hub can start an engine the box lists with `Autostart: false`
+  and stop any of them; it cannot add one, name a binary, a model path or a port. A name the box does
+  not list is refused on the node, whatever the hub sent.
+- **Each engine says what it is doing** on `/api/status` (`engines`: `running`, `starting`, `stopped`,
+  `unreachable`, `failed` and why). One engine down withdraws only its own models.
+
+Rules: at most one `ollama` and one `colibri` engine (each is its own section); a prompt-logging flag
+(`-v`, `--verbose`) in a `llama-server`'s arguments is refused at startup; `Backend:Type` beside
+`Engines` may only be the default `ollama` (on the `:colibri` image, set `Backend__Type=`). A node
+without `Engines` is exactly the single-backend node it was.
+
 ## Inference backends
 
-A node runs one inference backend behind the `IInferenceBackend` seam. The coordinator does
+A node runs one inference backend behind the `IInferenceBackend` seam — or, since v3.60, [several](#several-engines-on-one-node--ollama-llamacpp-and-colibri-v360). The coordinator does
 not know or care which — it hands the node an Ollama-shaped job and gets an Ollama-shaped
 response back, whatever ran it.
 
@@ -2780,6 +2825,7 @@ response back, whatever ran it.
 | `openrouter` (v3.35) | **OpenRouter** | The OpenAI dialect with its own base URL and optional attribution headers. |
 | `anthropic` (v3.35) | **Anthropic** `/v1/messages` | The vendor's own dialect. Declares `chat` and **not** `embed`. |
 | `gemini` (v3.35) | **Gemini** `:generateContent` | The vendor's own dialect. The model is a path segment. |
+| `llamacpp` (v3.60) | **llama.cpp** `llama-server` | The OpenAI dialect at `127.0.0.1:8080/v1`. Under `Backend:Engines` the node can launch it. |
 | `colibri` (v3.58) | **[colibri](#colibri--a-model-bigger-than-your-ram-v358)** `coli serve` | The OpenAI dialect, `chat` + (v3.59) [`score`](#brio--a-closed-question-answered-with-a-distribution-v359), `/health` watched, KV slots. The node can launch it. |
 
 `openai` is one implementation covering all the self-hosted servers, because they all converged

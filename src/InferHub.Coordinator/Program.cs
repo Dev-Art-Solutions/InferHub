@@ -123,6 +123,8 @@ builder.Services.AddSingleton<NodeCorpusDispatcher>();
 // Phase 45. The same mailbox for what a node's tool runtime is doing. Empty and harmless on a fleet
 // with Tools:Enabled=false, which is the default and therefore almost every deployment.
 builder.Services.AddSingleton<NodeToolRegistry>();
+// Phase 95: what each multi-engine node last said about its engines. Empty on a fleet without one.
+builder.Services.AddSingleton<NodeBackendRegistry>();
 
 // Phase 47. The async image-job surface. Registered unconditionally and inert on a fleet with no
 // image capability: the store holds nothing, the pump reads an empty queue, and the sweeper ticks
@@ -176,6 +178,7 @@ else
 // through the console. Off by default (AutoScaling:Enabled) and dry-run by default
 // (AutoScaling:DryRun) even when on, so turning it on the first time only produces log lines.
 builder.Services.AddSingleton<NodeModelToggle>();
+builder.Services.AddSingleton<NodeBackendToggle>();
 builder.Services.AddHostedService<AutoScalerService>();
 
 // Phase 77. A standby for a node-owned collection, so it survives its owning node's permanent loss.

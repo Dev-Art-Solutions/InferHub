@@ -640,6 +640,51 @@
     }).join("");
   };
 
+  // ------------------------------------------------------------------ engines (phase 95)
+
+  const engineStatePill = (engine) => {
+    const cls = engine.state === "running" ? "pill-ok"
+      : engine.state === "starting" ? "pill-warn"
+        : engine.state === "stopped" ? "pill-muted" : "pill-err";
+    return `<span class="pill ${cls}">${escapeHtml(engine.state)}</span>`;
+  };
+
+  const renderEngines = (status) => {
+    const tbody = document.getElementById("engines");
+    if (!tbody) return;
+
+    const rows = (status?.nodes ?? [])
+      .filter(n => Array.isArray(n.engines) && n.engines.length > 0)
+      .flatMap(n => n.engines.map(e => ({ node: n, engine: e })));
+
+    if (rows.length === 0) {
+      emptyRow("engines", 9, "No node runs several engines. List them under Backend:Engines on a node to start and stop them here.");
+      return;
+    }
+
+    tbody.innerHTML = rows.map(({ node, engine }) => {
+      const kinds = (engine.kinds ?? []).map(k => `<span class="label-chip">${escapeHtml(k)}</span>`).join("");
+      const models = (engine.models ?? []).length
+        ? (engine.models ?? []).map(m => `<code>${escapeHtml(m)}</code>`).join(" ")
+        : `<span class="matrix-no">—</span>`;
+      const running = engine.state !== "stopped";
+      const action = running ? "stop" : "start";
+      const source = engine.launched ? " · launched" : "";
+      return `
+        <tr class="${engine.state === "failed" || engine.state === "unreachable" ? "row-error" : ""}">
+          <td>${escapeHtml(node.name)}</td>
+          <td><code>${escapeHtml(engine.name)}</code>${engine.autostart ? "" : ` <span class="pill pill-muted" title="Autostart is false on the node">manual</span>`}</td>
+          <td>${escapeHtml(engine.type)}${source}</td>
+          <td>${engineStatePill(engine)}</td>
+          <td>${kinds || `<span class="matrix-no">—</span>`}</td>
+          <td>${models}</td>
+          <td>${engine.inFlight ?? 0}</td>
+          <td>${engine.lastError ? `<span class="why">${escapeHtml(engine.lastError)}</span>` : `<span class="matrix-no">—</span>`}</td>
+          <td><button type="button" data-eaction="${action}" data-node="${encodeURIComponent(node.nodeId)}" data-engine="${encodeURIComponent(engine.name)}">${running ? "Stop" : "Start"}</button></td>
+        </tr>`;
+    }).join("");
+  };
+
   const corpusStatePill = (corpus) => {
     if (!corpus.enabled) return `<span class="pill pill-muted">off</span>`;
     const cls = corpus.status === "running" ? "pill-ok" : corpus.status === "failed" ? "pill-err" : "pill-warn";
@@ -867,6 +912,7 @@
       renderCapabilityMatrix(latestStatus);
       renderProviders(latestStatus);
       renderTools(latestStatus);
+      renderEngines(latestStatus);
       renderCorpora(latestStatus);
       renderProfileNodes(latestStatus);
       renderImageRecipes(latestStatus);
@@ -1410,6 +1456,40 @@
       toast("Rebuild failed", `${collection}: ${err.message}`, "err");
     }
   };
+
+  // Phase 95. Start/stop writes the node's profile (backends[name]); the node clamps it and
+  // re-reports, so the row changes on the next status poll rather than optimistically here.
+  const setEngineRunning = async (nodeId, engine, action) => {
+    if (action === "stop" && !window.confirm(`Stop engine "${engine}"? Its models stop being routed to this node.`)) return;
+    try {
+      const res = await fetch(`/api/admin/nodes/${encodeURIComponent(nodeId)}/backends/${encodeURIComponent(engine)}/${action}`, {
+        method: "POST",
+        headers: adminHeaders()
+      });
+      if (res.status === 401) {
+        promptForKey("Admin key required for this action.");
+        return;
+      }
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try { const body = await res.json(); if (body?.error) detail = body.error; } catch { }
+        throw new Error(detail);
+      }
+      toast(action === "start" ? "Engine starting" : "Engine stopped", engine, "ok");
+      pollStatusNow();
+    } catch (err) {
+      toast(`Could not ${action} engine`, `${engine}: ${err.message}`, "err");
+    }
+  };
+
+  const enginesBody = document.getElementById("engines");
+  if (enginesBody) {
+    enginesBody.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-eaction]");
+      if (!button) return;
+      setEngineRunning(decodeURIComponent(button.dataset.node), decodeURIComponent(button.dataset.engine), button.dataset.eaction);
+    });
+  }
 
   const collectionsBody = document.getElementById("collections");
   if (collectionsBody) {

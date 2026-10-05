@@ -63,6 +63,7 @@ public static class NodeProfileClamp
         var concurrency = ClampConcurrency(local, desired, applied, refusals);
         var (ensure, remove, disabledModels) = ClampModels(local, desired, applied, refusals);
         var retrieval = ClampRetrieval(local, desired, applied, refusals);
+        var backends = ClampBackends(local, desired, applied, refusals);
 
         return new ClampResult(
             new EffectiveProfile(
@@ -70,7 +71,8 @@ public static class NodeProfileClamp
                 disabledTools.OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToArray(),
                 concurrency,
                 disabledRecipes.OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToArray(),
-                disabledModels),
+                disabledModels,
+                backends),
             applied,
             refusals,
             ensure,
@@ -426,6 +428,73 @@ public static class NodeProfileClamp
             string.IsNullOrWhiteSpace(retrieval.EmbeddingModel) ? null : retrieval.EmbeddingModel.Trim());
     }
 
+    /// <summary>
+    /// Phase 95. <c>Backend:Engines</c> is the grant, the way <c>Tools:Allowed</c> is for tools: a
+    /// profile can start an engine the operator listed and stop any of them, and it cannot name one
+    /// that is not there — which is also why it carries no binary, model path or port to name.
+    /// </summary>
+    /// <remarks>
+    /// <b>Starting a stopped engine is not widening</b> (95 D4). The operator wrote the engine into
+    /// this box's configuration, which is the statement that it may run here; <c>Autostart</c> is
+    /// only which way it boots. What a profile cannot do is make the list longer.
+    /// </remarks>
+    private static IReadOnlyDictionary<string, bool>? ClampBackends(
+        LocalCeiling local,
+        NodeProfile desired,
+        List<string> applied,
+        List<NodeProfileRefusal> refusals)
+    {
+        if (desired.Backends is null)
+        {
+            return null;
+        }
+
+        var result = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var pair in desired.Backends)
+        {
+            var name = pair.Key?.Trim();
+
+            if (string.IsNullOrEmpty(name))
+            {
+                continue;
+            }
+
+            if (local.Engines.Count == 0)
+            {
+                refusals.Add(new NodeProfileRefusal(
+                    $"backend:{name}",
+                    "this node runs a single backend (Backend:Type); a coordinator can start and stop engines only on a node that lists them under Backend:Engines"));
+
+                continue;
+            }
+
+            var configured = local.Engines.FirstOrDefault(engine => string.Equals(engine, name, StringComparison.OrdinalIgnoreCase));
+
+            if (configured is null)
+            {
+                if (!pair.Value)
+                {
+                    // Narrowing, so honoured even for a name this box does not have: there is nothing
+                    // to stop, and "I decline to not run it" is never the answer.
+                    applied.Add($"backend '{name}' off");
+                    continue;
+                }
+
+                refusals.Add(new NodeProfileRefusal(
+                    $"backend:{name}",
+                    $"Backend:Engines on this node does not name '{name}' (it names {string.Join(", ", local.Engines)}); that list is the operator's grant and a profile cannot add to it"));
+
+                continue;
+            }
+
+            result[configured] = pair.Value;
+            applied.Add($"backend '{configured}' {(pair.Value ? "on" : "off")}");
+        }
+
+        return result;
+    }
+
     private const string ProviderLocal = "local";
 
     private const string ProviderQdrant = "qdrant";
@@ -456,8 +525,12 @@ public sealed record LocalCeiling(
     IReadOnlyList<ImageRecipeInfo>? ImageRecipeCatalogue = null,
     IReadOnlyList<string>? AcceptedLicenseIds = null,
     int VramBudgetMiB = 0,
-    int VramReserveMiB = 0)
+    int VramReserveMiB = 0,
+    /// <summary>The names under <c>Backend:Engines</c> (phase 95). Empty on a single-backend node.</summary>
+    IReadOnlyList<string>? EngineNames = null)
 {
+    public IReadOnlyList<string> Engines => EngineNames ?? Array.Empty<string>();
+
     public IReadOnlyList<ImageRecipeInfo> ImageRecipes => ImageRecipeCatalogue ?? Array.Empty<ImageRecipeInfo>();
 
     public IReadOnlyList<string> AcceptedLicenses => AcceptedLicenseIds ?? Array.Empty<string>();
@@ -474,7 +547,12 @@ public sealed record EffectiveProfile(
     /// Models a profile hid from routing (phase 74). Narrowing only — does not affect whether the
     /// model is pulled or removed, only whether it is declared as something this node provides.
     /// </summary>
-    IReadOnlyList<string> DisabledModels);
+    IReadOnlyList<string> DisabledModels,
+    /// <summary>
+    /// Engine name → running, for the engines a profile mentioned (phase 95). Null: the profile said
+    /// nothing, and every engine runs as its <c>Autostart</c> says.
+    /// </summary>
+    IReadOnlyDictionary<string, bool>? Backends = null);
 
 public sealed record ClampResult(
     EffectiveProfile Effective,

@@ -29,6 +29,7 @@ public static class StatusEndpoint
             var profiles = services.GetService(typeof(IProfileRegistry)) as IProfileRegistry;
             var corpora = services.GetService(typeof(NodeCorpusRegistry)) as NodeCorpusRegistry;
             var tools = services.GetService(typeof(NodeToolRegistry)) as NodeToolRegistry;
+            var backends = services.GetService(typeof(NodeBackendRegistry)) as NodeBackendRegistry;
 
             return Results.Ok(new StatusResponse(
                 version,
@@ -54,7 +55,8 @@ public static class StatusEndpoint
                     tools?.Of(node.NodeId),
                     node.BackendHealth?.ToString().ToLowerInvariant(),
                     node.ResourceThrottled,
-                    node.OnDemand)).ToArray(),
+                    node.OnDemand,
+                    backends?.Of(node.NodeId)?.Engines)).ToArray(),
                 models,
                 registry.CapabilitySummary(),
                 snapshot,
@@ -408,7 +410,10 @@ public static class StatusEndpoint
         bool? ResourceThrottled = null,
         // Who holds the node's card (phase 86 D5), verbatim as the node sent it. Null when the node
         // does not run on demand, and a fleet of those keeps the pre-3.51 payload exactly.
-        OnDemandState? OnDemand = null);
+        OnDemandState? OnDemand = null,
+        // Every engine a Backend:Engines node configured and what each is doing (phase 95). Null for a
+        // single-backend node, and a fleet of those keeps the pre-3.60 payload exactly.
+        IReadOnlyList<NodeEngineInfo>? Engines = null);
 
     internal sealed record NodeProfileStatusBlock(
         string? Name,

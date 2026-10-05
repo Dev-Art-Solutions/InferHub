@@ -97,9 +97,11 @@ internal static class LocalStatusEndpoints
                 // transcriptions, which is the one page an operator checks to find out why nothing
                 // is being routed to it. Found by pulling the :tools image and looking at it.
                 capabilities = Capabilities.BackendCapabilities
-                    .Declare(models, backend.Kinds, node.Capabilities, services.GetService<Tools.IToolRuntime>()?.Capabilities)
+                    .Declare(models, backend.Kinds, node.Capabilities, services.GetService<Tools.IToolRuntime>()?.Capabilities, modelKinds: backend as Backends.IModelKinds)
                     .Select(capability => capability.Kind)
                     .ToArray(),
+                // Phase 95: every configured engine and what it is doing. Null on a single-backend node.
+                engines = services.GetService<Backends.IEngineControl>()?.State(string.Empty).Engines,
                 retrieval = await RetrievalBlockAsync(services, cancellationToken),
                 models = models.Select(model => new { name = model.Name, digest = model.Digest, size = model.SizeBytes })
             },

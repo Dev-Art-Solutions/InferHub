@@ -1091,3 +1091,6 @@ manifest's `requestTimeoutSeconds`). A hub deadline longer than the node's gains
 Tests: `DispatchDeadlineTests` (Coordinator — lookup, binding, validator, a real `Dispatcher` whose
 clock runs out), `ToolMeshTests`/`AudioEndpointTests`/`VideoJobTests` (Mesh — the 504s and a video
 job failing on its own deadline; echo worker `--audio-delay-ms`).
+
+> **Phase 95 (engines on a node, started and stopped from here)** — `NodeBackendRegistry`, `NodeBackendToggle` and
+> `/api/admin/nodes/{id}/backends/{name}/start|stop` are the hub's half; the decisions are in `src/InferHub.Node/Backends/CLAUDE.md`.

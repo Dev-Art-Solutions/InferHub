@@ -157,6 +157,20 @@ public sealed class NodeHub(
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// What a node's engines are doing (phase 95). Recorded, never asked for — the mailbox again. Only
+    /// a node running <c>Backend:Engines</c> sends one.
+    /// </summary>
+    public Task ReportBackendState(NodeBackendState state)
+    {
+        if (services.GetService(typeof(NodeBackendRegistry)) is NodeBackendRegistry backends)
+        {
+            backends.Report(state);
+        }
+
+        return Task.CompletedTask;
+    }
+
     /// <summary>What a node did with its profile, including everything it refused and why (D6).</summary>
     public Task ReportProfileState(NodeProfileState state)
     {

@@ -43,13 +43,18 @@ public static class BackendCapabilities
     /// it. Distinct from <paramref name="narrowed"/>, which narrows a whole capability kind rather
     /// than one model within it.
     /// </param>
+    /// <param name="modelKinds">
+    /// Phase 95: the kinds each model is served under, on a node whose engines differ. Null is every
+    /// model under every kind in <paramref name="backendKinds"/>, which is what one backend means.
+    /// </param>
     public static IReadOnlyList<NodeCapability> Declare(
         IReadOnlyList<ModelInfo> models,
         IReadOnlyList<string> backendKinds,
         CapabilityOptions options,
         IReadOnlyList<NodeCapability>? toolCapabilities = null,
         IReadOnlyList<string>? narrowed = null,
-        IReadOnlyList<string>? disabledModels = null)
+        IReadOnlyList<string>? disabledModels = null,
+        Backends.IModelKinds? modelKinds = null)
     {
         var disabled = narrowed is { Count: > 0 } ? narrowed : options.Disabled;
 
@@ -72,11 +77,20 @@ public static class BackendCapabilities
         // capabilities over nothing would say the same thing twice, less clearly — but a node with
         // no Ollama models and a running tool is a real deployment from phase 41 (a box that only
         // transcribes), so the tool half is folded in regardless.
+        // Phase 95. A node with several engines asks per model: an Ollama model chats and embeds, a
+        // colibri one chats and scores, and multiplying every kind by every name would claim both.
+        // A kind no model is served under is left out rather than declared over nothing.
         var backend = names.Length == 0
             ? Array.Empty<NodeCapability>()
             : backendKinds
                 .Where(kind => !IsDisabled(kind))
-                .Select(kind => new NodeCapability(kind, names))
+                .Select(kind => new NodeCapability(
+                    kind,
+                    modelKinds is null
+                        ? names
+                        : names.Where(name => (modelKinds.KindsFor(name) ?? backendKinds)
+                            .Contains(kind, StringComparer.OrdinalIgnoreCase)).ToArray()))
+                .Where(capability => capability.Models.Count > 0)
                 .ToArray();
 
         if (toolCapabilities is not { Count: > 0 })

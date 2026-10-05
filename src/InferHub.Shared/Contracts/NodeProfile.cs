@@ -64,7 +64,15 @@ public sealed record NodeProfile(
     /// <c>Tools:Allowed</c> is refused with the list in it. The hub still narrows and never widens
     /// (phase-43 D1) — it cannot make a node accept a licence, find weights or grow a card.
     /// </remarks>
-    [property: JsonPropertyName("imageRecipes")] IReadOnlyDictionary<string, bool>? ImageRecipes = null);
+    [property: JsonPropertyName("imageRecipes")] IReadOnlyDictionary<string, bool>? ImageRecipes = null,
+    /// <summary>
+    /// Phase 95. Engine name → whether it should be running, on a node that runs several
+    /// (<c>Backend:Engines</c>). <c>false</c> stops it and always works. <c>true</c> starts one only
+    /// if the node's own configuration names it — being listed is the grant, and a hub cannot add an
+    /// engine, a binary or a model path any more than it can add a tool (43 D1). An engine a profile
+    /// does not mention runs as its <c>Autostart</c> says.
+    /// </summary>
+    [property: JsonPropertyName("backends")] IReadOnlyDictionary<string, bool>? Backends = null);
 
 /// <summary>
 /// A corpus the coordinator wants a node to host (phase 44): which engine, where it is, which

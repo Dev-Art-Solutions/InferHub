@@ -66,6 +66,9 @@ public class ContextContractTests
         // Phase 67. The node's file hit 1099 and the tool runtime with its media phases was the
         // largest coherent subtree the provider track had nothing to do with (67 D6).
         ("src/InferHub.Node/Tools/CLAUDE.md", ScopedBudget),
+        // Phase 95. The node's file hit 1079 and the engine blocks (colibri, Brio, Backend:Engines)
+        // were the largest coherent subtree the rest of the node has nothing to do with (95).
+        ("src/InferHub.Node/Backends/CLAUDE.md", ScopedBudget),
         ("python/CLAUDE.md", ScopedBudget),
         ("tests/CLAUDE.md", ScopedBudget),
         ("deploy/CLAUDE.md", ScopedBudget),

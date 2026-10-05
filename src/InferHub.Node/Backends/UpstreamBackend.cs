@@ -38,7 +38,8 @@ public sealed class UpstreamBackend(
     IHttpClientFactory httpClientFactory,
     IOptions<BackendOptions> backend,
     IOptions<UpstreamBackendOptions> options,
-    ILogger<UpstreamBackend> logger) : IInferenceBackend, IClosedSetScorer
+    ILogger<UpstreamBackend> logger,
+    IReadOnlyList<string>? declaredKinds = null) : IInferenceBackend, IClosedSetScorer
 {
     public const string HttpClientName = "openai-upstream";
 
@@ -73,8 +74,12 @@ public sealed class UpstreamBackend(
     /// there guesses what a model is for. colibri declares <c>chat</c> alone for Anthropic's reason
     /// (93 D1): <c>coli serve</c> has no <c>/v1/embeddings</c> — and it adds <c>score</c> (94 D1),
     /// because <c>/v1/brio</c> is a route no other engine here has.
+    /// <para>
+    /// <c>declaredKinds</c> is phase 95's: an engine under <c>Backend:Engines</c> that says it is an
+    /// embedding server (<c>llama-server --embeddings</c> serves nothing else) declares exactly that.
+    /// </para>
     /// </remarks>
-    public IReadOnlyList<string> Kinds => Type switch
+    public IReadOnlyList<string> Kinds => declaredKinds ?? Type switch
     {
         BackendOptions.Colibri => ChatAndScore,
         BackendOptions.Anthropic => ChatOnly,
@@ -187,7 +192,7 @@ public sealed class UpstreamBackend(
         {
             // OpenRouter *is* the OpenAI dialect — the identity is the claim (62 D1). What its type
             // buys is configuration, one method down.
-            BackendOptions.OpenAi or BackendOptions.OpenRouter or BackendOptions.Colibri => new OpenAiUpstreamClient(http),
+            BackendOptions.OpenAi or BackendOptions.OpenRouter or BackendOptions.Colibri or BackendOptions.LlamaCpp => new OpenAiUpstreamClient(http),
             BackendOptions.Anthropic => new AnthropicUpstreamClient(http, options.MaxTokens),
             BackendOptions.Gemini => new GeminiUpstreamClient(http, options.ThinkingBudget),
             var type => throw new InvalidOperationException($"backend type '{type}' has no upstream dialect")

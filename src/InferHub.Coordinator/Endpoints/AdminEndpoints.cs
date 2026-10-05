@@ -71,6 +71,7 @@ public static class AdminEndpoints
             IProfileRegistry profiles,
             NodeCorpusRegistry corpora,
             NodeToolRegistry tools,
+            NodeBackendRegistry backends,
             ILoggerFactory loggerFactory) =>
         {
             var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin");
@@ -94,6 +95,7 @@ public static class AdminEndpoints
             // about its corpus and its tools is not something the hub should keep answering with.
             corpora.Forget(nodeId);
             tools.Forget(nodeId);
+            backends.Forget(nodeId);
             audit.Record(nodeId, "deregister", ActorOf(context), DateTimeOffset.UtcNow);
 
             logger.LogInformation(
@@ -351,6 +353,19 @@ public static class AdminEndpoints
             string nodeId, string model, HttpContext context,
             INodeRegistry registry, NodeModelToggle toggle, CancellationToken cancellationToken) =>
             await SetModelEnabledAsync(nodeId, model, enabled: false, force: true, context, registry, toggle, cancellationToken));
+
+        // Phase 95. Start or stop one engine on a node that runs several — the same profile
+        // read-modify-write as the two above, so the engine stays stopped across a reboot of either
+        // side and the node's clamp (Backend:Engines is the grant) stays the authority.
+        group.MapPost("/nodes/{nodeId}/backends/{backend}/start", async (
+            string nodeId, string backend, HttpContext context,
+            INodeRegistry registry, NodeBackendToggle toggle, CancellationToken cancellationToken) =>
+            await SetBackendRunningAsync(nodeId, backend, running: true, context, registry, toggle, cancellationToken));
+
+        group.MapPost("/nodes/{nodeId}/backends/{backend}/stop", async (
+            string nodeId, string backend, HttpContext context,
+            INodeRegistry registry, NodeBackendToggle toggle, CancellationToken cancellationToken) =>
+            await SetBackendRunningAsync(nodeId, backend, running: false, context, registry, toggle, cancellationToken));
 
         group.MapPost("/nodes/{nodeId}/collections/{collection}/assign", async (
             string nodeId, string collection, HttpContext context,
@@ -782,6 +797,42 @@ public static class AdminEndpoints
             profile = stored,
             owner = ownership.OwnerOfCollection(collection)
         });
+    }
+
+    /// <summary>
+    /// Starts or stops one engine on one node (phase 95). Thin HTTP wrapper around
+    /// <see cref="NodeBackendToggle"/>, which does the profile read-modify-write.
+    /// </summary>
+    private static async Task<IResult> SetBackendRunningAsync(
+        string nodeId,
+        string backend,
+        bool running,
+        HttpContext context,
+        INodeRegistry registry,
+        NodeBackendToggle toggle,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(backend))
+        {
+            return Results.BadRequest(new { error = "an engine name is required" });
+        }
+
+        var node = registry.Snapshot(DateTimeOffset.UtcNow)
+            .FirstOrDefault(n => string.Equals(n.NodeId, nodeId, StringComparison.OrdinalIgnoreCase));
+
+        if (node is null)
+        {
+            return Results.NotFound(new { error = $"node '{nodeId}' not found" });
+        }
+
+        var outcome = await toggle.SetRunningAsync(node, backend, running, ActorOf(context), cancellationToken);
+
+        return outcome.Refusal switch
+        {
+            null => Results.Ok(new { nodeId = node.NodeId, backend = outcome.Engine, running, profile = outcome.Profile }),
+            BackendToggleOutcome.UnknownEngine => Results.NotFound(new { error = outcome.Error }),
+            _ => Results.Conflict(new { error = outcome.Error })
+        };
     }
 
     private static async Task<IResult> EnsureModelAsync(

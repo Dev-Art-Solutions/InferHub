@@ -80,7 +80,11 @@ public sealed class ColibriOptionsValidator(IOptions<BackendOptions> backend, IC
 {
     public ValidateOptionsResult Validate(string? name, ColibriOptions options)
     {
-        if (backend.Value.Normalized() != BackendOptions.Colibri)
+        // Phase 95: a colibri *engine* reads this section too, so it is checked for one as well.
+        var multi = backend.Value.IsMulti;
+        var colibriEngine = multi && backend.Value.Engines.Values.Any(e => e.NormalizedType() == BackendOptions.Colibri);
+
+        if (backend.Value.Normalized() != BackendOptions.Colibri && !colibriEngine)
         {
             return ValidateOptionsResult.Success;
         }
@@ -125,7 +129,9 @@ public sealed class ColibriOptionsValidator(IOptions<BackendOptions> backend, IC
             var baseUrl = configuration[$"{UpstreamBackendOptions.SectionName}:{nameof(UpstreamBackendOptions.BaseUrl)}"]
                 ?? configuration[$"{UpstreamBackendOptions.LegacySectionName}:{nameof(UpstreamBackendOptions.BaseUrl)}"];
 
-            if (!string.IsNullOrWhiteSpace(baseUrl))
+            // Under Backend:Engines the engine's own BaseUrl is the other answer, and
+            // BackendOptionsValidator is the one that compares the two.
+            if (!multi && !string.IsNullOrWhiteSpace(baseUrl))
             {
                 failures.Add(
                     $"{ColibriOptions.SectionName}:Serve:{nameof(ColibriServeOptions.Model)} and {UpstreamBackendOptions.SectionName}:{nameof(UpstreamBackendOptions.BaseUrl)} "
