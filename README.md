@@ -180,7 +180,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 93 | [colibri](#colibri--a-model-bigger-than-your-ram-v358) — a node drives the disk-streaming MoE engine, and a refused OpenAI stream is a refusal (done) | `v3.58.0` |
 | 94 | [Brio](#brio--a-closed-question-answered-with-a-distribution-v359) — a closed question answered with a distribution, not a sentence: `POST /v1/brio` on a colibri fleet (done) | `v3.59.0` |
 | 95 | [Several engines on one node](#several-engines-on-one-node--ollama-llamacpp-and-colibri-v360) — ollama, llama.cpp and colibri side by side, started and stopped by the coordinator (done) | `v3.60.0` |
-| 96 | [All of llama.cpp](#all-of-llamacpp--a-router-models-from-hugging-face-its-own-routes-v361) — a router over many GGUFs, models pulled from Hugging Face, warmed, unloaded and deleted from the hub, `/v1/llamacpp/*` and `/v1/rerank` (built, not yet released) | `v3.61.0` |
+| 96 | [All of llama.cpp](#all-of-llamacpp--a-router-models-from-hugging-face-its-own-routes-v361) — a router over many GGUFs, models pulled from Hugging Face, warmed, unloaded and deleted from the hub, `/v1/llamacpp/*` and `/v1/rerank` (done) | `v3.61.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
