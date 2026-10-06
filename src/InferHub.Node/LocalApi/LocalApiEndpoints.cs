@@ -80,6 +80,7 @@ public static class LocalApiEndpoints
 
         // Phase 94, mapped for the same reason: a node with no scorer answers a 503 naming `score`.
         app.MapLocalBrioEndpoints();
+        app.MapLocalLlamaCppEndpoints();
 
         // Phase 46, and it is the same day the mesh gets it (phase-41 D8): the hub's endpoint is a
         // formatting layer over this node's executor with routing deleted, so a solo box with one

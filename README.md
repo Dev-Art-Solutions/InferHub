@@ -180,6 +180,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 93 | [colibri](#colibri--a-model-bigger-than-your-ram-v358) — a node drives the disk-streaming MoE engine, and a refused OpenAI stream is a refusal (done) | `v3.58.0` |
 | 94 | [Brio](#brio--a-closed-question-answered-with-a-distribution-v359) — a closed question answered with a distribution, not a sentence: `POST /v1/brio` on a colibri fleet (done) | `v3.59.0` |
 | 95 | [Several engines on one node](#several-engines-on-one-node--ollama-llamacpp-and-colibri-v360) — ollama, llama.cpp and colibri side by side, started and stopped by the coordinator (done) | `v3.60.0` |
+| 96 | [All of llama.cpp](#all-of-llamacpp--a-router-models-from-hugging-face-its-own-routes-v361) — a router over many GGUFs, models pulled from Hugging Face, warmed, unloaded and deleted from the hub, `/v1/llamacpp/*` and `/v1/rerank` (built, not yet released) | `v3.61.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -2812,6 +2813,48 @@ Rules: at most one `ollama` and one `colibri` engine (each is its own section); 
 `Engines` may only be the default `ollama` (on the `:colibri` image, set `Backend__Type=`). A node
 without `Engines` is exactly the single-backend node it was.
 
+## All of llama.cpp — a router, models from Hugging Face, its own routes (v3.61)
+
+v3.60 launched one `llama-server` per GGUF: one model, fixed at launch, chat or embeddings. From v3.61 a
+`llamacpp` engine can be **llama.cpp's router** — one process over a directory of GGUFs, each loaded on
+first use — and the hub manages its models the way it manages Ollama's:
+
+```jsonc
+"Backend": {
+  "Engines": {
+    "ollama": { "Type": "ollama" },
+    "gguf":   { "Type": "llamacpp",
+                "Serve": { "Executable": "/opt/llama/llama-server",
+                           "ModelsDir": "/models",          // every .gguf here is a model, by file name
+                           "MaxLoaded": 2,                  // at most two in memory, least recently used goes
+                           "Presets": {
+                             "nomic":       { "Model": "/models/nomic-embed-text.gguf", "Embeddings": true },
+                             "jina-rerank": { "HfRepo": "gpustack/jina-reranker-v1-tiny-en-GGUF:Q8_0", "Reranking": true },
+                             "qwen-long":   { "Model": "/models/qwen2.5-7b.gguf", "Settings": { "ctx-size": "32768" } }
+                           } } }
+  }
+}
+```
+
+- **Models load when they are asked for.** A chat for `qwen2.5-7b` loads it; past `MaxLoaded` the least
+  recently used one is unloaded. A sub-directory holding a model and its `mmproj` is one vision model.
+- **Pull from Hugging Face through the hub.** `POST /api/admin/nodes/{id}/models/bartowski%2FSmolLM2-135M-Instruct-GGUF%3AQ4_K_M/pull?engine=gguf`
+  — llama.cpp downloads it, the node reports it the moment it is done, and it is routable. Then
+  `…/warm`, **`…/unload`** (new, Ollama too) and `DELETE` (downloaded repos only — a file in
+  `ModelsDir` is the box's to remove). `?engine=` is needed only when another engine on the node (Ollama)
+  can pull too, and the node refuses a guess naming both. The console has the field and the button.
+- **llama.cpp's own routes reach clients**: `POST /v1/llamacpp/completion` (with a GBNF `grammar`),
+  `/infill` (for editor plugins), `/tokenize`, `/detokenize`, `/apply-template`, `/embedding`, and
+  `GET /v1/llamacpp/props?model=`. The body goes through untouched and the engine's errors keep their
+  words; no streaming (use `/v1/completions`), no `/slots` (it holds prompts). Billed in tokens.
+- **`POST /v1/rerank`** — Jina/Cohere shape (`query`, `documents`, `top_n`, `return_documents`), answered
+  by a llama.cpp reranker or the cross-encoder tool, so `Retrieval:RerankModel` can name either.
+- **Ollama's sampler options reach llama.cpp**: `top_k`, `min_p`, `typical_p`, `repeat_penalty`,
+  `repeat_last_n`, `mirostat*`, `num_keep`.
+
+A preset says what its model is for (`Embeddings`, `Reranking`); everything else chats. An already
+running router is `"BaseUrl": "http://host:8080/v1", "Router": true`. A v3.60 config is unchanged.
+
 ## Inference backends
 
 A node runs one inference backend behind the `IInferenceBackend` seam — or, since v3.60, [several](#several-engines-on-one-node--ollama-llamacpp-and-colibri-v360). The coordinator does
@@ -2825,7 +2868,7 @@ response back, whatever ran it.
 | `openrouter` (v3.35) | **OpenRouter** | The OpenAI dialect with its own base URL and optional attribution headers. |
 | `anthropic` (v3.35) | **Anthropic** `/v1/messages` | The vendor's own dialect. Declares `chat` and **not** `embed`. |
 | `gemini` (v3.35) | **Gemini** `:generateContent` | The vendor's own dialect. The model is a path segment. |
-| `llamacpp` (v3.60) | **llama.cpp** `llama-server` | The OpenAI dialect at `127.0.0.1:8080/v1`. Under `Backend:Engines` the node can launch it. |
+| `llamacpp` (v3.60) | **llama.cpp** `llama-server` | The OpenAI dialect at `127.0.0.1:8080/v1`. Under `Backend:Engines` the node can launch it — since v3.61 as a [router](#all-of-llamacpp--a-router-models-from-hugging-face-its-own-routes-v361) whose models the hub manages. |
 | `colibri` (v3.58) | **[colibri](#colibri--a-model-bigger-than-your-ram-v358)** `coli serve` | The OpenAI dialect, `chat` + (v3.59) [`score`](#brio--a-closed-question-answered-with-a-distribution-v359), `/health` watched, KV slots. The node can launch it. |
 
 `openai` is one implementation covering all the self-hosted servers, because they all converged

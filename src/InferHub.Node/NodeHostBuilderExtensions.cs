@@ -558,6 +558,12 @@ public static class NodeHostBuilderExtensions
         {
             builder.Services.AddSingleton<IClosedSetScorer>(services => services.GetRequiredService<MultiBackend>());
         }
+
+        // 96 D4/D5: llama.cpp's native routes and its reranker, answered by the engine that holds the model.
+        if (backend.Engines.Values.Any(e => e.NormalizedType() == BackendOptions.LlamaCpp))
+        {
+            builder.Services.AddSingleton<IBackendToolJobs>(services => services.GetRequiredService<MultiBackend>());
+        }
     }
 
     private static bool IsColibri(IConfiguration configuration)

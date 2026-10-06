@@ -192,7 +192,10 @@ public sealed class UpstreamBackend(
         {
             // OpenRouter *is* the OpenAI dialect — the identity is the claim (62 D1). What its type
             // buys is configuration, one method down.
-            BackendOptions.OpenAi or BackendOptions.OpenRouter or BackendOptions.Colibri or BackendOptions.LlamaCpp => new OpenAiUpstreamClient(http),
+            BackendOptions.OpenAi or BackendOptions.OpenRouter or BackendOptions.Colibri => new OpenAiUpstreamClient(http),
+
+            // 96 D6: Ollama's samplers are llama.cpp's, and only a llama.cpp server is sent them.
+            BackendOptions.LlamaCpp => new OpenAiUpstreamClient(http, llamaCppSamplers: true),
             BackendOptions.Anthropic => new AnthropicUpstreamClient(http, options.MaxTokens),
             BackendOptions.Gemini => new GeminiUpstreamClient(http, options.ThinkingBudget),
             var type => throw new InvalidOperationException($"backend type '{type}' has no upstream dialect")

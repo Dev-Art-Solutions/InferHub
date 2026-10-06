@@ -53,6 +53,14 @@ public sealed class ModelCommandExecutor(
             "Running {Kind} model command {CommandId} for '{Model}'",
             command.Kind, command.CommandId, command.ModelName);
 
+        // 96 D3: a command that names an engine is only for a node that runs several.
+        if (!string.IsNullOrWhiteSpace(command.Engine) && backend is not MultiBackend)
+        {
+            yield return Terminal(command, nodeId, "unsupported",
+                $"this node runs one backend ({backend.Name}), not engines; send the command without an engine");
+            yield break;
+        }
+
         if (command.Kind == ModelCommand.KindPull)
         {
             await foreach (var frame in RunPullAsync(command, nodeId, cancellationToken))
@@ -63,19 +71,39 @@ public sealed class ModelCommandExecutor(
             yield break;
         }
 
-        // delete / warm: a start frame, the (quick) op, then a terminal frame.
-        yield return Progress(command, nodeId, command.Kind == ModelCommand.KindDelete ? "deleting" : "warming", null);
+        // delete / warm / unload: a start frame, the (quick) op, then a terminal frame.
+        yield return Progress(command, nodeId, command.Kind switch
+        {
+            ModelCommand.KindDelete => "deleting",
+            ModelCommand.KindUnload => "unloading",
+            _ => "warming"
+        }, null);
 
         string? error = null;
         try
         {
-            if (command.Kind == ModelCommand.KindDelete)
+            var engines = backend as MultiBackend;
+
+            switch (command.Kind)
             {
-                await backend.DeleteAsync(command.ModelName, cancellationToken);
-            }
-            else
-            {
-                await backend.WarmAsync(command.ModelName, cancellationToken);
+                case ModelCommand.KindDelete when engines is not null:
+                    await engines.DeleteAsync(command.ModelName, command.Engine, cancellationToken);
+                    break;
+                case ModelCommand.KindDelete:
+                    await backend.DeleteAsync(command.ModelName, cancellationToken);
+                    break;
+                case ModelCommand.KindUnload when engines is not null:
+                    await engines.UnloadAsync(command.ModelName, command.Engine, cancellationToken);
+                    break;
+                case ModelCommand.KindUnload:
+                    await backend.UnloadAsync(command.ModelName, cancellationToken);
+                    break;
+                case ModelCommand.KindWarm when engines is not null:
+                    await engines.WarmAsync(command.ModelName, command.Engine, cancellationToken);
+                    break;
+                default:
+                    await backend.WarmAsync(command.ModelName, cancellationToken);
+                    break;
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -89,7 +117,14 @@ public sealed class ModelCommandExecutor(
         }
 
         yield return Terminal(command, nodeId,
-            error is null ? (command.Kind == ModelCommand.KindDelete ? "deleted" : "warmed") : "error",
+            error is null
+                ? command.Kind switch
+                {
+                    ModelCommand.KindDelete => "deleted",
+                    ModelCommand.KindUnload => "unloaded",
+                    _ => "warmed"
+                }
+                : "error",
             error);
     }
 
@@ -141,7 +176,29 @@ public sealed class ModelCommandExecutor(
         string nodeId,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var frames = backend.PullAsync(command.ModelName, cancellationToken).GetAsyncEnumerator(cancellationToken);
+        IAsyncEnumerator<ModelPullProgress> frames;
+        string? refused = null;
+
+        try
+        {
+            frames = (backend is MultiBackend engines
+                    ? engines.PullAsync(command.ModelName, command.Engine, cancellationToken)
+                    : backend.PullAsync(command.ModelName, cancellationToken))
+                .GetAsyncEnumerator(cancellationToken);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException or ArgumentException)
+        {
+            // Which engine (96 D3) is decided before the first frame, and a refusal is a terminal frame.
+            frames = AsyncEnumerable.Empty<ModelPullProgress>().GetAsyncEnumerator(cancellationToken);
+            refused = ex.Message;
+        }
+
+        if (refused is not null)
+        {
+            logger.LogWarning("Pull of '{Model}' refused: {Reason}", command.ModelName, refused);
+            yield return Terminal(command, nodeId, "error", refused);
+            yield break;
+        }
 
         try
         {

@@ -24,7 +24,7 @@ public static class UpstreamTranslator
 
     // ---- Ollama request → OpenAI request ---------------------------------------------
 
-    public static ChatCompletionRequest ToOpenAiChat(ChatRequest ollama)
+    public static ChatCompletionRequest ToOpenAiChat(ChatRequest ollama, bool llamaCppSamplers = false)
     {
         var request = new ChatCompletionRequest
         {
@@ -34,6 +34,11 @@ public static class UpstreamTranslator
         };
 
         ApplyOptions(ollama.Options, request);
+
+        if (llamaCppSamplers)
+        {
+            request.AdditionalProperties = LlamaCppSamplers(ollama.Options, request.AdditionalProperties);
+        }
 
         if (ollama.AdditionalProperties is { } extras)
         {
@@ -56,7 +61,7 @@ public static class UpstreamTranslator
         return request;
     }
 
-    public static CompletionRequest ToOpenAiCompletion(GenerateRequest ollama)
+    public static CompletionRequest ToOpenAiCompletion(GenerateRequest ollama, bool llamaCppSamplers = false)
     {
         var request = new CompletionRequest
         {
@@ -66,6 +71,11 @@ public static class UpstreamTranslator
         };
 
         ApplyOptions(ollama.Options, request);
+
+        if (llamaCppSamplers)
+        {
+            request.AdditionalProperties = LlamaCppSamplers(ollama.Options, request.AdditionalProperties);
+        }
 
         return request;
     }
@@ -391,6 +401,44 @@ public static class UpstreamTranslator
         request.Seed = ReadLong(element, "seed");
         request.MaxTokens = ReadInt(element, "num_predict");
         request.Stop = ReadElement(element, "stop");
+    }
+
+    /// <summary>
+    /// Ollama option name → llama.cpp server field (phase 96, D6). Ollama's sampler set is llama.cpp's
+    /// — Ollama runs it — so these mean the same thing at both ends; the OpenAI schema simply has no
+    /// field for them. Only a <c>llamacpp</c> upstream gets them: OpenAI proper answers an argument it
+    /// does not know with a 400, and the coordinator's providers compose this same client.
+    /// </summary>
+    private static readonly (string Ollama, string LlamaCpp)[] LlamaCppSamplerFields =
+    [
+        ("top_k", "top_k"),
+        ("min_p", "min_p"),
+        ("typical_p", "typical_p"),
+        ("repeat_penalty", "repeat_penalty"),
+        ("repeat_last_n", "repeat_last_n"),
+        ("mirostat", "mirostat"),
+        ("mirostat_tau", "mirostat_tau"),
+        ("mirostat_eta", "mirostat_eta"),
+        ("num_keep", "n_keep")
+    ];
+
+    private static Dictionary<string, JsonElement>? LlamaCppSamplers(JsonElement? options, Dictionary<string, JsonElement>? into)
+    {
+        if (options is not { ValueKind: JsonValueKind.Object } element)
+        {
+            return into;
+        }
+
+        foreach (var (ollama, llamaCpp) in LlamaCppSamplerFields)
+        {
+            if (element.TryGetProperty(ollama, out var value) && value.ValueKind == JsonValueKind.Number)
+            {
+                into ??= [];
+                into[llamaCpp] = value.Clone();
+            }
+        }
+
+        return into;
     }
 
     /// <summary>Ollama's <c>format</c> is <c>"json"</c> or a bare JSON schema object.</summary>

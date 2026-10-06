@@ -101,11 +101,19 @@ public static class CapabilityKinds
     public const string Score = "score";
 
     /// <summary>
+    /// llama.cpp's own routes — <c>/completion</c> with a grammar, <c>/infill</c>, <c>/tokenize</c> and
+    /// the rest of <c>LlamaCppNative.Operations</c> (phase 96, D4). Declared by a <c>llamacpp</c>
+    /// router engine for every model it lists; it travels as a <see cref="ToolJob"/> for
+    /// <see cref="Score"/>'s reason — none of it has an Ollama shape (40 D3).
+    /// </summary>
+    public const string LlamaCpp = "llamacpp";
+
+    /// <summary>
     /// Only used at the client edge, for error messages. The mesh carries any string — see the
     /// remarks on <see cref="NodeCapability"/>.
     /// </summary>
     public static bool IsWellKnown(string? kind) =>
-        kind is Chat or Embed or Transcribe or Speak or Image or ImageEdit or Video or Rerank or Score;
+        kind is Chat or Embed or Transcribe or Speak or Image or ImageEdit or Video or Rerank or Score or LlamaCpp;
 
     /// <summary>
     /// Either image kind — the question everything that reasons about a <em>recipe</em> asks.

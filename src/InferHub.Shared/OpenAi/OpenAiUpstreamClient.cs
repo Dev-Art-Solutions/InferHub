@@ -21,7 +21,7 @@ namespace InferHub.Shared.OpenAi;
 /// The <see cref="HttpClient"/> is supplied and owned by the caller — including for the async
 /// iterators, whose enumeration must not outlive it.
 /// </remarks>
-public sealed class OpenAiUpstreamClient(HttpClient http) : InferHub.Shared.Upstream.IUpstreamDialect
+public sealed class OpenAiUpstreamClient(HttpClient http, bool llamaCppSamplers = false) : InferHub.Shared.Upstream.IUpstreamDialect
 {
     private const string ChatPath = "chat/completions";
     private const string CompletionsPath = "completions";
@@ -70,7 +70,7 @@ public sealed class OpenAiUpstreamClient(HttpClient http) : InferHub.Shared.Upst
     public async Task<string> ChatAsync(string ollamaJson, CancellationToken cancellationToken)
     {
         var ollama = Deserialize<ChatRequest>(ollamaJson);
-        var request = UpstreamTranslator.ToOpenAiChat(ollama);
+        var request = UpstreamTranslator.ToOpenAiChat(ollama, llamaCppSamplers);
         request.Stream = false;
 
         var response = await PostAsync<ChatCompletionRequest, ChatCompletionResponse>(
@@ -84,7 +84,7 @@ public sealed class OpenAiUpstreamClient(HttpClient http) : InferHub.Shared.Upst
     public async Task<string> GenerateAsync(string ollamaJson, CancellationToken cancellationToken)
     {
         var ollama = Deserialize<GenerateRequest>(ollamaJson);
-        var request = UpstreamTranslator.ToOpenAiCompletion(ollama);
+        var request = UpstreamTranslator.ToOpenAiCompletion(ollama, llamaCppSamplers);
         request.Stream = false;
 
         var response = await PostAsync<CompletionRequest, CompletionResponse>(
@@ -128,7 +128,7 @@ public sealed class OpenAiUpstreamClient(HttpClient http) : InferHub.Shared.Upst
         var ollama = Deserialize<ChatRequest>(ollamaJson);
         var model = ollama.Model ?? string.Empty;
 
-        var request = UpstreamTranslator.ToOpenAiChat(ollama);
+        var request = UpstreamTranslator.ToOpenAiChat(ollama, llamaCppSamplers);
         request.Stream = true;
         request.StreamOptions = new StreamOptions { IncludeUsage = true };
 
@@ -173,7 +173,7 @@ public sealed class OpenAiUpstreamClient(HttpClient http) : InferHub.Shared.Upst
         var ollama = Deserialize<GenerateRequest>(ollamaJson);
         var model = ollama.Model ?? string.Empty;
 
-        var request = UpstreamTranslator.ToOpenAiCompletion(ollama);
+        var request = UpstreamTranslator.ToOpenAiCompletion(ollama, llamaCppSamplers);
         request.Stream = true;
         request.StreamOptions = new StreamOptions { IncludeUsage = true };
 

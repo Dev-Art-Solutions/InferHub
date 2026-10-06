@@ -31,14 +31,28 @@ public sealed record ModelCommand(
     /// along with the coalescing and the no-persistent-state property that came with it.
     /// </para>
     /// </remarks>
-    [property: JsonPropertyName("tool")] string? Tool = null)
+    [property: JsonPropertyName("tool")] string? Tool = null,
+    /// <summary>
+    /// Which of a <c>Backend:Engines</c> node's engines this is about (phase 96, D3). Null is "the
+    /// engine that reports the model, or the only one that can manage models" — every command
+    /// before v3.61 — and a node with two engines that can pull refuses a pull without it rather
+    /// than guessing from the name: <c>owner/model</c> is an Ollama name and a Hugging Face repo.
+    /// </summary>
+    [property: JsonPropertyName("engine")] string? Engine = null)
 {
     public const string KindPull = "pull";
     public const string KindDelete = "delete";
     public const string KindWarm = "warm";
 
+    /// <summary>
+    /// Free the memory a loaded model holds (phase 96, D3): <c>/models/unload</c> on a llama.cpp
+    /// router, <c>keep_alive: 0</c> on Ollama. Warm's opposite, so an operator who loaded a model
+    /// from the console can put it back without restarting an engine.
+    /// </summary>
+    public const string KindUnload = "unload";
+
     public static bool IsKnownKind(string kind) =>
-        kind is KindPull or KindDelete or KindWarm;
+        kind is KindPull or KindDelete or KindWarm or KindUnload;
 
     /// <summary>Whether this command is about a tool's models rather than the backend's.</summary>
     public bool IsToolCommand => !string.IsNullOrWhiteSpace(Tool);

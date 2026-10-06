@@ -75,7 +75,8 @@ public static class MultiBackendComposition
                 baseUrl = engine.Serve.LaunchedBaseUrl();
                 process = new EngineProcess(
                     name,
-                    () => LlamaCppServe.StartInfo(engine),
+                    // The preset INI is written at each launch, so the process reads this config (96 D1).
+                    () => LlamaCppServe.StartInfo(engine, LlamaCppServe.WritePresets(name, engine)),
                     () => LlamaCppServe.Precondition(engine),
                     time,
                     logger);
@@ -102,7 +103,49 @@ public static class MultiBackendComposition
             services.GetRequiredService<ILogger<UpstreamBackend>>(),
             kinds);
 
-        return new Engine(name, type, upstream, engine.Autostart, engine.Models, process);
+        if (type != BackendOptions.LlamaCpp)
+        {
+            return new Engine(name, type, upstream, engine.Autostart, engine.Models, process);
+        }
+
+        // 96: the same upstream for everything with an Ollama shape, the server's root for the rest.
+        var factory = services.GetRequiredService<IHttpClientFactory>();
+        var root = RootOf(baseUrl);
+        var timeout = TimeSpan.FromSeconds(Math.Max(1, engine.TimeoutSeconds));
+
+        var llamaCpp = new LlamaCppBackend(
+            upstream,
+            engine,
+            router: engine.Serve.IsRouter || engine.Router,
+            () =>
+            {
+                var http = factory.CreateClient(UpstreamBackend.HttpClientName);
+                http.BaseAddress = root;
+                http.Timeout = timeout;
+                return http;
+            },
+            time,
+            logger);
+
+        return new Engine(name, type, llamaCpp, engine.Autostart, engine.Models, process);
+    }
+
+    /// <summary><c>http://127.0.0.1:8080/v1</c> → <c>http://127.0.0.1:8080/</c>: llama.cpp's own routes live at the root.</summary>
+    internal static Uri? RootOf(string? baseUrl)
+    {
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            return null;
+        }
+
+        var trimmed = baseUrl.Trim().TrimEnd('/');
+
+        if (trimmed.EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
+        {
+            trimmed = trimmed[..^3];
+        }
+
+        return new Uri(trimmed + "/");
     }
 }
 

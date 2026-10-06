@@ -106,6 +106,12 @@ public sealed class OnDemandBackend : IInferenceBackend
         await inner.WarmAsync(model, cancellationToken);
     }
 
+    public async Task UnloadAsync(string model, CancellationToken cancellationToken)
+    {
+        loaded.TryRemove(model, out _);
+        await inner.UnloadAsync(model, cancellationToken);
+    }
+
     /// <summary>Takes the card, then records the model — after, so a refusal records nothing.</summary>
     private async Task<IAsyncDisposable> AcquireAsync(string requestJson, CancellationToken cancellationToken)
     {

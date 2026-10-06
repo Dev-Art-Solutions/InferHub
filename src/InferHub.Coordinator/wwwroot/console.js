@@ -943,7 +943,7 @@
     const node = selectedModelNode();
     const canManage = Boolean(node && node.supportsModelManagement);
     const note = document.getElementById("mm-note");
-    for (const id of ["mm-pull", "mm-warm", "mm-delete", "mm-model"]) {
+    for (const id of ["mm-pull", "mm-warm", "mm-unload", "mm-delete", "mm-model", "mm-engine"]) {
       const el = document.getElementById(id);
       if (!el) continue;
       el.disabled = !canManage;
@@ -953,15 +953,16 @@
       note.textContent = !node
         ? "Connect a node to manage its models."
         : canManage
-          ? `${node.name} runs a backend that can pull, delete and warm models.`
+          ? `${node.name} runs a backend that can pull, delete, warm and unload models.`
           : `${node.name} runs a backend that cannot manage models — controls disabled.`;
     }
   };
 
-  const postModelCommand = async (kind, nodeId, model) => {
+  const postModelCommand = async (kind, nodeId, model, engine) => {
     const enc = encodeURIComponent(model);
     const base = `/api/admin/nodes/${encodeURIComponent(nodeId)}/models/${enc}`;
-    const url = kind === "pull" ? `${base}/pull` : kind === "warm" ? `${base}/warm` : base;
+    const path = kind === "delete" ? base : `${base}/${kind}`;
+    const url = engine ? `${path}?engine=${encodeURIComponent(engine)}` : path;
     const method = kind === "delete" ? "DELETE" : "POST";
     try {
       const res = await fetch(url, { method, headers: adminHeaders() });
@@ -1979,10 +1980,11 @@
     const model = document.getElementById("mm-model")?.value.trim();
     if (!node) { pushModelNote("Select a node first.", true); return; }
     if (!model) { pushModelNote("Enter a model name.", true); return; }
-    postModelCommand(kind, node.nodeId, model);
+    postModelCommand(kind, node.nodeId, model, document.getElementById("mm-engine")?.value.trim());
   };
   document.getElementById("mm-pull")?.addEventListener("click", () => runModelCommand("pull"));
   document.getElementById("mm-warm")?.addEventListener("click", () => runModelCommand("warm"));
+  document.getElementById("mm-unload")?.addEventListener("click", () => runModelCommand("unload"));
   document.getElementById("mm-delete")?.addEventListener("click", () => runModelCommand("delete"));
   document.getElementById("mm-ensure")?.addEventListener("click", () => {
     const model = document.getElementById("mm-model")?.value.trim();

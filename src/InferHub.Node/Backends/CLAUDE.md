@@ -1,8 +1,9 @@
 # InferHub.Node/Backends — agent context
 
 **Scope: `src/InferHub.Node/Backends/`.** The engines a node drives that are not "an Ollama and a
-dialect": colibri and its Brio, and since phase 95 a node running several engines at once —
-`Backend:Engines`, ollama + llama.cpp + colibri side by side, started and stopped by the hub.
+dialect": colibri and its Brio, since phase 95 a node running several engines at once —
+`Backend:Engines`, ollama + llama.cpp + colibri side by side, started and stopped by the hub — and since
+96 a llama.cpp engine that is all of llama.cpp: a router over many GGUFs, managed from the hub.
 
 > **Read the root `CLAUDE.md` first, then `src/InferHub.Node/CLAUDE.md`.** That file still owns
 > `IInferenceBackend`, the dialects a backend speaks (67), the supervisor and backend health (36, 69),
@@ -174,3 +175,68 @@ zero. `Node:MaxConcurrency` is the operator's — colibri's `KvSlots` is not fol
 Tests: `EngineTests` (Node), `EngineMeshTests` (Mesh — real hub, SignalR, node and two llama-server
 stand-ins over sockets). Live run with a real Ollama, real `llama-server` and real colibri:
 `.claude/release-notes-v3.60.0.md`.
+
+### Phase 96 (a llama.cpp engine is the whole of llama.cpp: a router, its model management, its native routes, its reranker)
+
+Files: `Backends/Engines/` (`LlamaCppBackend` + `RouterModel`, `LlamaCppServe` router argv and INI,
+`EngineOptions` `ModelsDir`/`Presets`/`MaxLoaded`/`Router`/`Reranking`, `LlamaCppPresetOptions`, the
+validator, `MultiBackend.Manager` + `IBackendToolJobs`), `IInferenceBackend.UnloadAsync`,
+`ModelCommandExecutor`, `Tools/ToolExecutor.cs`, `LocalApi/LocalLlamaCppEndpoints.cs`; the hub's half is
+`src/InferHub.Coordinator/OpenAi/LlamaCppEndpoints.cs` (`/v1/llamacpp/{op}`, `/v1/rerank`) and
+`AdminEndpoints` (`unload`, `?engine=`); the contracts both read are `src/InferHub.Shared/LlamaCpp/`.
+Like Brio's (94), the edge files sit outside this folder because they are the client surface; nothing
+in them knows how the engine is launched or listed (rule 1).
+
+**D1 — `Serve:ModelsDir` or `Serve:Presets` launches one `llama-server` in router mode** (load-bearing).
+No `-m`: b11417 then lists a directory and a preset INI, spawns one child per model on first use, LRU
+past `--models-max` (`MaxLoaded`), and every route proxies by `model`. `Serve:Model` beside either fails
+startup; a v3.60 config is unchanged except that it now also declares `llamacpp`. The node writes the
+INI (temp dir, fresh per launch) from `Presets`, because only it knows which model embeds (D2); keys
+are plain tokens, `host`/`port`/`alias`/`model`/verbosity are refused (rule 7, and the router owns
+them). *Measured:* a `Serve:Arguments` flag reaches every child **and wins over a preset key**.
+*Rejected:* an operator-written INI path (the node would have to parse it to declare kinds); LLamaSharp
+or P/Invoke (a native library in the node's process is a package and a crash that takes the node with
+it — rule 5, 41 D1). Windows: a router's children are in the node's Job Object (95 D3) — measured, a
+killed node left no `llama-server` behind.
+
+**D2 — kinds are configuration.** A preset with `Embeddings` is `embed`, with `Reranking` `rerank`,
+anything else (a file in the dir, a pulled repo) `chat`; every model also `llamacpp`. The router's
+listing says nothing about pooling. A model `downloading` is not listed. **Found live:** a preset's
+`HfRepo` lands in llama.cpp's cache and the router lists the cache too, so the reranker reappeared under
+its repo name — as a chat model. A cache entry equal to a preset's `HfRepo`, or a dir entry that is a
+preset's `Model`, is not listed; the preset's name is the one.
+
+**D3 — the router's own endpoints manage its models.** pull = `POST /models` (llama.cpp's Hugging Face
+download, `hf.co/` stripped) then poll `/models` each second until it is not `downloading`; **no byte
+counts** — the router reports none and the frame says so. delete only where `can_remove` (a downloaded
+repo; a dir file or preset is refused naming the key). warm = `/models/load`, then wait for `loaded`;
+anything else after one poll of grace is a failed load (a child can die before the first poll sees
+`loading`). **`unload` is a new `ModelCommand` kind** (`/models/unload`; Ollama `keep_alive: 0`).
+`ModelCommand.Engine` / `?engine=` names the engine; without it a model some engine reports goes
+there, and a pull with two engines able to pull is refused naming both — `owner/model` is an Ollama
+name and a Hugging Face repo. The hub unescapes `%2F` in the route's model.
+**Two wrong-since-earlier things the live run found:** a `Backend:Engines` node told the hub "cannot
+manage models" at registration because no engine was *running* yet (95 waits for the profile) —
+management is now declared from configuration and a stopped engine refuses in a sentence; and since
+26 a pulled model was not routable (a deleted one stayed routable) until the next refresh — the node
+now reports its models when a pull or delete finishes (measured: routable 14 s after the pull began).
+
+**D4 — the native surface is one `ToolJob` kind, `llamacpp`, behind an allowlist.** POST `completion`,
+`infill`, `tokenize`, `detokenize`, `apply-template`, `embedding`; GET `props?model=`. Body passed
+through (94 D2), the engine's 4xx keeps its sentence, `stream: true` is a 400 naming `/v1/completions`.
+Not `/slots` (prompt text — rule 7), `/metrics`, `POST /lora-adapters` (shared state). Billed from
+`tokens_evaluated`/`tokens_predicted`, kind `llamacpp`. Same routes on solo. The node's backend answers
+these and `rerank` before any tool runtime (`IBackendToolJobs`, 94 D1's order).
+
+**D5 — `/v1/rerank` is the fleet's.** Jina/Cohere shape, phase 80's `{query, documents}` → `{scores}`
+job, so a cross-encoder tool worker answers it unchanged and `Retrieval:RerankModel` can name a
+llama.cpp reranker. 80's exact-length rule: a reranker that skipped a document fails.
+
+**D6 — Ollama's samplers reach llama.cpp under its names** (`top_k`, `min_p`, `typical_p`,
+`repeat_penalty`, `repeat_last_n`, `mirostat*`, `num_keep`→`n_keep`) — a flag on `OpenAiUpstreamClient`
+set for `llamacpp` only; OpenAI proper 400s an argument it does not know.
+
+Tests: `LlamaCppRouterTests` (Node), `LlamaCppContractTests` (Shared), `LlamaCppMeshTests` (Mesh — real
+hub, SignalR, node and a b11417-shaped router over a socket). Live run against a real b11417 router,
+real Ollama and a real Hugging Face download: `.claude/release-notes-v3.61.0.md`. **Not established:**
+a multimodal model through the router (no `mmproj` on this box); a Linux router (Windows only).

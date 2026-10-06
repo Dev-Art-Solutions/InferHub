@@ -66,6 +66,26 @@ public interface IInferenceBackend
 
     /// <summary>Load a model into memory so the first real request does not pay the cold-start cost.</summary>
     Task WarmAsync(string model, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Free what a loaded model holds (phase 96, D3) — warm's opposite. Only called when
+    /// <see cref="SupportsModelManagement"/>; a backend that has no such thing keeps this refusal.
+    /// </summary>
+    Task UnloadAsync(string model, CancellationToken cancellationToken)
+        => throw new NotSupportedException($"the {Name} backend cannot unload models");
+}
+
+/// <summary>
+/// A backend that answers some <see cref="ToolJob"/>s itself (phase 96, D4/D5): a llama.cpp engine's
+/// <c>llamacpp</c> routes and its reranker. <see cref="IClosedSetScorer"/> is the same idea for one
+/// kind; this asks per <c>(kind, model)</c>, because on one node a llama.cpp model reranks and the
+/// cross-encoder tool worker's does too.
+/// </summary>
+public interface IBackendToolJobs
+{
+    bool Serves(string capability, string model);
+
+    Task<ToolResult> RunAsync(ToolJob job, CancellationToken cancellationToken);
 }
 
 /// <summary>

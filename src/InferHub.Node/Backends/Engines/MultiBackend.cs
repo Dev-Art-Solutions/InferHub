@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using InferHub.Node.Configuration;
+using InferHub.Shared.Brio;
 using InferHub.Shared.Contracts;
 
 namespace InferHub.Node.Backends;
@@ -83,7 +84,7 @@ public sealed class Engine(
 /// process killed. Its models leave the next report, so the hub stops sending them here.
 /// </para>
 /// </remarks>
-public sealed class MultiBackend : IInferenceBackend, IClosedSetScorer, IModelKinds, IEngineControl
+public sealed class MultiBackend : IInferenceBackend, IClosedSetScorer, IModelKinds, IEngineControl, IBackendToolJobs
 {
     private static readonly TimeSpan ReadyPoll = TimeSpan.FromSeconds(2);
 
@@ -132,15 +133,26 @@ public sealed class MultiBackend : IInferenceBackend, IClosedSetScorer, IModelKi
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .ToArray();
 
-    public IReadOnlyList<string>? KindsFor(string model) => Resolve(model)?.Backend.Kinds;
+    /// <summary>The engine's answer, and per model where the engine has one (a llama.cpp router, 96 D2).</summary>
+    public IReadOnlyList<string>? KindsFor(string model)
+        => Resolve(model) is not { } engine
+            ? null
+            : engine.Backend is IModelKinds perModel
+                ? perModel.KindsFor(model) ?? engine.Backend.Kinds
+                : engine.Backend.Kinds;
 
     /// <summary>
-    /// Only Ollama pulls, deletes and warms, so the node can while its Ollama engine runs (26's
-    /// declaration, per engine).
+    /// Ollama and a llama.cpp router pull, delete, warm and unload, so the node can when one is
+    /// configured — declared, not discovered (26). A command for a stopped one is refused by
+    /// <see cref="Manager"/> in a sentence.
     /// </summary>
-    public bool SupportsModelManagement => ModelManager is not null;
-
-    private Engine? ModelManager => engines.FirstOrDefault(e => e.Running && e.Backend.SupportsModelManagement);
+    /// <remarks>
+    /// <b>Found in phase 96's live run, wrong since 95:</b> this asked which engines were
+    /// <em>running</em>, and a meshed node registers before its engines start (it waits for its
+    /// profile, D4) — so the hub was told "cannot manage models" once, at registration, and never
+    /// offered a pull to a node with an Ollama engine.
+    /// </remarks>
+    public bool SupportsModelManagement => engines.Any(e => e.Backend.SupportsModelManagement);
 
     public async Task<IReadOnlyList<ModelInfo>?> ListModelsAsync(CancellationToken cancellationToken)
     {
@@ -199,22 +211,101 @@ public sealed class MultiBackend : IInferenceBackend, IClosedSetScorer, IModelKi
     }
 
     public IAsyncEnumerable<ModelPullProgress> PullAsync(string model, CancellationToken cancellationToken)
-        => RequireModelManager().Backend.PullAsync(model, cancellationToken);
+        => PullAsync(model, engine: null, cancellationToken);
 
     public Task DeleteAsync(string model, CancellationToken cancellationToken)
-        => RequireModelManager().Backend.DeleteAsync(model, cancellationToken);
+        => DeleteAsync(model, engine: null, cancellationToken);
 
     public Task WarmAsync(string model, CancellationToken cancellationToken)
-    {
-        var engine = Resolve(model) ?? RequireModelManager();
+        => WarmAsync(model, engine: null, cancellationToken);
 
-        if (!engine.Backend.SupportsModelManagement)
+    public Task UnloadAsync(string model, CancellationToken cancellationToken)
+        => UnloadAsync(model, engine: null, cancellationToken);
+
+    /// <param name="engine"><c>ModelCommand.Engine</c> (96 D3); null picks as <see cref="Manager"/> says.</param>
+    public IAsyncEnumerable<ModelPullProgress> PullAsync(string model, string? engine, CancellationToken cancellationToken)
+        => Manager(ModelCommand.KindPull, model, engine).Backend.PullAsync(model, cancellationToken);
+
+    public Task DeleteAsync(string model, string? engine, CancellationToken cancellationToken)
+        => Manager(ModelCommand.KindDelete, model, engine).Backend.DeleteAsync(model, cancellationToken);
+
+    public Task WarmAsync(string model, string? engine, CancellationToken cancellationToken)
+    {
+        var target = Manager(ModelCommand.KindWarm, model, engine);
+        Remember(target, model);
+        return target.Backend.WarmAsync(model, cancellationToken);
+    }
+
+    public Task UnloadAsync(string model, string? engine, CancellationToken cancellationToken)
+        => Manager(ModelCommand.KindUnload, model, engine).Backend.UnloadAsync(model, cancellationToken);
+
+    /// <summary>
+    /// Which engine a model command is for (96 D3): the one named; else, for anything but a pull, the
+    /// one that reports the model; else the only running engine that can manage models. Two that
+    /// could and no name is a refusal naming both — <c>owner/model</c> is an Ollama name and a Hugging
+    /// Face repo, and a guess here downloads gigabytes into the wrong place.
+    /// </summary>
+    internal Engine Manager(string kind, string model, string? engine)
+    {
+        if (!string.IsNullOrWhiteSpace(engine))
         {
-            throw new NotSupportedException($"'{model}' is served by the {engine.Type} engine '{engine.Name}', which cannot warm models");
+            var named = engines.FirstOrDefault(e => string.Equals(e.Name, engine.Trim(), StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidOperationException($"this node has no engine named '{engine}'; it has {string.Join(", ", EngineNames)}");
+
+            if (!named.Running)
+            {
+                throw new InvalidOperationException($"engine '{named.Name}' is stopped; start it before you {kind} a model on it");
+            }
+
+            return named.Backend.SupportsModelManagement
+                ? named
+                : throw new NotSupportedException($"engine '{named.Name}' ({named.Type}) cannot manage models; Ollama and a llama.cpp router can");
         }
 
-        Remember(engine, model);
-        return engine.Backend.WarmAsync(model, cancellationToken);
+        if (kind != ModelCommand.KindPull && Resolve(model) is { } serving)
+        {
+            return serving.Backend.SupportsModelManagement
+                ? serving
+                : throw new NotSupportedException($"'{model}' is served by the {serving.Type} engine '{serving.Name}', which cannot {kind} models");
+        }
+
+        var managers = engines.Where(e => e.Running && e.Backend.SupportsModelManagement).ToArray();
+
+        return managers.Length switch
+        {
+            1 => managers[0],
+            0 => throw new NotSupportedException("no running engine on this node can manage models; Ollama and a llama.cpp router can"),
+            _ => throw new InvalidOperationException(
+                $"{managers.Length} engines on this node can {kind} '{model}' ({string.Join(", ", managers.Select(m => m.Name))}); name one with ?engine=<name>")
+        };
+    }
+
+    /// <summary>A llama.cpp engine's native routes and reranker (96 D4/D5), by the model's engine.</summary>
+    public bool Serves(string capability, string model)
+        => Resolve(model) is { Backend: IBackendToolJobs jobs } && jobs.Serves(capability, model);
+
+    public async Task<ToolResult> RunAsync(ToolJob job, CancellationToken cancellationToken)
+    {
+        if (Resolve(job.Model) is null)
+        {
+            await ListModelsAsync(cancellationToken);
+        }
+
+        if (Resolve(job.Model) is not { Backend: IBackendToolJobs jobs } engine || !jobs.Serves(job.Capability, job.Model))
+        {
+            return ToolResult.Refused(job.JobId, $"no running engine on this node serves '{job.Capability}' for '{job.Model}'", BrioErrorCodes.ModelNotFound);
+        }
+
+        engine.Enter();
+
+        try
+        {
+            return await jobs.RunAsync(job, cancellationToken);
+        }
+        finally
+        {
+            engine.Leave();
+        }
     }
 
     /// <summary>Brio (94 D1) goes to the running colibri engine, the only one with a <c>/v1/brio</c>.</summary>
@@ -580,9 +671,6 @@ public sealed class MultiBackend : IInferenceBackend, IClosedSetScorer, IModelKi
             engine.Routed.TryAdd(model, 0);
         }
     }
-
-    private Engine RequireModelManager()
-        => ModelManager ?? throw new NotSupportedException("no running engine on this node can manage models; only an ollama engine can");
 
     internal static string? ModelOf(string requestJson)
     {

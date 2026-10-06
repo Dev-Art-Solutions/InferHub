@@ -43,7 +43,8 @@ public sealed class ToolExecutor(
     IToolRuntime runtime,
     IOptions<ToolOptions> toolOptions,
     ILogger<ToolExecutor> logger,
-    IClosedSetScorer? scorer = null)
+    IClosedSetScorer? scorer = null,
+    IBackendToolJobs? backendJobs = null)
 {
     private readonly ToolOptions options = toolOptions.Value;
 
@@ -55,7 +56,7 @@ public sealed class ToolExecutor(
     public bool Provides(string capability, string model) =>
         IsScore(capability)
             ? scorer is not null
-            : runtime.Capabilities.Any(c =>
+            : backendJobs?.Serves(capability, model) == true || runtime.Capabilities.Any(c =>
                 string.Equals(c.Kind, capability, StringComparison.OrdinalIgnoreCase)
                 && c.Models.Any(m => string.Equals(m, model, StringComparison.OrdinalIgnoreCase)));
 
@@ -94,6 +95,22 @@ public sealed class ToolExecutor(
                 scored.Success);
 
             return scored;
+        }
+
+        // 96 D4/D5: a llama.cpp engine's native routes and its reranker, before any tool runtime —
+        // 94 D1's order. The operation, the model and the outcome; never a body (rule 7).
+        if (backendJobs is not null && backendJobs.Serves(job.Capability, job.Model))
+        {
+            var answered = await backendJobs.RunAsync(job, cancellationToken);
+
+            logger.LogInformation(
+                "Backend answered {Capability} job {JobId} with model {Model}: success={Success}",
+                job.Capability,
+                job.JobId,
+                job.Model,
+                answered.Success);
+
+            return answered;
         }
 
         var scratch = CreateScratch(job.JobId);
@@ -286,6 +303,13 @@ public sealed class ToolExecutor(
         {
             // One object is the whole answer; there is nothing to stream (94's non-goals).
             yield return Terminal(job.JobId, "a score is answered once; send the request without stream");
+            yield break;
+        }
+
+        if (backendJobs is not null && backendJobs.Serves(job.Capability, job.Model))
+        {
+            // 96 D4's non-goal: the engine's streaming routes are /v1/completions and /api/generate.
+            yield return Terminal(job.JobId, $"'{job.Capability}' is answered once; send the request without stream");
             yield break;
         }
 

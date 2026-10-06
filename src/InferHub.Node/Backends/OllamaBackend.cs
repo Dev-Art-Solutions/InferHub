@@ -148,6 +148,10 @@ public sealed class OllamaBackend(
         await client.Generate(new OllamaGenerateRequest { Model = model, Prompt = string.Empty }, cancellationToken);
     }
 
+    /// <summary>The console's unload (96 D3): the same <c>keep_alive: 0</c> as phase 85's release.</summary>
+    public Task UnloadAsync(string model, CancellationToken cancellationToken)
+        => UnloadAsync([model], cancellationToken);
+
     /// <summary>
     /// Unloads the named models if Ollama has them resident (phase 85, <c>Node:OnDemand</c>). A
     /// generate with an empty prompt and <c>keep_alive: 0</c> is Ollama's documented way to drop a

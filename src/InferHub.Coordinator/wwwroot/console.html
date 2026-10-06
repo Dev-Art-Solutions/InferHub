@@ -419,7 +419,9 @@
         <select id="mm-node" style="min-width:200px"></select>
         <input id="mm-model" placeholder="model name (e.g. llama3.2)" style="min-width:220px" />
         <button id="mm-pull">Pull</button>
+        <input id="mm-engine" placeholder="engine (if several can pull)" style="min-width:160px" title="Backend:Engines node: which engine — e.g. the llama.cpp router for a Hugging Face owner/repo:quant" />
         <button id="mm-warm">Warm</button>
+        <button id="mm-unload" title="Free the memory a loaded model holds">Unload</button>
         <button id="mm-delete">Delete</button>
         <span style="opacity:.5">|</span>
         <input id="mm-replicas" type="number" min="1" value="2" style="width:64px" title="replica count for Ensure (fleet-wide)" />

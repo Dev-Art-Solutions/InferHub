@@ -49,6 +49,20 @@ public sealed class EngineOptions
     /// </summary>
     public bool Embeddings { get; set; }
 
+    /// <summary>
+    /// <c>llamacpp</c>: this server is a reranker (<c>llama-server --reranking</c>), so its model
+    /// declares <c>rerank</c> (phase 96, D5) — declared, as <see cref="Embeddings"/> is. A router
+    /// says it per model, in <c>Serve:Presets</c>.
+    /// </summary>
+    public bool Reranking { get; set; }
+
+    /// <summary>
+    /// <c>llamacpp</c> at a <see cref="BaseUrl"/>: that server is a <c>llama-server</c> router (started
+    /// without <c>-m</c>), so this node may pull, load, unload and delete through it (96 D3). Declared,
+    /// not probed (26). A router the node launches (<c>Serve:ModelsDir</c>/<c>Presets</c>) is one already.
+    /// </summary>
+    public bool Router { get; set; }
+
     /// <summary>Same include/exclude semantics as <c>Node:Models</c>, applied to this engine alone.</summary>
     public ModelFilterOptions Models { get; set; } = new();
 
@@ -70,8 +84,25 @@ public sealed class EngineServeOptions
     /// <summary>The <c>llama-server</c> binary, by path or on <c>PATH</c>.</summary>
     public string Executable { get; set; } = "llama-server";
 
-    /// <summary>The GGUF file (<c>-m</c>). Unset: launch nothing.</summary>
+    /// <summary>The GGUF file (<c>-m</c>). Unset, with no router keys either: launch nothing.</summary>
     public string? Model { get; set; }
+
+    /// <summary>
+    /// Router mode (phase 96, D1): a directory of GGUFs, each served under its file name and loaded on
+    /// first use (<c>--models-dir</c>). A sub-directory holding a model and its <c>mmproj</c> is one
+    /// multimodal model — llama.cpp's own convention.
+    /// </summary>
+    public string? ModelsDir { get; set; }
+
+    /// <summary>
+    /// Router mode: named models with settings of their own, written by the node into the INI
+    /// <c>--models-preset</c> reads. The name is the routed model name. A name that is also a file in
+    /// <see cref="ModelsDir"/> adds settings to that file.
+    /// </summary>
+    public Dictionary<string, LlamaCppPresetOptions> Presets { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Router mode: how many models may be loaded at once (<c>--models-max</c>, LRU). Unset: llama.cpp's 4.</summary>
+    public int? MaxLoaded { get; set; }
 
     /// <summary><c>--alias</c>: the name the hub routes on. Unset: the file's name without <c>.gguf</c>.</summary>
     public string? Alias { get; set; }
@@ -84,7 +115,14 @@ public sealed class EngineServeOptions
     /// </summary>
     public List<string> Arguments { get; set; } = [];
 
-    public bool IsEnabled => !string.IsNullOrWhiteSpace(Model);
+    /// <summary>The node launches a <c>llama-server</c> — one model or a router.</summary>
+    public bool IsEnabled => IsSingle || IsRouter;
+
+    /// <summary>One GGUF behind <c>-m</c>: the v3.60 shape.</summary>
+    public bool IsSingle => !string.IsNullOrWhiteSpace(Model);
+
+    /// <summary>A router: many models, loaded on demand, managed through its own endpoints (96 D1).</summary>
+    public bool IsRouter => !string.IsNullOrWhiteSpace(ModelsDir) || Presets.Count > 0;
 
     public string ResolvedAlias()
         => string.IsNullOrWhiteSpace(Alias)
@@ -92,4 +130,33 @@ public sealed class EngineServeOptions
             : Alias!.Trim();
 
     public string LaunchedBaseUrl() => $"http://127.0.0.1:{Port}/v1";
+}
+
+/// <summary>
+/// <c>Backend:Engines:{name}:Serve:Presets:{model}</c> (phase 96, D1) — one section of the INI a
+/// router reads. Exactly one of <see cref="Model"/> and <see cref="HfRepo"/>, unless the name is a
+/// file in <c>Serve:ModelsDir</c> and this only adds settings to it.
+/// </summary>
+public sealed class LlamaCppPresetOptions
+{
+    /// <summary>A GGUF on this box.</summary>
+    public string? Model { get; set; }
+
+    /// <summary><c>owner/repo[:quant]</c>, downloaded by llama.cpp on first load into its cache.</summary>
+    public string? HfRepo { get; set; }
+
+    /// <summary>An embedding model: it declares <c>embed</c> and nothing else (96 D2).</summary>
+    public bool Embeddings { get; set; }
+
+    /// <summary>A reranker: it declares <c>rerank</c> and nothing else (96 D2, D5).</summary>
+    public bool Reranking { get; set; }
+
+    /// <summary>The multimodal projector for a vision or audio model.</summary>
+    public string? Mmproj { get; set; }
+
+    /// <summary>
+    /// Any other llama.cpp long option, without its dashes: <c>{"ctx-size": "8192", "n-gpu-layers":
+    /// "99"}</c>. A plain token each — a newline here would open a section of somebody else's.
+    /// </summary>
+    public Dictionary<string, string> Settings { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }

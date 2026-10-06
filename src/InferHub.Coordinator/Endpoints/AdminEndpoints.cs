@@ -127,6 +127,13 @@ public static class AdminEndpoints
             ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
             RunModelCommandAsync(ModelCommand.KindWarm, nodeId, model, context, registry, commands, audit, loggerFactory, cancellationToken));
 
+        // Phase 96 (D3): warm's opposite — a llama.cpp router's /models/unload, Ollama's keep_alive 0.
+        group.MapPost("/nodes/{nodeId}/models/{model}/unload", (
+            string nodeId, string model, HttpContext context,
+            INodeRegistry registry, ModelCommandCoordinator commands, IAuditLog audit,
+            ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
+            RunModelCommandAsync(ModelCommand.KindUnload, nodeId, model, context, registry, commands, audit, loggerFactory, cancellationToken));
+
         // Tool models (phase 48, D4). The SAME channel, the same coalescing, the same SSE relay —
         // what changes is that the command names a tool, so the node runs it against that tool's
         // catalogue instead of its inference backend. Weights measured in tens of gigabytes take
@@ -496,11 +503,26 @@ public static class AdminEndpoints
         CancellationToken cancellationToken)
     {
         var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin");
-        model = (model ?? string.Empty).Trim();
+
+        // A Hugging Face repo is owner/repo (96 D3), and a '/' in a route segment arrives as %2F —
+        // routing leaves that one escape alone. A model name never contains a literal '%'.
+        model = Uri.UnescapeDataString(model ?? string.Empty).Trim();
 
         if (string.IsNullOrWhiteSpace(model))
         {
             return Results.BadRequest(new { error = "a model name is required" });
+        }
+
+        // 96 D3: which engine on a Backend:Engines node. A token, as an engine name is (95 D4).
+        string? engine = context.Request.Query["engine"].ToString().Trim();
+
+        if (engine.Length == 0)
+        {
+            engine = null;
+        }
+        else if (!System.Text.RegularExpressions.Regex.IsMatch(engine, "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"))
+        {
+            return Results.BadRequest(new { error = "engine is a node's engine name: letters, digits, '.', '_' and '-'" });
         }
 
         var node = registry.Snapshot(DateTimeOffset.UtcNow)
@@ -520,7 +542,7 @@ public static class AdminEndpoints
             });
         }
 
-        var result = await commands.SendAsync(node.NodeId, kind, model, cancellationToken);
+        var result = await commands.SendAsync(node.NodeId, kind, model, cancellationToken, engine: engine);
         if (result is null)
         {
             return Results.NotFound(new { error = $"node '{nodeId}' is no longer connected" });
@@ -528,14 +550,15 @@ public static class AdminEndpoints
 
         audit.Record(node.NodeId, $"model.{kind}", ActorOf(context), DateTimeOffset.UtcNow);
         logger.LogInformation(
-            "Model command {Kind} '{Model}' on node {NodeId} → command {CommandId} (reused={Reused})",
-            kind, model, node.NodeId, result.CommandId, result.Reused);
+            "Model command {Kind} '{Model}' on node {NodeId}{Engine} → command {CommandId} (reused={Reused})",
+            kind, model, node.NodeId, engine is null ? "" : $" engine {engine}", result.CommandId, result.Reused);
 
         return Results.Accepted($"/api/admin/nodes/{node.NodeId}/models", new
         {
             nodeId = node.NodeId,
             model,
             kind,
+            engine,
             commandId = result.CommandId,
             reused = result.Reused
         });

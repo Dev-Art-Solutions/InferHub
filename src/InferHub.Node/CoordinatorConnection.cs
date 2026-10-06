@@ -863,6 +863,13 @@ public sealed class CoordinatorConnection(
                 "StreamModelCommandProgress",
                 modelCommandExecutor.ExecuteAsync(command, nodeId, commandCts.Token),
                 commandCts.Token);
+
+            // Found in phase 96's mesh test, true since 26: a pulled model was not routable until the
+            // next refresh interval, and a deleted one stayed routable for as long. Say so now.
+            if (!command.IsToolCommand && command.Kind is ModelCommand.KindPull or ModelCommand.KindDelete)
+            {
+                await ReportModelsAsync(commandCts.Token);
+            }
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
         {

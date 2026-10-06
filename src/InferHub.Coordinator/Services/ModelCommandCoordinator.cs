@@ -37,12 +37,17 @@ public sealed class ModelCommandCoordinator(
     /// part of the coalescing key because an Ollama model and a diffusion recipe may share a name
     /// and are not the same thing to pull.
     /// </param>
+    /// <param name="engine">
+    /// Phase 96: which of the node's engines, or null for "the node decides" (96 D3). Part of the key
+    /// for the tool's reason: the same repo pulled into Ollama and into a llama.cpp router is two pulls.
+    /// </param>
     public async Task<StartResult?> SendAsync(
         string nodeId,
         string kind,
         string model,
         CancellationToken cancellationToken,
-        string? tool = null)
+        string? tool = null,
+        string? engine = null)
     {
         var connectionId = registry.FindConnectionIdByNodeId(nodeId);
         if (connectionId is null)
@@ -50,7 +55,7 @@ public sealed class ModelCommandCoordinator(
             return null;
         }
 
-        var key = new CommandKey(nodeId, kind, model, tool);
+        var key = new CommandKey(nodeId, kind, model, tool, engine);
         if (active.TryGetValue(key, out var existing))
         {
             logger.LogInformation("Coalescing {Kind} '{Model}' on node {NodeId} onto command {CommandId}", kind, model, nodeId, existing);
@@ -64,7 +69,7 @@ public sealed class ModelCommandCoordinator(
             return new StartResult(active[key], Reused: true);
         }
 
-        var command = new ModelCommand(commandId, kind, model, tool);
+        var command = new ModelCommand(commandId, kind, model, tool, engine);
         latest[commandId] = new ModelCommandProgress(commandId, nodeId, kind, model, "queued", null, Done: false, Error: null, Tool: tool);
 
         try
@@ -88,7 +93,12 @@ public sealed class ModelCommandCoordinator(
 
         if (progress.Done)
         {
-            active.TryRemove(new CommandKey(progress.NodeId, progress.Kind, progress.ModelName, progress.Tool), out _);
+            // By id rather than by a rebuilt key: a progress frame does not carry the engine it ran on.
+            foreach (var entry in active.Where(pair => pair.Value == progress.CommandId))
+            {
+                active.TryRemove(entry);
+            }
+
             // Keep the terminal frame briefly discoverable, then forget it — a restart forgets anyway.
             _ = ForgetLaterAsync(progress.CommandId);
         }
@@ -102,5 +112,5 @@ public sealed class ModelCommandCoordinator(
         latest.TryRemove(commandId, out _);
     }
 
-    private readonly record struct CommandKey(string NodeId, string Kind, string Model, string? Tool);
+    private readonly record struct CommandKey(string NodeId, string Kind, string Model, string? Tool, string? Engine);
 }

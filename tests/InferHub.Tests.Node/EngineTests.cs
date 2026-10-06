@@ -341,7 +341,8 @@ public class EngineTests
         Assert.IsType<NoBackendSupervisor>(host.Services.GetRequiredService<IBackendSupervisor>());
 
         var kinds = backend.Engines.ToDictionary(e => e.Name, e => e.Backend.Kinds.ToArray());
-        Assert.Equal([CapabilityKinds.Chat], kinds["qwen"]);
+        // 96 D4: every llama.cpp engine also serves its own routes.
+        Assert.Equal([CapabilityKinds.Chat, CapabilityKinds.LlamaCpp], kinds["qwen"]);
         Assert.Equal([CapabilityKinds.Chat, CapabilityKinds.Score], kinds["colibri"]);
         Assert.Equal("http://127.0.0.1:8080/v1", backend.Engines.Single(e => e.Name == "qwen").Backend.Endpoint);
         Assert.Equal("http://127.0.0.1:8000/v1", backend.Engines.Single(e => e.Name == "colibri").Backend.Endpoint);
