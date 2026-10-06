@@ -86,11 +86,35 @@ cache), where it would have been declared a chat model — such duplicates are n
 
 - **A multimodal model through the router.** No `mmproj` on the test box; the directory convention and
   the `Mmproj` preset key are llama.cpp's own and were not exercised.
-- **A Linux router.** Windows only; the published node image does not carry llama.cpp (unchanged from
-  v3.60), so there is no image-level check of the router.
 - **Pull progress in bytes.** The router reports `downloading` and nothing more; the progress frame says so.
 - Ollama's samplers were seen arriving in the request body in tests; their effect on llama.cpp's output
   was not measured.
+
+## The published-image check
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.61.0` and `inferhub-node:3.61.0-colibri`, both with
+`org.opencontainers.image.revision` = `d84368a` (the tag), on a Docker network, keys on (host to
+container is not loopback). The node had two engines: the host's Ollama (`host.docker.internal`) and a
+`gguf` router launched **inside the container** from llama.cpp b11417's official Ubuntu x64 build,
+mounted read-only, over `/opt/llama/models` (qwen2.5-0.5b, nomic-embed), preset `nomic` pointing at the
+file in that directory, preset `jina-rerank` from Hugging Face, `MaxLoaded: 2`.
+
+- The hub listed `gguf` running with `jina-rerank, nomic, qwen2.5-0.5b`: the router's own extra entries
+  (`nomic-embed`, the cache's `gpustack/jina-reranker-…`) were filtered, as on Windows.
+- Chat, embeddings, `/v1/rerank` (Hugging Face download inside the container, 6.9 s, the right document
+  at `top_n: 1`), a `yes|no` grammar completion and tokenize all answered; without a key, 401.
+- Pull of `bartowski/SmolLM2-135M-Instruct-GGUF:Q4_K_M` with `?engine=gguf` (admin key; 401 without):
+  routable 15 s after the pull started, and a chat through the hub answered. Unload reached the router
+  (`qwen2.5-0.5b` unloaded); delete removed the repo, and the hub stopped routing it.
+- No prompt, query or document text in either container's log.
+
+Two things to know when you try this in a container:
+
+- **Use the `:colibri` image, not the plain one.** llama.cpp's Linux build needs `libgomp`, which only
+  the `:colibri` image carries; in the plain image `llama-server` exits with code 127 and the engine
+  says so. Set `Backend__Type=` on `:colibri`, as in v3.60.
+- **Set `Serve:Port`.** llama-server's default, 8080, is also the port the node images give the node's
+  own local API.
 
 ## Upgrading
 

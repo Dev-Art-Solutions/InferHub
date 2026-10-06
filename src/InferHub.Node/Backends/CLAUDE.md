@@ -238,5 +238,7 @@ set for `llamacpp` only; OpenAI proper 400s an argument it does not know.
 
 Tests: `LlamaCppRouterTests` (Node), `LlamaCppContractTests` (Shared), `LlamaCppMeshTests` (Mesh — real
 hub, SignalR, node and a b11417-shaped router over a socket). Live run against a real b11417 router,
-real Ollama and a real Hugging Face download: `.claude/release-notes-v3.61.0.md`. **Not established:**
-a multimodal model through the router (no `mmproj` on this box); a Linux router (Windows only).
+real Ollama and a real Hugging Face download: `.claude/release-notes-v3.61.0.md`. Image check (`:colibri`, the
+Linux build launched in the container): the same, end to end. **Not established:** a multimodal model
+through the router (no `mmproj` on this box). Two container traps, recorded in the notes rather than
+fixed: the plain image lacks `libgomp`, and `Serve:Port`'s 8080 is the images' local API port.
