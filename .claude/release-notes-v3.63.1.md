@@ -25,7 +25,16 @@ tests, and is not a side effect of a patch release. Recorded for the next phase.
 ## Verified
 
 Unit and mesh suites: 1956 passed, 61 skipped. A new mesh test holds a conversion open and checks that a
-chat to the same node is answered while it runs. The published-image check is in the notes below once run.
+chat to the same node is answered while it runs. 
+
+## The published-image check
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.63.1` and `inferhub-node:3.63.1-colibri`, both with
+`org.opencontainers.image.revision` = `67f66e6` (the tag), keys on, a fresh volume, a llama.cpp router and a
+colibri catalogue. The GGUF was pulled and routable; then the OLMoE conversion was started, and **while
+`convert_olmoe_merged.py` was running** three chats to the GGUF model through the hub answered in 0.49 s,
+0.06 s and 0.06 s (under 3.63.0 the same chat timed out at 120 s). The staging directory was not listed
+and the catalogue logged no warning about it.
 
 ## Upgrading
 
