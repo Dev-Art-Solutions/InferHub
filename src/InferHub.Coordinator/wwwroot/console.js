@@ -685,6 +685,57 @@
     }).join("");
   };
 
+  // ------------------------------------------------------------------ colibri catalogue (phase 97)
+
+  const colibriStatePill = (model) => {
+    const cls = model.state === "loaded" ? "pill-ok"
+      : model.state === "loading" ? "pill-warn"
+        : model.state === "unloaded" ? "pill-muted" : "pill-err";
+    return `<span class="pill ${cls}">${escapeHtml(model.state)}</span>`;
+  };
+
+  // The node reports on its model loop (a minute by default), so idle time is carried forward from
+  // the report's own timestamp rather than shown frozen at whatever it was then.
+  const idleNow = (model, catalogue) => {
+    const since = Date.parse(catalogue.atUtc);
+    const drift = Number.isNaN(since) ? 0 : Math.max(0, (Date.now() - since) / 1000);
+    return Math.round(model.idleSeconds + drift);
+  };
+
+  const renderColibri = (status) => {
+    const tbody = document.getElementById("colibri");
+    if (!tbody) return;
+
+    const nodes = (status?.nodes ?? []).filter(n => n.colibri && Array.isArray(n.colibri.models));
+    const rows = nodes.flatMap(n => n.colibri.models.map((m, i) => ({ node: n, catalogue: n.colibri, model: m, first: i === 0 })));
+
+    if (rows.length === 0) {
+      emptyRow("colibri", 9, "No node serves a colibri catalogue. Point Colibri:Serve:ModelsDir at its converted models to pick them from here.");
+      return;
+    }
+
+    tbody.innerHTML = rows.map(({ node, catalogue, model, first }) => {
+      const minutes = Math.round((catalogue.idleUnloadSeconds ?? 0) / 60);
+      const mode = !first ? "" : `
+        <span class="pill ${catalogue.onDemand ? "pill-ok" : "pill-muted"}" title="${catalogue.maxLoaded} loaded at most">${catalogue.onDemand ? `on demand · ${minutes} min` : "kept loaded"}</span>
+        <button type="button" data-caction="${catalogue.onDemand ? "on-demand/disable" : "on-demand/enable"}" data-node="${encodeURIComponent(node.nodeId)}">${catalogue.onDemand ? "Keep loaded" : "On demand"}</button>`;
+      const loadedOrPinned = model.pinned || model.state === "loaded" || model.state === "loading";
+      const action = model.pinned ? "unload" : "load";
+      return `
+        <tr class="${model.state === "failed" ? "row-error" : ""}">
+          <td>${first ? escapeHtml(node.name) : ""}${first && !catalogue.running ? ` <span class="pill pill-muted">stopped</span>` : ""}</td>
+          <td>${mode}</td>
+          <td><code>${escapeHtml(model.name)}</code></td>
+          <td>${colibriStatePill(model)}</td>
+          <td>${model.pinned ? `<span class="matrix-yes">yes</span>` : `<span class="matrix-no">—</span>`}</td>
+          <td>${model.inFlight ?? 0}</td>
+          <td>${model.idleSeconds == null ? `<span class="matrix-no">—</span>` : escapeHtml(fmtSeconds(idleNow(model, catalogue)))}</td>
+          <td>${model.lastError ? `<span class="why">${escapeHtml(model.lastError)}</span>` : `<span class="matrix-no">—</span>`}</td>
+          <td><button type="button" data-caction="models/${encodeURIComponent(model.name)}/${action}" data-node="${encodeURIComponent(node.nodeId)}" title="${model.pinned ? "Unpin and stop it" : (loadedOrPinned ? "Pin it so it stays loaded" : "Load it and keep it loaded")}">${model.pinned ? "Unload" : "Load"}</button></td>
+        </tr>`;
+    }).join("");
+  };
+
   const corpusStatePill = (corpus) => {
     if (!corpus.enabled) return `<span class="pill pill-muted">off</span>`;
     const cls = corpus.status === "running" ? "pill-ok" : corpus.status === "failed" ? "pill-err" : "pill-warn";
@@ -913,6 +964,7 @@
       renderProviders(latestStatus);
       renderTools(latestStatus);
       renderEngines(latestStatus);
+      renderColibri(latestStatus);
       renderCorpora(latestStatus);
       renderProfileNodes(latestStatus);
       renderImageRecipes(latestStatus);
@@ -1489,6 +1541,39 @@
       const button = event.target.closest("button[data-eaction]");
       if (!button) return;
       setEngineRunning(decodeURIComponent(button.dataset.node), decodeURIComponent(button.dataset.engine), button.dataset.eaction);
+    });
+  }
+
+  // Phase 97. Load/Unload/on-demand write the node's profile (colibri); the node clamps it and
+  // re-reports, so the row changes on the next status poll.
+  const setColibri = async (nodeId, action) => {
+    try {
+      const res = await fetch(`/api/admin/nodes/${encodeURIComponent(nodeId)}/colibri/${action}`, {
+        method: "POST",
+        headers: adminHeaders()
+      });
+      if (res.status === 401) {
+        promptForKey("Admin key required for this action.");
+        return;
+      }
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try { const body = await res.json(); if (body?.error) detail = body.error; } catch { }
+        throw new Error(detail);
+      }
+      toast("colibri", action.replace("models/", "").replace("/", " "), "ok");
+      pollStatusNow();
+    } catch (err) {
+      toast("colibri change refused", err.message, "err");
+    }
+  };
+
+  const colibriBody = document.getElementById("colibri");
+  if (colibriBody) {
+    colibriBody.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-caction]");
+      if (!button) return;
+      setColibri(decodeURIComponent(button.dataset.node), button.dataset.caction);
     });
   }
 

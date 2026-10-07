@@ -171,6 +171,20 @@ public sealed class NodeHub(
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// What a node's colibri catalogue holds (phase 97): which models are loaded, pinned, idle. The
+    /// mailbox again; only a node with a catalogue sends one.
+    /// </summary>
+    public Task ReportColibriState(NodeColibriState state)
+    {
+        if (services.GetService(typeof(NodeColibriRegistry)) is NodeColibriRegistry colibri)
+        {
+            colibri.Report(state);
+        }
+
+        return Task.CompletedTask;
+    }
+
     /// <summary>What a node did with its profile, including everything it refused and why (D6).</summary>
     public Task ReportProfileState(NodeProfileState state)
     {

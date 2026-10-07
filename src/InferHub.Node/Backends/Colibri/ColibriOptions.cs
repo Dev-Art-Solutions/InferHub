@@ -43,6 +43,16 @@ public sealed class ColibriOptions
 
     public ColibriServeOptions Serve { get; set; } = new();
 
+    /// <summary>How many catalogue models one node may hold loaded (97 D1) — a port each, and a sanity bound.</summary>
+    public const int MaxLoadedCeiling = 16;
+
+    /// <summary>A catalogue name: a token, never a path (97 D4, 95 D4's rule).</summary>
+    public static bool IsModelName(string? name)
+        => !string.IsNullOrWhiteSpace(name)
+           && name.Length <= 64
+           && char.IsAsciiLetterOrDigit(name[0])
+           && name.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-');
+
     /// <summary>Where <c>coli serve</c> listens when this node launched it.</summary>
     public string LaunchedBaseUrl() => $"http://127.0.0.1:{Serve.Port}/v1";
 }
@@ -67,7 +77,38 @@ public sealed class ColibriServeOptions
     /// <summary>The <c>coli</c> launcher from a colibri release archive or checkout.</summary>
     public string Launcher { get; set; } = "coli";
 
+    /// <summary>
+    /// Phase 97: a directory of converted models, one per sub-directory holding a <c>config.json</c>,
+    /// each served under its directory's name and launched when a request names it (97 D1).
+    /// </summary>
+    public string? ModelsDir { get; set; }
+
+    /// <summary>Phase 97: more catalogue entries, name → converted model directory. A name here wins over the same name in <see cref="ModelsDir"/>.</summary>
+    public Dictionary<string, string> Models { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Phase 97: how many catalogue models may be loaded at once — one <c>coli serve</c> each, on
+    /// <see cref="Port"/>, <see cref="Port"/>+1, … A statement about this box's RAM, so a profile
+    /// can never pin more than this (97 D4).
+    /// </summary>
+    public int MaxLoaded { get; set; } = 1;
+
+    /// <summary>Phase 97: stop a loaded, unpinned model once it has been idle for <see cref="IdleUnload"/> (97 D3).</summary>
+    public bool OnDemand { get; set; }
+
+    public TimeSpan IdleUnload { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>Phase 97: how long a launched model may take to answer before its load counts as failed.</summary>
+    public TimeSpan LoadTimeout { get; set; } = TimeSpan.FromMinutes(15);
+
+    /// <summary>Phase 97: catalogue models loaded when the node starts and kept loaded, until a profile says otherwise.</summary>
+    public List<string> Preload { get; set; } = [];
+
+    /// <summary>One model behind one <c>coli serve</c>: the v3.58 shape.</summary>
     public bool IsEnabled => !string.IsNullOrWhiteSpace(Model);
+
+    /// <summary>A catalogue: many models, loaded on demand (97 D1).</summary>
+    public bool IsCatalog => !string.IsNullOrWhiteSpace(ModelsDir) || Models.Count > 0;
 
     public string ResolvedModelId()
         => string.IsNullOrWhiteSpace(ModelId)
@@ -117,7 +158,12 @@ public sealed class ColibriOptionsValidator(IOptions<BackendOptions> backend, IC
             }
         }
 
-        if (options.Serve.IsEnabled)
+        if (options.Serve.IsCatalog)
+        {
+            ValidateCatalog(options, multi, configuration, failures);
+        }
+
+        if (options.Serve.IsEnabled && !options.Serve.IsCatalog)
         {
             if (options.Serve.Port is < 1 or > 65535)
             {
@@ -140,5 +186,73 @@ public sealed class ColibriOptionsValidator(IOptions<BackendOptions> backend, IC
         }
 
         return failures.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
+    }
+
+    /// <summary>97 D1: a catalogue is its own shape, and every way of half-writing it fails here.</summary>
+    private static void ValidateCatalog(ColibriOptions options, bool multi, IConfiguration configuration, List<string> failures)
+    {
+        var serve = options.Serve;
+        var key = $"{ColibriOptions.SectionName}:Serve";
+
+        if (serve.IsEnabled)
+        {
+            failures.Add(
+                $"{key}:{nameof(ColibriServeOptions.Model)} and {key}:{nameof(ColibriServeOptions.ModelsDir)}/{nameof(ColibriServeOptions.Models)} are both set. "
+                + $"One model, or a catalogue: put that directory under ModelsDir or in Models. (The :colibri image sets Model; clear it with Colibri__Serve__Model=.)");
+        }
+
+        if (!string.IsNullOrWhiteSpace(serve.ModelId))
+        {
+            failures.Add($"{key}:{nameof(ColibriServeOptions.ModelId)} names the single Serve:Model; a catalogue model is named by its directory or its Models key.");
+        }
+
+        if (serve.MaxLoaded is < 1 or > ColibriOptions.MaxLoadedCeiling)
+        {
+            failures.Add($"{key}:{nameof(ColibriServeOptions.MaxLoaded)} must be between 1 and {ColibriOptions.MaxLoadedCeiling} (got {serve.MaxLoaded}).");
+        }
+        else if (serve.Port < 1 || serve.Port + serve.MaxLoaded - 1 > 65535)
+        {
+            failures.Add($"{key}:{nameof(ColibriServeOptions.Port)} {serve.Port} leaves no room for {serve.MaxLoaded} loaded model(s), one port each.");
+        }
+
+        if (serve.IdleUnload <= TimeSpan.Zero)
+        {
+            failures.Add($"{key}:{nameof(ColibriServeOptions.IdleUnload)} must be positive (got {serve.IdleUnload}).");
+        }
+
+        if (serve.LoadTimeout <= TimeSpan.Zero)
+        {
+            failures.Add($"{key}:{nameof(ColibriServeOptions.LoadTimeout)} must be positive (got {serve.LoadTimeout}).");
+        }
+
+        foreach (var pair in serve.Models)
+        {
+            if (!ColibriOptions.IsModelName(pair.Key))
+            {
+                failures.Add($"{key}:Models:{pair.Key} is not a model name: letters, digits, '.', '_' and '-', up to 64.");
+            }
+
+            if (string.IsNullOrWhiteSpace(pair.Value))
+            {
+                failures.Add($"{key}:Models:{pair.Key} names no directory.");
+            }
+        }
+
+        var preload = serve.Preload.Where(name => !string.IsNullOrWhiteSpace(name)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+
+        if (preload.Length > serve.MaxLoaded)
+        {
+            failures.Add($"{key}:{nameof(ColibriServeOptions.Preload)} names {preload.Length} models and {key}:MaxLoaded is {serve.MaxLoaded}; they cannot all stay loaded.");
+        }
+
+        var baseUrl = configuration[$"{UpstreamBackendOptions.SectionName}:{nameof(UpstreamBackendOptions.BaseUrl)}"]
+            ?? configuration[$"{UpstreamBackendOptions.LegacySectionName}:{nameof(UpstreamBackendOptions.BaseUrl)}"];
+
+        if (!multi && !string.IsNullOrWhiteSpace(baseUrl))
+        {
+            failures.Add(
+                $"{key}:{nameof(ColibriServeOptions.ModelsDir)} and {UpstreamBackendOptions.SectionName}:{nameof(UpstreamBackendOptions.BaseUrl)} "
+                + "are both set. A catalogue launches its own engines on loopback; set one or the other.");
+        }
     }
 }

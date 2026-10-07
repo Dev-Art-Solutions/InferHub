@@ -54,6 +54,13 @@ public static class MultiBackendComposition
             return new Engine(name, type, backend, engine.Autostart, engine.Models, unload: ollama.UnloadAsync);
         }
 
+        // Phase 97. A catalogue launches one coli serve per loaded model itself; the engine's start and
+        // stop reach it through IEngineLifecycle, and its listing is the catalogue.
+        if (type == BackendOptions.Colibri && colibri.Serve.IsCatalog)
+        {
+            return new Engine(name, type, services.GetRequiredService<Colibri.ColibriCatalog>(), engine.Autostart, engine.Models);
+        }
+
         string? baseUrl;
         EngineProcess? process = null;
 

@@ -269,7 +269,12 @@ public sealed class MultiBackend : IInferenceBackend, IClosedSetScorer, IModelKi
                 : throw new NotSupportedException($"'{model}' is served by the {serving.Type} engine '{serving.Name}', which cannot {kind} models");
         }
 
-        var managers = engines.Where(e => e.Running && e.Backend.SupportsModelManagement).ToArray();
+        // A pull or a delete goes only where one can work (97): a colibri catalogue warms and unloads,
+        // and it is no reason to ask which of two engines an Ollama pull was meant for.
+        var managers = engines
+            .Where(e => e.Running && e.Backend.SupportsModelManagement)
+            .Where(e => kind is not (ModelCommand.KindPull or ModelCommand.KindDelete) || e.Backend.SupportsPull)
+            .ToArray();
 
         return managers.Length switch
         {
@@ -394,6 +399,11 @@ public sealed class MultiBackend : IInferenceBackend, IClosedSetScorer, IModelKi
             {
                 await process.StopAsync();
             }
+
+            if (engine.Backend is IEngineLifecycle lifecycle)
+            {
+                await lifecycle.StopAsync(CancellationToken.None);
+            }
         }
 
         Publish();
@@ -407,7 +417,7 @@ public sealed class MultiBackend : IInferenceBackend, IClosedSetScorer, IModelKi
             e.Backend.Endpoint,
             StateOf(e),
             e.Autostart,
-            e.Process is not null,
+            e.Process is not null || e.Backend is IEngineLifecycle,
             e.Backend.Kinds,
             e.Running ? e.LastModels.Select(m => m.Name).ToArray() : [],
             e.InFlight,
@@ -431,6 +441,7 @@ public sealed class MultiBackend : IInferenceBackend, IClosedSetScorer, IModelKi
         engine.LastError = null;
         engine.SetRunning(true);
         engine.Process?.Start();
+        (engine.Backend as IEngineLifecycle)?.Start();
 
         logger.LogInformation("Engine '{Engine}' ({Type}) started.", engine.Name, engine.Type);
 
@@ -464,6 +475,11 @@ public sealed class MultiBackend : IInferenceBackend, IClosedSetScorer, IModelKi
         if (engine.Process is { } process)
         {
             await process.StopAsync();
+        }
+
+        if (engine.Backend is IEngineLifecycle lifecycle)
+        {
+            await lifecycle.StopAsync(cancellationToken);
         }
 
         if (engine.Unload is { } unload && !engine.Routed.IsEmpty)

@@ -374,6 +374,28 @@ public static class AdminEndpoints
             INodeRegistry registry, NodeBackendToggle toggle, CancellationToken cancellationToken) =>
             await SetBackendRunningAsync(nodeId, backend, running: false, context, registry, toggle, cancellationToken));
 
+        // Phase 97. Pick which colibri catalogue models stay loaded, and switch on-demand — the same
+        // profile read-modify-write, so a pinned model is loaded again after a reboot of either side.
+        group.MapPost("/nodes/{nodeId}/colibri/models/{model}/load", async (
+            string nodeId, string model, HttpContext context,
+            INodeRegistry registry, NodeColibriToggle toggle, CancellationToken cancellationToken) =>
+            await SetColibriAsync(nodeId, context, registry, (node, by) => toggle.SetLoadedAsync(node, model, loaded: true, by, cancellationToken)));
+
+        group.MapPost("/nodes/{nodeId}/colibri/models/{model}/unload", async (
+            string nodeId, string model, HttpContext context,
+            INodeRegistry registry, NodeColibriToggle toggle, CancellationToken cancellationToken) =>
+            await SetColibriAsync(nodeId, context, registry, (node, by) => toggle.SetLoadedAsync(node, model, loaded: false, by, cancellationToken)));
+
+        group.MapPost("/nodes/{nodeId}/colibri/on-demand/enable", async (
+            string nodeId, HttpContext context,
+            INodeRegistry registry, NodeColibriToggle toggle, CancellationToken cancellationToken) =>
+            await SetColibriAsync(nodeId, context, registry, (node, by) => toggle.SetOnDemandAsync(node, onDemand: true, by, cancellationToken)));
+
+        group.MapPost("/nodes/{nodeId}/colibri/on-demand/disable", async (
+            string nodeId, HttpContext context,
+            INodeRegistry registry, NodeColibriToggle toggle, CancellationToken cancellationToken) =>
+            await SetColibriAsync(nodeId, context, registry, (node, by) => toggle.SetOnDemandAsync(node, onDemand: false, by, cancellationToken)));
+
         group.MapPost("/nodes/{nodeId}/collections/{collection}/assign", async (
             string nodeId, string collection, HttpContext context,
             INodeRegistry registry, IProfileRegistry profiles, NodeProfileCoordinator coordinator,
@@ -854,6 +876,31 @@ public static class AdminEndpoints
         {
             null => Results.Ok(new { nodeId = node.NodeId, backend = outcome.Engine, running, profile = outcome.Profile }),
             BackendToggleOutcome.UnknownEngine => Results.NotFound(new { error = outcome.Error }),
+            _ => Results.Conflict(new { error = outcome.Error })
+        };
+    }
+
+    /// <summary>Phase 97. Thin HTTP wrapper around <see cref="NodeColibriToggle"/>.</summary>
+    private static async Task<IResult> SetColibriAsync(
+        string nodeId,
+        HttpContext context,
+        INodeRegistry registry,
+        Func<NodeSnapshot, string, Task<ColibriToggleOutcome>> toggle)
+    {
+        var node = registry.Snapshot(DateTimeOffset.UtcNow)
+            .FirstOrDefault(n => string.Equals(n.NodeId, nodeId, StringComparison.OrdinalIgnoreCase));
+
+        if (node is null)
+        {
+            return Results.NotFound(new { error = $"node '{nodeId}' not found" });
+        }
+
+        var outcome = await toggle(node, ActorOf(context));
+
+        return outcome.Refusal switch
+        {
+            null => Results.Ok(new { nodeId = node.NodeId, colibri = outcome.Profile?.Colibri, profile = outcome.Profile }),
+            ColibriToggleOutcome.UnknownModel => Results.NotFound(new { error = outcome.Error }),
             _ => Results.Conflict(new { error = outcome.Error })
         };
     }

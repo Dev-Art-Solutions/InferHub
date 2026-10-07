@@ -163,6 +163,8 @@ public static class NodeHostBuilderExtensions
 
             return options.Normalized() switch
             {
+                // Phase 97. A catalogue owns its processes and routes by model; one Serve:Model does not.
+                BackendOptions.Colibri when services.GetService<ColibriCatalog>() is { } catalog => catalog,
                 // Phase 85. Only a local Ollama holds this box's VRAM; an upstream is somebody
                 // else's GPU and has nothing to release.
                 BackendOptions.Ollama when services.GetRequiredService<Resources.GpuArbiter>().Enabled =>
@@ -476,14 +478,53 @@ public static class NodeHostBuilderExtensions
             .AddHttpMessageHandler(services =>
                 new ColibriRequestHandler(services.GetRequiredService<IOptions<ColibriOptions>>().Value.KvSlots));
 
+        var colibri = builder.Configuration
+            .GetSection(ColibriOptions.SectionName)
+            .Get<ColibriOptions>() ?? new ColibriOptions();
+
+        var backend = builder.Configuration
+            .GetSection(BackendOptions.SectionName)
+            .Get<BackendOptions>() ?? new BackendOptions();
+
+        var colibriEngine = backend.IsMulti
+            ? backend.Engines.Values.FirstOrDefault(e => e.NormalizedType() == BackendOptions.Colibri)
+            : null;
+
+        // Phase 97. A catalogue, as the single backend or as a Backend:Engines colibri engine: the same
+        // instance either way, so the profile applier and the connection reach it through one seam.
+        var catalog = colibri.Serve.IsCatalog && (IsColibri(builder.Configuration) || colibriEngine is not null);
+
+        if (catalog)
+        {
+            var upstreamTimeout = builder.Configuration
+                .GetSection(UpstreamBackendOptions.SectionName)
+                .Get<UpstreamBackendOptions>()?.TimeoutSeconds ?? new UpstreamBackendOptions().TimeoutSeconds;
+
+            builder.Services.AddHttpClient(ColibriCatalogComposition.ProbeClientName, http => http.Timeout = colibri.ProbeTimeout)
+                .ConfigurePrimaryHttpMessageHandler(() => OllamaProbe.CreateHandler(colibri.ProbeTimeout))
+                .RemoveAllLoggers();
+            builder.Services.TryAddSingleton(TimeProvider.System);
+            builder.Services.AddSingleton(services =>
+                ColibriCatalogComposition.Create(services, colibriEngine?.TimeoutSeconds ?? upstreamTimeout));
+            builder.Services.AddSingleton<IColibriControl>(services => services.GetRequiredService<ColibriCatalog>());
+        }
+
         if (!IsColibri(builder.Configuration))
         {
             return;
         }
 
-        var colibri = builder.Configuration
-            .GetSection(ColibriOptions.SectionName)
-            .Get<ColibriOptions>() ?? new ColibriOptions();
+        if (catalog)
+        {
+            builder.Services.AddHostedService<ColibriCatalogHost>();
+            builder.Services.AddSingleton<IClosedSetScorer>(services => services.GetRequiredService<ColibriCatalog>());
+            builder.Services.PostConfigure<NodeOptions>(options => options.MaxConcurrency ??= colibri.KvSlots);
+
+            // Each model is its own process and its own readiness wait; one node-wide health verdict
+            // (69) would unroute every model because the one nobody asked for is not running.
+            NoSupervision(builder);
+            return;
+        }
 
         // D5. A launched engine is where prompts go; the validator has already refused a BaseUrl
         // written beside it, so this only ever fills a blank.

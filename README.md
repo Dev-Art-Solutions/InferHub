@@ -181,6 +181,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 94 | [Brio](#brio--a-closed-question-answered-with-a-distribution-v359) — a closed question answered with a distribution, not a sentence: `POST /v1/brio` on a colibri fleet (done) | `v3.59.0` |
 | 95 | [Several engines on one node](#several-engines-on-one-node--ollama-llamacpp-and-colibri-v360) — ollama, llama.cpp and colibri side by side, started and stopped by the coordinator (done) | `v3.60.0` |
 | 96 | [All of llama.cpp](#all-of-llamacpp--a-router-models-from-hugging-face-its-own-routes-v361) — a router over many GGUFs, models pulled from Hugging Face, warmed, unloaded and deleted from the hub, `/v1/llamacpp/*` and `/v1/rerank` (done) | `v3.61.0` |
+| 97 | [Many colibri models on one node](#many-colibri-models-on-one-node--loaded-on-request-freed-when-idle-picked-from-the-hub-v362) — a catalogue of converted models, loaded on request, freed when idle, and the coordinator picks which stay loaded (done) | `v3.62.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -542,7 +543,7 @@ small one and wonders where the audio went. All tags are under
 | `inferhub-node:tools` | ~6 GB | amd64 | The above, **plus speech**: Python, `faster-whisper` and `piper`, so `/v1/audio/transcriptions` and `/v1/audio/speech` work out of the box. |
 | `inferhub-node:diffusion` | ~12 GB | amd64 | **Text to image** (v3.14+) and **editing** (v3.18+): PyTorch, `diffusers`, `bitsandbytes` and seven recipes — SDXL, SD 1.5, FLUX.1-schnell, Qwen-Image, SD 3.5 Medium, SDXL-Turbo and [`qwen-360`](#360-panoramas-v317) — so `/v1/images/generations`, [`/edits` and `/variations`](#editing-a-picture-v318) work out of the box. **You need a card.** |
 | `inferhub-node:tts-bg` | — | amd64 | **Bulgarian speech** (v3.49+): PyTorch and NeMo's NanoCodec for [`bg-tts-v5`](https://huggingface.co/beleata74/bg-tts-v5), served on `/v1/audio/speech` as `bg-tts-v5-spk0` / `-spk1`. Does not stack on the others. **GPU, and the 2.9 GB checkpoint is placed by hand.** |
-| `inferhub-node:colibri` | ~410 MB | amd64 | **A Mixture-of-Experts model bigger than your RAM, on a CPU** (v3.58+): the plain node plus [colibri](#colibri--a-model-bigger-than-your-ram-v358)'s engine, which the node launches. No card needed; mount a converted model at `/models/colibri`. |
+| `inferhub-node:colibri` | ~410 MB | amd64 | **A Mixture-of-Experts model bigger than your RAM, on a CPU** (v3.58+): the plain node plus [colibri](#colibri--a-model-bigger-than-your-ram-v358)'s engine, which the node launches. No card needed; mount a converted model at `/models/colibri`, or (v3.62+) a directory of them with `Colibri__Serve__ModelsDir`. |
 | `inferhub-node:all` | ~11 GB | amd64 | **Everything on one card** (v3.52+): `:tools` and `:diffusion` in one node, with [on-demand](#a-card-that-is-also-your-desktop-gpu-v350) turned on, so chat, speech, images and video take turns on the card instead of fighting over it. For a box with **one card and no mesh**. **You need a card.** |
 
 Three rules of thumb that save the mistake each way:
@@ -2854,6 +2855,48 @@ first use — and the hub manages its models the way it manages Ollama's:
 
 A preset says what its model is for (`Embeddings`, `Reranking`); everything else chats. An already
 running router is `"BaseUrl": "http://host:8080/v1", "Router": true`. A v3.60 config is unchanged.
+
+## Many colibri models on one node — loaded on request, freed when idle, picked from the hub (v3.62)
+
+`coli serve` holds one model. Since v3.62 a colibri node holds a **catalogue**: point
+`Colibri:Serve:ModelsDir` at a directory of converted models (each sub-directory with a `config.json`
+is one, named after the directory) and every one of them is listed to the hub — loaded or not.
+
+```bash
+docker run -d --name inferhub-colibri   -e Coordinator__Url=http://hub:5080 -e Coordinator__EnrollmentSecret=...   -e Colibri__Serve__Model=   -e Colibri__Serve__ModelsDir=/models   -e Colibri__Serve__OnDemand=true   -v /nvme/colibri:/models   ghcr.io/dev-art-solutions/inferhub-node:colibri
+# /nvme/colibri/olmoe, /nvme/colibri/qwen3-moe, /nvme/colibri/glm-5.2 → three routable models
+```
+
+- **A request loads its model.** The node launches one `coli serve` per loaded model (ports
+  `Serve:Port` upward) and waits for it to answer. `Serve:MaxLoaded` (default **1**) is how many may be
+  in RAM at once: when a different model is asked for, the least recently used one with nothing in
+  flight is **stopped first**, then the new one starts — two models never share the box by accident.
+- **On demand frees the RAM.** With `Serve:OnDemand=true` a model idle for `Serve:IdleUnload`
+  (default 10 minutes) is stopped — the process, not a hint, so the memory really comes back.
+- **The coordinator picks what stays loaded.** The console's **Colibri models** panel shows every model
+  on every colibri node — `loaded`, `loading`, `unloaded` or `failed`, pinned or not, idle for how
+  long — with **Load** / **Unload** per model and **On demand** / **Keep loaded** per node. They write
+  the node's profile, so the choice survives a reboot of either side:
+
+  ```
+  POST /api/admin/nodes/{id}/colibri/models/{model}/load      # pin it; on a one-model node, a switch
+  POST /api/admin/nodes/{id}/colibri/models/{model}/unload    # unpin it and stop it
+  POST /api/admin/nodes/{id}/colibri/on-demand/enable|disable
+  # or in a profile: "colibri": { "loaded": ["olmoe"], "onDemand": true }
+  ```
+
+  A pinned model is never evicted or idled out. The node is the ceiling: a name it does not have, or
+  more pins than `MaxLoaded`, is refused by the node with the list of what it has.
+- `Serve:Preload` names models loaded at boot (until a profile says otherwise); `Serve:Models`
+  `{name: dir}` adds models outside `ModelsDir`; `Serve:LoadTimeout` (15 min) bounds a cold load.
+  Warm and unload from **Model management** work too; a pull is refused — a colibri model is made with
+  `coli convert`, not downloaded.
+- Works the same as a colibri engine under [`Backend:Engines`](#several-engines-on-one-node--ollama-llamacpp-and-colibri-v360):
+  stopping the engine stops every loaded model.
+
+`Serve:Model` (one model, the v3.58 shape) still works unchanged; it cannot be set beside a catalogue,
+which is why the example clears the image's default. A cold load of a large model takes minutes —
+**Load** it from the console first, or raise `Dispatcher:Deadlines:chat` on the hub.
 
 ## Inference backends
 

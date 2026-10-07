@@ -2,8 +2,9 @@
 
 **Scope: `src/InferHub.Node/Backends/`.** The engines a node drives that are not "an Ollama and a
 dialect": colibri and its Brio, since phase 95 a node running several engines at once —
-`Backend:Engines`, ollama + llama.cpp + colibri side by side, started and stopped by the hub — and since
-96 a llama.cpp engine that is all of llama.cpp: a router over many GGUFs, managed from the hub.
+`Backend:Engines`, ollama + llama.cpp + colibri side by side, started and stopped by the hub — since
+96 a llama.cpp engine that is all of llama.cpp: a router over many GGUFs, managed from the hub — and
+since 97 a colibri catalogue: many converted models, one loaded on request, idle ones freed, the hub picking.
 
 > **Read the root `CLAUDE.md` first, then `src/InferHub.Node/CLAUDE.md`.** That file still owns
 > `IInferenceBackend`, the dialects a backend speaks (67), the supervisor and backend health (36, 69),
@@ -242,3 +243,54 @@ real Ollama and a real Hugging Face download: `.claude/release-notes-v3.61.0.md`
 Linux build launched in the container): the same, end to end. **Not established:** a multimodal model
 through the router (no `mmproj` on this box). Two container traps, recorded in the notes rather than
 fixed: the plain image lacks `libgomp`, and `Serve:Port`'s 8080 is the images' local API port.
+
+### Phase 97 (a colibri catalogue: many converted models, the one a request names loaded, idle ones freed, the hub picking)
+
+Files: `Backends/Colibri/` (`ColibriCatalog` + `IColibriControl`/`IColibriLauncher`/`ColibriProcessLauncher`,
+`ColibriCatalogHost` + `ColibriCatalogComposition`, `ColibriOptions` catalogue keys and validator,
+`ColibriServe.StartInfo` per model), `Engines/IEngineControl.cs` (`IEngineLifecycle`), `MultiBackend`
+(lifecycle, `SupportsPull`), `Profiles/NodeProfileClamp.cs` (`ClampColibri`), `NodeProfileApplier`,
+`CoordinatorConnection` (`ReportColibriState`). The hub's half: `NodeColibriRegistry`, `NodeColibriToggle`,
+`POST /api/admin/nodes/{id}/colibri/models/{model}/load|unload` and `/colibri/on-demand/enable|disable`, the
+console's Colibri models panel, `colibri` on `/api/status` nodes. Contract: `NodeColibriState`, `NodeProfile.Colibri`.
+
+**D1 — a catalogue is a second shape beside `Serve:Model`, one `coli serve` per loaded model** (load-bearing).
+`Serve:ModelsDir` (sub-directories holding a `config.json`, named by directory, rescanned on every listing)
+and `Serve:Models` {name: dir} make the backend a `ColibriCatalog`, single or as a `Backend:Engines` colibri
+engine (the same DI singleton either way). `coli serve` takes exactly one `--model` (v1.12.1), so there is
+no engine router to drive as in 96: each loaded model gets a port from `Serve:Port` up, its own
+`EngineProcess` (95 D3's loop and Job Object) and its own `UpstreamBackend`, so 93 D2/D6 and 94 hold per
+model unchanged. `Serve:Model` or `ModelId` beside a catalogue fails startup (the `:colibri` image sets
+`Model`: clear it); a v3.61 config is byte-identical. The whole node has no 69 health verdict
+(`NoBackendSupervisor`): an unloaded model is not a down engine. *Rejected:* one process relaunched with
+another `--model` per request — two models could never be resident together.
+
+**D2 — the listing is the catalogue; a request loads its model, evicting the least recently used idle one.**
+Loaded → go; a slot free → launch and wait for `/health` (`Serve:LoadTimeout`); full → stop the LRU model
+with nothing in flight and not pinned **before** launching (its RAM and port are free first); all busy →
+wait; all pinned → refuse naming them. A process that exits before it answers is a failed load with the
+exit in the sentence and `failed` in the report, retried on the next request. A dying process still
+counts against `MaxLoaded` until it is gone. A pull is refused in a sentence (`coli convert` is hours of
+CPU, not a download) — `IInferenceBackend.SupportsPull`, so an unnamed pull on an ollama+colibri node
+still goes to Ollama rather than being refused as ambiguous (96 D3). Warm/unload commands load and stop.
+
+**D3 — on demand stops idle models; a pinned one never is.** `Serve:OnDemand` + `IdleUnload` (10 min):
+a sweep (`IdleUnload/4`, 1–30 s) kills the process tree of an unpinned model idle that long — 85 D2's
+reason, a hint keeps the memory.
+
+**D4 — the hub selects through the profile: `colibri.loaded` (the pinned set) and `colibri.onDemand`.**
+Desired state (43 D2): pins load when the catalogue starts and after a reboot of either side; a model
+dropped from the set is unloaded, and stopped before the next pin loads. The clamp: names from this
+box's catalogue only (refusals name what it has), at most `MaxLoaded`; `onDemand` either way. No block
+means the box's `Preload`/`OnDemand`. `NodeColibriToggle`'s **load on a full node is a switch** (the oldest
+pin gives way — on the default one slot, "this model instead of that one"). An unload command for a pinned
+model is refused naming the profile. A meshed single-backend node waits ≤15 s for its profile before
+loading `Preload` (95 D4's finding).
+
+**D5 — `NodeColibriState` on 44 D6's mailbox**: `loaded|loading|unloaded|failed`, pinned, in flight, idle
+seconds, last error, mode, `MaxLoaded`, `running`; on the model loop, after a profile, and on every load
+or stop. A hub older than v3.62 drops it with a debug line.
+
+Tests: `ColibriCatalogTests` (Node — every model a real socket via `FakeColibriLauncher` in `Tests.Common`),
+`ColibriCatalogMeshTests` (Mesh — real hub, SignalR, node; route an unloaded model, switch, on-demand,
+a hostile pin refused by both). Live run with real colibri: `.claude/release-notes-v3.62.0.md`.

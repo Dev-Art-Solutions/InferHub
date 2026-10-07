@@ -30,6 +30,7 @@ public static class StatusEndpoint
             var corpora = services.GetService(typeof(NodeCorpusRegistry)) as NodeCorpusRegistry;
             var tools = services.GetService(typeof(NodeToolRegistry)) as NodeToolRegistry;
             var backends = services.GetService(typeof(NodeBackendRegistry)) as NodeBackendRegistry;
+            var colibri = services.GetService(typeof(NodeColibriRegistry)) as NodeColibriRegistry;
 
             return Results.Ok(new StatusResponse(
                 version,
@@ -56,7 +57,8 @@ public static class StatusEndpoint
                     node.BackendHealth?.ToString().ToLowerInvariant(),
                     node.ResourceThrottled,
                     node.OnDemand,
-                    backends?.Of(node.NodeId)?.Engines)).ToArray(),
+                    backends?.Of(node.NodeId)?.Engines,
+                    colibri?.Of(node.NodeId))).ToArray(),
                 models,
                 registry.CapabilitySummary(),
                 snapshot,
@@ -413,7 +415,10 @@ public static class StatusEndpoint
         OnDemandState? OnDemand = null,
         // Every engine a Backend:Engines node configured and what each is doing (phase 95). Null for a
         // single-backend node, and a fleet of those keeps the pre-3.60 payload exactly.
-        IReadOnlyList<NodeEngineInfo>? Engines = null);
+        IReadOnlyList<NodeEngineInfo>? Engines = null,
+        // A colibri catalogue's models and which are loaded (phase 97). Null for a node without one,
+        // and a fleet of those keeps the pre-3.62 payload exactly.
+        NodeColibriState? Colibri = null);
 
     internal sealed record NodeProfileStatusBlock(
         string? Name,

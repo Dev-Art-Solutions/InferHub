@@ -58,6 +58,13 @@ public interface IInferenceBackend
     /// </summary>
     bool SupportsModelManagement { get; }
 
+    /// <summary>
+    /// Whether <see cref="PullAsync"/> and <see cref="DeleteAsync"/> can work, beside warm and unload
+    /// (phase 97). A colibri catalogue loads and stops its models but cannot download one — a pull is
+    /// <c>coli convert</c> — so a node with it and an Ollama still sends an unnamed pull to Ollama.
+    /// </summary>
+    bool SupportsPull => SupportsModelManagement;
+
     /// <summary>Download a model, streaming progress. Only called when <see cref="SupportsModelManagement"/>.</summary>
     IAsyncEnumerable<ModelPullProgress> PullAsync(string model, CancellationToken cancellationToken);
 

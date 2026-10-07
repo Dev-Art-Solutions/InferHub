@@ -110,6 +110,20 @@ public sealed partial class BackendOptionsValidator(IConfiguration configuration
                     failures.Add($"{key}:BaseUrl must be set for an openai engine; the node does not launch one.");
                     break;
 
+                case BackendOptions.Colibri when colibri.Serve.IsCatalog && !string.IsNullOrWhiteSpace(engine.BaseUrl):
+                    failures.Add(
+                        $"{key}:BaseUrl and {ColibriOptions.SectionName}:Serve:ModelsDir are both set. "
+                        + "A catalogue launches its own engines on loopback; set one or the other.");
+                    break;
+
+                case BackendOptions.Colibri when colibri.Serve.IsCatalog:
+                    for (var offset = 0; offset < Math.Clamp(colibri.Serve.MaxLoaded, 1, ColibriOptions.MaxLoadedCeiling); offset++)
+                    {
+                        Claim(ports, colibri.Serve.Port + offset, key, failures);
+                    }
+
+                    break;
+
                 case BackendOptions.Colibri when colibri.Serve.IsEnabled && !string.IsNullOrWhiteSpace(engine.BaseUrl):
                     failures.Add(
                         $"{key}:BaseUrl and {ColibriOptions.SectionName}:Serve:Model are both set. "

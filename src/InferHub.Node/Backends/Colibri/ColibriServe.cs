@@ -43,6 +43,10 @@ public sealed class ColibriServe(
 
     /// <summary>The whole command line, pure, so the tests can read it without starting Python.</summary>
     public static ProcessStartInfo StartInfo(ColibriOptions options)
+        => StartInfo(options, options.Serve.Model!, options.Serve.ResolvedModelId(), options.Serve.Port);
+
+    /// <summary>One catalogue model on its own port (97 D1): the same command line, three values apart.</summary>
+    public static ProcessStartInfo StartInfo(ColibriOptions options, string model, string modelId, int port)
     {
         var serve = options.Serve;
 
@@ -57,10 +61,10 @@ public sealed class ColibriServe(
         foreach (var argument in new[]
                  {
                      serve.Launcher, "serve",
-                     "--model", serve.Model!,
-                     "--model-id", serve.ResolvedModelId(),
+                     "--model", model,
+                     "--model-id", modelId,
                      "--host", "127.0.0.1",
-                     "--port", serve.Port.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                     "--port", port.ToString(System.Globalization.CultureInfo.InvariantCulture),
                      "--kv-slots", options.KvSlots.ToString(System.Globalization.CultureInfo.InvariantCulture)
                  })
         {

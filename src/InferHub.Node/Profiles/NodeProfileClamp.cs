@@ -64,6 +64,7 @@ public static class NodeProfileClamp
         var (ensure, remove, disabledModels) = ClampModels(local, desired, applied, refusals);
         var retrieval = ClampRetrieval(local, desired, applied, refusals);
         var backends = ClampBackends(local, desired, applied, refusals);
+        var colibri = ClampColibri(local, desired, applied, refusals);
 
         return new ClampResult(
             new EffectiveProfile(
@@ -72,7 +73,8 @@ public static class NodeProfileClamp
                 concurrency,
                 disabledRecipes.OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToArray(),
                 disabledModels,
-                backends),
+                backends,
+                colibri),
             applied,
             refusals,
             ensure,
@@ -495,6 +497,81 @@ public static class NodeProfileClamp
         return result;
     }
 
+    /// <summary>
+    /// Phase 97. The catalogue is the grant, as <c>Backend:Engines</c> is for engines: a profile pins
+    /// models the box already has, never a path, and never more than <c>Serve:MaxLoaded</c> — that
+    /// number is the operator's statement about RAM. <c>onDemand</c> is a preference over a ceiling
+    /// the operator already wrote, so either value is honoured.
+    /// </summary>
+    private static ColibriProfile? ClampColibri(
+        LocalCeiling local,
+        NodeProfile desired,
+        List<string> applied,
+        List<NodeProfileRefusal> refusals)
+    {
+        if (desired.Colibri is null)
+        {
+            return null;
+        }
+
+        if (local.ColibriCatalogue is not { } catalogue)
+        {
+            refusals.Add(new NodeProfileRefusal(
+                "colibri",
+                "this node has no colibri catalogue (Colibri:Serve:ModelsDir or Colibri:Serve:Models); a coordinator picks loaded models only from one"));
+
+            return null;
+        }
+
+        List<string>? loaded = null;
+
+        if (desired.Colibri.Loaded is { } wanted)
+        {
+            loaded = [];
+
+            foreach (var raw in Clean(wanted))
+            {
+                var name = catalogue.FirstOrDefault(model => string.Equals(model, raw, StringComparison.OrdinalIgnoreCase));
+
+                if (name is null)
+                {
+                    refusals.Add(new NodeProfileRefusal(
+                        $"colibri:{raw}",
+                        catalogue.Count == 0
+                            ? "this node's colibri catalogue is empty; a profile cannot add a model to it"
+                            : $"this node's colibri catalogue has no '{raw}' (it has {string.Join(", ", catalogue)}); a profile picks from it and cannot add to it"));
+
+                    continue;
+                }
+
+                if (loaded.Count >= local.ColibriMaxLoaded)
+                {
+                    refusals.Add(new NodeProfileRefusal(
+                        $"colibri:{name}",
+                        $"Colibri:Serve:MaxLoaded is {local.ColibriMaxLoaded} on this node and the profile pins more; '{name}' is not pinned"));
+
+                    continue;
+                }
+
+                loaded.Add(name);
+                applied.Add($"colibri '{name}' loaded");
+            }
+
+            if (loaded.Count == 0)
+            {
+                // An empty set is an instruction too: unload what an earlier revision pinned.
+                applied.Add("colibri: no model pinned");
+            }
+        }
+
+        if (desired.Colibri.OnDemand is { } onDemand)
+        {
+            applied.Add($"colibri on-demand {(onDemand ? "on" : "off")}");
+        }
+
+        return new ColibriProfile(loaded, desired.Colibri.OnDemand);
+    }
+
     private const string ProviderLocal = "local";
 
     private const string ProviderQdrant = "qdrant";
@@ -527,7 +604,10 @@ public sealed record LocalCeiling(
     int VramBudgetMiB = 0,
     int VramReserveMiB = 0,
     /// <summary>The names under <c>Backend:Engines</c> (phase 95). Empty on a single-backend node.</summary>
-    IReadOnlyList<string>? EngineNames = null)
+    IReadOnlyList<string>? EngineNames = null,
+    /// <summary>The colibri catalogue's names (phase 97). Null: this node has no catalogue.</summary>
+    IReadOnlyList<string>? ColibriCatalogue = null,
+    int ColibriMaxLoaded = 0)
 {
     public IReadOnlyList<string> Engines => EngineNames ?? Array.Empty<string>();
 
@@ -552,7 +632,9 @@ public sealed record EffectiveProfile(
     /// Engine name → running, for the engines a profile mentioned (phase 95). Null: the profile said
     /// nothing, and every engine runs as its <c>Autostart</c> says.
     /// </summary>
-    IReadOnlyDictionary<string, bool>? Backends = null);
+    IReadOnlyDictionary<string, bool>? Backends = null,
+    /// <summary>The colibri block after the clamp (phase 97). Null: the box's own <c>Preload</c> and <c>OnDemand</c>.</summary>
+    ColibriProfile? Colibri = null);
 
 public sealed record ClampResult(
     EffectiveProfile Effective,

@@ -25,6 +25,20 @@ public interface IEngineControl
 }
 
 /// <summary>
+/// A backend that launches and stops its own engine processes (phase 97: a colibri catalogue, one
+/// <c>coli serve</c> per loaded model), so an engine's start and stop reach it rather than a single
+/// <see cref="EngineProcess"/>.
+/// </summary>
+public interface IEngineLifecycle
+{
+    /// <summary>Serve again, and load what is pinned. Idempotent.</summary>
+    void Start();
+
+    /// <summary>Refuse new work, drain, and stop every process it launched. Idempotent.</summary>
+    Task StopAsync(CancellationToken cancellationToken);
+}
+
+/// <summary>
 /// A backend whose models do not all serve the same kinds (phase 95): an Ollama model chats and
 /// embeds, a colibri one chats and scores, an embedding <c>llama-server</c> only embeds. The
 /// declaration asks per model rather than multiplying every kind by every name.

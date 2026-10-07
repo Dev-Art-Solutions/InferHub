@@ -125,6 +125,8 @@ builder.Services.AddSingleton<NodeCorpusDispatcher>();
 builder.Services.AddSingleton<NodeToolRegistry>();
 // Phase 95: what each multi-engine node last said about its engines. Empty on a fleet without one.
 builder.Services.AddSingleton<NodeBackendRegistry>();
+// Phase 97: what each colibri catalogue last said it holds. Empty on a fleet without one.
+builder.Services.AddSingleton<NodeColibriRegistry>();
 
 // Phase 47. The async image-job surface. Registered unconditionally and inert on a fleet with no
 // image capability: the store holds nothing, the pump reads an empty queue, and the sweeper ticks
@@ -179,6 +181,7 @@ else
 // (AutoScaling:DryRun) even when on, so turning it on the first time only produces log lines.
 builder.Services.AddSingleton<NodeModelToggle>();
 builder.Services.AddSingleton<NodeBackendToggle>();
+builder.Services.AddSingleton<NodeColibriToggle>();
 builder.Services.AddHostedService<AutoScalerService>();
 
 // Phase 77. A standby for a node-owned collection, so it survives its owning node's permanent loss.

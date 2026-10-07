@@ -33,7 +33,8 @@ public sealed class CoordinatorConnection(
     Resources.IResourceGovernor resourceGovernor,
     ILogger<CoordinatorConnection> logger,
     Resources.GpuArbiter? gpuArbiter = null,
-    IEngineControl? engines = null) : IAsyncDisposable
+    IEngineControl? engines = null,
+    Backends.Colibri.IColibriControl? colibri = null) : IAsyncDisposable
 {
     private readonly CoordinatorOptions coordinator = coordinatorOptions.Value;
     private readonly NodeOptions node = nodeOptions.Value;
@@ -53,6 +54,7 @@ public sealed class CoordinatorConnection(
     private bool subscribedToTools;
     private bool subscribedToArbiter;
     private bool subscribedToEngines;
+    private bool subscribedToColibri;
     private int onDemandBeatQueued;
     private LocalVectorStore? tailedStore;
 
@@ -62,6 +64,7 @@ public sealed class CoordinatorConnection(
         SubscribeToTools();
         SubscribeToArbiter();
         SubscribeToEngines();
+        SubscribeToColibri();
         retrieval.CorpusChanged += OnCorpusChanged;
         return ConnectUntilSuccessfulAsync(cancellationToken);
     }
@@ -72,6 +75,7 @@ public sealed class CoordinatorConnection(
         UnsubscribeFromTools();
         UnsubscribeFromArbiter();
         UnsubscribeFromEngines();
+        UnsubscribeFromColibri();
         retrieval.CorpusChanged -= OnCorpusChanged;
         UnsubscribeFromTailedStore();
         await lifetime.CancelAsync();
@@ -112,6 +116,7 @@ public sealed class CoordinatorConnection(
         UnsubscribeFromTools();
         UnsubscribeFromArbiter();
         UnsubscribeFromEngines();
+        UnsubscribeFromColibri();
         retrieval.CorpusChanged -= OnCorpusChanged;
         UnsubscribeFromTailedStore();
         await lifetime.CancelAsync();
@@ -201,6 +206,50 @@ public sealed class CoordinatorConnection(
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "Could not re-report after an engine changed state");
+            }
+        });
+    }
+
+    /// <summary>
+    /// Phase 97. A catalogue model started loading, loaded, failed or stopped: the hub's colibri
+    /// panel hears it now. The model list does not change — the catalogue is listed loaded or not.
+    /// </summary>
+    private void SubscribeToColibri()
+    {
+        if (colibri is null || subscribedToColibri)
+        {
+            return;
+        }
+
+        subscribedToColibri = true;
+        colibri.Changed += OnColibriChanged;
+    }
+
+    private void UnsubscribeFromColibri()
+    {
+        if (!subscribedToColibri || colibri is null)
+        {
+            return;
+        }
+
+        subscribedToColibri = false;
+        colibri.Changed -= OnColibriChanged;
+    }
+
+    private void OnColibriChanged()
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ReportColibriStateAsync(lifetime.Token);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Could not report the colibri catalogue after it changed");
             }
         });
     }
@@ -652,6 +701,7 @@ public sealed class CoordinatorConnection(
 
         // Phase 95: a profile that stopped an engine is looked at right away, same as a tool.
         await ReportBackendStateAsync(cancellationToken);
+        await ReportColibriStateAsync(cancellationToken);
 
         if (application.Changed)
         {
@@ -1301,6 +1351,7 @@ public sealed class CoordinatorConnection(
         {
             // The engines block still goes out: "every engine is down" is exactly when it is read.
             await ReportBackendStateAsync(cancellationToken);
+            await ReportColibriStateAsync(cancellationToken);
 
             logger.LogWarning(
                 "Could not list models from the {Backend} backend; leaving the coordinator's inventory alone rather than reporting zero. The heartbeat carries this backend's health.",
@@ -1384,6 +1435,32 @@ public sealed class CoordinatorConnection(
 
         // Phase 95, the same loop again: which engines are running and which could be.
         await ReportBackendStateAsync(cancellationToken);
+
+        // Phase 97: which catalogue models are loaded, pinned, idle.
+        await ReportColibriStateAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Tells the hub what the colibri catalogue holds (phase 97). Sent only by a node with one. A hub
+    /// older than v3.62 has no such method: a debug line and a node that carries on (40 D1).
+    /// </summary>
+    private async Task ReportColibriStateAsync(CancellationToken cancellationToken)
+    {
+        var activeConnection = connection;
+
+        if (colibri is null || activeConnection is not { State: HubConnectionState.Connected })
+        {
+            return;
+        }
+
+        try
+        {
+            await activeConnection.InvokeAsync("ReportColibriState", colibri.State(nodeId), cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "This coordinator did not accept a colibri report");
+        }
     }
 
     /// <summary>

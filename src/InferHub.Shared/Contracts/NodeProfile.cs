@@ -72,7 +72,12 @@ public sealed record NodeProfile(
     /// engine, a binary or a model path any more than it can add a tool (43 D1). An engine a profile
     /// does not mention runs as its <c>Autostart</c> says.
     /// </summary>
-    [property: JsonPropertyName("backends")] IReadOnlyDictionary<string, bool>? Backends = null);
+    [property: JsonPropertyName("backends")] IReadOnlyDictionary<string, bool>? Backends = null,
+    /// <summary>
+    /// Phase 97. Which models of the node's colibri catalogue stay loaded, and whether idle ones are
+    /// stopped to free RAM. Names from the box's own catalogue only — never a path (43 D1).
+    /// </summary>
+    [property: JsonPropertyName("colibri")] ColibriProfile? Colibri = null);
 
 /// <summary>
 /// A corpus the coordinator wants a node to host (phase 44): which engine, where it is, which
