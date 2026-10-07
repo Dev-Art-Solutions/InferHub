@@ -66,6 +66,45 @@ public class HuggingFaceMeshTests
         Assert.Contains("has no 'someone/missing'", refused.Error);
     }
 
+    [Fact]
+    public async Task TheNodeKeepsAnsweringWhileALongConversionRuns()
+    {
+        // Found by the published-image check: a model command's handler held the node's connection
+        // for as long as the command ran, and SignalR delivers hub calls to a client one at a time —
+        // a chat sent during a four-minute conversion was not even received until it finished.
+        await using var hub = await FakeHuggingFace.StartAsync();
+        hub.Repo("allenai/OLMoE-1B-7B-0924",
+            ("config.json", "{}"u8.ToArray()),
+            ("model-00001-of-00001.safetensors", FakeHuggingFace.Bytes(1000, 1)));
+
+        await using var mesh = await HfMesh.StartAsync(hub, "olmoe");
+        await mesh.WaitForAsync(() => mesh.Models().SequenceEqual(["olmoe"]));
+
+        mesh.Converter.Hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var conversion = mesh.RunAsync("allenai/OLMoE-1B-7B-0924");
+
+        for (var i = 0; i < 200 && mesh.Converter.Calls.IsEmpty; i++)
+        {
+            await Task.Delay(25);
+        }
+
+        Assert.Single(mesh.Converter.Calls);
+
+        var routed = mesh.Router.Route("olmoe", capability: CapabilityKinds.Chat);
+        var chat = mesh.Dispatcher.DispatchAsync(
+            routed!,
+            new InferenceJob(Guid.NewGuid(), "chat", FakeColibri.Chat("olmoe")),
+            CancellationToken.None);
+
+        var answered = await Task.WhenAny(chat, Task.Delay(TimeSpan.FromSeconds(15)));
+        Assert.Same(chat, answered);
+        Assert.True((await chat).Success, (await chat).Error);
+        Assert.False(conversion.IsCompleted);
+
+        mesh.Converter.Hold.SetResult();
+        Assert.Null((await conversion).Error);
+    }
+
     private sealed class HfMesh : IAsyncDisposable
     {
         public const string NodeId = "hf-node";

@@ -92,6 +92,20 @@ catalogue (`/models/colibri`), `HuggingFace:Enabled=true`.
 - **Resuming a real interrupted download** from huggingface.co (resume is tested against the socket).
 - A safetensors model for **llama.cpp** (GGUF conversion) is not offered — link the model's GGUF repo.
 
+## The published-image check
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.63.0` and `inferhub-node:3.63.0-colibri`, both with
+`org.opencontainers.image.revision` = `8785cfd` (the tag), on a Docker network with keys on, a fresh volume,
+the same two engines. Without the admin key the `/huggingface` route answered 401. The GGUF and the OLMoE
+checkpoint were requested together: the GGUF was routable 19 s later; the conversion staged in
+`.converting-olmoe-1b-7b-0924-instruct` (the catalogue did not list it) and appeared as
+`olmoe-1b-7b-0924-instruct` when complete, about 3.5 minutes later. Then both answered through the hub
+("The capital of France is Paris." in 0.1 s; "Paris. The capital of France is Paris" in 11.3 s). No Hugging
+Face URL and no prompt in either container's log.
+
+**It also found a bug, fixed in v3.63.1:** a chat sent while the conversion ran was not answered — the
+node's model-command handler held its connection for the whole command. See `release-notes-v3.63.1.md`.
+
 ## Upgrading
 
 Nothing changes unless `HuggingFace:Enabled=true`. An engine named `huggingface` under `Backend:Engines`

@@ -351,6 +351,14 @@ router's `ModelsDir` did not exist and the engine sat `failed` — the store cre
 (`HuggingFaceStartup`, registered before the engines); the factory logged every request including signed CDN
 redirects — the client has no loggers.
 
+**v3.63.1, found on the published image: a model command no longer holds the node's connection.**
+SignalR hands a client the hub's calls one at a time and awaits each handler; the model-command handler
+awaited the whole command, so a conversion (or, since 26, a long Ollama pull) stopped the node receiving
+jobs. `CoordinatorConnection` now runs it off the dispatch (`Offload`). **Jobs are dispatched the same way
+and still run one at a time per node, whatever `MaxConcurrency`** (measured); making them concurrent broke
+three cancel tests — the hub dispatches the next image job while a cancelled one's worker is finishing — so
+it is a phase of its own, not done here.
+
 Tests: `HfReferenceTests` (Shared), `HuggingFaceStoreTests` (Node — a Hub-shaped socket in `Tests.Common`:
 resume by `Range`, sha256, gated 401, quants, mmproj, conversion via a fake converter), `HuggingFaceMeshTests`
 (Mesh — link → converted → routable → chat answered). Live run: `.claude/release-notes-v3.63.0.md`.

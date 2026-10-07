@@ -826,6 +826,13 @@ public sealed class ColibriCatalog : IInferenceBackend, IClosedSetScorer, IModel
 
                     var name = Path.GetFileName(sub);
 
+                    // A dot-directory is somebody's work in progress (v3.63's conversions stage in
+                    // `.converting-<name>`), not a model somebody misnamed: skipped without a warning.
+                    if (name.StartsWith('.'))
+                    {
+                        continue;
+                    }
+
                     if (!ColibriOptions.IsModelName(name))
                     {
                         if (warned.TryAdd("name:" + name, 0))

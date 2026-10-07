@@ -417,11 +417,38 @@ public sealed class CoordinatorConnection(
         return builder.Build();
     }
 
+    private Task Offload(Func<Task> work)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await work();
+            }
+            catch (Exception ex)
+            {
+                // Each handler reports its own failure to the hub; this is the backstop for a throw
+                // that escaped one, which would otherwise vanish with the discarded task.
+                logger.LogError(ex, "A coordinator call failed outside its own error handling");
+            }
+        });
+
+        return Task.CompletedTask;
+    }
+
     private void RegisterConnectionHandlers(HubConnection hubConnection)
     {
         hubConnection.On<InferenceJob>("RunJob", RunJobAsync);
         hubConnection.On<InferenceJob>("RunStreamingJob", RunStreamingJobAsync);
-        hubConnection.On<ModelCommand>("ExecuteModelCommand", RunModelCommandAsync);
+
+        // Phase 98, found on the published image: SignalR hands a client the hub's calls ONE AT A
+        // TIME and waits for each handler, so a model command that awaited a whole pull or conversion
+        // held every job sent to this node until it finished — a four-minute colibri convert, a
+        // forty-minute Ollama pull. The command reports its outcome on its own progress stream, so it
+        // runs off the dispatch. (The jobs above are dispatched the same way and so run one at a time
+        // per node; making them concurrent exposed hub-side ordering — a cancelled image job's worker
+        // still busy when the next arrived — and is a phase of its own, not a side effect of this one.)
+        hubConnection.On<ModelCommand>("ExecuteModelCommand", command => Offload(() => RunModelCommandAsync(command)));
         hubConnection.On<ToolJob>("ExecuteToolJob", RunToolJobAsync);
         hubConnection.On<ToolJob>("ExecuteStreamingToolJob", RunStreamingToolJobAsync);
         hubConnection.On<NodeProfile>("ApplyNodeProfile", OnApplyNodeProfile);

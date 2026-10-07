@@ -139,12 +139,20 @@ internal sealed class FakeConverter : IColibriConverter
 
     public bool Fail { get; set; }
 
+    /// <summary>When set, the conversion waits on it after its first line — a long convert, held open.</summary>
+    public TaskCompletionSource? Hold { get; set; }
+
     public async IAsyncEnumerable<string> ConvertAsync(string repoId, string outputDirectory, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         Calls.Enqueue((repoId, outputDirectory));
         Directory.CreateDirectory(outputDirectory);
         await File.WriteAllTextAsync(Path.Combine(outputDirectory, "model-00000.safetensors"), "half", cancellationToken);
         yield return "checkpoint: OLMoE -> tools/convert_olmoe_merged.py";
+
+        if (Hold is { } hold)
+        {
+            await hold.Task.WaitAsync(cancellationToken);
+        }
 
         if (Fail)
         {
