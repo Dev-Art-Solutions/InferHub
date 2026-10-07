@@ -103,6 +103,23 @@ change"; it now says `colibri: no model pinned`.
 - The refusal when every slot is pinned is a **502** (a failed job), not a 503 with `Retry-After`: waiting
   does not help until somebody changes a pin.
 
+## The published-image check
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.62.0` and `inferhub-node:3.62.0-colibri`, both with
+`org.opencontainers.image.revision` = `45604b6` (the tag), on a Docker network with keys on (host to
+container is not loopback). The node: `Colibri__Serve__Model=` cleared, `ModelsDir=/models` with OLMoE
+mounted as `olmoe` and `olmoe-b`, `OnDemand=true`, `IdleUnload=00:01:30`.
+
+- The hub listed both models `unloaded`, kinds `chat, score`. A chat without a key: 401.
+- Chat on `olmoe`: 200 "Paris" in 30.2 s (cold). Chat on `olmoe-b`: 200 in 30.2 s, with `olmoe` stopped
+  first — one `coli serve` in the container afterwards.
+- Pin `olmoe` from the hub: 401 without the admin key, 200 with it; profile revision 1, the node stopped
+  `olmoe-b` (idle 0.7 s) and loaded `olmoe` in 5.3 s. `olmoe-b` while pinned: 502 with the sentence.
+- Unpin: revision 2, the node logged `colibri: no model pinned` and `Stopped colibri model 'olmoe' (the hub
+  unpinned it)`; no engine process left. A chat then loaded `olmoe-b` (200, 30.7 s), and on demand stopped
+  it `idle for 00:01:44` (the sweep runs every quarter of `IdleUnload`).
+- No prompt text in either container's log.
+
 ## Upgrading
 
 Nothing to change. A node with one `Colibri:Serve:Model` behaves as before. A v3.62 node against an older
