@@ -2067,6 +2067,29 @@
     if (!model) { pushModelNote("Enter a model name.", true); return; }
     postModelCommand(kind, node.nodeId, model, document.getElementById("mm-engine")?.value.trim());
   };
+  // Phase 98: a Hugging Face link, downloaded by the selected node. Progress arrives on the same
+  // model-progress feed as any pull.
+  const pullFromHuggingFace = async () => {
+    const node = selectedModelNode();
+    const url = document.getElementById("hf-url")?.value.trim();
+    const quant = document.getElementById("hf-quant")?.value.trim();
+    if (!node) { pushModelNote("Select a node first.", true); return; }
+    if (!url) { pushModelNote("Paste a Hugging Face link.", true); return; }
+    try {
+      const res = await fetch(`/api/admin/nodes/${encodeURIComponent(node.nodeId)}/huggingface`, {
+        method: "POST",
+        headers: { ...adminHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ url, quant: quant || null })
+      });
+      if (res.status === 401) { promptForKey("Admin key required for this action."); return; }
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+      pushModelNote(`${node.name} is fetching ${body.model}${body.reused ? " (already running)" : ""}.`, false);
+    } catch (err) {
+      pushModelNote(`Hugging Face download refused: ${err.message}`, true);
+    }
+  };
+  document.getElementById("hf-pull")?.addEventListener("click", pullFromHuggingFace);
   document.getElementById("mm-pull")?.addEventListener("click", () => runModelCommand("pull"));
   document.getElementById("mm-warm")?.addEventListener("click", () => runModelCommand("warm"));
   document.getElementById("mm-unload")?.addEventListener("click", () => runModelCommand("unload"));

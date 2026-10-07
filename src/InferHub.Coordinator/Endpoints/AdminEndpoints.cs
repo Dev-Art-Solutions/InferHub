@@ -115,6 +115,50 @@ public static class AdminEndpoints
             ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
             RunModelCommandAsync(ModelCommand.KindPull, nodeId, model, context, registry, commands, audit, loggerFactory, cancellationToken));
 
+        // Phase 98. A Hugging Face link, downloaded by the node into the engine that can serve it.
+        // The phase-26 pull with engine "huggingface": same progress, same coalescing.
+        group.MapPost("/nodes/{nodeId}/huggingface", async (
+            string nodeId, HuggingFacePullRequest body, HttpContext context,
+            INodeRegistry registry, ModelCommandCoordinator commands, IAuditLog audit,
+            ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
+        {
+            if (!InferHub.Shared.HuggingFace.HfReference.TryParse(body?.Url, body?.Quant, out var reference, out var error))
+            {
+                return Results.BadRequest(new { error });
+            }
+
+            var node = registry.Snapshot(DateTimeOffset.UtcNow)
+                .FirstOrDefault(n => string.Equals(n.NodeId, nodeId, StringComparison.OrdinalIgnoreCase));
+
+            if (node is null)
+            {
+                return Results.NotFound(new { error = $"node '{nodeId}' not found" });
+            }
+
+            var model = reference!.ToString();
+            var result = await commands.SendAsync(node.NodeId, ModelCommand.KindPull, model, cancellationToken, engine: ModelCommand.EngineHuggingFace);
+
+            if (result is null)
+            {
+                return Results.NotFound(new { error = $"node '{nodeId}' is no longer connected" });
+            }
+
+            audit.Record(node.NodeId, "model.pull.huggingface", ActorOf(context), DateTimeOffset.UtcNow);
+            loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin").LogInformation(
+                "Hugging Face pull '{Model}' on node {NodeId} → command {CommandId} (reused={Reused})",
+                model, node.NodeId, result.CommandId, result.Reused);
+
+            return Results.Accepted($"/api/admin/nodes/{node.NodeId}/models", new
+            {
+                nodeId = node.NodeId,
+                model,
+                kind = ModelCommand.KindPull,
+                engine = ModelCommand.EngineHuggingFace,
+                commandId = result.CommandId,
+                reused = result.Reused
+            });
+        });
+
         group.MapDelete("/nodes/{nodeId}/models/{model}", (
             string nodeId, string model, HttpContext context,
             INodeRegistry registry, ModelCommandCoordinator commands, IAuditLog audit,
@@ -1239,4 +1283,9 @@ public static class AdminEndpoints
         string Status,
         IReadOnlyList<string>? Conflicts,
         IReadOnlyList<NodeProfileRefusal> Refusals);
+
+    /// <summary>Phase 98: <c>POST /api/admin/nodes/{id}/huggingface</c>. The quant is a separate field so a form can carry it.</summary>
+    internal sealed record HuggingFacePullRequest(
+        [property: System.Text.Json.Serialization.JsonPropertyName("url")] string? Url,
+        [property: System.Text.Json.Serialization.JsonPropertyName("quant")] string? Quant = null);
 }

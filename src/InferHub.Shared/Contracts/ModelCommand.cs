@@ -51,6 +51,13 @@ public sealed record ModelCommand(
     /// </summary>
     public const string KindUnload = "unload";
 
+    /// <summary>
+    /// Phase 98: the engine name that means "this node's Hugging Face store". The model is a link
+    /// (<c>HfReference</c>); a GGUF lands in the llama.cpp router's directory, a checkpoint is
+    /// converted into the colibri catalogue. Reserved: an engine configured under this name is refused.
+    /// </summary>
+    public const string EngineHuggingFace = "huggingface";
+
     public static bool IsKnownKind(string kind) =>
         kind is KindPull or KindDelete or KindWarm or KindUnload;
 

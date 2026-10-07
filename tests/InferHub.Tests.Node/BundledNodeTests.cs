@@ -747,8 +747,15 @@ public class BundledNodeTests
         Assert.Contains("libgomp1", dockerfile);
         Assert.Contains("python3", dockerfile);
         Assert.DoesNotContain("ollama", dockerfile, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("torch", dockerfile, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("pip install", dockerfile);
+        // Phase 98 amends "nothing heavier": the image now carries colibri's converter (torch), and
+        // only in the shape that keeps two builds of one tag identical and a broken venv out of a
+        // release — CPU wheel, pinned, in colibri's own mio_env, imports asserted at build time.
+        Assert.Contains("--index-url https://download.pytorch.org/whl/cpu \"torch==${TORCH_VERSION}+cpu\"", dockerfile);
+        Assert.Matches(@"ARG TORCH_VERSION=\d+\.\d+\.\d+", dockerfile);
+        Assert.Matches(@"""numpy==[\d.]+"" ""safetensors==[\d.]+"" ""huggingface_hub==[\d.]+""", dockerfile);
+        Assert.Contains("python3 -m venv /opt/colibri/mio_env", dockerfile);
+        Assert.Contains("import torch, numpy, safetensors, huggingface_hub", dockerfile);
+        Assert.DoesNotContain("pip install torch", dockerfile);
 
         // The node launches the engine; the container's surface is InferHub's API (37 D4).
         Assert.Contains("ENV Backend__Type=colibri", dockerfile);

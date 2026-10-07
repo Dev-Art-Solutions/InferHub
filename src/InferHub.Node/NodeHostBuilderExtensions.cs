@@ -193,6 +193,8 @@ public static class NodeHostBuilderExtensions
         // see a GPU is a supported deployment; a node that cannot *tell you* is the bug.
         builder.Services.AddHostedService<GpuReport>();
 
+        // Before the engines' host, so the store's directories exist before a llama.cpp router checks its own.
+        AddHuggingFace(builder);
         AddEngines(builder);
         AddOllamaSupervision(builder, ollamaOptions);
         AddToolRuntime(builder);
@@ -605,6 +607,63 @@ public static class NodeHostBuilderExtensions
         {
             builder.Services.AddSingleton<IBackendToolJobs>(services => services.GetRequiredService<MultiBackend>());
         }
+    }
+
+    /// <summary>
+    /// Phase 98. <c>HuggingFace:</c> — the node downloads what the hub links to. The options and the
+    /// validator are bound on every node (an engine named <c>huggingface</c> is refused either way);
+    /// the store exists only when <c>Enabled</c>.
+    /// </summary>
+    private static void AddHuggingFace(IHostApplicationBuilder builder)
+    {
+        builder.Services
+            .AddOptions<Backends.HuggingFace.HuggingFaceOptions>()
+            .Bind(builder.Configuration.GetSection(Backends.HuggingFace.HuggingFaceOptions.SectionName))
+            .ValidateOnStart();
+        builder.Services.AddSingleton<IValidateOptions<Backends.HuggingFace.HuggingFaceOptions>, Backends.HuggingFace.HuggingFaceOptionsValidator>();
+
+        var options = builder.Configuration
+            .GetSection(Backends.HuggingFace.HuggingFaceOptions.SectionName)
+            .Get<Backends.HuggingFace.HuggingFaceOptions>() ?? new Backends.HuggingFace.HuggingFaceOptions();
+
+        if (!options.Enabled)
+        {
+            return;
+        }
+
+        // No overall timeout: a 40 GB file is one request. The API calls carry their own deadline.
+        // RemoveAllLoggers: found live — the factory logged every request, and a resolve redirects to a
+        // CDN URL carrying a signature. The store logs what it downloaded, which is what an operator reads.
+        builder.Services.AddHttpClient(Backends.HuggingFace.HuggingFaceStore.HttpClientName, http => http.Timeout = Timeout.InfiniteTimeSpan)
+            .RemoveAllLoggers();
+
+        // Resolved by a hosted service at startup, so the target directories exist before an engine
+        // checks for them (the store creates them) — not at the first command.
+        builder.Services.AddHostedService(services => new Backends.HuggingFace.HuggingFaceStartup(
+            services.GetRequiredService<Backends.HuggingFace.HuggingFaceStore>()));
+
+        builder.Services.AddSingleton(services =>
+        {
+            var hf = services.GetRequiredService<IOptions<Backends.HuggingFace.HuggingFaceOptions>>().Value;
+            var backend = services.GetRequiredService<IOptions<BackendOptions>>().Value;
+            var colibri = services.GetRequiredService<IOptions<ColibriOptions>>().Value;
+            var targets = Backends.HuggingFace.HuggingFaceTargets.Resolve(hf, backend, colibri, out _);
+            var logger = services.GetRequiredService<ILoggerFactory>().CreateLogger("InferHub.Node.HuggingFace");
+            var factory = services.GetRequiredService<IHttpClientFactory>();
+            var engines = services.GetService<MultiBackend>();
+            var endpoint = new Uri(hf.Endpoint.TrimEnd('/') + "/");
+
+            return new Backends.HuggingFace.HuggingFaceStore(
+                hf,
+                targets,
+                () => new Backends.HuggingFace.HuggingFaceClient(factory.CreateClient(Backends.HuggingFace.HuggingFaceStore.HttpClientName), endpoint, hf.Token),
+                targets.ColibriDirectory is { } dir
+                    ? new Backends.HuggingFace.ColibriProcessConverter(colibri, hf, Path.Combine(dir, ".hf-cache"), logger)
+                    : null,
+                engines is null ? null : engines.RestartAsync,
+                services.GetService<IColibriControl>(),
+                logger);
+        });
     }
 
     private static bool IsColibri(IConfiguration configuration)

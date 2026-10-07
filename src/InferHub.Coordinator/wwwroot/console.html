@@ -454,6 +454,12 @@
         <input id="mm-replicas" type="number" min="1" value="2" style="width:64px" title="replica count for Ensure (fleet-wide)" />
         <button id="mm-ensure" title="Pull the model onto N suitable nodes fleet-wide">Ensure N</button>
       </div>
+      <!-- Phase 98: the node downloads a Hugging Face link — a GGUF for llama.cpp, a checkpoint converted for colibri. -->
+      <div class="actions" style="flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px">
+        <input id="hf-url" placeholder="Hugging Face link (https://huggingface.co/owner/repo)" style="min-width:360px" />
+        <input id="hf-quant" placeholder="quant, e.g. Q4_K_M (GGUF repos)" style="min-width:170px" />
+        <button id="hf-pull" title="The node downloads it once; a GGUF goes to its llama.cpp router, a safetensors checkpoint is converted for colibri. Delete it later with engine 'huggingface'.">Download to node</button>
+      </div>
       <div id="mm-note" class="empty" style="padding:8px 0 0"></div>
     </div>
     <div class="table-wrap"><div id="model-matrix"></div></div>

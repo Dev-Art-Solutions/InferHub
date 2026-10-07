@@ -294,3 +294,63 @@ or stop. A hub older than v3.62 drops it with a debug line.
 Tests: `ColibriCatalogTests` (Node — every model a real socket via `FakeColibriLauncher` in `Tests.Common`),
 `ColibriCatalogMeshTests` (Mesh — real hub, SignalR, node; route an unloaded model, switch, on-demand,
 a hostile pin refused by both). Live run with real colibri: `.claude/release-notes-v3.62.0.md`.
+
+### Phase 98 (a Hugging Face link from the hub: the node downloads it once, llama.cpp serves a GGUF, colibri a converted checkpoint)
+
+Files: `Backends/HuggingFace/` (`HuggingFaceOptions` + `HuggingFaceTargets` + validator, `HuggingFaceClient`,
+`HuggingFaceStore`, `ColibriConverter`), `MultiBackend.RestartAsync`, `ModelCommandExecutor` (engine
+`huggingface`, `ManagesModels`), `Dockerfile.colibri` (the converter venv); `src/InferHub.Shared/HuggingFace/HfReference.cs`
+(the link, parsed the same on both hosts); the hub's half is `POST /api/admin/nodes/{id}/huggingface` and the
+console's "Download to node". Contract: `ModelCommand.EngineHuggingFace`.
+
+**D1 — `HuggingFace:Enabled` is the consent, and each engine's own directory is the store** (load-bearing).
+Off by default (39 D7: a GPU box reaches the internet when its operator says so). **colibri does not
+read GGUF** (v1.12.1: its own format, made by `coli convert` from a safetensors MoE checkpoint), so one
+file never feeds both engines: a GGUF goes to `<llama.cpp router Serve:ModelsDir>/<name>/` — a
+sub-directory is one model in llama.cpp's convention (measured, b11417: listed under the directory's
+name), so split files and an `mmproj` travel together — and a checkpoint is converted into
+`<Colibri:Serve:ModelsDir>/<name>`. `.inferhub-source.json` (repo, commit, files) marks what the store
+made: a second pull is "already downloaded", and a delete touches only a marked directory, never one the
+operator put there. `HuggingFace:LlamaCppEngine` names the router when two have a `ModelsDir`; an engine
+named `huggingface` is refused (the reserved command engine). *Rejected:* a separate store tree linked into
+both engines — nothing reads the same bytes twice, so it would be a second place to clean up.
+
+**D2 — GGUF: the node downloads, resumably and verified, then restarts the router.** Commit from
+`/api/models/{repo}/revision/{rev}` (the download pins to it), files from `/tree/{commit}?recursive=true`
+(size, LFS sha256; paged by `Link`), bytes from `/{repo}/resolve/{commit}/{path}` into `.part.partial`
+with `Range` resume, size and sha256 checked (a mismatch deletes the file), renamed only when every file
+is whole — the router never lists a half model. Selection: a file link takes that file and its split
+siblings; `quant` takes the files whose name carries it as a whole token; one model in the repo is taken;
+several and no quant is refused naming them; an `mmproj` comes along. **The router reads its directory at
+launch only** (measured), so the engine restarts after a download and around a delete (95 D5's drain; on
+Windows a mapped file cannot be deleted). Byte progress on the phase-26 frames, `MaxConcurrentDownloads` (2).
+
+**D3 — a checkpoint: `coli convert`, one at a time.** No `.gguf`, and `config.json` beside `*.safetensors`
+→ `python coli convert --repo <repo> --model <dir>/<name>` (name: the repo, lowercased); colibri picks its
+family's converter and downloads the shards itself through `huggingface_hub` (`HF_TOKEN`, `HF_ENDPOINT`,
+`HF_HOME=<ModelsDir>/.hf-cache` passed; never `COLI_DEBUG`). Its output lines are the progress; a failure
+removes the half-written directory and reports the last lines. Main branch only (the converter takes no
+revision). The `:colibri` image builds the converter venv at `/opt/colibri/mio_env` (where `coli` looks
+first) in the final stage, torch CPU pinned, imports asserted at build. A checkpoint on a node without a
+catalogue is refused saying llama.cpp needs a GGUF. *Rejected:* the node downloading the checkpoint and
+pointing the converter at it — colibri's converters fetch with `hf_hub_download(local_dir=…)`, which does
+not read a cache, so the shards would cross the network twice.
+
+**D4 — the phase-26 pull, engine `huggingface`.** The hub's `/huggingface` route parses the link
+(`HfReference`: huggingface.co / hf.co URLs, `/tree|blob|resolve/`, `owner/repo[:quant]`; any other host,
+`..` or a backslash is refused) and sends the canonical form; the node parses it again. Delete:
+`DELETE /api/admin/nodes/{id}/models/{name}?engine=huggingface`. Warm/unload go to the engine. A node with
+the store declares model management even when no engine can (`ManagesModels`).
+
+**Four things the live run found, all fixed:** `coli convert` under the image's bare `python3` could not
+import `huggingface_hub`, misread the family and ran GLM-5.2's converter on an OLMoE — the converter now
+runs under `<launcher dir>/mio_env` (`ColibriProcessConverter.Interpreter`, as `coli` itself prefers); the
+converter writes `config.json` early and the catalogue listed a half-converted model — conversion goes to
+`.converting-<name>` (not a model name, never listed) and is renamed when whole; on a fresh volume the
+router's `ModelsDir` did not exist and the engine sat `failed` — the store creates its targets at startup
+(`HuggingFaceStartup`, registered before the engines); the factory logged every request including signed CDN
+redirects — the client has no loggers.
+
+Tests: `HfReferenceTests` (Shared), `HuggingFaceStoreTests` (Node — a Hub-shaped socket in `Tests.Common`:
+resume by `Range`, sha256, gated 401, quants, mmproj, conversion via a fake converter), `HuggingFaceMeshTests`
+(Mesh — link → converted → routable → chat answered). Live run: `.claude/release-notes-v3.63.0.md`.

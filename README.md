@@ -182,6 +182,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 95 | [Several engines on one node](#several-engines-on-one-node--ollama-llamacpp-and-colibri-v360) — ollama, llama.cpp and colibri side by side, started and stopped by the coordinator (done) | `v3.60.0` |
 | 96 | [All of llama.cpp](#all-of-llamacpp--a-router-models-from-hugging-face-its-own-routes-v361) — a router over many GGUFs, models pulled from Hugging Face, warmed, unloaded and deleted from the hub, `/v1/llamacpp/*` and `/v1/rerank` (done) | `v3.61.0` |
 | 97 | [Many colibri models on one node](#many-colibri-models-on-one-node--loaded-on-request-freed-when-idle-picked-from-the-hub-v362) — a catalogue of converted models, loaded on request, freed when idle, and the coordinator picks which stay loaded (done) | `v3.62.0` |
+| 98 | [Models from a Hugging Face link](#models-from-a-hugging-face-link--downloaded-once-by-the-node-served-by-llamacpp-or-colibri-v363) — the node downloads what the hub links: a GGUF for its llama.cpp router, a checkpoint converted for colibri (done) | `v3.63.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -2897,6 +2898,42 @@ docker run -d --name inferhub-colibri   -e Coordinator__Url=http://hub:5080 -e C
 `Serve:Model` (one model, the v3.58 shape) still works unchanged; it cannot be set beside a catalogue,
 which is why the example clears the image's default. A cold load of a large model takes minutes —
 **Load** it from the console first, or raise `Dispatcher:Deadlines:chat` on the hub.
+
+## Models from a Hugging Face link — downloaded once by the node, served by llama.cpp or colibri (v3.63)
+
+Paste a Hugging Face link in the console (**Model management → Download to node**) or post it, and
+the node fetches the model itself and keeps it:
+
+```
+POST /api/admin/nodes/{id}/huggingface   {"url": "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF", "quant": "Q4_K_M"}
+POST /api/admin/nodes/{id}/huggingface   {"url": "https://huggingface.co/allenai/OLMoE-1B-7B-0924-Instruct"}
+```
+
+```jsonc
+"HuggingFace": { "Enabled": true },                       // off by default: the box reaches the internet only when you say so
+"Backend": { "Engines": {
+  "gguf":    { "Type": "llamacpp", "Serve": { "Executable": "/opt/llama/llama-server", "ModelsDir": "/models/gguf", "Port": 8090 } },
+  "colibri": { "Type": "colibri" } } },
+"Colibri": { "Serve": { "Model": "", "ModelsDir": "/models/colibri" } }
+```
+
+- **A GGUF goes to llama.cpp.** The node downloads it into the router's `ModelsDir` as its own
+  directory (`/models/gguf/SmolLM2-135M-Instruct-Q4_K_M/`), resuming an interrupted download and
+  checking each file's sha256, then restarts the router, which only reads its directory at launch.
+  `quant` picks the file; a repo with several and no quant is refused with the list; a link to one
+  `.gguf` takes that file; split files and an `mmproj` come along.
+- **A safetensors checkpoint is converted for colibri.** colibri cannot read GGUF; it has its own format,
+  made by `coli convert` from a Mixture-of-Experts checkpoint of a family it knows (OLMoE, Qwen MoE,
+  GLM, DeepSeek, Kimi). The node runs it (one at a time — it can take a long time) and the result lands
+  in the colibri catalogue under the repo's name. The `:colibri` image carries the converter (CPU torch).
+- **Downloaded once.** A second pull of the same thing is "already downloaded"; the models are there
+  after a restart. Progress — bytes for a GGUF, the converter's own lines for a checkpoint — is in the
+  console's command feed.
+- Gated or private repos: `HuggingFace__Token`. Several llama.cpp routers: `HuggingFace:LlamaCppEngine`.
+  Delete: `DELETE /api/admin/nodes/{id}/models/{name}?engine=huggingface` — only what the node downloaded.
+
+One file never feeds both engines: llama.cpp needs a GGUF, colibri its converted format. For the same
+model on both, pull its GGUF repo *and* its checkpoint.
 
 ## Inference backends
 

@@ -15,8 +15,12 @@ namespace InferHub.Node;
 public sealed class ModelCommandExecutor(
     IInferenceBackend backend,
     ILogger<ModelCommandExecutor> logger,
-    ToolExecutor? tools = null)
+    ToolExecutor? tools = null,
+    Backends.HuggingFace.HuggingFaceStore? huggingFace = null)
 {
+    /// <summary>Phase 98: this node downloads from Hugging Face, so it manages models even when no engine does.</summary>
+    public bool ManagesModels => backend.SupportsModelManagement || huggingFace is not null;
+
     public async IAsyncEnumerable<ModelCommandProgress> ExecuteAsync(
         ModelCommand command,
         string nodeId,
@@ -28,6 +32,17 @@ public sealed class ModelCommandExecutor(
         if (command.IsToolCommand)
         {
             await foreach (var frame in RunToolCommandAsync(command, nodeId, cancellationToken))
+            {
+                yield return frame;
+            }
+
+            yield break;
+        }
+
+        // Phase 98: the engine "huggingface" is this node's store, not one of its engines.
+        if (string.Equals(command.Engine, ModelCommand.EngineHuggingFace, StringComparison.OrdinalIgnoreCase))
+        {
+            await foreach (var frame in RunHuggingFaceAsync(command, nodeId, cancellationToken))
             {
                 yield return frame;
             }
@@ -129,6 +144,55 @@ public sealed class ModelCommandExecutor(
     }
 
     /// <summary>
+    /// A pull (a Hugging Face link) or a delete (a model the store downloaded) — phase 98. Same
+    /// frames as a backend pull, so the hub's progress relay and coalescing need nothing new.
+    /// </summary>
+    private async IAsyncEnumerable<ModelCommandProgress> RunHuggingFaceAsync(
+        ModelCommand command,
+        string nodeId,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        if (huggingFace is null)
+        {
+            yield return Terminal(command, nodeId, "unsupported",
+                "this node does not download from Hugging Face; set HuggingFace:Enabled=true on it");
+            yield break;
+        }
+
+        if (command.Kind == ModelCommand.KindDelete)
+        {
+            yield return Progress(command, nodeId, "deleting", null);
+            string? failure = null;
+
+            try
+            {
+                await huggingFace.DeleteAsync(command.ModelName, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                failure = ex.Message;
+            }
+
+            yield return Terminal(command, nodeId, failure is null ? "deleted" : "error", failure);
+            yield break;
+        }
+
+        if (command.Kind != ModelCommand.KindPull)
+        {
+            yield return Terminal(command, nodeId, "unsupported",
+                $"'{command.Kind}' is not something a Hugging Face download does; pull and delete are — warm and unload go to the engine that serves the model");
+            yield break;
+        }
+
+        logger.LogInformation("Pulling '{Model}' from Hugging Face (command {CommandId})", command.ModelName, command.CommandId);
+
+        await foreach (var frame in RelayAsync(command, nodeId, huggingFace.PullAsync(command.ModelName, cancellationToken), cancellationToken))
+        {
+            yield return frame;
+        }
+    }
+
+    /// <summary>
     /// A pull or a delete against a tool's model catalogue (phase 48, D4).
     /// </summary>
     /// <remarks>
@@ -200,6 +264,26 @@ public sealed class ModelCommandExecutor(
             yield break;
         }
 
+        await foreach (var frame in RelayAsync(command, nodeId, frames, cancellationToken))
+        {
+            yield return frame;
+        }
+    }
+
+    private IAsyncEnumerable<ModelCommandProgress> RelayAsync(
+        ModelCommand command,
+        string nodeId,
+        IAsyncEnumerable<ModelPullProgress> source,
+        CancellationToken cancellationToken)
+        => RelayAsync(command, nodeId, source.GetAsyncEnumerator(cancellationToken), cancellationToken);
+
+    /// <summary>Every frame relayed; any throw — before the first frame or after the last — a terminal error frame.</summary>
+    private async IAsyncEnumerable<ModelCommandProgress> RelayAsync(
+        ModelCommand command,
+        string nodeId,
+        IAsyncEnumerator<ModelPullProgress> frames,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
         try
         {
             while (true)

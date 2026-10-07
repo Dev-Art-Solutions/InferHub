@@ -71,8 +71,20 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 # and the aspnet base does not carry it — without it every engine binary fails to load, and the
 # gateway reports that as a model that never became ready.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 libgomp1 \
+ && apt-get install -y --no-install-recommends python3 python3-venv libgomp1 \
  && rm -rf /var/lib/apt/lists/*
+
+# Phase 98: colibri's converters (`coli convert`, which the node runs when the hub links a safetensors
+# checkpoint). colibri looks for them in /opt/colibri/mio_env first. CPU torch, pinned; built HERE, in
+# the final stage, against this image's own python3 — a venv copied from another stage points at an
+# interpreter that is not there — and the imports are asserted at build time, not at the first convert.
+ARG TORCH_VERSION=2.9.1
+RUN python3 -m venv /opt/colibri/mio_env \
+ && /opt/colibri/mio_env/bin/pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cpu "torch==${TORCH_VERSION}+cpu" \
+ && /opt/colibri/mio_env/bin/pip install --no-cache-dir \
+        "numpy==2.3.5" "safetensors==0.8.0" "huggingface_hub==1.33.0" \
+ && /opt/colibri/mio_env/bin/python -c "import torch, numpy, safetensors, huggingface_hub; print('converter venv:', torch.__version__, huggingface_hub.__version__)"
 
 WORKDIR /app
 COPY --from=build /app .

@@ -379,6 +379,43 @@ public sealed class MultiBackend : IInferenceBackend, IClosedSetScorer, IModelKi
     }
 
     /// <summary>
+    /// Stops a running engine, runs <paramref name="whileStopped"/>, and starts it again (phase 98): a
+    /// llama.cpp router reads its directory at launch only, and a model file cannot be deleted under
+    /// the process mapping it. 95 D5's drain applies. An engine that is stopped stays stopped.
+    /// </summary>
+    public async Task RestartAsync(string name, Func<Task>? whileStopped, CancellationToken cancellationToken)
+    {
+        var engine = engines.FirstOrDefault(e => string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException($"this node has no engine named '{name}'");
+
+        await applyGate.WaitAsync(cancellationToken);
+
+        try
+        {
+            var wasRunning = engine.Running;
+
+            if (wasRunning)
+            {
+                await StopAsync(engine, cancellationToken);
+            }
+
+            if (whileStopped is not null)
+            {
+                await whileStopped();
+            }
+
+            if (wasRunning)
+            {
+                Start(engine);
+            }
+        }
+        finally
+        {
+            applyGate.Release();
+        }
+    }
+
+    /// <summary>
     /// The boot-time convergence. It re-applies whatever a profile last asked for rather than the
     /// bare autostart set, because the connection can deliver a profile before the host gets here.
     /// </summary>

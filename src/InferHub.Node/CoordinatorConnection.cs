@@ -572,7 +572,7 @@ public sealed class CoordinatorConnection(
             // lowered its concurrency must not spend one registration advertising the higher number.
             profiles.Effective.MaxConcurrency,
             inventory.Count == 0 ? null : inventory,
-            backend.SupportsModelManagement,
+            modelCommandExecutor.ManagesModels,
             // Capabilities are declared on the model report, not here (phase-40 D1's note).
             Capabilities: null,
             // This one *is* declared here, because unlike a capability it does not follow from
