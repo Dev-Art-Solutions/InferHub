@@ -62,8 +62,9 @@ Strata `fb58e0d`, its own Windows setup, Coder IQ1_M (58 GB). Hub and node from 
 - Neither the hub's nor the node's log contains any prompt text (grep for both prompts: 0 lines).
 - **An install through the hub**: `POST …/strata/install {"model":"strata-q2_0"}` → 202, the node ran
   Strata's setup, its download bar arrived on the hub's `model-progress` feed as percent; **a chat sent
-  during the install was answered in 3.9 s**. A size Strata does not have (`strata-swift-iq3_s`) → 400 with
-  the nine names.
+  during the install was answered in 3.9 s**. Setup ran all seven steps (download, pack, MTP layer, start
+  script) and the node logged `Strata 'strata-q2_0' is installed and listed`; the hub listed it at once.
+  A size Strata does not have (`strata-swift-iq3_s`) → 400 with the nine names.
 
 ## Not established
 
@@ -71,4 +72,22 @@ Strata `fb58e0d`, its own Windows setup, Coder IQ1_M (58 GB). Hub and node from 
 - Two Strata models loaded at once (`MaxLoaded` > 1): one 3090 Ti holds one.
 - Pictures: Strata's vision is a setup choice; the node declares chat only.
 - No image carries Strata (its engine is a CUDA/HIP build per card generation, and it ships its own
-  Dockerfile); the published images were checked with Strata's mock engine, see below.
+  Dockerfile).
+- Throughput under contention: the published-binary chats below shared the card with a 23 GB Ollama
+  model another program on this box reloaded mid-check (GPU at 100 %), so their 0.2–1 tok/s says nothing
+  about Strata or InferHub.
+
+## The published artifact
+
+Docker Desktop's VM could not be brought back on this box (WSL itself stopped answering), so instead of a
+container the check pulled `inferhub-coordinator:3.64.0` and `inferhub-node:3.64.0` (linux/amd64) from GHCR
+anonymously, extracted their `/app` layers and ran **those DLLs** natively — the only way a node image's
+code can reach this Windows Strata install and its GPU anyway. Both images' `org.opencontainers.image.revision`
+label is `a91b8c3`, the tag commit.
+
+- The published hub reported `3.64.0`, listed both installed sizes (`strata-coder-iq1_m` and the
+  hub-installed `strata-q2_0`), and served the console with the Strata panel.
+- `strata-q2_0` — the size installed through the hub — loaded in 69 s and answered "Jupiter" (HTTP 200).
+- `POST …/strata/models/strata-coder-iq1_m/load` → 200, the profile carries `"strata": {"loaded":
+  ["strata-coder-iq1_m"]}`; the node stopped the idle Q2_0 first, then loaded the Coder (130 s, contended).
+- No prompt text in either published process's log; no `server.py` left behind after the node was killed.
