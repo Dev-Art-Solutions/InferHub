@@ -1,3 +1,4 @@
+using InferHub.Node.Backends.Catalog;
 using System.Collections.Concurrent;
 using InferHub.Node.Backends;
 using InferHub.Node.Backends.Colibri;
@@ -17,7 +18,7 @@ namespace InferHub.Tests;
 /// <c>/health</c>, <c>/v1/models</c>, a chat, a Brio — in place of the Python process, so the
 /// catalogue's admission, eviction and idle stops cross real HTTP. The real engine is in the notes.
 /// </summary>
-internal sealed class FakeColibriLauncher : IColibriLauncher
+internal sealed class FakeColibriLauncher : ICatalogLauncher
 {
     private readonly ConcurrentDictionary<string, int> chats = new(StringComparer.OrdinalIgnoreCase);
 
@@ -26,6 +27,12 @@ internal sealed class FakeColibriLauncher : IColibriLauncher
 
     /// <summary>How long a launched model stays unanswering, as if reading its dense weights.</summary>
     public TimeSpan LoadDelay { get; set; } = TimeSpan.Zero;
+
+    /// <summary>
+    /// Phase 99: answer <c>/health</c> the way Strata's server does while it loads — a 200 saying
+    /// <c>"loaded": false</c> — instead of colibri's refused probe.
+    /// </summary>
+    public bool StrataHealth { get; set; }
 
     /// <summary>Models whose process exits before it ever answers.</summary>
     public HashSet<string> Crashing { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -37,7 +44,7 @@ internal sealed class FakeColibriLauncher : IColibriLauncher
 
     public int Chats(string model) => chats.GetValueOrDefault(model);
 
-    public IColibriProcess Launch(string model, string directory, int port)
+    public ICatalogProcess Launch(string model, string directory, int port)
     {
         Events.Enqueue($"launch:{model}");
         Directories[model] = directory;
@@ -47,7 +54,7 @@ internal sealed class FakeColibriLauncher : IColibriLauncher
             return new CrashedProcess(this, model);
         }
 
-        var process = FakeColibriProcess.Start(this, model, LoadDelay);
+        var process = FakeColibriProcess.Start(this, model, LoadDelay, StrataHealth);
         Alive[model] = process;
         return process;
     }
@@ -60,7 +67,7 @@ internal sealed class FakeColibriLauncher : IColibriLauncher
         Alive.TryRemove(model, out _);
     }
 
-    private sealed class CrashedProcess(FakeColibriLauncher owner, string model) : IColibriProcess
+    private sealed class CrashedProcess(FakeColibriLauncher owner, string model) : ICatalogProcess
     {
         public string BaseUrl => "http://127.0.0.1:9/v1";
 
@@ -74,7 +81,7 @@ internal sealed class FakeColibriLauncher : IColibriLauncher
     }
 }
 
-internal sealed class FakeColibriProcess : IColibriProcess
+internal sealed class FakeColibriProcess : ICatalogProcess
 {
     private WebApplication app = null!;
     private int stopped;
@@ -83,7 +90,7 @@ internal sealed class FakeColibriProcess : IColibriProcess
 
     public string? Exited => null;
 
-    public static FakeColibriProcess Start(FakeColibriLauncher owner, string model, TimeSpan loadDelay)
+    public static FakeColibriProcess Start(FakeColibriLauncher owner, string model, TimeSpan loadDelay, bool strataHealth = false)
     {
         var process = new FakeColibriProcess();
         var ready = DateTimeOffset.UtcNow + loadDelay;
@@ -92,7 +99,9 @@ internal sealed class FakeColibriProcess : IColibriProcess
         builder.Logging.ClearProviders();
 
         var app = builder.Build();
-        app.MapGet("/health", () => DateTimeOffset.UtcNow < ready ? Results.StatusCode(503) : Results.Json(new { status = "ok" }));
+        app.MapGet("/health", () => strataHealth
+            ? Results.Json(new { status = "ok", loaded = DateTimeOffset.UtcNow >= ready, service = "strata" })
+            : DateTimeOffset.UtcNow < ready ? Results.StatusCode(503) : Results.Json(new { status = "ok" }));
         app.MapGet("/v1/models", () => Results.Json(new { @object = "list", data = new[] { new { id = model, @object = "model", owned_by = "colibri" } } }));
         app.MapPost("/v1/chat/completions", () =>
         {

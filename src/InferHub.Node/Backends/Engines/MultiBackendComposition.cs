@@ -61,6 +61,12 @@ public static class MultiBackendComposition
             return new Engine(name, type, services.GetRequiredService<Colibri.ColibriCatalog>(), engine.Autostart, engine.Models);
         }
 
+        // Phase 99. The same for Strata: with Strata:Root the catalogue is the installed configs.
+        if (type == BackendOptions.Strata && services.GetService<Strata.StrataCatalog>() is { } strata)
+        {
+            return new Engine(name, type, strata, engine.Autostart, engine.Models);
+        }
+
         string? baseUrl;
         EngineProcess? process = null;
 

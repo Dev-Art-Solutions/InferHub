@@ -16,7 +16,8 @@ public sealed class ModelCommandExecutor(
     IInferenceBackend backend,
     ILogger<ModelCommandExecutor> logger,
     ToolExecutor? tools = null,
-    Backends.HuggingFace.HuggingFaceStore? huggingFace = null)
+    Backends.HuggingFace.HuggingFaceStore? huggingFace = null,
+    Backends.Strata.StrataInstaller? strata = null)
 {
     /// <summary>Phase 98: this node downloads from Hugging Face, so it manages models even when no engine does.</summary>
     public bool ManagesModels => backend.SupportsModelManagement || huggingFace is not null;
@@ -159,6 +160,39 @@ public sealed class ModelCommandExecutor(
             yield break;
         }
 
+        // Phase 99 D4: a link to one of Strata's repos is an install by Strata's own setup, not a GGUF
+        // for llama.cpp — Strata's quants need its pack step, and llama.cpp cannot serve its model.
+        InferHub.Shared.HuggingFace.HfReference? reference = null;
+        var strataLink = command.Kind == ModelCommand.KindPull
+                         && InferHub.Shared.HuggingFace.HfReference.TryParse(command.ModelName, null, out reference, out _)
+                         && InferHub.Shared.Strata.StrataModels.IsStrataRepo(reference!);
+
+        if (strataLink)
+        {
+            if (strata is null)
+            {
+                yield return Terminal(command, nodeId, "error",
+                    $"'{command.ModelName}' is a Strata model, and this node serves no Strata install; set Strata:Root and a strata backend or engine to install it here");
+                yield break;
+            }
+
+            logger.LogInformation("Installing '{Model}' with Strata's setup (command {CommandId})", command.ModelName, command.CommandId);
+
+            await foreach (var frame in RelayAsync(command, nodeId, InstallStrataAsync(strata, reference!, cancellationToken), cancellationToken))
+            {
+                yield return frame;
+            }
+
+            yield break;
+        }
+
+        if (command.Kind == ModelCommand.KindDelete && strata is not null && strata.Has(command.ModelName))
+        {
+            yield return Terminal(command, nodeId, "error",
+                $"'{command.ModelName}' is a Strata install; Strata's sizes share files and only its setup knows which, so it is removed on the box, not from the hub");
+            yield break;
+        }
+
         if (command.Kind == ModelCommand.KindDelete)
         {
             yield return Progress(command, nodeId, "deleting", null);
@@ -187,6 +221,18 @@ public sealed class ModelCommandExecutor(
         logger.LogInformation("Pulling '{Model}' from Hugging Face (command {CommandId})", command.ModelName, command.CommandId);
 
         await foreach (var frame in RelayAsync(command, nodeId, huggingFace.PullAsync(command.ModelName, cancellationToken), cancellationToken))
+        {
+            yield return frame;
+        }
+    }
+
+    /// <summary>A refusal of the link (a size Strata does not have) is a terminal frame, as a GGUF refusal is.</summary>
+    private static async IAsyncEnumerable<ModelPullProgress> InstallStrataAsync(
+        Backends.Strata.StrataInstaller strata,
+        InferHub.Shared.HuggingFace.HfReference reference,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await foreach (var frame in strata.InstallAsync(reference, cancellationToken))
         {
             yield return frame;
         }

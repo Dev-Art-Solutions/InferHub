@@ -127,6 +127,7 @@ builder.Services.AddSingleton<NodeToolRegistry>();
 builder.Services.AddSingleton<NodeBackendRegistry>();
 // Phase 97: what each colibri catalogue last said it holds. Empty on a fleet without one.
 builder.Services.AddSingleton<NodeColibriRegistry>();
+builder.Services.AddSingleton<NodeStrataRegistry>();
 
 // Phase 47. The async image-job surface. Registered unconditionally and inert on a fleet with no
 // image capability: the store holds nothing, the pump reads an empty queue, and the sweeper ticks
@@ -182,6 +183,7 @@ else
 builder.Services.AddSingleton<NodeModelToggle>();
 builder.Services.AddSingleton<NodeBackendToggle>();
 builder.Services.AddSingleton<NodeColibriToggle>();
+builder.Services.AddSingleton<NodeStrataToggle>();
 builder.Services.AddHostedService<AutoScalerService>();
 
 // Phase 77. A standby for a node-owned collection, so it survives its owning node's permanent loss.

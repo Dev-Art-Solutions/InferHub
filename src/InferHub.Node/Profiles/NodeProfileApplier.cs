@@ -32,7 +32,8 @@ public sealed class NodeProfileApplier(
     RetrievalHost retrieval,
     ILogger<NodeProfileApplier> logger,
     IEngineControl? engines = null,
-    Backends.Colibri.IColibriControl? colibri = null)
+    Backends.Colibri.IColibriControl? colibri = null,
+    Backends.Strata.IStrataControl? strata = null)
 {
     private readonly NodeOptions node = nodeOptions.Value;
     private readonly ToolOptions tools = toolOptions.Value;
@@ -109,6 +110,11 @@ public sealed class NodeProfileApplier(
                 ? Array.Empty<string>()
                 : await colibri.ApplyAsync(result.Effective.Colibri, cancellationToken);
 
+            // Phase 99. The same for the Strata catalogue.
+            var strataChanges = strata is null
+                ? Array.Empty<string>()
+                : await strata.ApplyAsync(result.Effective.Strata, cancellationToken);
+
             // Phase 44. The corpus is the one part of a profile whose application can fail against the
             // world rather than against the clamp — an engine that is not there, a credential this box
             // does not have — so its refusal joins the others rather than throwing. Refusals are per
@@ -147,7 +153,7 @@ public sealed class NodeProfileApplier(
             return new ProfileApplication(
                 state,
                 commands,
-                Changed: !SameCapabilityNarrowing(previous, result.Effective) || commands.Length > 0 || engineChanges.Count > 0 || colibriChanges.Count > 0);
+                Changed: !SameCapabilityNarrowing(previous, result.Effective) || commands.Length > 0 || engineChanges.Count > 0 || colibriChanges.Count > 0 || strataChanges.Count > 0);
         }
         finally
         {
@@ -219,7 +225,9 @@ public sealed class NodeProfileApplier(
         node.Vram.ReserveMiB,
         engines?.EngineNames,
         colibri?.CatalogNames,
-        colibri?.MaxLoaded ?? 0);
+        colibri?.MaxLoaded ?? 0,
+        strata?.CatalogNames,
+        strata?.MaxLoaded ?? 0);
 
     private void Log(NodeProfile? profile, NodeProfileState state)
     {

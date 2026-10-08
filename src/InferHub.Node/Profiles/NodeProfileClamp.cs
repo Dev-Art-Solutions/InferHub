@@ -64,7 +64,12 @@ public static class NodeProfileClamp
         var (ensure, remove, disabledModels) = ClampModels(local, desired, applied, refusals);
         var retrieval = ClampRetrieval(local, desired, applied, refusals);
         var backends = ClampBackends(local, desired, applied, refusals);
-        var colibri = ClampColibri(local, desired, applied, refusals);
+        var colibri = ClampCatalog(
+            "colibri", "Colibri:Serve:ModelsDir or Colibri:Serve:Models", "Colibri",
+            desired.Colibri, local.ColibriCatalogue, local.ColibriMaxLoaded, applied, refusals);
+        var strata = ClampCatalog(
+            "strata", "Strata:Root with a strata backend or engine", "Strata",
+            desired.Strata, local.StrataCatalogue, local.StrataMaxLoaded, applied, refusals);
 
         return new ClampResult(
             new EffectiveProfile(
@@ -74,7 +79,8 @@ public static class NodeProfileClamp
                 disabledRecipes.OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToArray(),
                 disabledModels,
                 backends,
-                colibri),
+                colibri,
+                strata),
             applied,
             refusals,
             ensure,
@@ -498,34 +504,38 @@ public static class NodeProfileClamp
     }
 
     /// <summary>
-    /// Phase 97. The catalogue is the grant, as <c>Backend:Engines</c> is for engines: a profile pins
-    /// models the box already has, never a path, and never more than <c>Serve:MaxLoaded</c> — that
-    /// number is the operator's statement about RAM. <c>onDemand</c> is a preference over a ceiling
-    /// the operator already wrote, so either value is honoured.
+    /// Phase 97 (colibri), 99 (Strata). The catalogue is the grant, as <c>Backend:Engines</c> is for
+    /// engines: a profile pins models the box already has, never a path, and never more than
+    /// <c>Serve:MaxLoaded</c> — that number is the operator's statement about RAM. <c>onDemand</c> is a
+    /// preference over a ceiling the operator already wrote, so either value is honoured.
     /// </summary>
-    private static ColibriProfile? ClampColibri(
-        LocalCeiling local,
-        NodeProfile desired,
+    private static CatalogProfile? ClampCatalog(
+        string engine,
+        string source,
+        string section,
+        CatalogProfile? desired,
+        IReadOnlyList<string>? catalogue,
+        int maxLoaded,
         List<string> applied,
         List<NodeProfileRefusal> refusals)
     {
-        if (desired.Colibri is null)
+        if (desired is null)
         {
             return null;
         }
 
-        if (local.ColibriCatalogue is not { } catalogue)
+        if (catalogue is null)
         {
             refusals.Add(new NodeProfileRefusal(
-                "colibri",
-                "this node has no colibri catalogue (Colibri:Serve:ModelsDir or Colibri:Serve:Models); a coordinator picks loaded models only from one"));
+                engine,
+                $"this node has no {engine} catalogue ({source}); a coordinator picks loaded models only from one"));
 
             return null;
         }
 
         List<string>? loaded = null;
 
-        if (desired.Colibri.Loaded is { } wanted)
+        if (desired.Loaded is { } wanted)
         {
             loaded = [];
 
@@ -536,40 +546,40 @@ public static class NodeProfileClamp
                 if (name is null)
                 {
                     refusals.Add(new NodeProfileRefusal(
-                        $"colibri:{raw}",
+                        $"{engine}:{raw}",
                         catalogue.Count == 0
-                            ? "this node's colibri catalogue is empty; a profile cannot add a model to it"
-                            : $"this node's colibri catalogue has no '{raw}' (it has {string.Join(", ", catalogue)}); a profile picks from it and cannot add to it"));
+                            ? $"this node's {engine} catalogue is empty; a profile cannot add a model to it"
+                            : $"this node's {engine} catalogue has no '{raw}' (it has {string.Join(", ", catalogue)}); a profile picks from it and cannot add to it"));
 
                     continue;
                 }
 
-                if (loaded.Count >= local.ColibriMaxLoaded)
+                if (loaded.Count >= maxLoaded)
                 {
                     refusals.Add(new NodeProfileRefusal(
-                        $"colibri:{name}",
-                        $"Colibri:Serve:MaxLoaded is {local.ColibriMaxLoaded} on this node and the profile pins more; '{name}' is not pinned"));
+                        $"{engine}:{name}",
+                        $"{section}:Serve:MaxLoaded is {maxLoaded} on this node and the profile pins more; '{name}' is not pinned"));
 
                     continue;
                 }
 
                 loaded.Add(name);
-                applied.Add($"colibri '{name}' loaded");
+                applied.Add($"{engine} '{name}' loaded");
             }
 
             if (loaded.Count == 0)
             {
                 // An empty set is an instruction too: unload what an earlier revision pinned.
-                applied.Add("colibri: no model pinned");
+                applied.Add($"{engine}: no model pinned");
             }
         }
 
-        if (desired.Colibri.OnDemand is { } onDemand)
+        if (desired.OnDemand is { } onDemand)
         {
-            applied.Add($"colibri on-demand {(onDemand ? "on" : "off")}");
+            applied.Add($"{engine} on-demand {(onDemand ? "on" : "off")}");
         }
 
-        return new ColibriProfile(loaded, desired.Colibri.OnDemand);
+        return new CatalogProfile(loaded, desired.OnDemand);
     }
 
     private const string ProviderLocal = "local";
@@ -607,7 +617,10 @@ public sealed record LocalCeiling(
     IReadOnlyList<string>? EngineNames = null,
     /// <summary>The colibri catalogue's names (phase 97). Null: this node has no catalogue.</summary>
     IReadOnlyList<string>? ColibriCatalogue = null,
-    int ColibriMaxLoaded = 0)
+    int ColibriMaxLoaded = 0,
+    /// <summary>The Strata catalogue's names (phase 99). Null: this node has no Strata install.</summary>
+    IReadOnlyList<string>? StrataCatalogue = null,
+    int StrataMaxLoaded = 0)
 {
     public IReadOnlyList<string> Engines => EngineNames ?? Array.Empty<string>();
 
@@ -634,7 +647,9 @@ public sealed record EffectiveProfile(
     /// </summary>
     IReadOnlyDictionary<string, bool>? Backends = null,
     /// <summary>The colibri block after the clamp (phase 97). Null: the box's own <c>Preload</c> and <c>OnDemand</c>.</summary>
-    ColibriProfile? Colibri = null);
+    CatalogProfile? Colibri = null,
+    /// <summary>The strata block after the clamp (phase 99). Null: the box's own <c>Preload</c> and <c>OnDemand</c>.</summary>
+    CatalogProfile? Strata = null);
 
 public sealed record ClampResult(
     EffectiveProfile Effective,

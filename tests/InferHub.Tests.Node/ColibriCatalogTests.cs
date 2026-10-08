@@ -1,3 +1,4 @@
+using InferHub.Node.Backends.Catalog;
 using System.Text.Json;
 using InferHub.Node.Backends;
 using InferHub.Node.Backends.Colibri;
@@ -55,7 +56,7 @@ public class ColibriCatalogTests : IDisposable
         Assert.Equal(["chat", "score"], catalog.Kinds);
         Assert.Equal(["chat", "score"], catalog.KindsFor("olmoe"));
         Assert.Null(catalog.KindsFor("llama3"));
-        Assert.All(catalog.State("n").Models, m => Assert.Equal(NodeColibriModel.Unloaded, m.State));
+        Assert.All(catalog.State("n").Models, m => Assert.Equal(NodeCatalogModel.Unloaded, m.State));
     }
 
     [Fact]
@@ -88,7 +89,7 @@ public class ColibriCatalogTests : IDisposable
         Assert.EndsWith(Path.Combine("olmoe"), launcher.Directories["olmoe"]);
 
         var state = catalog.State("n").Models.Single(m => m.Name == "olmoe");
-        Assert.Equal(NodeColibriModel.Loaded, state.State);
+        Assert.Equal(NodeCatalogModel.Loaded, state.State);
         Assert.Equal(0, state.InFlight);
         Assert.NotNull(state.IdleSeconds);
     }
@@ -128,7 +129,7 @@ public class ColibriCatalogTests : IDisposable
     {
         var catalog = Started(Options(Root("olmoe")), new FakeColibriLauncher());
 
-        var refused = await Assert.ThrowsAsync<ColibriCatalogException>(
+        var refused = await Assert.ThrowsAsync<CatalogException>(
             () => catalog.ChatAsync(FakeColibri.Chat("llama3"), CancellationToken.None));
 
         Assert.True(refused.NotInCatalogue);
@@ -157,19 +158,19 @@ public class ColibriCatalogTests : IDisposable
         launcher.Crashing.Add("olmoe");
         var catalog = Started(Options(Root("olmoe")), launcher);
 
-        var refused = await Assert.ThrowsAsync<ColibriCatalogException>(
+        var refused = await Assert.ThrowsAsync<CatalogException>(
             () => catalog.ChatAsync(FakeColibri.Chat("olmoe"), CancellationToken.None));
 
         Assert.Contains("could not load 'olmoe'", refused.Message);
         Assert.Contains("exited with code 1", refused.Message);
         var state = catalog.State("n").Models.Single();
-        Assert.Equal(NodeColibriModel.Failed, state.State);
+        Assert.Equal(NodeCatalogModel.Failed, state.State);
         Assert.Contains("exited with code 1", state.LastError);
 
         // The next request tries again — the operator may have fixed the box.
         launcher.Crashing.Clear();
         Assert.Contains("hello from olmoe", await catalog.ChatAsync(FakeColibri.Chat("olmoe"), CancellationToken.None));
-        Assert.Equal(NodeColibriModel.Loaded, catalog.State("n").Models.Single().State);
+        Assert.Equal(NodeCatalogModel.Loaded, catalog.State("n").Models.Single().State);
     }
 
     [Fact]
@@ -183,7 +184,7 @@ public class ColibriCatalogTests : IDisposable
 
         Assert.Empty(launcher.Alive);
         Assert.False(catalog.State("n").Running);
-        var refused = await Assert.ThrowsAsync<ColibriCatalogException>(
+        var refused = await Assert.ThrowsAsync<CatalogException>(
             () => catalog.ChatAsync(FakeColibri.Chat("olmoe"), CancellationToken.None));
         Assert.Contains("stopped", refused.Message);
     }
@@ -206,7 +207,7 @@ public class ColibriCatalogTests : IDisposable
             launcher,
             time);
 
-        await WaitAsync(() => catalog.State("n").Models.Single(m => m.Name == "a").State == NodeColibriModel.Loaded);
+        await WaitAsync(() => catalog.State("n").Models.Single(m => m.Name == "a").State == NodeCatalogModel.Loaded);
         await catalog.ChatAsync(FakeColibri.Chat("b"), CancellationToken.None);
 
         time.Advance(TimeSpan.FromMinutes(9));
@@ -217,7 +218,7 @@ public class ColibriCatalogTests : IDisposable
         await catalog.SweepAsync(CancellationToken.None);
 
         Assert.Equal(["a"], launcher.Alive.Keys);
-        Assert.Equal(NodeColibriModel.Unloaded, catalog.State("n").Models.Single(m => m.Name == "b").State);
+        Assert.Equal(NodeCatalogModel.Unloaded, catalog.State("n").Models.Single(m => m.Name == "b").State);
         Assert.True(catalog.State("n").Models.Single(m => m.Name == "a").Pinned);
     }
 
@@ -244,19 +245,19 @@ public class ColibriCatalogTests : IDisposable
         var launcher = new FakeColibriLauncher();
         var catalog = Started(Options(Root("a", "b")), launcher);
 
-        var changes = await catalog.ApplyAsync(new ColibriProfile(["a"], OnDemand: true), CancellationToken.None);
+        var changes = await catalog.ApplyAsync(new CatalogProfile(["a"], OnDemand: true), CancellationToken.None);
         Assert.Contains("colibri 'a' pinned", changes);
         Assert.Contains("colibri on-demand on", changes);
         await WaitAsync(() => launcher.Alive.ContainsKey("a"));
         Assert.True(catalog.State("n").OnDemand);
 
         // Switching the pin on a one-slot box stops the old model before the new one starts.
-        await catalog.ApplyAsync(new ColibriProfile(["b"], OnDemand: true), CancellationToken.None);
+        await catalog.ApplyAsync(new CatalogProfile(["b"], OnDemand: true), CancellationToken.None);
         await WaitAsync(() => launcher.Alive.ContainsKey("b") && !launcher.Alive.ContainsKey("a"));
         Assert.Equal(["launch:a", "stop:a", "launch:b"], launcher.Events);
 
         // A pinned model fills the only slot, so another model is refused naming it rather than evicting it.
-        var refused = await Assert.ThrowsAsync<ColibriCatalogException>(
+        var refused = await Assert.ThrowsAsync<CatalogException>(
             () => catalog.ChatAsync(FakeColibri.Chat("a"), CancellationToken.None));
         Assert.Contains("pinned (b)", refused.Message);
 
@@ -272,7 +273,7 @@ public class ColibriCatalogTests : IDisposable
     {
         var launcher = new FakeColibriLauncher();
         var catalog = Started(Options(Root("a", "b"), o => o.Serve.MaxLoaded = 2), launcher);
-        await catalog.ApplyAsync(new ColibriProfile(["a"]), CancellationToken.None);
+        await catalog.ApplyAsync(new CatalogProfile(["a"]), CancellationToken.None);
         await catalog.WarmAsync("b", CancellationToken.None);
         await WaitAsync(() => launcher.Alive.Count == 2);
 
@@ -300,14 +301,14 @@ public class ColibriCatalogTests : IDisposable
     {
         var local = new LocalCeiling([], false, [], null, true, ColibriCatalogue: ["a", "b", "c"], ColibriMaxLoaded: 1);
 
-        var result = NodeProfileClamp.Apply(local, Profile(new ColibriProfile(["/etc/passwd", "B", "c"], OnDemand: true)));
+        var result = NodeProfileClamp.Apply(local, Profile(new CatalogProfile(["/etc/passwd", "B", "c"], OnDemand: true)));
 
         Assert.Equal(["b"], result.Effective.Colibri!.Loaded);
         Assert.True(result.Effective.Colibri.OnDemand);
         Assert.Contains(result.Refusals, r => r.Item == "colibri:/etc/passwd" && r.Reason.Contains("it has a, b, c"));
         Assert.Contains(result.Refusals, r => r.Item == "colibri:c" && r.Reason.Contains("MaxLoaded is 1"));
 
-        var none = NodeProfileClamp.Apply(local with { ColibriCatalogue = null }, Profile(new ColibriProfile(["a"])));
+        var none = NodeProfileClamp.Apply(local with { ColibriCatalogue = null }, Profile(new CatalogProfile(["a"])));
         Assert.Null(none.Effective.Colibri);
         Assert.Contains("no colibri catalogue", Assert.Single(none.Refusals).Reason);
 
@@ -424,7 +425,7 @@ public class ColibriCatalogTests : IDisposable
         return catalog;
     }
 
-    private static NodeProfile Profile(ColibriProfile? colibri)
+    private static NodeProfile Profile(CatalogProfile? colibri)
         => new("p", 1, new NodeProfileSelector(NodeId: "n"), Colibri: colibri);
 
     private static async Task WaitAsync(Func<bool> predicate)

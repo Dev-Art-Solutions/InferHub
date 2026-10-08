@@ -42,18 +42,26 @@ public sealed class BackendOptions
     public const string LlamaCpp = "llamacpp";
 
     /// <summary>
-    /// The six types driven by <see cref="UpstreamBackend"/> — everything that is not the local
+    /// Strata's <c>serve/server.py</c> (phase 99): Qwen3.8-Flash-Next on one gaming GPU plus system RAM.
+    /// The OpenAI dialect, chat only. With <c>Strata:Root</c> the node serves that install's configs as
+    /// a catalogue and launches one server per loaded model (99 D1); without it, a Strata server
+    /// somebody else runs, at <c>Upstream:BaseUrl</c> (default Strata's own <c>127.0.0.1:8080/v1</c>).
+    /// </summary>
+    public const string Strata = "strata";
+
+    /// <summary>
+    /// The seven types driven by <see cref="UpstreamBackend"/> — everything that is not the local
     /// Ollama. Kept as a list so the validator, the composition root and the supervisor guard all
     /// ask the same question rather than each writing their own <c>!= ollama</c>.
     /// </summary>
-    public static readonly string[] UpstreamTypes = [OpenAi, OpenRouter, Anthropic, Gemini, Colibri, LlamaCpp];
+    public static readonly string[] UpstreamTypes = [OpenAi, OpenRouter, Anthropic, Gemini, Colibri, LlamaCpp, Strata];
 
     /// <summary>
     /// The types an entry under <see cref="Engines"/> may name (95 D2): the local engines a node can
     /// start, stop and route between, plus <c>openai</c> for one already running beside it. A cloud
     /// vendor is not an engine anybody starts or stops, so it stays a single-backend type.
     /// </summary>
-    public static readonly string[] EngineTypes = [Ollama, LlamaCpp, Colibri, OpenAi];
+    public static readonly string[] EngineTypes = [Ollama, LlamaCpp, Colibri, OpenAi, Strata];
 
     public string Type { get; set; } = Ollama;
 
@@ -194,6 +202,7 @@ public sealed class UpstreamBackendOptions
             // colibri's own default; a node that launches the engine points this at its port (93 D5).
             BackendOptions.Colibri => $"http://127.0.0.1:{Colibri.ColibriOptions.DefaultPort}/v1",
             BackendOptions.LlamaCpp => $"http://127.0.0.1:{EngineServeOptions.LlamaCppDefaultPort}/v1",
+            BackendOptions.Strata => "http://127.0.0.1:8080/v1",
             _ => null
         };
     }

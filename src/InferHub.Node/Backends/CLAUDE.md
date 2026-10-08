@@ -4,7 +4,9 @@
 dialect": colibri and its Brio, since phase 95 a node running several engines at once —
 `Backend:Engines`, ollama + llama.cpp + colibri side by side, started and stopped by the hub — since
 96 a llama.cpp engine that is all of llama.cpp: a router over many GGUFs, managed from the hub — and
-since 97 a colibri catalogue: many converted models, one loaded on request, idle ones freed, the hub picking.
+since 97 a colibri catalogue: many converted models, one loaded on request, idle ones freed, the hub picking —
+since 98 Hugging Face links the node downloads, and since 99 Strata: an install's sizes as the same kind of
+catalogue (`Backends/Catalog/`, shared with colibri), installed from a link by Strata's own setup.
 
 > **Read the root `CLAUDE.md` first, then `src/InferHub.Node/CLAUDE.md`.** That file still owns
 > `IInferenceBackend`, the dialects a backend speaks (67), the supervisor and backend health (36, 69),
@@ -362,3 +364,57 @@ it is a phase of its own, not done here.
 Tests: `HfReferenceTests` (Shared), `HuggingFaceStoreTests` (Node — a Hub-shaped socket in `Tests.Common`:
 resume by `Range`, sha256, gated 401, quants, mmproj, conversion via a fake converter), `HuggingFaceMeshTests`
 (Mesh — link → converted → routable → chat answered). Live run: `.claude/release-notes-v3.63.0.md`.
+
+### Phase 99 (Strata: an install served as a catalogue, its sizes installed from a Hugging Face link by its own setup)
+
+Files: `Backends/Catalog/` (`ModelCatalog` + `ICatalogControl`/`ICatalogLauncher`/`ICatalogProcess`/`ICatalogServeOptions`,
+`ModelCatalogHost`), `Backends/Strata/` (`StrataOptions` + validator, `StrataCatalog` + `StrataServe` +
+`StrataProcessLauncher`, `StrataInstaller` + `StrataSetupRunner`, `StrataComposition`), `ColibriCatalog` (now a
+subclass), `BackendOptions.Strata`, `ModelCommandExecutor` (Strata links), `HuggingFaceTargets.Strata`,
+`Profiles/NodeProfileClamp.cs` (`ClampCatalog`), `CoordinatorConnection` (`ReportStrataState`); `src/InferHub.Shared/Strata/StrataModels.cs`.
+The hub's half: `NodeStrataRegistry`, `NodeStrataToggle` (both on `NodeCatalogRegistry`/`NodeCatalogToggle`),
+`/api/admin/nodes/{id}/strata/models/{m}/load|unload`, `/strata/on-demand/enable|disable`, `/strata/install`,
+the console's Strata models panel, `strata` on `/api/status` nodes. Contract: `NodeCatalogState` (+ `installable`), `NodeProfile.Strata`.
+[Strata](https://github.com/Niko1221/Strata) (MIT) runs Qwen3.8-Flash-Next (125B MoE) on one GPU plus RAM; one
+model in nine sizes over four families, each prepared for the box by its `setup.py` into a `strata-<size>.json`
+that `serve/server.py --config` serves (OpenAI dialect).
+
+**D1 — 97's catalogue is `ModelCatalog`, and Strata is its second user** (load-bearing). Admission, LRU,
+pins, on-demand and the state report moved verbatim out of `ColibriCatalog`; a subclass supplies its name,
+section, process name, kinds, `Scan()` (name → path), `IsReadyAsync` and an optional `Installable`. Colibri's
+sentences are byte-identical and its tests ran unchanged. Contract types renamed engine-neutral
+(`NodeCatalogState`, `NodeCatalogModel`, `CatalogProfile`, `CatalogToggleOutcome`) — the wire is the same JSON;
+each engine keeps its own hub method, so an older hub drops only the report it does not know. *Rejected:* a
+second copy of the 1 000 lines; folding Strata into colibri's section (two engines, two `Serve:` blocks).
+
+**D2 — a Strata model is a config, named by its file.** `strata-*.json` in `Strata:ConfigDir` (default `Root`,
+where setup writes them), kept only when it is a JSON object with `exe` and an `args` list — Strata's own
+#549 test, so `*.shared-settings.json`, a user's file and a half-written config are skipped. The name is the
+file's (`strata-coder-iq1_m`): every config's `model_name` is the same family name. Chat only (no embeddings;
+pictures are a setup choice the config does not reveal). Pull and delete refuse in a sentence: an install is
+D4's link, and sizes share files only setup can tell apart. `Backend:Type=strata` without `Root` is a plain
+upstream at Strata's `127.0.0.1:8080/v1`.
+
+**D3 — one `server.py` per loaded config, loopback, nothing that keeps prompts.** `--engine strata --config
+<cfg> --host 127.0.0.1 --port <Serve:Port+i>` from `Root`, under Strata's `.venv` when it exists. Rule 7:
+`STRATA_DEBUG` (raw model text on stdout) is removed from the child, and `--api-monitor` (the last 100 prompts
+for a web page) is refused in `Serve:Arguments` with the node-owned flags. **Ready is `/health` 200 and not
+`"loaded": false`** — Strata answers health while a lazy engine loads. The config's own `api_key` (first of
+`"k1,k2"` or a list) is the client's key unless `Strata:ApiKey` is written, which reaches the child as
+`STRATA_API_KEY`, never argv. Port 8095 (8080 is the images' local API, v3.61's trap); one slot; 20 min load.
+`Serve:Engine=mock` is Strata's own canned engine — a node's wiring checked before a 70 GB download.
+
+**D4 — an install is Strata's setup, reached by 98's link.** `StrataModels` maps a link to one of the four
+repos (size from `:quant`, a file's name, or the repo's only size; a revision is refused — setup pins its own)
+to `--family`/`--model`; anything else stays the GGUF store's. The executor hands a Strata link to
+`StrataInstaller`, which runs `setup.py --setup --yes --no-start --no-browser --family F --model S --host
+127.0.0.1 --vision no` (+ `DataDir`, `Install:Context`, `Install:Arguments`; node-owned flags refused), one at
+a time, `HF_TOKEN`/`HF_ENDPOINT` from `HuggingFace:`. **Setup draws its bar with `\r` alone**, so the runner
+reads characters, not lines; each percent is a frame with bytes. Success is the config listed afterwards, not
+exit 0. `HuggingFace:Enabled` is the consent (98 D1) and also what makes the state carry `installable`, which
+the hub's `/strata/install` maps a name back to a link from. *Rejected:* the node downloading the GGUFs and
+passing `--gguf-dir` — a second resume/checksum implementation, and setup's pack step still after it.
+
+Tests: `StrataModelsTests` (Shared), `StrataCatalogTests` (Node — `FakeStrata`, `FakeSetupRunner`, the fake
+launcher's Strata health), `StrataMeshTests` (Mesh — real hub, SignalR, node: route, install from a link, pin,
+refused delete). Live run with a real Strata install on a real GPU: `.claude/release-notes-v3.64.0.md`.

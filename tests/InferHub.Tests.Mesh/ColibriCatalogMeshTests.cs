@@ -36,7 +36,7 @@ public class ColibriCatalogMeshTests
         // Both models are routable before either is loaded: the listing is the catalogue.
         await mesh.WaitForAsync(() => mesh.Models().SequenceEqual(["olmoe", "qwen-moe"]));
         var boot = await mesh.WaitForStateAsync(s => s.Models.Count == 2);
-        Assert.All(boot.Models, m => Assert.Equal(NodeColibriModel.Unloaded, m.State));
+        Assert.All(boot.Models, m => Assert.Equal(NodeCatalogModel.Unloaded, m.State));
         Assert.Empty(mesh.Launcher.Alive);
 
         // A request for one that is not loaded loads it, through the hub.
@@ -48,14 +48,14 @@ public class ColibriCatalogMeshTests
             CancellationToken.None);
         Assert.True(result.Success, result.Error);
         Assert.Equal(1, mesh.Launcher.Chats("qwen-moe"));
-        await mesh.WaitForStateAsync(s => s.Models.Single(m => m.Name == "qwen-moe").State == NodeColibriModel.Loaded);
+        await mesh.WaitForStateAsync(s => s.Models.Single(m => m.Name == "qwen-moe").State == NodeCatalogModel.Loaded);
 
         // The hub selects olmoe: on a one-slot node that is a switch, and it lands in the profile.
         var load = await mesh.Toggle.SetLoadedAsync(mesh.Node()!, "OLMOE", loaded: true, "test", CancellationToken.None);
         Assert.True(load.Applied, load.Error);
         var switched = await mesh.WaitForStateAsync(s =>
-            s.Models.Single(m => m.Name == "olmoe") is { Pinned: true, State: NodeColibriModel.Loaded }
-            && s.Models.Single(m => m.Name == "qwen-moe").State == NodeColibriModel.Unloaded);
+            s.Models.Single(m => m.Name == "olmoe") is { Pinned: true, State: NodeCatalogModel.Loaded }
+            && s.Models.Single(m => m.Name == "qwen-moe").State == NodeCatalogModel.Unloaded);
         Assert.Equal(["olmoe"], mesh.Launcher.Alive.Keys);
         Assert.Equal(["olmoe"], mesh.Profiles.Get($"node:{ColibriMesh.NodeId}")!.Colibri!.Loaded);
 
@@ -66,7 +66,7 @@ public class ColibriCatalogMeshTests
         // Unloading from the hub unpins and stops it: the RAM comes back.
         var unload = await mesh.Toggle.SetLoadedAsync(mesh.Node()!, "olmoe", loaded: false, "test", CancellationToken.None);
         Assert.True(unload.Applied, unload.Error);
-        await mesh.WaitForStateAsync(s => s.Models.All(m => m.State == NodeColibriModel.Unloaded && !m.Pinned));
+        await mesh.WaitForStateAsync(s => s.Models.All(m => m.State == NodeCatalogModel.Unloaded && !m.Pinned));
         Assert.Empty(mesh.Launcher.Alive);
         Assert.Equal(["olmoe", "qwen-moe"], mesh.Models());
     }
@@ -79,13 +79,13 @@ public class ColibriCatalogMeshTests
 
         // The hub's own check, for the better message…
         var refused = await mesh.Toggle.SetLoadedAsync(mesh.Node()!, "../../etc/passwd", loaded: true, "test", CancellationToken.None);
-        Assert.Equal(ColibriToggleOutcome.UnknownModel, refused.Refusal);
+        Assert.Equal(CatalogToggleOutcome.UnknownModel, refused.Refusal);
         Assert.Contains("it has olmoe", refused.Error);
 
         // …and the node's, which holds when the profile arrives by another road.
         mesh.Profiles.Put("raw", new NodeProfile(
             "raw", 0, new NodeProfileSelector(NodeId: ColibriMesh.NodeId),
-            Colibri: new ColibriProfile(["../../etc/passwd"])));
+            Colibri: new CatalogProfile(["../../etc/passwd"])));
         await mesh.Coordinator.ReassertAsync(CancellationToken.None);
 
         var state = await mesh.WaitForProfileStateAsync(s => s.ProfileName == "raw");
@@ -153,7 +153,7 @@ public class ColibriCatalogMeshTests
             Assert.True(predicate(), $"timed out; the hub has {string.Join(", ", Models())}");
         }
 
-        public async Task<NodeColibriState> WaitForStateAsync(Func<NodeColibriState, bool> predicate)
+        public async Task<NodeCatalogState> WaitForStateAsync(Func<NodeCatalogState, bool> predicate)
         {
             for (var i = 0; i < 400; i++)
             {

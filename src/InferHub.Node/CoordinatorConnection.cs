@@ -34,8 +34,19 @@ public sealed class CoordinatorConnection(
     ILogger<CoordinatorConnection> logger,
     Resources.GpuArbiter? gpuArbiter = null,
     IEngineControl? engines = null,
-    Backends.Colibri.IColibriControl? colibri = null) : IAsyncDisposable
+    Backends.Colibri.IColibriControl? colibri = null,
+    Backends.Strata.IStrataControl? strata = null) : IAsyncDisposable
 {
+    /// <summary>
+    /// Phase 97's catalogue report, one per engine that has a catalogue (99): each has its own hub
+    /// method, so a hub older than the engine drops only that report.
+    /// </summary>
+    private readonly (Backends.Catalog.ICatalogControl Control, string Method)[] catalogs =
+        new (Backends.Catalog.ICatalogControl? Control, string Method)[] { (colibri, "ReportColibriState"), (strata, "ReportStrataState") }
+            .Where(c => c.Control is not null)
+            .Select(c => (c.Control!, c.Method))
+            .ToArray();
+
     private readonly CoordinatorOptions coordinator = coordinatorOptions.Value;
     private readonly NodeOptions node = nodeOptions.Value;
     private readonly ToolOptions toolOptions = toolOptionsAccessor.Value;
@@ -54,7 +65,7 @@ public sealed class CoordinatorConnection(
     private bool subscribedToTools;
     private bool subscribedToArbiter;
     private bool subscribedToEngines;
-    private bool subscribedToColibri;
+    private bool subscribedToCatalogs;
     private int onDemandBeatQueued;
     private LocalVectorStore? tailedStore;
 
@@ -64,7 +75,7 @@ public sealed class CoordinatorConnection(
         SubscribeToTools();
         SubscribeToArbiter();
         SubscribeToEngines();
-        SubscribeToColibri();
+        SubscribeToCatalogs();
         retrieval.CorpusChanged += OnCorpusChanged;
         return ConnectUntilSuccessfulAsync(cancellationToken);
     }
@@ -75,7 +86,7 @@ public sealed class CoordinatorConnection(
         UnsubscribeFromTools();
         UnsubscribeFromArbiter();
         UnsubscribeFromEngines();
-        UnsubscribeFromColibri();
+        UnsubscribeFromCatalogs();
         retrieval.CorpusChanged -= OnCorpusChanged;
         UnsubscribeFromTailedStore();
         await lifetime.CancelAsync();
@@ -116,7 +127,7 @@ public sealed class CoordinatorConnection(
         UnsubscribeFromTools();
         UnsubscribeFromArbiter();
         UnsubscribeFromEngines();
-        UnsubscribeFromColibri();
+        UnsubscribeFromCatalogs();
         retrieval.CorpusChanged -= OnCorpusChanged;
         UnsubscribeFromTailedStore();
         await lifetime.CancelAsync();
@@ -211,45 +222,54 @@ public sealed class CoordinatorConnection(
     }
 
     /// <summary>
-    /// Phase 97. A catalogue model started loading, loaded, failed or stopped: the hub's colibri
-    /// panel hears it now. The model list does not change — the catalogue is listed loaded or not.
+    /// Phase 97 (99 for Strata). A catalogue model started loading, loaded, failed or stopped — or a
+    /// Strata install finished: the hub's panel hears it now. The model list itself goes out on the
+    /// usual paths (a catalogue is listed loaded or not; an install is a pull, reported when it ends).
     /// </summary>
-    private void SubscribeToColibri()
+    private void SubscribeToCatalogs()
     {
-        if (colibri is null || subscribedToColibri)
+        if (catalogs.Length == 0 || subscribedToCatalogs)
         {
             return;
         }
 
-        subscribedToColibri = true;
-        colibri.Changed += OnColibriChanged;
+        subscribedToCatalogs = true;
+
+        foreach (var (control, _) in catalogs)
+        {
+            control.Changed += OnCatalogChanged;
+        }
     }
 
-    private void UnsubscribeFromColibri()
+    private void UnsubscribeFromCatalogs()
     {
-        if (!subscribedToColibri || colibri is null)
+        if (!subscribedToCatalogs)
         {
             return;
         }
 
-        subscribedToColibri = false;
-        colibri.Changed -= OnColibriChanged;
+        subscribedToCatalogs = false;
+
+        foreach (var (control, _) in catalogs)
+        {
+            control.Changed -= OnCatalogChanged;
+        }
     }
 
-    private void OnColibriChanged()
+    private void OnCatalogChanged()
     {
         _ = Task.Run(async () =>
         {
             try
             {
-                await ReportColibriStateAsync(lifetime.Token);
+                await ReportCatalogStateAsync(lifetime.Token);
             }
             catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
             {
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Could not report the colibri catalogue after it changed");
+                logger.LogWarning(ex, "Could not report a model catalogue after it changed");
             }
         });
     }
@@ -728,7 +748,7 @@ public sealed class CoordinatorConnection(
 
         // Phase 95: a profile that stopped an engine is looked at right away, same as a tool.
         await ReportBackendStateAsync(cancellationToken);
-        await ReportColibriStateAsync(cancellationToken);
+        await ReportCatalogStateAsync(cancellationToken);
 
         if (application.Changed)
         {
@@ -1378,7 +1398,7 @@ public sealed class CoordinatorConnection(
         {
             // The engines block still goes out: "every engine is down" is exactly when it is read.
             await ReportBackendStateAsync(cancellationToken);
-            await ReportColibriStateAsync(cancellationToken);
+            await ReportCatalogStateAsync(cancellationToken);
 
             logger.LogWarning(
                 "Could not list models from the {Backend} backend; leaving the coordinator's inventory alone rather than reporting zero. The heartbeat carries this backend's health.",
@@ -1464,29 +1484,33 @@ public sealed class CoordinatorConnection(
         await ReportBackendStateAsync(cancellationToken);
 
         // Phase 97: which catalogue models are loaded, pinned, idle.
-        await ReportColibriStateAsync(cancellationToken);
+        await ReportCatalogStateAsync(cancellationToken);
     }
 
     /// <summary>
-    /// Tells the hub what the colibri catalogue holds (phase 97). Sent only by a node with one. A hub
-    /// older than v3.62 has no such method: a debug line and a node that carries on (40 D1).
+    /// Tells the hub what each catalogue holds (phase 97; Strata's since 99). Sent only by a node with
+    /// one. A hub older than the method (v3.62 for colibri, v3.64 for Strata) has no such method: a debug
+    /// line and a node that carries on (40 D1).
     /// </summary>
-    private async Task ReportColibriStateAsync(CancellationToken cancellationToken)
+    private async Task ReportCatalogStateAsync(CancellationToken cancellationToken)
     {
         var activeConnection = connection;
 
-        if (colibri is null || activeConnection is not { State: HubConnectionState.Connected })
+        if (catalogs.Length == 0 || activeConnection is not { State: HubConnectionState.Connected })
         {
             return;
         }
 
-        try
+        foreach (var (control, method) in catalogs)
         {
-            await activeConnection.InvokeAsync("ReportColibriState", colibri.State(nodeId), cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            logger.LogDebug(ex, "This coordinator did not accept a colibri report");
+            try
+            {
+                await activeConnection.InvokeAsync(method, control.State(nodeId), cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "This coordinator did not accept a {Engine} report", control.Name);
+            }
         }
     }
 

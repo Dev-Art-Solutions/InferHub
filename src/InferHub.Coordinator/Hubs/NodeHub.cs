@@ -175,11 +175,25 @@ public sealed class NodeHub(
     /// What a node's colibri catalogue holds (phase 97): which models are loaded, pinned, idle. The
     /// mailbox again; only a node with a catalogue sends one.
     /// </summary>
-    public Task ReportColibriState(NodeColibriState state)
+    public Task ReportColibriState(NodeCatalogState state)
     {
         if (services.GetService(typeof(NodeColibriRegistry)) is NodeColibriRegistry colibri)
         {
             colibri.Report(state);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// What a node's Strata catalogue holds (phase 99): the same mailbox as colibri's, plus what the
+    /// node could install from Hugging Face. Only a node serving a Strata install sends one.
+    /// </summary>
+    public Task ReportStrataState(NodeCatalogState state)
+    {
+        if (services.GetService(typeof(NodeStrataRegistry)) is NodeStrataRegistry strata)
+        {
+            strata.Report(state);
         }
 
         return Task.CompletedTask;

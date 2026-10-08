@@ -423,22 +423,50 @@ public static class AdminEndpoints
         group.MapPost("/nodes/{nodeId}/colibri/models/{model}/load", async (
             string nodeId, string model, HttpContext context,
             INodeRegistry registry, NodeColibriToggle toggle, CancellationToken cancellationToken) =>
-            await SetColibriAsync(nodeId, context, registry, (node, by) => toggle.SetLoadedAsync(node, model, loaded: true, by, cancellationToken)));
+            await SetCatalogAsync(nodeId, context, registry, (node, by) => toggle.SetLoadedAsync(node, model, loaded: true, by, cancellationToken)));
 
         group.MapPost("/nodes/{nodeId}/colibri/models/{model}/unload", async (
             string nodeId, string model, HttpContext context,
             INodeRegistry registry, NodeColibriToggle toggle, CancellationToken cancellationToken) =>
-            await SetColibriAsync(nodeId, context, registry, (node, by) => toggle.SetLoadedAsync(node, model, loaded: false, by, cancellationToken)));
+            await SetCatalogAsync(nodeId, context, registry, (node, by) => toggle.SetLoadedAsync(node, model, loaded: false, by, cancellationToken)));
 
         group.MapPost("/nodes/{nodeId}/colibri/on-demand/enable", async (
             string nodeId, HttpContext context,
             INodeRegistry registry, NodeColibriToggle toggle, CancellationToken cancellationToken) =>
-            await SetColibriAsync(nodeId, context, registry, (node, by) => toggle.SetOnDemandAsync(node, onDemand: true, by, cancellationToken)));
+            await SetCatalogAsync(nodeId, context, registry, (node, by) => toggle.SetOnDemandAsync(node, onDemand: true, by, cancellationToken)));
 
         group.MapPost("/nodes/{nodeId}/colibri/on-demand/disable", async (
             string nodeId, HttpContext context,
             INodeRegistry registry, NodeColibriToggle toggle, CancellationToken cancellationToken) =>
-            await SetColibriAsync(nodeId, context, registry, (node, by) => toggle.SetOnDemandAsync(node, onDemand: false, by, cancellationToken)));
+            await SetCatalogAsync(nodeId, context, registry, (node, by) => toggle.SetOnDemandAsync(node, onDemand: false, by, cancellationToken)));
+
+        // Phase 99. The same four for a Strata catalogue, and an install: a model from the node's own
+        // `installable` list (or a link to one of Strata's repos), sent as the phase-98 Hugging Face pull.
+        group.MapPost("/nodes/{nodeId}/strata/models/{model}/load", async (
+            string nodeId, string model, HttpContext context,
+            INodeRegistry registry, NodeStrataToggle toggle, CancellationToken cancellationToken) =>
+            await SetCatalogAsync(nodeId, context, registry, (node, by) => toggle.SetLoadedAsync(node, model, loaded: true, by, cancellationToken)));
+
+        group.MapPost("/nodes/{nodeId}/strata/models/{model}/unload", async (
+            string nodeId, string model, HttpContext context,
+            INodeRegistry registry, NodeStrataToggle toggle, CancellationToken cancellationToken) =>
+            await SetCatalogAsync(nodeId, context, registry, (node, by) => toggle.SetLoadedAsync(node, model, loaded: false, by, cancellationToken)));
+
+        group.MapPost("/nodes/{nodeId}/strata/on-demand/enable", async (
+            string nodeId, HttpContext context,
+            INodeRegistry registry, NodeStrataToggle toggle, CancellationToken cancellationToken) =>
+            await SetCatalogAsync(nodeId, context, registry, (node, by) => toggle.SetOnDemandAsync(node, onDemand: true, by, cancellationToken)));
+
+        group.MapPost("/nodes/{nodeId}/strata/on-demand/disable", async (
+            string nodeId, HttpContext context,
+            INodeRegistry registry, NodeStrataToggle toggle, CancellationToken cancellationToken) =>
+            await SetCatalogAsync(nodeId, context, registry, (node, by) => toggle.SetOnDemandAsync(node, onDemand: false, by, cancellationToken)));
+
+        group.MapPost("/nodes/{nodeId}/strata/install", async (
+            string nodeId, StrataInstallRequest body, HttpContext context,
+            INodeRegistry registry, NodeStrataRegistry strata, ModelCommandCoordinator commands, IAuditLog audit,
+            ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
+            await InstallStrataAsync(nodeId, body, context, registry, strata, commands, audit, loggerFactory, cancellationToken));
 
         group.MapPost("/nodes/{nodeId}/collections/{collection}/assign", async (
             string nodeId, string collection, HttpContext context,
@@ -924,12 +952,83 @@ public static class AdminEndpoints
         };
     }
 
-    /// <summary>Phase 97. Thin HTTP wrapper around <see cref="NodeColibriToggle"/>.</summary>
-    private static async Task<IResult> SetColibriAsync(
+    /// <summary>
+    /// Phase 99 D4. A name from the node's own <c>installable</c> list is its link; anything else must be
+    /// a link to one of Strata's repos. Either way it travels as the phase-98 pull with engine
+    /// <c>huggingface</c>, and the node hands a Strata repo to Strata's setup.
+    /// </summary>
+    private static async Task<IResult> InstallStrataAsync(
+        string nodeId,
+        StrataInstallRequest body,
+        HttpContext context,
+        INodeRegistry registry,
+        NodeStrataRegistry strata,
+        ModelCommandCoordinator commands,
+        IAuditLog audit,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        var node = registry.Snapshot(DateTimeOffset.UtcNow)
+            .FirstOrDefault(n => string.Equals(n.NodeId, nodeId, StringComparison.OrdinalIgnoreCase));
+
+        if (node is null)
+        {
+            return Results.NotFound(new { error = $"node '{nodeId}' not found" });
+        }
+
+        if (strata.Of(node.NodeId) is not { } state)
+        {
+            return Results.Conflict(new { error = $"node '{node.NodeId}' reports no Strata catalogue: it runs no strata backend or engine with Strata:Root, or a release before v3.64." });
+        }
+
+        if (state.Installable is null)
+        {
+            return Results.Conflict(new { error = $"node '{node.NodeId}' does not install from Hugging Face; set HuggingFace:Enabled=true on it." });
+        }
+
+        var wanted = (body?.Model ?? string.Empty).Trim();
+        var link = state.Installable.FirstOrDefault(i => string.Equals(i.Name, wanted, StringComparison.OrdinalIgnoreCase))?.Link ?? wanted;
+
+        if (!InferHub.Shared.HuggingFace.HfReference.TryParse(link, null, out var reference, out var error))
+        {
+            return Results.BadRequest(new { error = $"'{wanted}' is neither a model this node can install ({string.Join(", ", state.Installable.Select(i => i.Name))}) nor a link: {error}" });
+        }
+
+        if (!InferHub.Shared.Strata.StrataModels.TryMatch(reference!, out _, out _, out error))
+        {
+            return Results.BadRequest(new { error });
+        }
+
+        var model = reference!.ToString();
+        var result = await commands.SendAsync(node.NodeId, ModelCommand.KindPull, model, cancellationToken, engine: ModelCommand.EngineHuggingFace);
+
+        if (result is null)
+        {
+            return Results.NotFound(new { error = $"node '{nodeId}' is no longer connected" });
+        }
+
+        audit.Record(node.NodeId, "model.install.strata", ActorOf(context), DateTimeOffset.UtcNow);
+        loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin").LogInformation(
+            "Strata install '{Model}' on node {NodeId} -> command {CommandId} (reused={Reused})",
+            model, node.NodeId, result.CommandId, result.Reused);
+
+        return Results.Accepted($"/api/admin/nodes/{node.NodeId}/models", new
+        {
+            nodeId = node.NodeId,
+            model,
+            kind = ModelCommand.KindPull,
+            engine = ModelCommand.EngineHuggingFace,
+            commandId = result.CommandId,
+            reused = result.Reused
+        });
+    }
+
+    /// <summary>Phase 97 (99: either catalogue). Thin HTTP wrapper around a <see cref="NodeCatalogToggle"/>.</summary>
+    private static async Task<IResult> SetCatalogAsync(
         string nodeId,
         HttpContext context,
         INodeRegistry registry,
-        Func<NodeSnapshot, string, Task<ColibriToggleOutcome>> toggle)
+        Func<NodeSnapshot, string, Task<CatalogToggleOutcome>> toggle)
     {
         var node = registry.Snapshot(DateTimeOffset.UtcNow)
             .FirstOrDefault(n => string.Equals(n.NodeId, nodeId, StringComparison.OrdinalIgnoreCase));
@@ -943,8 +1042,8 @@ public static class AdminEndpoints
 
         return outcome.Refusal switch
         {
-            null => Results.Ok(new { nodeId = node.NodeId, colibri = outcome.Profile?.Colibri, profile = outcome.Profile }),
-            ColibriToggleOutcome.UnknownModel => Results.NotFound(new { error = outcome.Error }),
+            null => Results.Ok(new { nodeId = node.NodeId, colibri = outcome.Profile?.Colibri, strata = outcome.Profile?.Strata, profile = outcome.Profile }),
+            CatalogToggleOutcome.UnknownModel => Results.NotFound(new { error = outcome.Error }),
             _ => Results.Conflict(new { error = outcome.Error })
         };
     }
@@ -1283,6 +1382,9 @@ public static class AdminEndpoints
         string Status,
         IReadOnlyList<string>? Conflicts,
         IReadOnlyList<NodeProfileRefusal> Refusals);
+
+    /// <summary>Phase 99: <c>POST /api/admin/nodes/{id}/strata/install</c> — a name from the node's <c>installable</c>, or a link.</summary>
+    internal sealed record StrataInstallRequest(string? Model);
 
     /// <summary>Phase 98: <c>POST /api/admin/nodes/{id}/huggingface</c>. The quant is a separate field so a form can carry it.</summary>
     internal sealed record HuggingFacePullRequest(

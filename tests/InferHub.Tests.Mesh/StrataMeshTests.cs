@@ -4,8 +4,8 @@ using InferHub.Coordinator.Observability;
 using InferHub.Coordinator.Services;
 using InferHub.Node;
 using InferHub.Node.Backends;
-using InferHub.Node.Backends.Colibri;
 using InferHub.Node.Backends.HuggingFace;
+using InferHub.Node.Backends.Strata;
 using InferHub.Node.Backends.Supervision;
 using InferHub.Node.Configuration;
 using InferHub.Node.Profiles;
@@ -22,135 +22,110 @@ using Microsoft.Extensions.Options;
 namespace InferHub.Tests;
 
 /// <summary>
-/// Phase 98 across a real wire: the hub sends a Hugging Face link as a model command, the node's
-/// store fetches it from a Hub-shaped socket (or converts it), the hub hears the progress and the
-/// node's new model, and a chat for it is routed and answered.
+/// Phase 99 across a real wire: a real hub, a real <see cref="CoordinatorConnection"/>, and a node whose
+/// backend is a Strata catalogue — each loaded config a real socket, each install a scripted
+/// <c>setup.py</c>. The hub routes an unloaded Strata model, installs another from a Hugging Face link,
+/// and pins it through the shipped <see cref="NodeStrataToggle"/>.
 /// </summary>
-public class HuggingFaceMeshTests
+public class StrataMeshTests
 {
+    private const string CoderLink = "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M";
+
     [Fact]
-    public async Task ALinkFromTheHubBecomesAColibriModelTheFleetCanChatWith()
+    public async Task TheHubRoutesAStrataModelInstallsAnotherFromALinkAndSwitchesToIt()
     {
-        await using var hub = await FakeHuggingFace.StartAsync();
-        hub.Repo("allenai/OLMoE-1B-7B-0924",
-            ("config.json", "{}"u8.ToArray()),
-            ("model-00001-of-00001.safetensors", FakeHuggingFace.Bytes(1000, 1)));
-        hub.Repo("bartowski/Tiny-GGUF", ("Tiny-Q4_K_M.gguf", FakeHuggingFace.Bytes(200_000, 2)));
+        await using var mesh = await StrataMesh.StartAsync("strata-iq2_xs");
 
-        await using var mesh = await HfMesh.StartAsync(hub, "olmoe");
-        await mesh.WaitForAsync(() => mesh.Models().SequenceEqual(["olmoe"]));
+        // Installed configs are routable before any is loaded, and the node offers what it could install.
+        await mesh.WaitForAsync(() => mesh.Models().SequenceEqual(["strata-iq2_xs"]));
+        var boot = await mesh.WaitForStateAsync(s => s.Models.Count == 1 && s.Installable is { Count: > 0 });
+        Assert.Equal(NodeCatalogModel.Unloaded, boot.Models.Single().State);
+        Assert.Contains(boot.Installable!, i => i is { Name: "strata-iq2_xs", Installed: true });
+        Assert.Contains(boot.Installable!, i => i is { Name: "strata-coder-iq1_m", Installed: false, Link: CoderLink });
 
-        var done = await mesh.RunAsync("allenai/OLMoE-1B-7B-0924");
+        var answered = await mesh.ChatAsync("strata-iq2_xs");
+        Assert.True(answered.Success, answered.Error);
+        Assert.Equal(1, mesh.Launcher.Chats("strata-iq2_xs"));
+
+        // The link a hub sends for a Strata repo runs Strata's setup on the node, not the GGUF store.
+        var done = await mesh.RunAsync(ModelCommand.KindPull, CoderLink);
         Assert.Null(done.Error);
         Assert.Equal("success", done.Status);
+        Assert.Contains("--family", mesh.Runner.Runs.Single().ArgumentList);
 
-        // The node reports its models when a pull finishes (96 D3): the converted model is routable.
-        await mesh.WaitForAsync(() => mesh.Models().SequenceEqual(["olmoe", "olmoe-1b-7b-0924"]));
+        await mesh.WaitForAsync(() => mesh.Models().SequenceEqual(["strata-coder-iq1_m", "strata-iq2_xs"]));
+        await mesh.WaitForStateAsync(s => s.Installable!.Single(i => i.Name == "strata-coder-iq1_m").Installed);
 
-        var routed = mesh.Router.Route("olmoe-1b-7b-0924", capability: CapabilityKinds.Chat);
-        Assert.NotNull(routed);
-        var result = await mesh.Dispatcher.DispatchAsync(
-            routed!,
-            new InferenceJob(Guid.NewGuid(), "chat", FakeColibri.Chat("olmoe-1b-7b-0924")),
-            CancellationToken.None);
-        Assert.True(result.Success, result.Error);
-        Assert.Equal(1, mesh.Launcher.Chats("olmoe-1b-7b-0924"));
+        // Picking it from the hub is a switch on the one-slot default, and it lands in the profile.
+        var load = await mesh.Toggle.SetLoadedAsync(mesh.Node()!, "strata-coder-iq1_m", loaded: true, "test", CancellationToken.None);
+        Assert.True(load.Applied, load.Error);
+        await mesh.WaitForStateAsync(s =>
+            s.Models.Single(m => m.Name == "strata-coder-iq1_m") is { Pinned: true, State: NodeCatalogModel.Loaded }
+            && s.Models.Single(m => m.Name == "strata-iq2_xs").State == NodeCatalogModel.Unloaded);
+        Assert.Equal(["strata-coder-iq1_m"], mesh.Launcher.Alive.Keys);
+        Assert.Equal(["strata-coder-iq1_m"], mesh.Profiles.Get($"node:{StrataMesh.NodeId}")!.Strata!.Loaded);
 
-        // A GGUF from the same hub lands in the router's directory, verified.
-        var gguf = await mesh.RunAsync("bartowski/Tiny-GGUF");
-        Assert.Null(gguf.Error);
-        Assert.True(File.Exists(Path.Combine(mesh.GgufDirectory, "Tiny-Q4_K_M", "Tiny-Q4_K_M.gguf")));
-
-        // A link the node cannot serve ends in one terminal frame with the node's sentence.
-        var refused = await mesh.RunAsync("someone/missing");
-        Assert.Contains("has no 'someone/missing'", refused.Error);
+        // A delete through the store is refused in Strata's words: its sizes share files.
+        var delete = await mesh.RunAsync(ModelCommand.KindDelete, "strata-coder-iq1_m");
+        Assert.Contains("Strata install", delete.Error);
+        Assert.Contains("strata-coder-iq1_m", mesh.Models());
     }
 
     [Fact]
-    public async Task TheNodeKeepsAnsweringWhileALongConversionRuns()
+    public async Task AnInstallTheNodeCannotDoIsAFrameNotASilence()
     {
-        // Found by the published-image check: a model command's handler held the node's connection
-        // for as long as the command ran, and SignalR delivers hub calls to a client one at a time —
-        // a chat sent during a four-minute conversion was not even received until it finished.
-        await using var hub = await FakeHuggingFace.StartAsync();
-        hub.Repo("allenai/OLMoE-1B-7B-0924",
-            ("config.json", "{}"u8.ToArray()),
-            ("model-00001-of-00001.safetensors", FakeHuggingFace.Bytes(1000, 1)));
+        await using var mesh = await StrataMesh.StartAsync("strata-iq2_xs");
+        await mesh.WaitForStateAsync(s => s.Models.Count == 1);
 
-        await using var mesh = await HfMesh.StartAsync(hub, "olmoe");
-        await mesh.WaitForAsync(() => mesh.Models().SequenceEqual(["olmoe"]));
+        var refused = await mesh.RunAsync(ModelCommand.KindPull, "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF:IQ3_S");
 
-        mesh.Converter.Hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var conversion = mesh.RunAsync("allenai/OLMoE-1B-7B-0924");
+        Assert.Equal("error", refused.Status);
+        Assert.Contains("IQ2_XS, IQ3_XXS", refused.Error);
+        Assert.Empty(mesh.Runner.Runs);
 
-        for (var i = 0; i < 200 && mesh.Converter.Calls.IsEmpty; i++)
-        {
-            await Task.Delay(25);
-        }
-
-        Assert.Single(mesh.Converter.Calls);
-
-        var routed = mesh.Router.Route("olmoe", capability: CapabilityKinds.Chat);
-        var chat = mesh.Dispatcher.DispatchAsync(
-            routed!,
-            new InferenceJob(Guid.NewGuid(), "chat", FakeColibri.Chat("olmoe")),
-            CancellationToken.None);
-
-        var answered = await Task.WhenAny(chat, Task.Delay(TimeSpan.FromSeconds(15)));
-        Assert.Same(chat, answered);
-        Assert.True((await chat).Success, (await chat).Error);
-        Assert.False(conversion.IsCompleted);
-
-        mesh.Converter.Hold.SetResult();
-        Assert.Null((await conversion).Error);
+        var colibri = await mesh.Toggle.SetLoadedAsync(mesh.Node()!, "llama3", loaded: true, "test", CancellationToken.None);
+        Assert.Equal(CatalogToggleOutcome.UnknownModel, colibri.Refusal);
+        Assert.Contains("installed by Strata's setup", colibri.Error);
     }
 
-    private sealed class HfMesh : IAsyncDisposable
+    private sealed class StrataMesh : IAsyncDisposable
     {
-        public const string NodeId = "hf-node";
-        private const string Secret = "colibri-mesh-secret";
+        public const string NodeId = "strata-node";
+        private const string Secret = "strata-mesh-secret";
 
         private WebApplication app = null!;
         private CoordinatorConnection node = null!;
-        private ColibriCatalog catalog = null!;
+        private StrataCatalog catalog = null!;
         private string scratch = null!;
-        private string models = null!;
+        private string install = null!;
 
         public FakeColibriLauncher Launcher { get; } = new();
 
-        public FakeConverter Converter { get; } = new();
-
-        public FakeHuggingFace Hub { get; private set; } = null!;
-
-        public ModelCommandCoordinator Commands { get; private set; } = null!;
-
-        public string GgufDirectory => Path.Combine(scratch, "gguf");
-
-        public string ColibriDirectory => models;
+        public FakeSetupRunner Runner { get; private set; } = null!;
 
         public NodeRegistry Registry { get; } = new();
 
         public ProfileRegistry Profiles { get; } = new(new NoProfileStore(), NullLogger<ProfileRegistry>.Instance);
 
-        public NodeColibriRegistry Colibri { get; } = new();
+        public NodeStrataRegistry Strata { get; } = new();
 
-        public NodeProfileCoordinator Coordinator { get; private set; } = null!;
+        public NodeStrataToggle Toggle { get; private set; } = null!;
 
-        public NodeColibriToggle Toggle { get; private set; } = null!;
+        public ModelCommandCoordinator Commands { get; private set; } = null!;
 
         public IRouter Router { get; private set; } = null!;
 
         public IDispatcher Dispatcher { get; private set; } = null!;
 
-        public static async Task<HfMesh> StartAsync(FakeHuggingFace hub, params string[] catalogue)
+        public static async Task<StrataMesh> StartAsync(params string[] configs)
         {
-            var mesh = new HfMesh
+            var mesh = new StrataMesh
             {
-                scratch = Path.Combine(Path.GetTempPath(), "inferhub-hf-mesh-" + Guid.NewGuid().ToString("N")),
-                models = FakeColibri.Catalogue(catalogue),
-                Hub = hub
+                scratch = Path.Combine(Path.GetTempPath(), "inferhub-strata-mesh-" + Guid.NewGuid().ToString("N")),
+                install = FakeStrata.Install(configs)
             };
 
+            mesh.Runner = new FakeSetupRunner(mesh.install);
             await mesh.StartCoordinatorAsync();
             await mesh.StartNodeAsync();
             return mesh;
@@ -164,6 +139,13 @@ public class HuggingFaceMeshTests
             .SelectMany(c => c.Models)
             .Order(StringComparer.Ordinal)
             .ToArray();
+
+        public async Task<InferenceResult> ChatAsync(string model)
+        {
+            var routed = Router.Route(model, capability: CapabilityKinds.Chat);
+            Assert.NotNull(routed);
+            return await Dispatcher.DispatchAsync(routed!, new InferenceJob(Guid.NewGuid(), "chat", FakeColibri.Chat(model)), CancellationToken.None);
+        }
 
         public async Task WaitForAsync(Func<bool> predicate)
         {
@@ -179,7 +161,7 @@ public class HuggingFaceMeshTests
         {
             for (var i = 0; i < 400; i++)
             {
-                if (Colibri.Of(NodeId) is { } state && predicate(state))
+                if (Strata.Of(NodeId) is { } state && predicate(state))
                 {
                     return state;
                 }
@@ -187,10 +169,10 @@ public class HuggingFaceMeshTests
                 await Task.Delay(25);
             }
 
-            throw new TimeoutException("No colibri report matching the predicate arrived.");
+            throw new TimeoutException("No Strata report matching the predicate arrived.");
         }
 
-        public async Task<ModelCommandProgress> RunAsync(string link)
+        public async Task<ModelCommandProgress> RunAsync(string kind, string model)
         {
             var finished = new TaskCompletionSource<ModelCommandProgress>(TaskCreationOptions.RunContinuationsAsynchronously);
             Guid? id = null;
@@ -207,7 +189,7 @@ public class HuggingFaceMeshTests
 
             try
             {
-                var started = await Commands.SendAsync(NodeId, ModelCommand.KindPull, link, CancellationToken.None, engine: ModelCommand.EngineHuggingFace);
+                var started = await Commands.SendAsync(NodeId, kind, model, CancellationToken.None, engine: ModelCommand.EngineHuggingFace);
                 Assert.NotNull(started);
                 id = started!.CommandId;
                 return await finished.Task.WaitAsync(TimeSpan.FromSeconds(30));
@@ -216,21 +198,6 @@ public class HuggingFaceMeshTests
             {
                 Commands.ProgressReceived -= Handler;
             }
-        }
-
-        public async Task<NodeProfileState> WaitForProfileStateAsync(Func<NodeProfileState, bool> predicate)
-        {
-            for (var i = 0; i < 400; i++)
-            {
-                if (Profiles.StateOf(NodeId) is { } state && predicate(state))
-                {
-                    return state;
-                }
-
-                await Task.Delay(25);
-            }
-
-            throw new TimeoutException("No profile state matching the predicate arrived.");
         }
 
         private async Task StartCoordinatorAsync()
@@ -244,7 +211,7 @@ public class HuggingFaceMeshTests
             builder.Services.AddSingleton<NodeAuthFilter>();
             builder.Services.AddSingleton<INodeRegistry>(Registry);
             builder.Services.AddSingleton<IProfileRegistry>(Profiles);
-            builder.Services.AddSingleton(Colibri);
+            builder.Services.AddSingleton(Strata);
             builder.Services.AddSingleton<IAuditLog, AuditLog>();
             builder.Services.AddSingleton<IRouter, InferHub.Coordinator.Services.Router>();
             builder.Services.AddSingleton<IConversationAffinity>(new ConversationAffinity(
@@ -259,7 +226,7 @@ public class HuggingFaceMeshTests
             builder.Services.AddSingleton<InferHub.Coordinator.Vector.CollectionOwnership>();
             builder.Services.AddSingleton<InferHub.Coordinator.Vector.NodeCorpusRegistry>();
             builder.Services.AddSingleton<NodeProfileCoordinator>();
-            builder.Services.AddSingleton<NodeColibriToggle>();
+            builder.Services.AddSingleton<NodeStrataToggle>();
             builder.Services.AddSingleton<ModelCommandCoordinator>();
             builder.Services.AddSingleton<InferHub.Coordinator.Cluster.IClusterMembership,
                 InferHub.Coordinator.Cluster.SingleCoordinatorMembership>();
@@ -268,8 +235,7 @@ public class HuggingFaceMeshTests
             app.MapHub<NodeHub>("/hubs/node");
 
             await app.StartAsync();
-            Coordinator = app.Services.GetRequiredService<NodeProfileCoordinator>();
-            Toggle = app.Services.GetRequiredService<NodeColibriToggle>();
+            Toggle = app.Services.GetRequiredService<NodeStrataToggle>();
             Commands = app.Services.GetRequiredService<ModelCommandCoordinator>();
             Router = app.Services.GetRequiredService<IRouter>();
             Dispatcher = app.Services.GetRequiredService<IDispatcher>();
@@ -277,11 +243,12 @@ public class HuggingFaceMeshTests
 
         private async Task StartNodeAsync()
         {
-            catalog = FakeColibri.Catalog(
-                new ColibriOptions { Serve = new ColibriServeOptions { ModelsDir = models, LoadTimeout = TimeSpan.FromSeconds(10) } },
-                Launcher);
+            var options = FakeStrata.Options(install);
+            catalog = FakeStrata.Catalog(options, Launcher);
+            catalog.InstallsFromHub = true;
             catalog.Start();
 
+            var hf = new HuggingFaceOptions { Enabled = true };
             var toolOptions = Options.Create(new ToolOptions());
             var runtime = new NoToolRuntime();
             var replicas = new ReplicaStore(
@@ -301,14 +268,18 @@ public class HuggingFaceMeshTests
                 new FixedIdentity(NodeId),
                 catalog,
                 new InferenceExecutor(catalog, replicas, TestProfiles.IdleRetrieval(), NullLogger<InferenceExecutor>.Instance),
-                new ModelCommandExecutor(catalog, NullLogger<ModelCommandExecutor>.Instance, huggingFace: new HuggingFaceStore(
-                    new HuggingFaceOptions { Enabled = true, Endpoint = Hub.Url },
-                    new HuggingFaceTargets(null, GgufDirectory, models),
-                    () => Hub.Client(),
-                    Converter,
-                    restartEngine: null,
+                new ModelCommandExecutor(
                     catalog,
-                    NullLogger.Instance)),
+                    NullLogger<ModelCommandExecutor>.Instance,
+                    huggingFace: new HuggingFaceStore(
+                        hf,
+                        new HuggingFaceTargets(null, null, null, Strata: true),
+                        () => throw new InvalidOperationException("a Strata install never reaches the GGUF store"),
+                        converter: null,
+                        restartEngine: null,
+                        colibri: null,
+                        NullLogger.Instance),
+                    strata: FakeStrata.Installer(catalog, options, Runner, hf)),
                 new ToolExecutor(runtime, toolOptions, NullLogger<ToolExecutor>.Instance),
                 runtime,
                 toolOptions,
@@ -319,13 +290,13 @@ public class HuggingFaceMeshTests
                     runtime,
                     TestProfiles.IdleRetrieval(),
                     NullLogger<NodeProfileApplier>.Instance,
-                    colibri: catalog),
+                    strata: catalog),
                 TestProfiles.IdleRetrieval(),
                 replicas,
                 new NoBackendSupervisor(),
                 InferHub.Node.Resources.NoResourceGovernor.Instance,
                 NullLogger<CoordinatorConnection>.Instance,
-                colibri: catalog);
+                strata: catalog);
 
             await node.StartAsync(CancellationToken.None);
 
@@ -349,7 +320,7 @@ public class HuggingFaceMeshTests
             await app.StopAsync();
             await app.DisposeAsync();
 
-            foreach (var dir in new[] { scratch, models })
+            foreach (var dir in new[] { scratch, install })
             {
                 try
                 {

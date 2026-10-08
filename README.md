@@ -2935,6 +2935,57 @@ POST /api/admin/nodes/{id}/huggingface   {"url": "https://huggingface.co/allenai
 One file never feeds both engines: llama.cpp needs a GGUF, colibri its converted format. For the same
 model on both, pull its GGUF repo *and* its checkpoint.
 
+## Strata — a 125B model on one gaming GPU, its sizes picked and installed from the hub (v3.64)
+
+[Strata](https://github.com/Niko1221/Strata) runs **Qwen3.8-Flash-Next** — 125 billion parameters,
+24,576 experts — on one 12 GB+ NVIDIA or AMD card plus 32–64 GB of RAM: the busiest experts on the
+card, all of them in RAM, a lookup table on the SSD. It comes in nine sizes over four versions, and
+since v3.64 a node serves a Strata install the way it serves a colibri catalogue: **every installed
+size is a model**, the one a request names is started, and the coordinator picks which stays loaded.
+
+```jsonc
+"Backend": { "Type": "strata" },              // or a Backend:Engines entry of Type "strata", beside ollama/llama.cpp
+"Strata": { "Root": "/opt/strata" },          // a Strata checkout set up with its own installer
+"HuggingFace": { "Enabled": true }            // only if the hub may install more sizes
+```
+
+- **Every size Strata's setup installed is listed** — `strata-iq2_xs`, `strata-coder-iq1_m`,
+  `strata-unsloth-ud-iq4_xs`… (one `strata-*.json` config each, named by its file), loaded or not.
+- **A request starts its model.** The node runs Strata's own `serve/server.py` for that config on a
+  loopback port and waits until its `/health` says loaded (it maps 25–60 GB first; `Serve:LoadTimeout`
+  is 20 minutes). `Serve:MaxLoaded` is **1** by default, so asking for another size is a switch: the
+  first is stopped before the second loads. `Serve:OnDemand` stops an idle one to give the RAM back.
+- **The coordinator picks.** The console's **Strata models** panel works like the colibri one —
+  **Load** / **Unload**, **On demand** / **Keep loaded** — and writes the node's profile:
+
+  ```
+  POST /api/admin/nodes/{id}/strata/models/{model}/load|unload
+  POST /api/admin/nodes/{id}/strata/on-demand/enable|disable
+  # or in a profile: "strata": { "loaded": ["strata-coder-iq1_m"], "onDemand": true }
+  ```
+
+- **Installed from Hugging Face, through the hub.** With `HuggingFace:Enabled`, the panel offers every
+  size Strata knows (**Install on node**), or post a name or a link to one of Strata's repos:
+
+  ```
+  POST /api/admin/nodes/{id}/strata/install   {"model": "strata-coder-iq1_m"}
+  POST /api/admin/nodes/{id}/huggingface      {"url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "quant": "IQ2_XS"}
+  ```
+
+  The node runs **Strata's own setup** (`setup.py --setup --yes --no-start`), which downloads the pinned
+  files, checks them, resumes a cut download and prepares them for that box — 58–111 GB each, one
+  install at a time, byte progress in the console's command feed. `Strata:DataDir` is where the files
+  go; `Strata:Install:Arguments` passes setup flags such as `--kv q4_0` or `--low-ram on`.
+- The config's own API key is used if it has one (`Strata__ApiKey` overrides it). `STRATA_DEBUG` is
+  never passed to the server and `--api-monitor` is refused: no prompt reaches a log.
+- `Strata:Serve:Engine=mock` runs Strata's own canned engine — no GPU, no weights — to check a node's
+  wiring before a 70 GB download. Without `Root`, `Backend:Type=strata` is a Strata server somebody else
+  runs, at `Upstream:BaseUrl` (Strata's default `http://127.0.0.1:8080/v1`).
+
+Chat only: Strata's pictures are a setup choice the node cannot see, and the hub has its own Anthropic
+and Responses edges. Sizes are removed with Strata's setup on the box — they share files, and only it
+knows which.
+
 ## Inference backends
 
 A node runs one inference backend behind the `IInferenceBackend` seam — or, since v3.60, [several](#several-engines-on-one-node--ollama-llamacpp-and-colibri-v360). The coordinator does
@@ -2950,6 +3001,7 @@ response back, whatever ran it.
 | `gemini` (v3.35) | **Gemini** `:generateContent` | The vendor's own dialect. The model is a path segment. |
 | `llamacpp` (v3.60) | **llama.cpp** `llama-server` | The OpenAI dialect at `127.0.0.1:8080/v1`. Under `Backend:Engines` the node can launch it — since v3.61 as a [router](#all-of-llamacpp--a-router-models-from-hugging-face-its-own-routes-v361) whose models the hub manages. |
 | `colibri` (v3.58) | **[colibri](#colibri--a-model-bigger-than-your-ram-v358)** `coli serve` | The OpenAI dialect, `chat` + (v3.59) [`score`](#brio--a-closed-question-answered-with-a-distribution-v359), `/health` watched, KV slots. The node can launch it. |
+| `strata` (v3.64) | **[Strata](#strata--a-125b-model-on-one-gaming-gpu-its-sizes-picked-and-installed-from-the-hub-v364)** `serve/server.py` | The OpenAI dialect, `chat` only. With `Strata:Root` the node serves every installed size as a catalogue and installs more from Hugging Face. |
 
 `openai` is one implementation covering all the self-hosted servers, because they all converged
 on the same dialect. For anyone serving more than a couple of users off one GPU, vLLM's

@@ -702,15 +702,16 @@
     return Math.round(model.idleSeconds + drift);
   };
 
-  const renderColibri = (status) => {
-    const tbody = document.getElementById("colibri");
+  // Phase 99: the same table for a Strata catalogue — `key` is the status block and the tbody id.
+  const renderCatalogue = (status, key, empty) => {
+    const tbody = document.getElementById(key);
     if (!tbody) return;
 
-    const nodes = (status?.nodes ?? []).filter(n => n.colibri && Array.isArray(n.colibri.models));
-    const rows = nodes.flatMap(n => n.colibri.models.map((m, i) => ({ node: n, catalogue: n.colibri, model: m, first: i === 0 })));
+    const nodes = (status?.nodes ?? []).filter(n => n[key] && Array.isArray(n[key].models));
+    const rows = nodes.flatMap(n => n[key].models.map((m, i) => ({ node: n, catalogue: n[key], model: m, first: i === 0 })));
 
     if (rows.length === 0) {
-      emptyRow("colibri", 9, "No node serves a colibri catalogue. Point Colibri:Serve:ModelsDir at its converted models to pick them from here.");
+      emptyRow(key, 9, nodes.length ? "Nothing installed yet." : empty);
       return;
     }
 
@@ -734,6 +735,35 @@
           <td><button type="button" data-caction="models/${encodeURIComponent(model.name)}/${action}" data-node="${encodeURIComponent(node.nodeId)}" title="${model.pinned ? "Unpin and stop it" : (loadedOrPinned ? "Pin it so it stays loaded" : "Load it and keep it loaded")}">${model.pinned ? "Unload" : "Load"}</button></td>
         </tr>`;
     }).join("");
+  };
+
+  const renderColibri = (status) => renderCatalogue(status, "colibri",
+    "No node serves a colibri catalogue. Point Colibri:Serve:ModelsDir at its converted models to pick them from here.");
+
+  const renderStrata = (status) => {
+    renderCatalogue(status, "strata",
+      "No node serves a Strata install. Point Strata:Root at one, with a strata backend or engine, to pick its models from here.");
+    renderStrataInstall(status);
+  };
+
+  // The install picker: nodes that can install (HuggingFace:Enabled reports a list), then that node's sizes.
+  const renderStrataInstall = (status) => {
+    const nodeSelect = document.getElementById("strata-node");
+    const modelSelect = document.getElementById("strata-model");
+    if (!nodeSelect || !modelSelect) return;
+
+    const nodes = (status?.nodes ?? []).filter(n => n.strata && Array.isArray(n.strata.installable));
+    const chosen = nodeSelect.value;
+    nodeSelect.innerHTML = nodes.length
+      ? nodes.map(n => `<option value="${escapeHtml(n.nodeId)}">${escapeHtml(n.name)}</option>`).join("")
+      : `<option value="">no node installs Strata models</option>`;
+    if (nodes.some(n => n.nodeId === chosen)) nodeSelect.value = chosen;
+
+    const node = nodes.find(n => n.nodeId === nodeSelect.value);
+    const pick = modelSelect.value;
+    modelSelect.innerHTML = (node?.strata.installable ?? []).map(i =>
+      `<option value="${escapeHtml(i.name)}"${i.installed ? " disabled" : ""}>${escapeHtml(i.name)}${i.installed ? " (installed)" : ""} — ${escapeHtml(i.about)}</option>`).join("");
+    if ([...modelSelect.options].some(o => o.value === pick && !o.disabled)) modelSelect.value = pick;
   };
 
   const corpusStatePill = (corpus) => {
@@ -965,6 +995,7 @@
       renderTools(latestStatus);
       renderEngines(latestStatus);
       renderColibri(latestStatus);
+      renderStrata(latestStatus);
       renderCorpora(latestStatus);
       renderProfileNodes(latestStatus);
       renderImageRecipes(latestStatus);
@@ -1546,9 +1577,9 @@
 
   // Phase 97. Load/Unload/on-demand write the node's profile (colibri); the node clamps it and
   // re-reports, so the row changes on the next status poll.
-  const setColibri = async (nodeId, action) => {
+  const setCatalogue = async (engine, nodeId, action) => {
     try {
-      const res = await fetch(`/api/admin/nodes/${encodeURIComponent(nodeId)}/colibri/${action}`, {
+      const res = await fetch(`/api/admin/nodes/${encodeURIComponent(nodeId)}/${engine}/${action}`, {
         method: "POST",
         headers: adminHeaders()
       });
@@ -1561,21 +1592,45 @@
         try { const body = await res.json(); if (body?.error) detail = body.error; } catch { }
         throw new Error(detail);
       }
-      toast("colibri", action.replace("models/", "").replace("/", " "), "ok");
+      toast(engine, action.replace("models/", "").replace("/", " "), "ok");
       pollStatusNow();
     } catch (err) {
-      toast("colibri change refused", err.message, "err");
+      toast(`${engine} change refused`, err.message, "err");
     }
   };
 
-  const colibriBody = document.getElementById("colibri");
-  if (colibriBody) {
-    colibriBody.addEventListener("click", (event) => {
+  for (const engine of ["colibri", "strata"]) {
+    document.getElementById(engine)?.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-caction]");
       if (!button) return;
-      setColibri(decodeURIComponent(button.dataset.node), button.dataset.caction);
+      setCatalogue(engine, decodeURIComponent(button.dataset.node), button.dataset.caction);
     });
   }
+
+  // Phase 99: the node runs Strata's setup; progress arrives on the Models section's feed.
+  const installStrata = async () => {
+    const note = document.getElementById("strata-note");
+    const nodeId = document.getElementById("strata-node")?.value;
+    const model = document.getElementById("strata-model")?.value;
+    const say = (text, bad) => { if (note) { note.textContent = text; note.style.color = bad ? "var(--err, #c33)" : ""; } };
+    if (!nodeId) { say("No node can install Strata models: it needs Strata:Root and HuggingFace:Enabled.", true); return; }
+    if (!model) { say("Pick a size.", true); return; }
+    try {
+      const res = await fetch(`/api/admin/nodes/${encodeURIComponent(nodeId)}/strata/install`, {
+        method: "POST",
+        headers: { ...adminHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ model })
+      });
+      if (res.status === 401) { promptForKey("Admin key required for this action."); return; }
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+      say(`Installing ${model}${body.reused ? " (already running)" : ""}: Strata's setup is downloading ${body.model}. Progress shows under Models.`, false);
+    } catch (err) {
+      say(`Install refused: ${err.message}`, true);
+    }
+  };
+  document.getElementById("strata-install")?.addEventListener("click", installStrata);
+  document.getElementById("strata-node")?.addEventListener("change", () => latestStatus && renderStrataInstall(latestStatus));
 
   const collectionsBody = document.getElementById("collections");
   if (collectionsBody) {

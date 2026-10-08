@@ -36,10 +36,16 @@ public sealed class HuggingFaceOptions
     public int MaxConcurrentDownloads { get; set; } = 2;
 }
 
-/// <summary>Where a download lands (98 D1): the engines' own directories, resolved once from configuration.</summary>
-public sealed record HuggingFaceTargets(string? GgufEngine, string? GgufDirectory, string? ColibriDirectory)
+/// <summary>
+/// Where a download lands (98 D1): the engines' own directories, resolved once from configuration —
+/// and since phase 99, whether a link to one of Strata's repos has a Strata install to go to.
+/// </summary>
+public sealed record HuggingFaceTargets(string? GgufEngine, string? GgufDirectory, string? ColibriDirectory, bool Strata = false)
 {
     public static HuggingFaceTargets Resolve(HuggingFaceOptions options, BackendOptions backend, ColibriOptions colibri, out string? problem)
+        => Resolve(options, backend, colibri, strata: false, out problem);
+
+    public static HuggingFaceTargets Resolve(HuggingFaceOptions options, BackendOptions backend, ColibriOptions colibri, bool strata, out string? problem)
     {
         problem = null;
 
@@ -84,16 +90,16 @@ public sealed record HuggingFaceTargets(string? GgufEngine, string? GgufDirector
             ? colibri.Serve.ModelsDir!.Trim()
             : null;
 
-        if (problem is null && ggufDir is null && colibriDir is null)
+        if (problem is null && ggufDir is null && colibriDir is null && !strata)
         {
-            problem = $"{HuggingFaceOptions.SectionName}:Enabled is set, and this node has nowhere to put a model: a GGUF goes to a llamacpp engine's Serve:ModelsDir (Backend:Engines), a checkpoint to Colibri:Serve:ModelsDir.";
+            problem = $"{HuggingFaceOptions.SectionName}:Enabled is set, and this node has nowhere to put a model: a GGUF goes to a llamacpp engine's Serve:ModelsDir (Backend:Engines), a checkpoint to Colibri:Serve:ModelsDir, a Strata model to the install at Strata:Root.";
         }
 
-        return new HuggingFaceTargets(engine, ggufDir, colibriDir);
+        return new HuggingFaceTargets(engine, ggufDir, colibriDir, strata);
     }
 }
 
-public sealed class HuggingFaceOptionsValidator(IOptions<BackendOptions> backend, IOptions<ColibriOptions> colibri)
+public sealed class HuggingFaceOptionsValidator(IOptions<BackendOptions> backend, IOptions<ColibriOptions> colibri, IOptions<Strata.StrataOptions>? strata = null)
     : IValidateOptions<HuggingFaceOptions>
 {
     public ValidateOptionsResult Validate(string? name, HuggingFaceOptions options)
@@ -118,7 +124,7 @@ public sealed class HuggingFaceOptionsValidator(IOptions<BackendOptions> backend
                 failures.Add($"{HuggingFaceOptions.SectionName}:{nameof(HuggingFaceOptions.MaxConcurrentDownloads)} must be between 1 and 16 (got {options.MaxConcurrentDownloads}).");
             }
 
-            HuggingFaceTargets.Resolve(options, backend.Value, colibri.Value, out var problem);
+            HuggingFaceTargets.Resolve(options, backend.Value, colibri.Value, strata is not null && Strata.StrataComposition.HasCatalog(strata.Value, backend.Value), out var problem);
 
             if (problem is not null)
             {

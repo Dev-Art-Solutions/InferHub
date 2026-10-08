@@ -61,7 +61,7 @@ public sealed class ColibriOptions
 /// <c>Colibri:Serve:</c> — the node launches <c>coli serve</c> as its own child (93 D5). Off unless
 /// <see cref="Model"/> is set: the path is the consent.
 /// </summary>
-public sealed class ColibriServeOptions
+public sealed class ColibriServeOptions : Catalog.ICatalogServeOptions
 {
     /// <summary>The converted model directory (<c>coli serve --model</c>). Unset: launch nothing.</summary>
     public string? Model { get; set; }

@@ -77,7 +77,12 @@ public sealed record NodeProfile(
     /// Phase 97. Which models of the node's colibri catalogue stay loaded, and whether idle ones are
     /// stopped to free RAM. Names from the box's own catalogue only — never a path (43 D1).
     /// </summary>
-    [property: JsonPropertyName("colibri")] ColibriProfile? Colibri = null);
+    [property: JsonPropertyName("colibri")] CatalogProfile? Colibri = null,
+    /// <summary>
+    /// Phase 99. The same block for the node's Strata catalogue: which installed Strata models stay
+    /// loaded, and whether idle ones are stopped. Names from the box's own installs only (43 D1).
+    /// </summary>
+    [property: JsonPropertyName("strata")] CatalogProfile? Strata = null);
 
 /// <summary>
 /// A corpus the coordinator wants a node to host (phase 44): which engine, where it is, which

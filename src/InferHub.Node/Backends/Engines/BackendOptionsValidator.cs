@@ -50,6 +50,7 @@ public sealed partial class BackendOptionsValidator(IConfiguration configuration
         }
 
         var colibri = configuration.GetSection(ColibriOptions.SectionName).Get<ColibriOptions>() ?? new ColibriOptions();
+        var strata = configuration.GetSection(Strata.StrataOptions.SectionName).Get<Strata.StrataOptions>() ?? new Strata.StrataOptions();
         var ports = new Dictionary<int, string>();
 
         foreach (var (engineName, engine) in options.Engines)
@@ -134,6 +135,21 @@ public sealed partial class BackendOptionsValidator(IConfiguration configuration
                     Claim(ports, colibri.Serve.Port, key, failures);
                     break;
 
+                // Phase 99: a Strata catalogue, colibri's rules.
+                case BackendOptions.Strata when strata.IsCatalog && !string.IsNullOrWhiteSpace(engine.BaseUrl):
+                    failures.Add(
+                        $"{key}:BaseUrl and {Strata.StrataOptions.SectionName}:Root are both set. "
+                        + "A catalogue launches its own servers on loopback; set one or the other.");
+                    break;
+
+                case BackendOptions.Strata when strata.IsCatalog:
+                    for (var offset = 0; offset < Math.Clamp(strata.Serve.MaxLoaded, 1, ColibriOptions.MaxLoadedCeiling); offset++)
+                    {
+                        Claim(ports, strata.Serve.Port + offset, key, failures);
+                    }
+
+                    break;
+
                 case BackendOptions.LlamaCpp when engine.Serve.IsEnabled:
                     if (!string.IsNullOrWhiteSpace(engine.BaseUrl))
                     {
@@ -171,7 +187,7 @@ public sealed partial class BackendOptionsValidator(IConfiguration configuration
         }
 
         // 95 D2: the two engines whose configuration is a whole section of its own are one each.
-        foreach (var single in new[] { BackendOptions.Ollama, BackendOptions.Colibri })
+        foreach (var single in new[] { BackendOptions.Ollama, BackendOptions.Colibri, BackendOptions.Strata })
         {
             var named = options.Engines
                 .Where(pair => pair.Value.NormalizedType() == single)
@@ -182,7 +198,7 @@ public sealed partial class BackendOptionsValidator(IConfiguration configuration
             {
                 failures.Add(
                     $"{Section} names {named.Length} {single} engines ({string.Join(", ", named)}). "
-                    + $"A node runs at most one: its configuration is the {(single == BackendOptions.Ollama ? "Ollama:" : "Colibri:")} section, and there is one of those.");
+                    + $"A node runs at most one: its configuration is the {(single switch { BackendOptions.Ollama => "Ollama:", BackendOptions.Colibri => "Colibri:", _ => "Strata:" })} section, and there is one of those.");
             }
         }
 

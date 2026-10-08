@@ -122,6 +122,7 @@ public static class NodeHostBuilderExtensions
         builder.Services.AddSingleton<IValidateOptions<UpstreamBackendOptions>, UpstreamBackendOptionsValidator>();
 
         AddColibri(builder);
+        AddStrata(builder);
 
         builder.Services
             .AddOptions<VectorReplicaOptions>()
@@ -165,6 +166,8 @@ public static class NodeHostBuilderExtensions
             {
                 // Phase 97. A catalogue owns its processes and routes by model; one Serve:Model does not.
                 BackendOptions.Colibri when services.GetService<ColibriCatalog>() is { } catalog => catalog,
+                // Phase 99. So does a Strata install: its configs are the catalogue.
+                BackendOptions.Strata when services.GetService<Backends.Strata.StrataCatalog>() is { } strata => strata,
                 // Phase 85. Only a local Ollama holds this box's VRAM; an upstream is somebody
                 // else's GPU and has nothing to release.
                 BackendOptions.Ollama when services.GetRequiredService<Resources.GpuArbiter>().Enabled =>
@@ -195,6 +198,7 @@ public static class NodeHostBuilderExtensions
 
         // Before the engines' host, so the store's directories exist before a llama.cpp router checks its own.
         AddHuggingFace(builder);
+        AddStrataInstaller(builder);
         AddEngines(builder);
         AddOllamaSupervision(builder, ollamaOptions);
         AddToolRuntime(builder);
@@ -518,7 +522,10 @@ public static class NodeHostBuilderExtensions
 
         if (catalog)
         {
-            builder.Services.AddHostedService<ColibriCatalogHost>();
+            builder.Services.AddHostedService(services => new Backends.Catalog.ModelCatalogHost(
+                services.GetRequiredService<ColibriCatalog>(),
+                services.GetRequiredService<IOptions<CoordinatorOptions>>(),
+                services.GetRequiredService<ILogger<Backends.Catalog.ModelCatalogHost>>()));
             builder.Services.AddSingleton<IClosedSetScorer>(services => services.GetRequiredService<ColibriCatalog>());
             builder.Services.PostConfigure<NodeOptions>(options => options.MaxConcurrency ??= colibri.KvSlots);
 
@@ -574,6 +581,52 @@ public static class NodeHostBuilderExtensions
         builder.Services.AddSingleton<ColibriWatcher>();
         builder.Services.AddSingleton<IBackendSupervisor>(services => services.GetRequiredService<ColibriWatcher>());
         builder.Services.AddSingleton<IHostedService>(services => services.GetRequiredService<ColibriWatcher>());
+    }
+
+    /// <summary>
+    /// Phase 99. <c>Strata:</c> — a Strata install served as a catalogue, as the single backend or as a
+    /// <c>Backend:Engines</c> strata engine (the same instance either way, 97's reason). Without
+    /// <c>Strata:Root</c> a <c>strata</c> backend is a plain upstream and nothing here is registered.
+    /// </summary>
+    private static void AddStrata(IHostApplicationBuilder builder)
+    {
+        builder.Services
+            .AddOptions<Backends.Strata.StrataOptions>()
+            .Bind(builder.Configuration.GetSection(Backends.Strata.StrataOptions.SectionName))
+            .ValidateOnStart();
+        builder.Services.AddSingleton<IValidateOptions<Backends.Strata.StrataOptions>, Backends.Strata.StrataOptionsValidator>();
+
+        if (!Backends.Strata.StrataComposition.HasCatalog(builder.Configuration, out var engine))
+        {
+            return;
+        }
+
+        var strata = builder.Configuration
+            .GetSection(Backends.Strata.StrataOptions.SectionName)
+            .Get<Backends.Strata.StrataOptions>() ?? new Backends.Strata.StrataOptions();
+
+        var upstreamTimeout = builder.Configuration
+            .GetSection(UpstreamBackendOptions.SectionName)
+            .Get<UpstreamBackendOptions>()?.TimeoutSeconds ?? new UpstreamBackendOptions().TimeoutSeconds;
+
+        builder.Services.AddHttpClient(Backends.Strata.StrataComposition.ProbeClientName, http => http.Timeout = strata.ProbeTimeout)
+            .ConfigurePrimaryHttpMessageHandler(() => OllamaProbe.CreateHandler(strata.ProbeTimeout))
+            .RemoveAllLoggers();
+        builder.Services.TryAddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton(services =>
+            Backends.Strata.StrataComposition.Create(services, engine?.TimeoutSeconds ?? upstreamTimeout));
+        builder.Services.AddSingleton<Backends.Strata.IStrataControl>(services => services.GetRequiredService<Backends.Strata.StrataCatalog>());
+
+        if (engine is null)
+        {
+            builder.Services.AddHostedService(services => new Backends.Catalog.ModelCatalogHost(
+                services.GetRequiredService<Backends.Strata.StrataCatalog>(),
+                services.GetRequiredService<IOptions<CoordinatorOptions>>(),
+                services.GetRequiredService<ILogger<Backends.Catalog.ModelCatalogHost>>()));
+
+            // 97's reason: an unloaded model is not a down engine, so no node-wide health verdict.
+            NoSupervision(builder);
+        }
     }
 
     /// <summary>
@@ -647,7 +700,8 @@ public static class NodeHostBuilderExtensions
             var hf = services.GetRequiredService<IOptions<Backends.HuggingFace.HuggingFaceOptions>>().Value;
             var backend = services.GetRequiredService<IOptions<BackendOptions>>().Value;
             var colibri = services.GetRequiredService<IOptions<ColibriOptions>>().Value;
-            var targets = Backends.HuggingFace.HuggingFaceTargets.Resolve(hf, backend, colibri, out _);
+            var strata = services.GetService<Backends.Strata.StrataCatalog>();
+            var targets = Backends.HuggingFace.HuggingFaceTargets.Resolve(hf, backend, colibri, strata is not null, out _);
             var logger = services.GetRequiredService<ILoggerFactory>().CreateLogger("InferHub.Node.HuggingFace");
             var factory = services.GetRequiredService<IHttpClientFactory>();
             var engines = services.GetService<MultiBackend>();
@@ -662,6 +716,35 @@ public static class NodeHostBuilderExtensions
                     : null,
                 engines is null ? null : engines.RestartAsync,
                 services.GetService<IColibriControl>(),
+                logger);
+        });
+    }
+
+    /// <summary>
+    /// Phase 99. A node with a Strata catalogue and <c>HuggingFace:Enabled</c> installs Strata's sizes from
+    /// a link: the consent is the same switch, because the box reaches Hugging Face either way.
+    /// </summary>
+    private static void AddStrataInstaller(IHostApplicationBuilder builder)
+    {
+        var hf = builder.Configuration
+            .GetSection(Backends.HuggingFace.HuggingFaceOptions.SectionName)
+            .Get<Backends.HuggingFace.HuggingFaceOptions>() ?? new Backends.HuggingFace.HuggingFaceOptions();
+
+        if (!hf.Enabled || !Backends.Strata.StrataComposition.HasCatalog(builder.Configuration, out _))
+        {
+            return;
+        }
+
+        builder.Services.AddSingleton(services =>
+        {
+            var catalog = services.GetRequiredService<Backends.Strata.StrataCatalog>();
+            var logger = services.GetRequiredService<ILoggerFactory>().CreateLogger("InferHub.Node.Strata");
+
+            return new Backends.Strata.StrataInstaller(
+                services.GetRequiredService<IOptions<Backends.Strata.StrataOptions>>().Value,
+                services.GetRequiredService<IOptions<Backends.HuggingFace.HuggingFaceOptions>>().Value,
+                catalog,
+                new Backends.Strata.StrataSetupRunner(logger),
                 logger);
         });
     }

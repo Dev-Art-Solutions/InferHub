@@ -82,7 +82,7 @@ public sealed class UpstreamBackend(
     public IReadOnlyList<string> Kinds => declaredKinds ?? Type switch
     {
         BackendOptions.Colibri => ChatAndScore,
-        BackendOptions.Anthropic => ChatOnly,
+        BackendOptions.Anthropic or BackendOptions.Strata => ChatOnly,
         _ => ChatAndEmbed
     };
 
@@ -192,7 +192,7 @@ public sealed class UpstreamBackend(
         {
             // OpenRouter *is* the OpenAI dialect — the identity is the claim (62 D1). What its type
             // buys is configuration, one method down.
-            BackendOptions.OpenAi or BackendOptions.OpenRouter or BackendOptions.Colibri => new OpenAiUpstreamClient(http),
+            BackendOptions.OpenAi or BackendOptions.OpenRouter or BackendOptions.Colibri or BackendOptions.Strata => new OpenAiUpstreamClient(http),
 
             // 96 D6: Ollama's samplers are llama.cpp's, and only a llama.cpp server is sent them.
             BackendOptions.LlamaCpp => new OpenAiUpstreamClient(http, llamaCppSamplers: true),
