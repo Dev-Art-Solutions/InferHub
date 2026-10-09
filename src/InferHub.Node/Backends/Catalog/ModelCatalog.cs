@@ -205,6 +205,15 @@ public abstract class ModelCatalog : IInferenceBackend, IModelKinds, ICatalogCon
     /// <summary>Phase 99: what the node could install, for the hub's panel. Null: this engine installs nothing.</summary>
     protected virtual IReadOnlyList<CatalogInstallable>? Installable(IReadOnlyCollection<string> catalogue) => null;
 
+    /// <summary>Phase 100: whether the model at <paramref name="path"/> reads pictures; null where the engine does not say.</summary>
+    protected internal virtual bool? ImagesOf(string path) => null;
+
+    /// <summary>
+    /// Phase 100: a refusal of the request before its model is loaded, or null to go ahead. A request
+    /// the model cannot serve is a sentence in milliseconds, not one after minutes of loading.
+    /// </summary>
+    protected virtual string? Refuse(string model, string path, string requestJson) => null;
+
     /// <summary>Raises <see cref="Changed"/> — for a subclass whose catalogue grew (an install finished).</summary>
     protected void OnChanged() => Changed?.Invoke();
 
@@ -349,7 +358,9 @@ public abstract class ModelCatalog : IInferenceBackend, IModelKinds, ICatalogCon
             pins = new HashSet<string>(pinned, StringComparer.OrdinalIgnoreCase);
         }
 
-        var catalogue = Scan().Keys.ToArray();
+        var scanned = Scan();
+        var catalogue = scanned.Keys.ToArray();
+        bool? Images(string name) => scanned.TryGetValue(name, out var path) ? ImagesOf(path) : null;
 
         var names = catalogue
             .Concat(loaded.Keys)
@@ -372,12 +383,13 @@ public abstract class ModelCatalog : IInferenceBackend, IModelKinds, ICatalogCon
                         ready ? NodeCatalogModel.Loaded : NodeCatalogModel.Loading,
                         pins.Contains(name),
                         r.InFlight,
-                        ready && r.InFlight == 0 ? Math.Round((now - r.LastUsed).TotalSeconds) : null);
+                        ready && r.InFlight == 0 ? Math.Round((now - r.LastUsed).TotalSeconds) : null,
+                        Images: Images(name));
                 }
 
                 return failures.TryGetValue(name, out var error)
-                    ? new NodeCatalogModel(name, NodeCatalogModel.Failed, pins.Contains(name), 0, null, error)
-                    : new NodeCatalogModel(name, NodeCatalogModel.Unloaded, pins.Contains(name), 0);
+                    ? new NodeCatalogModel(name, NodeCatalogModel.Failed, pins.Contains(name), 0, null, error, Images(name))
+                    : new NodeCatalogModel(name, NodeCatalogModel.Unloaded, pins.Contains(name), 0, Images: Images(name));
             }).ToArray(),
             now,
             Installable(catalogue));
@@ -404,6 +416,7 @@ public abstract class ModelCatalog : IInferenceBackend, IModelKinds, ICatalogCon
         string requestJson,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        Admit(requestJson);
         var resident = await EnsureLoadedAsync(MultiBackend.ModelOf(requestJson), cancellationToken);
 
         try
@@ -468,6 +481,7 @@ public abstract class ModelCatalog : IInferenceBackend, IModelKinds, ICatalogCon
         Func<IInferenceBackend, CancellationToken, Task<string>> call,
         CancellationToken cancellationToken)
     {
+        Admit(requestJson);
         var resident = await EnsureLoadedAsync(MultiBackend.ModelOf(requestJson), cancellationToken);
 
         try
@@ -477,6 +491,15 @@ public abstract class ModelCatalog : IInferenceBackend, IModelKinds, ICatalogCon
         finally
         {
             Release(resident);
+        }
+    }
+
+    /// <summary>100: <see cref="Refuse"/>, for a model in the catalogue; an unknown one is <see cref="EnsureLoadedAsync"/>'s sentence.</summary>
+    private void Admit(string requestJson)
+    {
+        if (Resolve(MultiBackend.ModelOf(requestJson)) is ({ } name, { } path) && Refuse(name, path, requestJson) is { } refusal)
+        {
+            throw new CatalogException(refusal, status: Microsoft.AspNetCore.Http.StatusCodes.Status400BadRequest);
         }
     }
 
@@ -954,9 +977,12 @@ public abstract class ModelCatalog : IInferenceBackend, IModelKinds, ICatalogCon
 }
 
 /// <summary>A catalogue refusal with the sentence an operator reads; <see cref="NotInCatalogue"/> is a 404, not a failure.</summary>
-public sealed class CatalogException(string message, bool notInCatalogue = false) : InvalidOperationException(message)
+public sealed class CatalogException(string message, bool notInCatalogue = false, int? status = null) : InvalidOperationException(message)
 {
     public bool NotInCatalogue { get; } = notInCatalogue;
+
+    /// <summary>Phase 100: the request's own fault, as its HTTP status (a 4xx), or null for a node-side failure.</summary>
+    public int? Status { get; } = status;
 }
 
 /// <summary>The launched process behind one catalogue model: 95's supervised loop and Job Object.</summary>

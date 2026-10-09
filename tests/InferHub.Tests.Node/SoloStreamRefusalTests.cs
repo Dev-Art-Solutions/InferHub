@@ -90,6 +90,27 @@ public class SoloStreamRefusalTests
         Assert.EndsWith(OpenAiSse.DoneFrame, body);
     }
 
+    /// <summary>
+    /// Phase 100: a refusal that is the caller's — a picture for a Strata size without the image
+    /// encoder — carries its 400 on the failure chunk, and the solo edge answers with it.
+    /// </summary>
+    [Fact]
+    public async Task ARefusalChunkWithA4xxIsThatStatusNotA502()
+    {
+        var context = Context();
+
+        await new LocalApiEndpoints.LocalSseResult(
+                Chunks(JsonSerializer.Serialize(new { error = "cannot read pictures", status = 400, done = true })),
+                new ChatStreamFormatter("id", 0, "strata-q2_0", includeUsage: false),
+                NullLogger.Instance)
+            .ExecuteAsync(context);
+
+        Assert.Equal(StatusCodes.Status400BadRequest, context.Response.StatusCode);
+        var error = JsonDocument.Parse(Body(context)).RootElement.GetProperty("error");
+        Assert.Equal(OpenAiErrorTypes.InvalidRequest, error.GetProperty("type").GetString());
+        Assert.Equal("cannot read pictures", error.GetProperty("message").GetString());
+    }
+
     private const string Partial = """{"model":"olmoe","message":{"role":"assistant","content":"Sofia"},"done":false}""";
 
     private static string Error(string message) => JsonSerializer.Serialize(new { error = message, done = true });

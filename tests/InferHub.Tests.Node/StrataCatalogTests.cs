@@ -280,6 +280,177 @@ public class StrataCatalogTests : IDisposable
         Assert.True(new StrataOptionsValidator(Options.Create(new BackendOptions())).Validate(null, options).Succeeded);
     }
 
+    // ---- phase 100: pictures ----------------------------------------------------------------------
+
+    [Fact]
+    public void EachModelSaysWhetherItReadsPictures()
+    {
+        var root = Install();
+        FakeStrata.WriteConfig(root, "strata-coder-iq1_m", images: true);
+        FakeStrata.WriteConfig(root, "strata-q2_0");
+
+        var models = FakeStrata.Catalog(FakeStrata.Options(root), new FakeColibriLauncher()).State("n").Models;
+
+        Assert.True(models.Single(m => m.Name == "strata-coder-iq1_m").Images);
+        Assert.False(models.Single(m => m.Name == "strata-q2_0").Images);
+    }
+
+    [Fact]
+    public void AnEncoderIsTheVisionBlockOrTheVisionArgument()
+    {
+        var root = Install();
+        File.WriteAllText(Path.Combine(root, "a.json"), """{"exe": "s", "args": ["--vision"]}""");
+        File.WriteAllText(Path.Combine(root, "b.json"), """{"exe": "s", "args": [], "vision": {"gpu": false}}""");
+        File.WriteAllText(Path.Combine(root, "c.json"), """{"exe": "s", "args": ["--vision-tokens", "300"], "vision": null}""");
+        File.WriteAllText(Path.Combine(root, "d.json"), """{"exe": "s", "ar""");
+
+        Assert.True(StrataCatalog.HasImageEncoder(Path.Combine(root, "a.json")));
+        Assert.True(StrataCatalog.HasImageEncoder(Path.Combine(root, "b.json")));
+        Assert.False(StrataCatalog.HasImageEncoder(Path.Combine(root, "c.json")));
+        Assert.Null(StrataCatalog.HasImageEncoder(Path.Combine(root, "d.json")));
+        Assert.Null(StrataCatalog.HasImageEncoder(Path.Combine(root, "missing.json")));
+    }
+
+    [Theory]
+    [InlineData("""{"model":"m","messages":[{"role":"user","content":"what is in it?","images":["iVBORw0KGgo="]}]}""", true)]
+    [InlineData("""{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"x"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBO"}}]}]}""", true)]
+    [InlineData("""{"model":"m","messages":[{"role":"user","content":"draw me an image","images":[]}]}""", false)]
+    [InlineData("""{"model":"m","messages":[{"role":"user","content":"an image_url is a link"}]}""", false)]
+    [InlineData("""{"model":"m","messages":"image"}""", false)]
+    public void APictureIsAnImagesEntryOrAnImagePart(string request, bool pictures)
+        => Assert.Equal(pictures, StrataCatalog.HasPictures(request));
+
+    [Fact]
+    public async Task APictureForASizeWithoutTheEncoderIsRefusedBeforeItsServerStarts()
+    {
+        var root = Install();
+        FakeStrata.WriteConfig(root, "strata-q2_0");
+        FakeStrata.WriteConfig(root, "strata-coder-iq1_m", images: true);
+        var launcher = new FakeColibriLauncher();
+        var catalog = FakeStrata.Catalog(FakeStrata.Options(root), launcher);
+        catalog.Start();
+
+        var refused = await Assert.ThrowsAsync<CatalogException>(() => catalog.ChatAsync(Picture("strata-q2_0"), CancellationToken.None));
+        Assert.Contains("'strata-q2_0' was set up without Strata's image encoder", refused.Message);
+        Assert.Contains("\"vision\": \"yes\"", refused.Message);
+        Assert.DoesNotContain("iVBORw0KGgo", refused.Message);
+
+        var streamed = await Assert.ThrowsAsync<CatalogException>(async () =>
+        {
+            await foreach (var _ in catalog.StreamAsync("chat", Picture("strata-q2_0"), CancellationToken.None))
+            {
+            }
+        });
+        Assert.Equal(refused.Message, streamed.Message);
+
+        // Nothing was started, and nothing evicted; the same size answers a chat without pictures.
+        Assert.Empty(launcher.Events);
+        Assert.Contains("hello from strata-q2_0", await catalog.ChatAsync(FakeColibri.Chat("strata-q2_0"), CancellationToken.None));
+
+        // A size set up with the encoder is sent the picture.
+        Assert.Contains("hello from strata-coder-iq1_m", await catalog.ChatAsync(Picture("strata-coder-iq1_m"), CancellationToken.None));
+        Assert.Equal(["launch:strata-q2_0", "stop:strata-q2_0", "launch:strata-coder-iq1_m"], launcher.Events);
+    }
+
+    [Fact]
+    public void TheHubsVisionIsSetupsAndTheNodesIsTheDefault()
+    {
+        var root = Install();
+        var options = FakeStrata.Options(root, o => o.Install.Vision = "cpu");
+        var hf = new HuggingFaceOptions { Enabled = true };
+
+        Assert.Equal("cpu", Arg(StrataInstaller.StartInfo(options, hf, "coder", "IQ1_M"), "--vision"));
+        Assert.Equal("yes", Arg(StrataInstaller.StartInfo(options, hf, "coder", "IQ1_M", "yes"), "--vision"));
+    }
+
+    [Fact]
+    public async Task PicturesAskedForAnInstalledSizeRunSetupAgainAndTheConfigGainsTheEncoder()
+    {
+        var root = Install("strata-coder-iq1_m");
+        var catalog = FakeStrata.Catalog(FakeStrata.Options(root), new FakeColibriLauncher());
+        catalog.Start();
+        var runner = new FakeSetupRunner(root);
+        var installer = FakeStrata.Installer(catalog, FakeStrata.Options(root), runner);
+
+        // A plain install of an installed size is still nothing to do; so is "no".
+        Assert.Equal(["'strata-coder-iq1_m' is already installed"], (await Collect(installer.InstallAsync(Link(CoderLink), CancellationToken.None))).Select(f => f.Status));
+        Assert.Equal(["'strata-coder-iq1_m' is already installed"], (await Collect(installer.InstallAsync(Link(CoderLink), "no", CancellationToken.None))).Select(f => f.Status));
+        Assert.Empty(runner.Runs);
+
+        var frames = await Collect(installer.InstallAsync(Link(CoderLink), "yes", CancellationToken.None));
+
+        Assert.Equal("adding pictures to Qwen3.8-Flash-Next Coder IQ1_M with Strata's setup", frames[0].Status);
+        Assert.Equal("installed as 'strata-coder-iq1_m', with pictures", frames[^1].Status);
+        var encoder = frames.Last(f => f.Status == "downloading vision encoder");
+        Assert.Equal(910_000_000, encoder.Total);
+        Assert.Equal(910_000_000, encoder.Completed);
+        Assert.Equal("yes", Arg(runner.Runs.Single(), "--vision"));
+        Assert.True(catalog.State("n").Models.Single().Images);
+
+        // Setup answers every question again for a size; the config's own context and KV go back in.
+        Assert.Equal("32768", Arg(runner.Runs.Single(), "--context"));
+        Assert.Equal("int8", Arg(runner.Runs.Single(), "--kv"));
+
+        // Asked again: there is nothing left to add.
+        Assert.Equal(["'strata-coder-iq1_m' is already installed, with pictures"], (await Collect(installer.InstallAsync(Link(CoderLink), "yes", CancellationToken.None))).Select(f => f.Status));
+        Assert.Single(runner.Runs);
+    }
+
+    [Fact]
+    public void TheNodesOwnInstallChoicesWinOverTheKeptOnes()
+    {
+        var root = Install("strata-coder-iq1_m");
+        var config = Path.Combine(root, "strata-coder-iq1_m.json");
+
+        Assert.Equal(["--context", "32768", "--kv", "int8"], StrataInstaller.KeptChoices(FakeStrata.Options(root), config));
+        Assert.Equal(["--kv", "int8"], StrataInstaller.KeptChoices(FakeStrata.Options(root, o => o.Install.Context = 65536), config));
+        Assert.Equal(["--context", "32768"], StrataInstaller.KeptChoices(FakeStrata.Options(root, o => o.Install.Arguments = ["--kv=q4_0"]), config));
+        Assert.Empty(StrataInstaller.KeptChoices(FakeStrata.Options(root), Path.Combine(root, "missing.json")));
+
+        // A fresh install keeps nothing: there is no config to keep from.
+        Assert.Null(Arg(StrataInstaller.StartInfo(FakeStrata.Options(root), new HuggingFaceOptions(), "qwen", "Q2_0"), "--context"));
+    }
+
+    [Fact]
+    public async Task PicturesAreNotAddedToALoadedSize()
+    {
+        var root = Install("strata-coder-iq1_m");
+        var catalog = FakeStrata.Catalog(FakeStrata.Options(root), new FakeColibriLauncher());
+        catalog.Start();
+        await catalog.WarmAsync("strata-coder-iq1_m", CancellationToken.None);
+        var runner = new FakeSetupRunner(root);
+
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => Collect(FakeStrata.Installer(catalog, FakeStrata.Options(root), runner).InstallAsync(Link(CoderLink), "yes", CancellationToken.None)));
+
+        Assert.Contains("'strata-coder-iq1_m' is loaded; unload it", refused.Message);
+        Assert.Empty(runner.Runs);
+    }
+
+    [Fact]
+    public async Task ASetupThatLeavesOutTheEncoderIsAFailureNotASuccess()
+    {
+        var root = Install();
+        var catalog = FakeStrata.Catalog(FakeStrata.Options(root), new FakeColibriLauncher());
+        var installer = FakeStrata.Installer(catalog, FakeStrata.Options(root), new FakeSetupRunner(root) { DropVision = true });
+
+        var failed = await Assert.ThrowsAsync<InvalidOperationException>(() => Collect(installer.InstallAsync(Link(CoderLink), "cpu", CancellationToken.None)));
+
+        Assert.Contains("has no image encoder (--vision cpu was asked for)", failed.Message);
+    }
+
+    [Fact]
+    public async Task AVisionSetupDoesNotKnowIsRefusedBeforeItRuns()
+    {
+        var root = Install();
+        var catalog = FakeStrata.Catalog(FakeStrata.Options(root), new FakeColibriLauncher());
+        var runner = new FakeSetupRunner(root);
+
+        var refused = await Assert.ThrowsAsync<ArgumentException>(() => Collect(FakeStrata.Installer(catalog, FakeStrata.Options(root), runner).InstallAsync(Link(CoderLink), "--build", CancellationToken.None)));
+
+        Assert.Contains("not setup.py's --vision", refused.Message);
+        Assert.Empty(runner.Runs);
+    }
+
     // ---- D4: an install from a Hugging Face link ---------------------------------------------------
 
     [Fact]
@@ -384,6 +555,18 @@ public class StrataCatalogTests : IDisposable
     }
 
     // ------------------------------------------------------------------------------------------------
+
+    private const string CoderLink = "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M";
+
+    /// <summary>A chat with a picture in it, as the node receives one (phase 64's <c>images</c>).</summary>
+    private static string Picture(string model) =>
+        $$"""{"model":"{{model}}","messages":[{"role":"user","content":"what is in it?","images":["iVBORw0KGgo="]}],"stream":false}""";
+
+    private static string? Arg(System.Diagnostics.ProcessStartInfo info, string flag)
+    {
+        var i = info.ArgumentList.IndexOf(flag);
+        return i >= 0 && i + 1 < info.ArgumentList.Count ? info.ArgumentList[i + 1] : null;
+    }
 
     private string Install(params string[] configs)
     {

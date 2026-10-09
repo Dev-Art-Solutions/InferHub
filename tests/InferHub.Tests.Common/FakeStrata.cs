@@ -33,11 +33,14 @@ internal static class FakeStrata
         return root;
     }
 
-    /// <summary>What setup.py writes, cut to the two keys Strata itself checks (its #549).</summary>
-    public static void WriteConfig(string root, string name, string? apiKey = null) =>
+    /// <summary>
+    /// What setup.py writes, cut to the two keys Strata itself checks (its #549) — and, for a size set up
+    /// with pictures (phase 100), the <c>vision</c> block and the <c>--vision</c> argument setup adds.
+    /// </summary>
+    public static void WriteConfig(string root, string name, string? apiKey = null, bool images = false) =>
         File.WriteAllText(
             Path.Combine(root, name + ".json"),
-            $$"""{"exe": "/opt/strata/engine/strata", "args": ["--native", "x.gguf"], "model_name": "qwen3.8-flash-next", "port": 8080{{(apiKey is null ? "" : $", \"api_key\": \"{apiKey}\"")}}}""");
+            $$"""{"exe": "/opt/strata/engine/strata", "args": ["--native", "x.gguf", "--max-context", "32768", "--kv", "int8"{{(images ? ", \"--vision\", \"--vram-reserve-mib\", \"700\"" : "")}}], "model_name": "qwen3.8-flash-next", "port": 8080{{(apiKey is null ? "" : $", \"api_key\": \"{apiKey}\"")}}{{(images ? ", \"vision\": {\"exe\": \"/opt/strata/engine/strata-vision\", \"mmproj\": \"mmproj-Qwen3.8-Flash-Next-BF16.gguf\", \"gpu\": true, \"max_tokens\": 1024}" : "")}}}""");
 
     public static StrataOptions Options(string root, Action<StrataOptions>? configure = null)
     {
@@ -98,6 +101,9 @@ internal sealed class FakeSetupRunner(string root) : IStrataSetupRunner
     /// <summary>Held open until released, so a second install can be seen waiting.</summary>
     public TaskCompletionSource? Gate { get; set; }
 
+    /// <summary>Phase 100: exit 0 with a config that has no image encoder, whatever <c>--vision</c> said.</summary>
+    public bool DropVision { get; set; }
+
     public async IAsyncEnumerable<SetupOutput> RunAsync(ProcessStartInfo info, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         Runs.Enqueue(info);
@@ -111,6 +117,16 @@ internal sealed class FakeSetupRunner(string root) : IStrataSetupRunner
         {
             var percent = (int)(double.Parse(done, System.Globalization.CultureInfo.InvariantCulture) / 29.61 * 100);
             yield return new SetupOutput($"Qwen3.8-Flash-Next-GSQ-RCO-{size}-00001-of-00002.gguf:  {done} / 29.61 GB ({percent}%)");
+        }
+
+        var vision = Arg(info, "--vision");
+
+        if (vision is "yes" or "cpu" or "gpu")
+        {
+            // Phase 100: what setup printed on the real run — the encoder's bar has a space in its label.
+            yield return new SetupOutput("vision encoder:   0.45 / 0.91 GB (50%)");
+            yield return new SetupOutput("vision encoder:   0.91 / 0.91 GB (100%)");
+            yield return new SetupOutput("  [ok] vision encoder downloaded");
         }
 
         if (Gate is { } gate)
@@ -128,7 +144,7 @@ internal sealed class FakeSetupRunner(string root) : IStrataSetupRunner
         if (!WriteNothing)
         {
             var tag = family == "qwen" ? "" : family + "-";
-            FakeStrata.WriteConfig(root, $"strata-{tag}{size!.ToLowerInvariant()}");
+            FakeStrata.WriteConfig(root, $"strata-{tag}{size!.ToLowerInvariant()}", images: !DropVision && vision is "yes" or "cpu" or "gpu");
         }
 
         yield return new SetupOutput("  [ok] installed");

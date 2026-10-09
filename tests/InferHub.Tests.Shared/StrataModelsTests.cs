@@ -1,3 +1,5 @@
+using System.Text.Json;
+using InferHub.Shared.Contracts;
 using InferHub.Shared.HuggingFace;
 using InferHub.Shared.Strata;
 
@@ -88,5 +90,31 @@ public class StrataModelsTests
         }
 
         Assert.Equal(9, StrataModels.All().Count());
+    }
+
+    [Fact]
+    public void PicturesTravelAsOptionalFieldsBothVersionsRead()
+    {
+        // Phase 100: a v3.65 hub's install names setup's --vision; a v3.64 node's command has none, which is its own default.
+        var command = new ModelCommand(Guid.NewGuid(), ModelCommand.KindPull, "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M", Engine: ModelCommand.EngineHuggingFace, Vision: "yes");
+        Assert.Contains("\"vision\":\"yes\"", JsonSerializer.Serialize(command));
+        Assert.Null(JsonSerializer.Deserialize<ModelCommand>("""{"commandId":"6f2b8c1e-0000-0000-0000-000000000001","kind":"pull","modelName":"x","engine":"huggingface"}""")!.Vision);
+
+        var model = JsonSerializer.Deserialize<NodeCatalogModel>("""{"name":"strata-q2_0","state":"unloaded","pinned":false,"inFlight":0,"images":true}""")!;
+        Assert.True(model.Images);
+        Assert.Null(JsonSerializer.Deserialize<NodeCatalogModel>("""{"name":"m","state":"unloaded","pinned":false,"inFlight":0}""")!.Images);
+
+        // A refused job's 4xx rides the result and the stream's failure chunk; a v3.64 node's has none and stays a 502.
+        Assert.Equal(400, JsonSerializer.Deserialize<InferenceResult>(JsonSerializer.Serialize(InferenceResult.Refused(Guid.NewGuid(), "no", 400)))!.Status);
+        Assert.Equal(502, InferenceResult.HttpStatusOf(JsonSerializer.Deserialize<InferenceResult>("""{"jobId":"6f2b8c1e-0000-0000-0000-000000000001","success":false,"error":"x"}""")!.Status));
+        Assert.True(InferHub.Shared.OpenAi.OpenAiSse.TryReadFailure("""{"error":"no","status":400,"done":true}""", out _, out var status));
+        Assert.Equal(400, status);
+        Assert.True(InferHub.Shared.OpenAi.OpenAiSse.TryReadFailure("""{"error":"no","done":true}""", out _, out status));
+        Assert.Equal(502, status);
+
+        Assert.True(ModelCommand.IsKnownVision(null));
+        Assert.True(ModelCommand.WantsImages("cpu"));
+        Assert.False(ModelCommand.WantsImages("none"));
+        Assert.False(ModelCommand.IsKnownVision("--build"));
     }
 }

@@ -178,7 +178,7 @@ public sealed class ModelCommandExecutor(
 
             logger.LogInformation("Installing '{Model}' with Strata's setup (command {CommandId})", command.ModelName, command.CommandId);
 
-            await foreach (var frame in RelayAsync(command, nodeId, InstallStrataAsync(strata, reference!, cancellationToken), cancellationToken))
+            await foreach (var frame in RelayAsync(command, nodeId, InstallStrataAsync(strata, reference!, command.Vision, cancellationToken), cancellationToken))
             {
                 yield return frame;
             }
@@ -230,9 +230,10 @@ public sealed class ModelCommandExecutor(
     private static async IAsyncEnumerable<ModelPullProgress> InstallStrataAsync(
         Backends.Strata.StrataInstaller strata,
         InferHub.Shared.HuggingFace.HfReference reference,
+        string? vision,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        await foreach (var frame in strata.InstallAsync(reference, cancellationToken))
+        await foreach (var frame in strata.InstallAsync(reference, vision, cancellationToken))
         {
             yield return frame;
         }

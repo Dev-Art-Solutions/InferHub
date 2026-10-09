@@ -726,7 +726,7 @@
         <tr class="${model.state === "failed" ? "row-error" : ""}">
           <td>${first ? escapeHtml(node.name) : ""}${first && !catalogue.running ? ` <span class="pill pill-muted">stopped</span>` : ""}</td>
           <td>${mode}</td>
-          <td><code>${escapeHtml(model.name)}</code></td>
+          <td><code>${escapeHtml(model.name)}</code>${model.images ? ` <span class="label-chip" title="Set up with the image encoder: it reads a chat's pictures">pictures</span>` : ""}</td>
           <td>${colibriStatePill(model)}</td>
           <td>${model.pinned ? `<span class="matrix-yes">yes</span>` : `<span class="matrix-no">—</span>`}</td>
           <td>${model.inFlight ?? 0}</td>
@@ -761,8 +761,15 @@
 
     const node = nodes.find(n => n.nodeId === nodeSelect.value);
     const pick = modelSelect.value;
-    modelSelect.innerHTML = (node?.strata.installable ?? []).map(i =>
-      `<option value="${escapeHtml(i.name)}"${i.installed ? " disabled" : ""}>${escapeHtml(i.name)}${i.installed ? " (installed)" : ""} — ${escapeHtml(i.about)}</option>`).join("");
+    // Phase 100: with "with pictures" ticked, a size installed without them can be picked — setup adds the encoder.
+    const withPictures = document.getElementById("strata-vision")?.checked;
+    const images = new Map((node?.strata.models ?? []).map(m => [m.name, m.images]));
+    modelSelect.innerHTML = (node?.strata.installable ?? []).map(i => {
+      const pictures = images.get(i.name) === true;
+      const closed = i.installed && (pictures || !withPictures);
+      const state = !i.installed ? "" : pictures ? " (installed, with pictures)" : withPictures ? " (installed: add pictures)" : " (installed)";
+      return `<option value="${escapeHtml(i.name)}"${closed ? " disabled" : ""}>${escapeHtml(i.name)}${state} — ${escapeHtml(i.about)}</option>`;
+    }).join("");
     if ([...modelSelect.options].some(o => o.value === pick && !o.disabled)) modelSelect.value = pick;
   };
 
@@ -1612,6 +1619,7 @@
     const note = document.getElementById("strata-note");
     const nodeId = document.getElementById("strata-node")?.value;
     const model = document.getElementById("strata-model")?.value;
+    const vision = document.getElementById("strata-vision")?.checked ? "yes" : undefined;
     const say = (text, bad) => { if (note) { note.textContent = text; note.style.color = bad ? "var(--err, #c33)" : ""; } };
     if (!nodeId) { say("No node can install Strata models: it needs Strata:Root and HuggingFace:Enabled.", true); return; }
     if (!model) { say("Pick a size.", true); return; }
@@ -1619,18 +1627,19 @@
       const res = await fetch(`/api/admin/nodes/${encodeURIComponent(nodeId)}/strata/install`, {
         method: "POST",
         headers: { ...adminHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({ model })
+        body: JSON.stringify({ model, vision })
       });
       if (res.status === 401) { promptForKey("Admin key required for this action."); return; }
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
-      say(`Installing ${model}${body.reused ? " (already running)" : ""}: Strata's setup is downloading ${body.model}. Progress shows under Models.`, false);
+      say(`Installing ${model}${vision ? " with pictures" : ""}${body.reused ? " (already running)" : ""}: Strata's setup is downloading ${body.model}. Progress shows under Models.`, false);
     } catch (err) {
       say(`Install refused: ${err.message}`, true);
     }
   };
   document.getElementById("strata-install")?.addEventListener("click", installStrata);
   document.getElementById("strata-node")?.addEventListener("change", () => latestStatus && renderStrataInstall(latestStatus));
+  document.getElementById("strata-vision")?.addEventListener("change", () => latestStatus && renderStrataInstall(latestStatus));
 
   const collectionsBody = document.getElementById("collections");
   if (collectionsBody) {

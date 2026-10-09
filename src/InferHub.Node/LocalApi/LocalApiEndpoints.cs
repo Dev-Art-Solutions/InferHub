@@ -472,9 +472,9 @@ public static class LocalApiEndpoints
                 {
                     await foreach (var chunk in chunks.WithCancellation(httpContext.RequestAborted))
                     {
-                        if (chunk.Done && OpenAiSse.TryReadFailure(chunk.ResponseJson, out var failure))
+                        if (chunk.Done && OpenAiSse.TryReadFailure(chunk.ResponseJson, out var failure, out var status))
                         {
-                            await FailAsync(httpContext, failure);
+                            await FailAsync(httpContext, failure, status);
                             return;
                         }
 
@@ -531,15 +531,16 @@ public static class LocalApiEndpoints
         /// error frame, which the OpenAI SDKs raise on. The hub's writer does the same (37 D6: the
         /// text is shared, each host writes it).
         /// </summary>
-        private static async Task FailAsync(HttpContext httpContext, string message)
+        private static async Task FailAsync(HttpContext httpContext, string message, int status = StatusCodes.Status502BadGateway)
         {
             try
             {
                 if (!httpContext.Response.HasStarted)
                 {
-                    httpContext.Response.StatusCode = StatusCodes.Status502BadGateway;
+                    // Phase 100: a node's refusal keeps its 4xx (a picture for a model that cannot read one).
+                    httpContext.Response.StatusCode = status;
                     await httpContext.Response.WriteAsJsonAsync(
-                        OpenAiErrorEnvelope.Create(message, OpenAiErrorTypes.ApiError),
+                        OpenAiErrorEnvelope.Create(message, status < 500 ? OpenAiErrorTypes.InvalidRequest : OpenAiErrorTypes.ApiError),
                         JsonOptions,
                         httpContext.RequestAborted);
                     return;

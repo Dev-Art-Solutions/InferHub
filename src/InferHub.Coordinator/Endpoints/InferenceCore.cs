@@ -370,7 +370,7 @@ internal static class InferenceCore
             if (!result.Success)
             {
                 return DispatchOutcome.Failure(
-                    StatusCodes.Status502BadGateway,
+                    InferenceResult.HttpStatusOf(result.Status),
                     ReadableNodeError(result.Error));
             }
 
@@ -420,7 +420,7 @@ internal static class InferenceCore
             {
                 metrics.RecordFailoverSucceeded();
                 return DispatchOutcome.Failure(
-                    StatusCodes.Status502BadGateway,
+                    InferenceResult.HttpStatusOf(result.Status),
                     ReadableNodeError(result.Error));
             }
 

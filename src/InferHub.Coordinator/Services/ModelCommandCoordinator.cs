@@ -41,13 +41,18 @@ public sealed class ModelCommandCoordinator(
     /// Phase 96: which of the node's engines, or null for "the node decides" (96 D3). Part of the key
     /// for the tool's reason: the same repo pulled into Ollama and into a llama.cpp router is two pulls.
     /// </param>
+    /// <param name="vision">
+    /// Phase 100: a Strata install's <c>--vision</c>, or null for the node's own. Part of the key: a
+    /// size installed with pictures and the same size without are two different runs of setup.
+    /// </param>
     public async Task<StartResult?> SendAsync(
         string nodeId,
         string kind,
         string model,
         CancellationToken cancellationToken,
         string? tool = null,
-        string? engine = null)
+        string? engine = null,
+        string? vision = null)
     {
         var connectionId = registry.FindConnectionIdByNodeId(nodeId);
         if (connectionId is null)
@@ -55,7 +60,7 @@ public sealed class ModelCommandCoordinator(
             return null;
         }
 
-        var key = new CommandKey(nodeId, kind, model, tool, engine);
+        var key = new CommandKey(nodeId, kind, model, tool, engine, vision);
         if (active.TryGetValue(key, out var existing))
         {
             logger.LogInformation("Coalescing {Kind} '{Model}' on node {NodeId} onto command {CommandId}", kind, model, nodeId, existing);
@@ -69,7 +74,7 @@ public sealed class ModelCommandCoordinator(
             return new StartResult(active[key], Reused: true);
         }
 
-        var command = new ModelCommand(commandId, kind, model, tool, engine);
+        var command = new ModelCommand(commandId, kind, model, tool, engine, vision);
         latest[commandId] = new ModelCommandProgress(commandId, nodeId, kind, model, "queued", null, Done: false, Error: null, Tool: tool);
 
         try
@@ -112,5 +117,5 @@ public sealed class ModelCommandCoordinator(
         latest.TryRemove(commandId, out _);
     }
 
-    private readonly record struct CommandKey(string NodeId, string Kind, string Model, string? Tool, string? Engine);
+    private readonly record struct CommandKey(string NodeId, string Kind, string Model, string? Tool, string? Engine, string? Vision);
 }

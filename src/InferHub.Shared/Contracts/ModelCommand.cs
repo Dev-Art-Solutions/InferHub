@@ -38,7 +38,13 @@ public sealed record ModelCommand(
     /// before v3.61 — and a node with two engines that can pull refuses a pull without it rather
     /// than guessing from the name: <c>owner/model</c> is an Ollama name and a Hugging Face repo.
     /// </summary>
-    [property: JsonPropertyName("engine")] string? Engine = null)
+    [property: JsonPropertyName("engine")] string? Engine = null,
+    /// <summary>
+    /// Phase 100: a Strata install's pictures — <c>setup.py --vision</c> (<c>yes</c>, <c>cpu</c> or
+    /// <c>no</c>). Null is the node's own <c>Strata:Install:Vision</c>, which is what every install
+    /// before v3.65 meant; a node before v3.65 ignores the field.
+    /// </summary>
+    [property: JsonPropertyName("vision")] string? Vision = null)
 {
     public const string KindPull = "pull";
     public const string KindDelete = "delete";
@@ -57,6 +63,12 @@ public sealed record ModelCommand(
     /// converted into the colibri catalogue. Reserved: an engine configured under this name is refused.
     /// </summary>
     public const string EngineHuggingFace = "huggingface";
+
+    /// <summary>The <see cref="Vision"/> values: setup.py's own words (<c>gpu</c> and <c>none</c> are its synonyms of <c>yes</c> and <c>no</c>).</summary>
+    public static bool IsKnownVision(string? vision) => vision is null or "yes" or "no" or "cpu" or "gpu" or "none";
+
+    /// <summary>Whether a <see cref="Vision"/> value asks for an image encoder.</summary>
+    public static bool WantsImages(string? vision) => vision is "yes" or "cpu" or "gpu";
 
     public static bool IsKnownKind(string kind) =>
         kind is KindPull or KindDelete or KindWarm or KindUnload;

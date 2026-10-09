@@ -329,6 +329,8 @@
     Phase 99. A Strata catalogue: every Strata model installed on a node (one strata-*.json config
     each), which is loaded, and which the hub pinned — the colibri panel's rules. Install asks the
     node to run Strata's own setup for a size from its list; progress shows under Models.
+    Phase 100: "with pictures" is setup's --vision yes — a new size gets the image encoder, and an
+    installed size without one can be picked again to add it.
   -->
   <section>
     <h2>Strata models</h2>
@@ -353,6 +355,7 @@
     <div class="actions" style="flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px">
       <select id="strata-node" title="A node serving a Strata install with HuggingFace:Enabled"></select>
       <select id="strata-model" style="min-width:320px" title="Strata's sizes; each is 60-110 GB and needs 32-64 GB of RAM"></select>
+      <label title="setup.py --vision yes: the image encoder on the GPU, so the model reads a chat's pictures. On an installed size, adds it."><input type="checkbox" id="strata-vision"> with pictures</label>
       <button id="strata-install" title="The node runs Strata's setup: it downloads from Hugging Face, checks the files and prepares them for that box. Progress shows under Models.">Install on node</button>
     </div>
     <div id="strata-note" class="empty" style="padding:8px 0 0"></div>

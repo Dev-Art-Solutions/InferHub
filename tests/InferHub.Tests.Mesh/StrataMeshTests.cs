@@ -88,6 +88,32 @@ public class StrataMeshTests
         Assert.Contains("installed by Strata's setup", colibri.Error);
     }
 
+    [Fact]
+    public async Task PicturesAreAskedForOnTheWireAndTheHubSeesWhichModelReadsThem()
+    {
+        await using var mesh = await StrataMesh.StartAsync("strata-coder-iq1_m");
+        var boot = await mesh.WaitForStateAsync(s => s.Models.Count == 1);
+        Assert.False(boot.Models.Single().Images);
+
+        // A picture for a size without the encoder: a failed job with the sentence, and no server started.
+        var picture = """{"model":"strata-coder-iq1_m","messages":[{"role":"user","content":"what is in it?","images":["iVBORw0KGgo="]}],"stream":false}""";
+        var refused = await mesh.ChatAsync("strata-coder-iq1_m", picture);
+        Assert.False(refused.Success);
+        Assert.Equal(400, refused.Status);
+        Assert.Contains("without Strata's image encoder", refused.Error);
+        Assert.Empty(mesh.Launcher.Alive.Keys);
+
+        // The hub's "vision" reaches setup's command line, and the new config's encoder reaches the hub.
+        var done = await mesh.RunAsync(ModelCommand.KindPull, CoderLink, vision: "yes");
+        Assert.Null(done.Error);
+        Assert.Equal("yes", mesh.Runner.Runs.Single().ArgumentList[mesh.Runner.Runs.Single().ArgumentList.IndexOf("--vision") + 1]);
+        await mesh.WaitForStateAsync(s => s.Models.Single().Images == true);
+
+        var answered = await mesh.ChatAsync("strata-coder-iq1_m", picture);
+        Assert.True(answered.Success, answered.Error);
+        Assert.Equal(1, mesh.Launcher.Chats("strata-coder-iq1_m"));
+    }
+
     private sealed class StrataMesh : IAsyncDisposable
     {
         public const string NodeId = "strata-node";
@@ -140,11 +166,11 @@ public class StrataMeshTests
             .Order(StringComparer.Ordinal)
             .ToArray();
 
-        public async Task<InferenceResult> ChatAsync(string model)
+        public async Task<InferenceResult> ChatAsync(string model, string? request = null)
         {
             var routed = Router.Route(model, capability: CapabilityKinds.Chat);
             Assert.NotNull(routed);
-            return await Dispatcher.DispatchAsync(routed!, new InferenceJob(Guid.NewGuid(), "chat", FakeColibri.Chat(model)), CancellationToken.None);
+            return await Dispatcher.DispatchAsync(routed!, new InferenceJob(Guid.NewGuid(), "chat", request ?? FakeColibri.Chat(model)), CancellationToken.None);
         }
 
         public async Task WaitForAsync(Func<bool> predicate)
@@ -172,7 +198,7 @@ public class StrataMeshTests
             throw new TimeoutException("No Strata report matching the predicate arrived.");
         }
 
-        public async Task<ModelCommandProgress> RunAsync(string kind, string model)
+        public async Task<ModelCommandProgress> RunAsync(string kind, string model, string? vision = null)
         {
             var finished = new TaskCompletionSource<ModelCommandProgress>(TaskCreationOptions.RunContinuationsAsynchronously);
             Guid? id = null;
@@ -189,7 +215,7 @@ public class StrataMeshTests
 
             try
             {
-                var started = await Commands.SendAsync(NodeId, kind, model, CancellationToken.None, engine: ModelCommand.EngineHuggingFace);
+                var started = await Commands.SendAsync(NodeId, kind, model, CancellationToken.None, engine: ModelCommand.EngineHuggingFace, vision: vision);
                 Assert.NotNull(started);
                 id = started!.CommandId;
                 return await finished.Task.WaitAsync(TimeSpan.FromSeconds(30));

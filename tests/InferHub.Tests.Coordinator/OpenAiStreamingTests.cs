@@ -322,6 +322,28 @@ public class OpenAiStreamingTests
         Assert.Equal("api_error", error.GetProperty("type").GetString());
     }
 
+    /// <summary>Phase 100: a refusal that is the caller's keeps the node's 4xx; anything else on the chunk is still a 502.</summary>
+    [Theory]
+    [InlineData(400, 400, "invalid_request_error")]
+    [InlineData(500, 502, "api_error")]
+    [InlineData(200, 502, "api_error")]
+    public async Task ARefusalWithTheNodesStatusKeepsItsClientErrorOnly(int sent, int answered, string type)
+    {
+        var channel = Channel.CreateUnbounded<InferenceChunk>();
+        await channel.Writer.WriteAsync(new InferenceChunk(Guid.NewGuid(), JsonSerializer.Serialize(new { error = "cannot read pictures", status = sent, done = true }), true));
+        channel.Writer.TryComplete();
+
+        var context = new DefaultHttpContext();
+        var body = new MemoryStream();
+        context.Response.Body = body;
+
+        await new OpenAiStreamingResult(channel.Reader, new ChatStreamFormatter(Id, 0, Model, false), NullLogger.Instance)
+            .ExecuteAsync(context);
+
+        Assert.Equal(answered, context.Response.StatusCode);
+        Assert.Equal(type, JsonDocument.Parse(body.ToArray()).RootElement.GetProperty("error").GetProperty("type").GetString());
+    }
+
     [Fact]
     public async Task ARefusalAfterAFrameIsAnErrorFrameAndNotAStop()
     {

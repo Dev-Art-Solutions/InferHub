@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using InferHub.Node.Backends.HuggingFace;
+using InferHub.Shared.Contracts;
 using InferHub.Shared.HuggingFace;
 using InferHub.Shared.Strata;
 
@@ -38,6 +39,21 @@ public sealed record SetupOutput(string? Line, int? ExitCode = null);
 /// one waits and says so. <c>HF_TOKEN</c> and <c>HF_ENDPOINT</c> come from <c>HuggingFace:</c>, which
 /// Strata's setup reads exactly as <c>huggingface_hub</c> does.
 /// </para>
+/// <para>
+/// <b>Pictures are the install's choice</b> (phase 100): the hub's <c>vision</c> is setup's
+/// <c>--vision</c>, and the node's <c>Strata:Install:Vision</c> when the hub says nothing. Asking for
+/// pictures on a size installed without them runs setup again for that size — "install another model
+/// or change settings", in its own words — which skips everything already there and adds the image
+/// encoder to the config. Not while that size is loaded: setup rewrites the config a running server
+/// was started from, and the server would go on without the encoder anyway.
+/// </para>
+/// <para>
+/// <b>Adding pictures changes nothing else.</b> Setup run for a size answers every question again with
+/// its own recommendation — it reuses an earlier config's answers only when it adopts a new copy of
+/// Strata — so the Coder set up at 32K would come back at this card's 128K. The node passes the
+/// config's own context and KV precision back (<see cref="KeptChoices"/>), unless
+/// <c>Strata:Install</c> names them.
+/// </para>
 /// </remarks>
 public sealed partial class StrataInstaller(
     StrataOptions options,
@@ -53,16 +69,24 @@ public sealed partial class StrataInstaller(
     /// <summary>Whether <paramref name="model"/> is in the Strata catalogue — so a delete through the store is refused in Strata's words.</summary>
     public bool Has(string model) => catalog.CatalogNames.Contains(model?.Trim() ?? string.Empty, StringComparer.OrdinalIgnoreCase);
 
-    /// <summary><c>Qwen3…-00001-of-00002.gguf:   7.93 / 29.61 GB (27%)</c> — setup's download line.</summary>
-    [GeneratedRegex(@"^(?<file>\S+):\s+(?<done>[\d.]+)\s*/\s*(?<total>[\d.]+)\s*GB\s*\((?<pct>\d+)%\)")]
+    /// <summary>
+    /// <c>Qwen3…-00001-of-00002.gguf:   7.93 / 29.61 GB (27%)</c> — setup's download line; the image
+    /// encoder's is labelled <c>vision encoder:</c>, with a space (found on the first real run of 100).
+    /// </summary>
+    [GeneratedRegex(@"^(?<file>\S+(?: \S+)*?):\s+(?<done>[\d.]+)\s*/\s*(?<total>[\d.]+)\s*GB\s*\((?<pct>\d+)%\)")]
     private static partial Regex DownloadLine();
 
     /// <summary><c>=== Step 5: downloading Qwen3.8-Flash-Next Coder IQ1_M ===</c></summary>
     [GeneratedRegex(@"^=+\s*Step\s+(?<n>\d+):\s*(?<title>.+?)\s*=+$")]
     private static partial Regex StepLine();
 
+    public IAsyncEnumerable<ModelPullProgress> InstallAsync(HfReference reference, CancellationToken cancellationToken)
+        => InstallAsync(reference, vision: null, cancellationToken);
+
+    /// <param name="vision">setup's <c>--vision</c> for this install (100), or null for <c>Strata:Install:Vision</c>.</param>
     public async IAsyncEnumerable<ModelPullProgress> InstallAsync(
         HfReference reference,
+        string? vision,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (!StrataModels.TryMatch(reference, out var family, out var size, out var error))
@@ -70,12 +94,25 @@ public sealed partial class StrataInstaller(
             throw new ArgumentException(error);
         }
 
+        vision = string.IsNullOrWhiteSpace(vision) ? null : vision.Trim().ToLowerInvariant();
+
+        if (!ModelCommand.IsKnownVision(vision))
+        {
+            throw new ArgumentException($"'{vision}' is not setup.py's --vision: yes, cpu or no");
+        }
+
         var name = StrataModels.CatalogName(family!, size!);
 
-        if (catalog.CatalogNames.Contains(name, StringComparer.OrdinalIgnoreCase))
+        if (Settled(name, vision) is { } settled)
         {
-            yield return new ModelPullProgress($"'{name}' is already installed", null, null);
+            yield return new ModelPullProgress(settled, null, null);
             yield break;
+        }
+
+        if (AddingPictures(name, vision) && Loaded(name))
+        {
+            throw new InvalidOperationException(
+                $"'{name}' is loaded; unload it (and unpin it) in the hub's Strata panel first — setup rewrites the config its server was started from, and pictures need a fresh start of it");
         }
 
         if (!await one.WaitAsync(0, cancellationToken))
@@ -87,24 +124,32 @@ public sealed partial class StrataInstaller(
         try
         {
             // Installed while this one waited for the other.
-            if (catalog.CatalogNames.Contains(name, StringComparer.OrdinalIgnoreCase))
+            if (Settled(name, vision) is { } settledMeanwhile)
             {
-                yield return new ModelPullProgress($"'{name}' is already installed", null, null);
+                yield return new ModelPullProgress(settledMeanwhile, null, null);
                 yield break;
             }
 
-            logger.LogInformation(
-                "Installing Strata {Family} {Size} as '{Name}' with its setup.py (from {Repo}).",
-                family!.Name, size!.Name, name, family.Repo);
+            var effective = vision ?? options.Install.Vision;
+            var adding = AddingPictures(name, vision);
 
-            yield return new ModelPullProgress($"installing {family.Title} {size.Name} with Strata's setup", null, null);
+            logger.LogInformation(
+                "{What} Strata {Family} {Size} as '{Name}' with its setup.py (from {Repo}, --vision {Vision}).",
+                adding ? "Adding the image encoder to" : "Installing", family!.Name, size!.Name, name, family.Repo, effective);
+
+            yield return new ModelPullProgress(
+                adding
+                    ? $"adding pictures to {family.Title} {size.Name} with Strata's setup"
+                    : $"installing {family.Title} {size.Name}{(ModelCommand.WantsImages(effective) ? " with pictures" : "")} with Strata's setup",
+                null,
+                null);
 
             var tail = new Queue<string>();
             int? exit = null;
             string? lastStatus = null;
             var lastPercent = -1;
 
-            await foreach (var output in runner.RunAsync(StartInfo(options, huggingFace, family.Name, size.Name), cancellationToken))
+            await foreach (var output in runner.RunAsync(StartInfo(options, huggingFace, family.Name, size.Name, effective, adding ? KeptChoices(options, ConfigOf(name)) : null), cancellationToken))
             {
                 if (output.ExitCode is { } code)
                 {
@@ -164,9 +209,17 @@ public sealed partial class StrataInstaller(
                     $"Strata's setup.py finished, and there is no {name}.json in {options.ResolvedConfigDir()} (Strata:ConfigDir): {string.Join(" | ", tail)}");
             }
 
-            logger.LogInformation("Strata '{Name}' is installed and listed.", name);
+            var images = ImagesOf(name) == true;
+
+            if (ModelCommand.WantsImages(effective) && !images)
+            {
+                throw new InvalidOperationException(
+                    $"Strata's setup.py finished, and {name}.json has no image encoder (--vision {effective} was asked for): {string.Join(" | ", tail)}");
+            }
+
+            logger.LogInformation("Strata '{Name}' is installed and listed (pictures: {Images}).", name, images ? "yes" : "no");
             catalog.Installed();
-            yield return new ModelPullProgress($"installed as '{name}'", null, null);
+            yield return new ModelPullProgress($"installed as '{name}'{(images ? ", with pictures" : "")}", null, null);
         }
         finally
         {
@@ -174,8 +227,94 @@ public sealed partial class StrataInstaller(
         }
     }
 
+    /// <summary>
+    /// The sentence that ends an install before setup runs: the size is there, and nothing asks for
+    /// pictures it lacks. Null: setup has work to do.
+    /// </summary>
+    private string? Settled(string name, string? vision)
+    {
+        if (!catalog.CatalogNames.Contains(name, StringComparer.OrdinalIgnoreCase) || AddingPictures(name, vision))
+        {
+            return null;
+        }
+
+        return ModelCommand.WantsImages(vision)
+            ? $"'{name}' is already installed, with pictures"
+            : $"'{name}' is already installed";
+    }
+
+    /// <summary>
+    /// An explicit ask for pictures on a size installed without them. Only an explicit one: a node whose
+    /// <c>Strata:Install:Vision</c> is <c>yes</c> does not re-run setup for every plain install request.
+    /// </summary>
+    private bool AddingPictures(string name, string? vision) =>
+        ModelCommand.WantsImages(vision)
+        && catalog.CatalogNames.Contains(name, StringComparer.OrdinalIgnoreCase)
+        && ImagesOf(name) == false;
+
+    private bool? ImagesOf(string name) =>
+        ConfigOf(name) is { } path ? catalog.ImagesOf(path) : null;
+
+    private string? ConfigOf(string name) => catalog.Scan().TryGetValue(name, out var path) ? path : null;
+
+    /// <summary>
+    /// The installed config's own <c>--context</c> and <c>--kv</c>, as setup flags — what setup itself
+    /// reads back from a config when it adopts one (its <c>choices_from_config</c>) — minus whatever
+    /// <c>Strata:Install</c> sets, which wins.
+    /// </summary>
+    internal static IReadOnlyList<string> KeptChoices(StrataOptions options, string? config)
+    {
+        if (config is null)
+        {
+            return [];
+        }
+
+        List<string> args;
+
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllText(config));
+
+            if (!document.RootElement.TryGetProperty("args", out var list) || list.ValueKind != System.Text.Json.JsonValueKind.Array)
+            {
+                return [];
+            }
+
+            args = list.EnumerateArray().Select(a => a.ValueKind == System.Text.Json.JsonValueKind.String ? a.GetString() ?? "" : "").ToList();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        {
+            return [];
+        }
+
+        string? Value(string flag) => args.IndexOf(flag) is var i and >= 0 && i + 1 < args.Count ? args[i + 1] : null;
+        bool Named(string flag) => options.Install.Arguments.Any(a => a.Trim().Split('=')[0].Equals(flag, StringComparison.OrdinalIgnoreCase));
+
+        var kept = new List<string>();
+
+        if (options.Install.Context is null && !Named("--context")
+            && int.TryParse(Value("--max-context"), NumberStyles.None, CultureInfo.InvariantCulture, out var context) && context > 0)
+        {
+            kept.AddRange(["--context", context.ToString(CultureInfo.InvariantCulture)]);
+        }
+
+        if (!Named("--kv") && Value("--kv") is { } kv && kv is "int8" or "q4_0" or "k8v4")
+        {
+            kept.AddRange(["--kv", kv]);
+        }
+
+        return kept;
+    }
+
+    private bool Loaded(string name) =>
+        catalog.State(string.Empty).Models.Any(m =>
+            string.Equals(m.Name, name, StringComparison.OrdinalIgnoreCase)
+            && m.State is NodeCatalogModel.Loaded or NodeCatalogModel.Loading);
+
     /// <summary>The whole <c>setup.py</c> command line, pure, so the tests can read it.</summary>
-    public static ProcessStartInfo StartInfo(StrataOptions options, HuggingFaceOptions huggingFace, string family, string size)
+    /// <param name="vision">setup's <c>--vision</c> for this install; null is <c>Strata:Install:Vision</c>.</param>
+    /// <param name="kept">An installed config's own answers (<see cref="KeptChoices"/>) when setup runs again for it.</param>
+    public static ProcessStartInfo StartInfo(StrataOptions options, HuggingFaceOptions huggingFace, string family, string size, string? vision = null, IReadOnlyList<string>? kept = null)
     {
         var root = options.Root!.Trim();
 
@@ -195,7 +334,7 @@ public sealed partial class StrataInstaller(
             "--family", family,
             "--model", size,
             "--host", "127.0.0.1",
-            "--vision", options.Install.Vision
+            "--vision", vision ?? options.Install.Vision
         };
 
         if (!string.IsNullOrWhiteSpace(options.DataDir))
@@ -208,6 +347,7 @@ public sealed partial class StrataInstaller(
             arguments.AddRange(["--context", context.ToString(CultureInfo.InvariantCulture)]);
         }
 
+        arguments.AddRange(kept ?? []);
         arguments.AddRange(options.Install.Arguments.Where(a => !string.IsNullOrWhiteSpace(a)).Select(a => a.Trim()));
 
         foreach (var argument in arguments)

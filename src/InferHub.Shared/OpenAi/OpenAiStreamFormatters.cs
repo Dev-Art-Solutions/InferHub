@@ -157,9 +157,13 @@ public static class OpenAiSse
     /// OpenAI client as a successful empty answer, on both hosts, from every backend — the Ollama
     /// surface passes the same line through and was right all along.
     /// </summary>
-    public static bool TryReadFailure(string ollamaJson, out string message)
+    public static bool TryReadFailure(string ollamaJson, out string message) => TryReadFailure(ollamaJson, out message, out _);
+
+    /// <param name="status">Phase 100: the chunk's <c>status</c> as an edge answers it — the node's 4xx, else 502.</param>
+    public static bool TryReadFailure(string ollamaJson, out string message, out int status)
     {
         message = "";
+        status = Contracts.InferenceResult.HttpStatusOf(null);
 
         if (!ollamaJson.Contains("\"error\"", StringComparison.Ordinal))
         {
@@ -179,6 +183,8 @@ public static class OpenAiSse
 
             message = Contracts.NodeErrorText.Readable(
                 error.ValueKind == JsonValueKind.String ? error.GetString() : document.RootElement.GetRawText());
+            status = Contracts.InferenceResult.HttpStatusOf(
+                document.RootElement.TryGetProperty("status", out var code) && code.ValueKind == JsonValueKind.Number && code.TryGetInt32(out var value) ? value : null);
             return true;
         }
         catch (JsonException)

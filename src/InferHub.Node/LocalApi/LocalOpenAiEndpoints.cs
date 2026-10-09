@@ -124,10 +124,11 @@ internal static class LocalOpenAiEndpoints
 
                 if (!result.Success)
                 {
+                    var status = InferenceResult.HttpStatusOf(result.Status);
                     return Error(new OpenAiRequestException(
                         NodeErrorText.Readable(result.Error),
-                        StatusCodes.Status502BadGateway,
-                        OpenAiErrorTypes.ApiError));
+                        status,
+                        status < 500 ? OpenAiErrorTypes.InvalidRequest : OpenAiErrorTypes.ApiError));
                 }
 
                 var ollama = ResponseTranslator.ParseChat(result.ResponseJson ?? "{}");

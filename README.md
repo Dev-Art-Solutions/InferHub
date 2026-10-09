@@ -2982,9 +2982,31 @@ size is a model**, the one a request names is started, and the coordinator picks
   wiring before a 70 GB download. Without `Root`, `Backend:Type=strata` is a Strata server somebody else
   runs, at `Upstream:BaseUrl` (Strata's default `http://127.0.0.1:8080/v1`).
 
-Chat only: Strata's pictures are a setup choice the node cannot see, and the hub has its own Anthropic
-and Responses edges. Sizes are removed with Strata's setup on the box — they share files, and only it
-knows which.
+### Pictures, per size (v3.65)
+
+Strata reads pictures when a size is set up with its image encoder. Each model on the panel and in
+`/api/status` says so (`"images": true`, a **pictures** chip), and a chat with an `image_url` part goes
+to it like any other:
+
+```
+POST /api/admin/nodes/{id}/strata/install   {"model": "strata-coder-iq1_m", "vision": "yes"}
+```
+
+- `"vision": "yes"` (the encoder on the GPU), `"cpu"` or `"no"`; left out, the node's
+  `Strata:Install:Vision` decides (default `no`). In the console: tick **with pictures** beside Install.
+- **On a size already installed without pictures it adds them**: setup runs again for that size, skips
+  everything that is there, and fetches only the ~0.9 GB encoder. The node passes the config's own
+  context and KV choice back, so nothing else about the size changes. Not while that size is loaded —
+  unload it first.
+- **A picture sent to a size without the encoder is a 400 at once**, with the call that fixes it —
+  not a 400 after the one-to-three-minute load (that would also have evicted the loaded size).
+
+Measured (RTX 3090 Ti): pictures added to the installed Coder IQ1_M through the hub in about two
+minutes; a 448×448 picture through the hub was described correctly in 15 s, and streamed with the
+first byte in 40 ms.
+
+Strata's Anthropic and Responses routes are not used — the hub has its own edges. Sizes are removed
+with Strata's setup on the box — they share files, and only it knows which.
 
 ## Inference backends
 

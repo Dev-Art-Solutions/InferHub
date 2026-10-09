@@ -999,8 +999,16 @@ public static class AdminEndpoints
             return Results.BadRequest(new { error });
         }
 
+        // Phase 100: setup's --vision for this install; omitted, the node's Strata:Install:Vision decides.
+        var vision = string.IsNullOrWhiteSpace(body?.Vision) ? null : body.Vision.Trim().ToLowerInvariant();
+
+        if (!ModelCommand.IsKnownVision(vision))
+        {
+            return Results.BadRequest(new { error = $"vision '{body!.Vision}' is not setup.py's --vision: yes (the image encoder on the GPU), cpu, or no" });
+        }
+
         var model = reference!.ToString();
-        var result = await commands.SendAsync(node.NodeId, ModelCommand.KindPull, model, cancellationToken, engine: ModelCommand.EngineHuggingFace);
+        var result = await commands.SendAsync(node.NodeId, ModelCommand.KindPull, model, cancellationToken, engine: ModelCommand.EngineHuggingFace, vision: vision);
 
         if (result is null)
         {
@@ -1009,8 +1017,8 @@ public static class AdminEndpoints
 
         audit.Record(node.NodeId, "model.install.strata", ActorOf(context), DateTimeOffset.UtcNow);
         loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin").LogInformation(
-            "Strata install '{Model}' on node {NodeId} -> command {CommandId} (reused={Reused})",
-            model, node.NodeId, result.CommandId, result.Reused);
+            "Strata install '{Model}' on node {NodeId} (vision {Vision}) -> command {CommandId} (reused={Reused})",
+            model, node.NodeId, vision ?? "node default", result.CommandId, result.Reused);
 
         return Results.Accepted($"/api/admin/nodes/{node.NodeId}/models", new
         {
@@ -1018,6 +1026,7 @@ public static class AdminEndpoints
             model,
             kind = ModelCommand.KindPull,
             engine = ModelCommand.EngineHuggingFace,
+            vision,
             commandId = result.CommandId,
             reused = result.Reused
         });
@@ -1383,8 +1392,11 @@ public static class AdminEndpoints
         IReadOnlyList<string>? Conflicts,
         IReadOnlyList<NodeProfileRefusal> Refusals);
 
-    /// <summary>Phase 99: <c>POST /api/admin/nodes/{id}/strata/install</c> — a name from the node's <c>installable</c>, or a link.</summary>
-    internal sealed record StrataInstallRequest(string? Model);
+    /// <summary>
+    /// Phase 99: <c>POST /api/admin/nodes/{id}/strata/install</c> — a name from the node's <c>installable</c>, or a link.
+    /// Phase 100: <c>vision</c> — <c>yes</c>, <c>cpu</c> or <c>no</c>; <c>yes</c> on a size installed without pictures adds them.
+    /// </summary>
+    internal sealed record StrataInstallRequest(string? Model, string? Vision = null);
 
     /// <summary>Phase 98: <c>POST /api/admin/nodes/{id}/huggingface</c>. The quant is a separate field so a form can carry it.</summary>
     internal sealed record HuggingFacePullRequest(

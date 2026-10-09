@@ -37,10 +37,10 @@ internal sealed class OpenAiStreamingResult(
             {
                 // Phase 93: a node's failed-job chunk is a refusal, not a terminal chunk to format
                 // as an empty stop. See FailAsync.
-                if (chunk.Done && OpenAiSse.TryReadFailure(chunk.ResponseJson, out var failure))
+                if (chunk.Done && OpenAiSse.TryReadFailure(chunk.ResponseJson, out var failure, out var status))
                 {
-                    logger.LogWarning("Node failed the streamed job; answering the OpenAI client with the error");
-                    await FailAsync(httpContext, failure);
+                    logger.LogWarning("Node failed the streamed job ({Status}); answering the OpenAI client with the error", status);
+                    await FailAsync(httpContext, failure, status);
                     return;
                 }
 
@@ -90,15 +90,16 @@ internal sealed class OpenAiStreamingResult(
     /// an empty answer. Before the first byte, the blocking path's own 502; after it, an error frame
     /// the OpenAI SDKs raise on. The node's writer does the same (37 D6).
     /// </summary>
-    private static async Task FailAsync(HttpContext httpContext, string message)
+    private static async Task FailAsync(HttpContext httpContext, string message, int status = StatusCodes.Status502BadGateway)
     {
         try
         {
             if (!httpContext.Response.HasStarted)
             {
-                httpContext.Response.StatusCode = StatusCodes.Status502BadGateway;
+                // Phase 100: a node's refusal keeps its 4xx (a picture for a model that cannot read one).
+                httpContext.Response.StatusCode = status;
                 await httpContext.Response.WriteAsJsonAsync(
-                    OpenAiErrorEnvelope.Create(message, OpenAiErrorTypes.ApiError),
+                    OpenAiErrorEnvelope.Create(message, status < 500 ? OpenAiErrorTypes.InvalidRequest : OpenAiErrorTypes.ApiError),
                     ErrorJsonOptions,
                     httpContext.RequestAborted);
                 return;

@@ -40,7 +40,12 @@ public sealed record NodeCatalogModel(
     [property: JsonPropertyName("inFlight")] int InFlight,
     /// <summary>Seconds since its last request finished, while loaded. Null when not loaded.</summary>
     [property: JsonPropertyName("idleSeconds")] double? IdleSeconds = null,
-    [property: JsonPropertyName("lastError")] string? LastError = null)
+    [property: JsonPropertyName("lastError")] string? LastError = null,
+    /// <summary>
+    /// Phase 100: whether the model reads pictures — for Strata, whether its config was set up with the
+    /// image encoder. Null where the engine says nothing either way (colibri, or a node before v3.65).
+    /// </summary>
+    [property: JsonPropertyName("images")] bool? Images = null)
 {
     public const string Loaded = "loaded";
 

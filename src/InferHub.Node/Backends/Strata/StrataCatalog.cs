@@ -28,8 +28,15 @@ public interface IStrataControl : ICatalogControl;
 /// </para>
 /// <para>
 /// <b>Chat only.</b> Strata also speaks Anthropic's and OpenAI's Responses routes, which the hub has its
-/// own edges for; it has no embeddings, and pictures need a setup choice the node cannot see from
-/// the config — 99's non-goal, not declared.
+/// own edges for; it has no embeddings.
+/// </para>
+/// <para>
+/// <b>Pictures are per config</b> (phase 100). 99 called them a setup choice the node could not see;
+/// it can — setup writes a <c>vision</c> block (and <c>--vision</c> in <c>args</c>) into the config of a
+/// size set up with the image encoder. Such a model reads a chat's pictures (the node passes them as
+/// OpenAI <c>image_url</c> parts); a picture sent to one without is refused <em>before</em> its
+/// server is started, because Strata would refuse it anyway — after a load of one to three minutes
+/// that evicts whatever else was loaded.
 /// </para>
 /// </remarks>
 public sealed class StrataCatalog : ModelCatalog, IStrataControl
@@ -172,6 +179,93 @@ public sealed class StrataCatalog : ModelCatalog, IStrataControl
         catch (JsonException)
         {
             return true;
+        }
+    }
+
+    protected internal override bool? ImagesOf(string path) => HasImageEncoder(path);
+
+    protected override string? Refuse(string model, string path, string requestJson)
+        => HasImageEncoder(path) == false && HasPictures(requestJson)
+            ? $"'{model}' was set up without Strata's image encoder, so it cannot read pictures; install it again with pictures from the hub's Strata panel (POST /api/admin/nodes/{{id}}/strata/install {{\"model\": \"{model}\", \"vision\": \"yes\"}}), or send the chat without them"
+            : null;
+
+    /// <summary>
+    /// Whether setup gave the config the image encoder: a <c>vision</c> object (what <c>server.py</c>
+    /// starts the encoder from), or <c>--vision</c> among the engine's <c>args</c>. Null: unreadable.
+    /// </summary>
+    internal static bool? HasImageEncoder(string path)
+    {
+        try
+        {
+            using var config = JsonDocument.Parse(File.ReadAllText(path));
+            var root = config.RootElement;
+
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            if (root.TryGetProperty("vision", out var vision) && vision.ValueKind == JsonValueKind.Object)
+            {
+                return true;
+            }
+
+            return root.TryGetProperty("args", out var args)
+                   && args.ValueKind == JsonValueKind.Array
+                   && args.EnumerateArray().Any(a => a.ValueKind == JsonValueKind.String && a.GetString() == "--vision");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Whether a chat carries a picture: the node's own shape (<c>images</c> on a message, phase 64's
+    /// translation of OpenAI parts), or content parts that are one (<c>image_url</c>, <c>image</c>, <c>input_image</c>).
+    /// </summary>
+    internal static bool HasPictures(string requestJson)
+    {
+        if (!requestJson.Contains("image", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var request = JsonDocument.Parse(requestJson);
+
+            if (!request.RootElement.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array)
+            {
+                return false;
+            }
+
+            foreach (var message in messages.EnumerateArray())
+            {
+                if (message.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                if (message.TryGetProperty("images", out var images) && images.ValueKind == JsonValueKind.Array && images.GetArrayLength() > 0)
+                {
+                    return true;
+                }
+
+                if (message.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array
+                    && content.EnumerateArray().Any(part => part.ValueKind == JsonValueKind.Object
+                        && part.TryGetProperty("type", out var type)
+                        && type.GetString() is "image_url" or "image" or "input_image"))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 

@@ -6,7 +6,8 @@ dialect": colibri and its Brio, since phase 95 a node running several engines at
 96 a llama.cpp engine that is all of llama.cpp: a router over many GGUFs, managed from the hub — and
 since 97 a colibri catalogue: many converted models, one loaded on request, idle ones freed, the hub picking —
 since 98 Hugging Face links the node downloads, and since 99 Strata: an install's sizes as the same kind of
-catalogue (`Backends/Catalog/`, shared with colibri), installed from a link by Strata's own setup.
+catalogue (`Backends/Catalog/`, shared with colibri), installed from a link by Strata's own setup — since 100
+with pictures, per size.
 
 > **Read the root `CLAUDE.md` first, then `src/InferHub.Node/CLAUDE.md`.** That file still owns
 > `IInferenceBackend`, the dialects a backend speaks (67), the supervisor and backend health (36, 69),
@@ -391,7 +392,7 @@ second copy of the 1 000 lines; folding Strata into colibri's section (two engin
 where setup writes them), kept only when it is a JSON object with `exe` and an `args` list — Strata's own
 #549 test, so `*.shared-settings.json`, a user's file and a half-written config are skipped. The name is the
 file's (`strata-coder-iq1_m`): every config's `model_name` is the same family name. Chat only (no embeddings;
-pictures are a setup choice the config does not reveal). Pull and delete refuse in a sentence: an install is
+pictures were called a setup choice the config does not reveal — wrong, see 100 D1). Pull and delete refuse in a sentence: an install is
 D4's link, and sizes share files only setup can tell apart. `Backend:Type=strata` without `Root` is a plain
 upstream at Strata's `127.0.0.1:8080/v1`.
 
@@ -418,3 +419,53 @@ passing `--gguf-dir` — a second resume/checksum implementation, and setup's pa
 Tests: `StrataModelsTests` (Shared), `StrataCatalogTests` (Node — `FakeStrata`, `FakeSetupRunner`, the fake
 launcher's Strata health), `StrataMeshTests` (Mesh — real hub, SignalR, node: route, install from a link, pin,
 refused delete). Live run with a real Strata install on a real GPU: `.claude/release-notes-v3.64.0.md`.
+
+### Phase 100 (Strata pictures: each size says whether it reads them, a picture it cannot read is a 400 before a load, the hub adds the encoder)
+
+Files: `StrataCatalog` (`HasImageEncoder`, `HasPictures`, `Refuse`), `ModelCatalog` (`ImagesOf`, `Refuse` →
+`Admit` before `EnsureLoadedAsync`; `CatalogException.Status`), `StrataInstaller` (`vision`, `Settled`,
+`AddingPictures`, `KeptChoices`), `InferenceExecutor` (a `CatalogException` with a status is
+`InferenceResult.Refused`, its stream chunk carries `status`), `ModelCommandExecutor` (`command.Vision`).
+Shared: `NodeCatalogModel.Images`, `ModelCommand.Vision` (+ `IsKnownVision`/`WantsImages`),
+`InferenceResult.Status` (+ `HttpStatusOf`, `Refused`), `OpenAiSse.TryReadFailure(…, out status)`. Hub:
+`StrataInstallRequest.Vision`, `ModelCommandCoordinator.SendAsync(vision:)` (in the coalescing key),
+`InferenceCore` and `OpenAiStreamingResult` answer a refusal's 4xx; solo: `LocalOpenAiEndpoints`, `LocalSseResult`.
+Console: a "pictures" chip on a model, a **with pictures** box beside Install.
+
+**D1 — whether a size reads pictures is in its config** (load-bearing; 99 D2 said it was not). Setup writes
+a `vision` object (encoder exe, mmproj, gpu) and `--vision` into `args` for a size set up with images, and
+`server.py` starts the encoder from exactly that. `HasImageEncoder` = either; unreadable = null. It rides
+`NodeCatalogModel.images` (null for colibri, and from a v3.64 node).
+
+**D2 — a picture for a size without the encoder is refused before its server starts.** Strata refuses it
+itself ("started without the vision encoder"), but only after a load of one to three minutes that, on the
+one-slot default, evicted the size that was loaded. `ModelCatalog.Admit` asks the subclass's `Refuse` before
+admission; `HasPictures` = an `images` entry (the node's own shape, phase 64) or an `image_url`/`image`/
+`input_image` part, checked only when the body contains "image" at all. The sentence names the install call
+that fixes it. *Rejected:* refusing at the hub — it has the state, but a v3.64 node's state has no `images`,
+and the node is where the config is.
+
+**D3 — a node refusal keeps its 4xx.** Every failed node job was a 502 (`InferenceCore`); a request the model
+cannot take is the caller's, so `InferenceResult.Status` (and `status` on a stream's failure chunk) carries
+it, and the hub and the solo edge answer it as `invalid_request_error`. Only a `CatalogException` with
+`Status` sets it today; an engine's own 4xx inside a job is still a 502 (not widened here). Absent = 502, so
+an older node is unchanged; a non-4xx value is ignored. *Found on the live run:* the first refusal through
+the hub was a 502.
+
+**D4 — pictures are the install's choice; asking for them on an installed size runs setup again.**
+`POST …/strata/install {"model", "vision": "yes|cpu|no"}` → `ModelCommand.Vision` → `setup.py --vision`;
+absent is `Strata:Install:Vision` (default `no`), so a plain request never re-runs setup on a `yes` node.
+An explicit `yes`/`cpu` for an installed size without the encoder is "change settings" in setup's words:
+everything present is skipped, the ~0.9 GB mmproj is fetched (its bar is labelled `vision encoder:` —
+with a space, which 99's progress regex missed), the config gains the encoder. Refused while that size is
+loaded or loading (setup rewrites the config its server started from). Success is the config having the
+encoder, not exit 0. **`KeptChoices`:** setup answers every question again for a size — it reuses an
+earlier config's answers only when adopting a fresh copy of Strata — so the node passes the config's own
+`--max-context` as `--context` and its `--kv` back, unless `Strata:Install` sets them. *Found before the
+live run by reading setup:* without it the 32K Coder would have come back at this card's 128K.
+
+Tests: `StrataCatalogTests` (Node: images per config, encoder detection, picture detection, refusal before
+launch blocking and streamed, kept choices, add-pictures re-run, loaded refusal, setup that drops the
+encoder), `StrataMeshTests` (Mesh: 400 on the job, `vision` across the wire, `images` at the hub),
+`OpenAiStreamingTests` + `SoloStreamRefusalTests` (the 4xx on both edges), `StrataModelsTests` (Shared:
+optional fields read both ways). Live run: `.claude/release-notes-v3.65.0.md`.

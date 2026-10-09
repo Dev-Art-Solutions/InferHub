@@ -45,6 +45,12 @@ public sealed class InferenceExecutor(
             logger.LogWarning("Inference job {JobId} was canceled", job.JobId);
             return InferenceResult.Failed(job.JobId, "inference job was canceled");
         }
+        catch (Backends.Catalog.CatalogException ex) when (ex.Status is { } status)
+        {
+            // Phase 100: the request's fault, said in the backend's sentence — no stack trace for it.
+            logger.LogInformation("Inference job {JobId} refused ({Status}): {Reason}", job.JobId, status, ex.Message);
+            return InferenceResult.Refused(job.JobId, ex.Message, status);
+        }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Inference job {JobId} failed", job.JobId);
@@ -86,6 +92,13 @@ public sealed class InferenceExecutor(
                 catch (Exception ex)
                 {
                     error = ex;
+                }
+
+                if (error is Backends.Catalog.CatalogException { Status: { } status })
+                {
+                    logger.LogInformation("Streaming inference job {JobId} refused ({Status}): {Reason}", job.JobId, status, error.Message);
+                    yield return new InferenceChunk(job.JobId, SerializeError(error.Message, status), true);
+                    yield break;
                 }
 
                 if (error is not null)
@@ -181,9 +194,12 @@ public sealed class InferenceExecutor(
         return JsonSerializer.Serialize(new VectorQueryResponse(matches), JsonOptions);
     }
 
-    private static string SerializeError(string message)
+    /// <param name="status">Phase 100: a refusal's 4xx, read back by <c>OpenAiSse.TryReadFailure</c>; omitted for a failure.</param>
+    private static string SerializeError(string message, int? status = null)
     {
-        return JsonSerializer.Serialize(new { error = message, done = true }, JsonOptions);
+        return status is { } code
+            ? JsonSerializer.Serialize(new { error = message, status = code, done = true }, JsonOptions)
+            : JsonSerializer.Serialize(new { error = message, done = true }, JsonOptions);
     }
 
     private static bool IsDone(string responseJson)
