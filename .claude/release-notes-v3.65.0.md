@@ -71,4 +71,20 @@ paused. The Coder had loaded during the contention, so its expert cache was size
 
 ## The published artifact
 
-(filled in after the tag)
+Docker Desktop was not running on this box, and no image carries Strata anyway, so — as for v3.64 — the
+check pulled `inferhub-coordinator:3.65.0` and `inferhub-node:3.65.0` (linux/amd64) from GHCR anonymously,
+extracted their `/app` layers and ran **those DLLs** natively against the real Strata install and GPU. Both
+images' `org.opencontainers.image.revision` label is `bba53a7`, the tag commit. This tests the published code,
+not the images' OS layer.
+
+- The published hub reported `3.65.0` and listed `strata-coder-iq1_m` with `"images": true` and
+  `strata-q2_0` with `"images": false`.
+- The picture to `strata-q2_0`: **400 in 5 ms**, blocking and streamed; the node logged `refused (400)`;
+  no Strata process was started.
+- `/strata/install {"model": "strata-coder-iq1_m", "vision": "yes"}` → 202, and the node did not run
+  setup: the size already has the encoder.
+- The picture to the Coder: **HTTP 200 in 41.8 s**, of which the cold load was 16.3 s — *"The picture
+  contains a red circle in the upper left and a blue square in the lower right, with the black text
+  "OK 42" appearing in the upper right."* The card was not shared this time.
+- Neither published process's log contains the prompt or any of the picture's base64; no Strata process
+  was left after the node was stopped.
