@@ -103,10 +103,24 @@ and `ConsoleContractTests` extended to every field the new panel reads.
   the virtual account with automatic updates) have not been seen by a person.
 - **The console's panel was not opened in a browser.** Its fields are covered by `ConsoleContractTests` and
   its buttons call the two endpoints exercised above; nobody has looked at it.
-- **The published setup on this release** is checked against the real GitHub release after the tag — see
-  the addendum below once it is done. Against GitHub, a node on 3.66.0 has nothing newer to find, so the
-  first real self-update through GitHub will be to the next release.
+- **The published coordinator image** was not pulled and run for this release; the hub side was run from
+  source at the tagged commit. The setup, which is this release's artifact, was checked as published (below).
 - **Not code-signed.** SmartScreen will warn on a fresh download ("unrecognized app"). The checksum guards
   a download, not the release; a node that updates itself runs what is published.
 - Only `win-x64`. No ARM64 setup.
 - The coordinator does not update itself; it ships as an image.
+
+## Addendum — the published setup, through the real GitHub release
+
+`windows-installer.yml` attached `InferHub-Node-Setup-3.66.0-win-x64.exe` (35 282 159 bytes) and its
+`.sha256` to v3.66.0 about three minutes after the tag. A node installed from the local 3.65.99 setup with
+**no** `/UpdateSource` — so asking `api.github.com` — and *when an admin says*:
+
+- *Check* through the hub → `available: 3.66.0`, `releaseUrl:
+  https://github.com/Dev-Art-Solutions/InferHub/releases/tag/v3.66.0`: the real API's JSON, the real asset
+  names, picked by the shipped code.
+- *Update* → `downloading` → `applying` → back in **14 s** as **`3.66.0+773ee9e`** — the tagged commit,
+  i.e. the setup GitHub serves, downloaded, checked against its published SHA-256 and run by the node.
+  `lastUpdate: updated 3.65.99 → 3.66.0`.
+- *Check* again → `up-to-date`.
+- Uninstalled; the box is as it was.
