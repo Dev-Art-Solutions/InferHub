@@ -299,6 +299,32 @@
   </section>
 
   <!--
+    Phase 101. Each node's version and the newest release it could move to. Update sends the node one
+    command; it downloads the setup, verifies it and runs it, and comes back on the new version. A node
+    whose operator chose automatic updates does this by itself; one that chose "never" has no button.
+  -->
+  <section>
+    <h2>Versions &amp; updates</h2>
+    <div class="table-wrap">
+      <table id="updates-table">
+        <thead>
+          <tr>
+            <th>Node</th>
+            <th>Version</th>
+            <th>Available</th>
+            <th>State</th>
+            <th>Updates</th>
+            <th>Last checked</th>
+            <th>Note</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="updates"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!--
     Phase 97. A colibri catalogue: every converted model a node may load, which are loaded, and
     which the hub pinned. Load and Unload write the node's profile (colibri.loaded); on a node that
     may hold one model, Load is a switch. On-demand stops idle, unpinned models to free their RAM.

@@ -1,0 +1,67 @@
+name: windows-installer
+
+# PHASE 101. Builds the Windows node setup (InferHub-Node-Setup-X.Y.Z-win-x64.exe) and its .sha256 and
+# attaches both to the tag's GitHub release. A node's updater counts a release only once BOTH are attached
+# (101 D3), so the minutes between the tag and this upload read as "not yet", never as a broken release.
+on:
+  push:
+    tags: ['v*']
+
+  # Dispatch it against the TAG (`gh workflow run windows-installer.yml --ref v3.66.0`): the version is
+  # read from github.ref_name, and against a branch there is no version to build — that run builds
+  # Directory.Build.props' version and attaches nothing.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # Not on every runner image any more; the build script finds it on PATH or in Program Files.
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+
+      - name: Build the setup
+        shell: pwsh
+        run: |
+          $version = ''
+          if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME.TrimStart('v') }
+          if ($version) {
+            ./deploy/windows/installer/build-installer.ps1 -Version $version -OutputDirectory artifacts/installer
+          } else {
+            ./deploy/windows/installer/build-installer.ps1 -OutputDirectory artifacts/installer
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: node-setup
+          path: artifacts/installer/*
+
+      # The release is normally cut by hand with its notes; if this run gets there first it creates a
+      # placeholder the hand-cut step then edits (`gh release edit --notes-file`), rather than failing.
+      - name: Attach to the release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --repo $env:GITHUB_REPOSITORY --verify-tag --title $tag --notes "Release notes follow."
+          }
+          gh release upload $tag (Get-ChildItem artifacts/installer/*).FullName --repo $env:GITHUB_REPOSITORY --clobber

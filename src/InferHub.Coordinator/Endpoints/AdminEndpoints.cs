@@ -72,6 +72,7 @@ public static class AdminEndpoints
             NodeCorpusRegistry corpora,
             NodeToolRegistry tools,
             NodeBackendRegistry backends,
+            NodeUpdateRegistry updates,
             ILoggerFactory loggerFactory) =>
         {
             var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin");
@@ -96,6 +97,7 @@ public static class AdminEndpoints
             corpora.Forget(nodeId);
             tools.Forget(nodeId);
             backends.Forget(nodeId);
+            updates.Forget(nodeId);
             audit.Record(nodeId, "deregister", ActorOf(context), DateTimeOffset.UtcNow);
 
             logger.LogInformation(
@@ -467,6 +469,15 @@ public static class AdminEndpoints
             INodeRegistry registry, NodeStrataRegistry strata, ModelCommandCoordinator commands, IAuditLog audit,
             ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
             await InstallStrataAsync(nodeId, body, context, registry, strata, commands, audit, loggerFactory, cancellationToken));
+
+        // Phase 101. Look for a release now, or apply the newest one. The node downloads and runs the setup
+        // itself; progress arrives as its update state on /api/status, not on this response.
+        group.MapPost("/nodes/{nodeId}/update/check", (
+            string nodeId, HttpContext context, NodeUpdateControl control, CancellationToken cancellationToken) =>
+            SendNodeUpdateAsync(nodeId, NodeUpdateCommand.KindCheck, context, control, cancellationToken));
+        group.MapPost("/nodes/{nodeId}/update/apply", (
+            string nodeId, HttpContext context, NodeUpdateControl control, CancellationToken cancellationToken) =>
+            SendNodeUpdateAsync(nodeId, NodeUpdateCommand.KindApply, context, control, cancellationToken));
 
         group.MapPost("/nodes/{nodeId}/collections/{collection}/assign", async (
             string nodeId, string collection, HttpContext context,
@@ -949,6 +960,24 @@ public static class AdminEndpoints
             null => Results.Ok(new { nodeId = node.NodeId, backend = outcome.Engine, running, profile = outcome.Profile }),
             BackendToggleOutcome.UnknownEngine => Results.NotFound(new { error = outcome.Error }),
             _ => Results.Conflict(new { error = outcome.Error })
+        };
+    }
+
+    /// <summary>Phase 101: 202 once sent; 404 for an unknown node; 409 with the node's own reason otherwise.</summary>
+    private static async Task<IResult> SendNodeUpdateAsync(
+        string nodeId,
+        string kind,
+        HttpContext context,
+        NodeUpdateControl control,
+        CancellationToken cancellationToken)
+    {
+        var (refusal, message, state) = await control.SendAsync(nodeId, kind, ActorOf(context), cancellationToken);
+
+        return refusal switch
+        {
+            null => Results.Accepted(value: new { nodeId, kind, message, update = state }),
+            NodeUpdateControl.NotFound => Results.NotFound(new { error = message }),
+            _ => Results.Conflict(new { error = message, update = state })
         };
     }
 

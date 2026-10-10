@@ -1094,3 +1094,5 @@ job failing on its own deadline; echo worker `--audio-delay-ms`).
 
 > **Phases 95 and 97 (engines, and colibri's catalogue, driven from here)** — `NodeBackendRegistry`/`NodeBackendToggle`, `NodeColibriRegistry`/`NodeColibriToggle`,
 > `/api/admin/nodes/{id}/backends/{name}/start|stop` and `/colibri/…` are the hub's half; the decisions are in `src/InferHub.Node/Backends/CLAUDE.md`.
+
+> **Phase 101 (node versions and updates)** — `NodeUpdateRegistry`/`NodeUpdateControl`, `/api/admin/nodes/{id}/update/check|apply`, the console's Versions & updates panel; decisions in `src/InferHub.Node/CLAUDE.md`.

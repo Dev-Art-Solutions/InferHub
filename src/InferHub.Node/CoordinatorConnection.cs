@@ -35,7 +35,8 @@ public sealed class CoordinatorConnection(
     Resources.GpuArbiter? gpuArbiter = null,
     IEngineControl? engines = null,
     Backends.Colibri.IColibriControl? colibri = null,
-    Backends.Strata.IStrataControl? strata = null) : IAsyncDisposable
+    Backends.Strata.IStrataControl? strata = null,
+    Update.UpdateManager? updates = null) : IAsyncDisposable
 {
     /// <summary>
     /// Phase 97's catalogue report, one per engine that has a catalogue (99): each has its own hub
@@ -61,11 +62,15 @@ public sealed class CoordinatorConnection(
     private Task? modelRefreshTask;
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> activeJobs = new();
     private int inFlight;
+
+    /// <summary>Mesh jobs running on this node now — what an automatic update waits to reach zero (101 D4).</summary>
+    public int InFlight => Volatile.Read(ref inFlight);
     private bool subscribedToSupervisor;
     private bool subscribedToTools;
     private bool subscribedToArbiter;
     private bool subscribedToEngines;
     private bool subscribedToCatalogs;
+    private bool subscribedToUpdates;
     private int onDemandBeatQueued;
     private LocalVectorStore? tailedStore;
 
@@ -76,6 +81,7 @@ public sealed class CoordinatorConnection(
         SubscribeToArbiter();
         SubscribeToEngines();
         SubscribeToCatalogs();
+        SubscribeToUpdates();
         retrieval.CorpusChanged += OnCorpusChanged;
         return ConnectUntilSuccessfulAsync(cancellationToken);
     }
@@ -87,6 +93,7 @@ public sealed class CoordinatorConnection(
         UnsubscribeFromArbiter();
         UnsubscribeFromEngines();
         UnsubscribeFromCatalogs();
+        UnsubscribeFromUpdates();
         retrieval.CorpusChanged -= OnCorpusChanged;
         UnsubscribeFromTailedStore();
         await lifetime.CancelAsync();
@@ -128,6 +135,7 @@ public sealed class CoordinatorConnection(
         UnsubscribeFromArbiter();
         UnsubscribeFromEngines();
         UnsubscribeFromCatalogs();
+        UnsubscribeFromUpdates();
         retrieval.CorpusChanged -= OnCorpusChanged;
         UnsubscribeFromTailedStore();
         await lifetime.CancelAsync();
@@ -272,6 +280,116 @@ public sealed class CoordinatorConnection(
                 logger.LogWarning(ex, "Could not report a model catalogue after it changed");
             }
         });
+    }
+
+    /// <summary>
+    /// Phase 101. A check found a release, a download started, a setup was launched: the console hears it
+    /// now, because "applying" is exactly the state an admin who just pressed Update is watching for.
+    /// </summary>
+    private void SubscribeToUpdates()
+    {
+        if (updates is null || subscribedToUpdates)
+        {
+            return;
+        }
+
+        subscribedToUpdates = true;
+        updates.Changed += OnUpdateChanged;
+    }
+
+    private void UnsubscribeFromUpdates()
+    {
+        if (!subscribedToUpdates || updates is null)
+        {
+            return;
+        }
+
+        subscribedToUpdates = false;
+        updates.Changed -= OnUpdateChanged;
+    }
+
+    private void OnUpdateChanged()
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ReportUpdateStateAsync(lifetime.Token);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "Could not report the update state after it changed");
+            }
+        });
+    }
+
+    /// <summary>
+    /// The hub asked this node to look for, or apply, a release (phase 101). Offloaded like a model command
+    /// (98): a download is minutes, and every later hub call to this node would wait behind it. The node
+    /// refuses for itself what its operator did not allow (43 D1); the refusal is reported as the state's
+    /// <c>lastError</c>, which is where the console reads it.
+    /// </summary>
+    private async Task RunUpdateCommandAsync(NodeUpdateCommand command)
+    {
+        if (updates is null)
+        {
+            return;
+        }
+
+        var by = string.IsNullOrWhiteSpace(command.RequestedBy) ? "the coordinator" : command.RequestedBy!;
+        Update.UpdateOutcome outcome;
+
+        if (string.Equals(command.Kind, NodeUpdateCommand.KindApply, StringComparison.OrdinalIgnoreCase))
+        {
+            outcome = await updates.ApplyAsync(by, fromHub: true, lifetime.Token);
+        }
+        else if (string.Equals(command.Kind, NodeUpdateCommand.KindCheck, StringComparison.OrdinalIgnoreCase))
+        {
+            outcome = updates.Options.Check || updates.Options.AllowFromHub
+                ? await updates.CheckAsync(lifetime.Token)
+                : new Update.UpdateOutcome(false, "Update:Check and Update:AllowFromHub are both off on this node: it looks for no releases");
+        }
+        else
+        {
+            outcome = new Update.UpdateOutcome(false, $"'{command.Kind}' is not an update command");
+        }
+
+        if (outcome.Accepted)
+        {
+            logger.LogInformation("Update {Kind} from {By}: {Message}", command.Kind, by, outcome.Message);
+        }
+        else
+        {
+            logger.LogWarning("Update {Kind} from {By} refused: {Message}", command.Kind, by, outcome.Message);
+            updates.Refused(outcome.Message);
+        }
+    }
+
+    /// <summary>
+    /// Tells the hub this node's version and the newest release it could move to (phase 101). Sent by every
+    /// node, checking or not: "3.66.0, never checks, cannot apply" is an answer too. A hub older than v3.66
+    /// has no such method: a debug line and a node that carries on (40 D1).
+    /// </summary>
+    private async Task ReportUpdateStateAsync(CancellationToken cancellationToken)
+    {
+        var activeConnection = connection;
+
+        if (updates is null || activeConnection is not { State: HubConnectionState.Connected })
+        {
+            return;
+        }
+
+        try
+        {
+            await activeConnection.InvokeAsync("ReportUpdateState", updates.State(nodeId), cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "This coordinator did not accept an update report");
+        }
     }
 
     private void SubscribeToArbiter()
@@ -479,6 +597,7 @@ public sealed class CoordinatorConnection(
         hubConnection.On<string>("DropVectorReplica", OnDropVectorReplica);
         hubConnection.On<string>("RequestCorpusSnapshot", OnRequestCorpusSnapshot);
         hubConnection.On<string>("PromoteCorpusReplica", collection => _ = OnPromoteCorpusReplicaAsync(collection));
+        hubConnection.On<NodeUpdateCommand>("NodeUpdate", command => Offload(() => RunUpdateCommandAsync(command)));
 
         hubConnection.Reconnecting += error =>
         {
@@ -641,6 +760,9 @@ public sealed class CoordinatorConnection(
         await connection.InvokeAsync("Register", registration, cancellationToken);
         await RequestProfileAsync(cancellationToken);
         await ReportModelsAsync(cancellationToken);
+        // Phase 101. Here as well as on the model loop, which returns early when the backend cannot list —
+        // and a node whose engine is down is still a node an admin may want to update.
+        await ReportUpdateStateAsync(cancellationToken);
 
         logger.LogInformation(
             "Registered node {NodeId} ({NodeName}) with coordinator",
@@ -1485,6 +1607,9 @@ public sealed class CoordinatorConnection(
 
         // Phase 97: which catalogue models are loaded, pinned, idle.
         await ReportCatalogStateAsync(cancellationToken);
+
+        // Phase 101: which version, and whether a newer one is waiting.
+        await ReportUpdateStateAsync(cancellationToken);
     }
 
     /// <summary>

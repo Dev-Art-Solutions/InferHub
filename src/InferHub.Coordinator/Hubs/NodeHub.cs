@@ -199,6 +199,20 @@ public sealed class NodeHub(
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// What a node said about its version and the newest release it could move to (phase 101). The
+    /// mailbox again; a node before v3.66 sends none.
+    /// </summary>
+    public Task ReportUpdateState(NodeUpdateState state)
+    {
+        if (services.GetService(typeof(NodeUpdateRegistry)) is NodeUpdateRegistry updates)
+        {
+            updates.Report(state);
+        }
+
+        return Task.CompletedTask;
+    }
+
     /// <summary>What a node did with its profile, including everything it refused and why (D6).</summary>
     public Task ReportProfileState(NodeProfileState state)
     {

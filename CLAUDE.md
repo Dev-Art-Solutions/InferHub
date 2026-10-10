@@ -35,7 +35,8 @@ src/
                           is solo mode (phase 37); Retrieval/ is solo RAG (phase 38). Two
                           Dockerfiles: the plain one (multi-arch, ~340 MB) and Dockerfile.ollama
                           (phase 39 — amd64, ~4 GB, Ollama inside the container).
-  InferHub.Node.WindowsService/  Windows-service host. References InferHub.Node, adds AddWindowsService + install scripts.
+  InferHub.Node.WindowsService/  Windows-service host. References InferHub.Node, adds AddWindowsService + install scripts;
+                          since phase 101 also the setup's `configure` verb, `update`, and the applier that runs the next setup.
 tests/
   InferHub.Tests.Common/       fixtures and hosts. A library, not a test project.
   InferHub.Tests.Shared/       pure: contracts, renderers, stores, the context contract
@@ -46,7 +47,7 @@ tests/
 deploy/
   docker/                 Compose stack (coordinator + node), Postgres overlay, runbook.
   postgres/               Postgres+pgvector for the gated integration tests.
-  windows/                Node-as-a-Windows-service install scripts.
+  windows/                Node-as-a-Windows-service install scripts; installer/ is the Inno Setup setup (phase 101).
 .github/workflows/        CI: build+test and docker image build on PRs; GHCR publish on v* tags.
 plan/                     Phase build-briefs. Not shipped; lives in repo for context.
 tools/
@@ -96,7 +97,7 @@ longer pays for the Qdrant connector's UUID mapping and the cluster lease's spli
 | `src/InferHub.Coordinator/Vector/` | `src/InferHub.Coordinator/Vector/CLAUDE.md` | the three vector providers, replication and healing, collection ownership, cross-provider migration, federated retrieval · phases 31, 35, 44, 75 (split out in phase 62) |
 | `src/InferHub.Coordinator/Observability/` | `src/InferHub.Coordinator/Observability/CLAUDE.md` | `/metrics`, the `Metrics` registry, the OTLP push exporter · phases 28, 66, 81 (split out in phase 81) |
 | `src/InferHub.Coordinator/Cluster/` | `src/InferHub.Coordinator/Cluster/CLAUDE.md` | the multi-coordinator lease, the split-brain fence, the standby's refusal set · phase 32 (split out in phase 69) |
-| `src/InferHub.Node/` | `src/InferHub.Node/CLAUDE.md` | backends and the upstream dialects a node can drive, the Ollama supervisor, solo mode, profiles · phases 36–39, 43, 53, 67 |
+| `src/InferHub.Node/` | `src/InferHub.Node/CLAUDE.md` | backends and the upstream dialects a node can drive, the Ollama supervisor, solo mode, profiles, the Windows setup and self-update · phases 36–39, 43, 53, 67, 101 |
 | `src/InferHub.Node/Backends/` | `src/InferHub.Node/Backends/CLAUDE.md` | colibri and its Brio, `Backend:Engines` — ollama, llama.cpp and colibri on one node, started and stopped by the hub — and the llama.cpp router: models pulled, loaded and unloaded from the hub, `/v1/llamacpp/*`, `/v1/rerank`; colibri's catalogue — many models, loaded on demand, picked from the hub; Hugging Face links downloaded by the node (GGUF for llama.cpp, converted for colibri); Strata — an install's sizes as a catalogue, installed from a link by its own setup · phases 93, 94, 95, 96, 97, 98, 99 (split out in phase 95) |
 | `src/InferHub.Node/Tools/` | `src/InferHub.Node/Tools/CLAUDE.md` | the tool runtime, STT/TTS, the image and video catalogues, the VRAM budget and the licence gate · phases 41, 42, 48, 55–58, 70 (split out in phase 67) |
 | `python/` | `python/CLAUDE.md` | the worker protocol, recipes, the diffusion worker · phases 49, 50, 55, 57, 58, 70 |

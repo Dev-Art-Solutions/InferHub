@@ -685,6 +685,67 @@
     }).join("");
   };
 
+  // ------------------------------------------------------------------ versions & updates (phase 101)
+
+  const updateStatePill = (update) => {
+    const cls = update.state === "up-to-date" ? "pill-ok"
+      : update.state === "available" || update.state === "downloading" || update.state === "applying" ? "pill-warn"
+        : update.state === "failed" ? "pill-err" : "pill-muted";
+    return `<span class="pill ${cls}">${escapeHtml(update.state)}</span>`;
+  };
+
+  const updateMode = (update) => {
+    if (update.auto) return `<span class="pill pill-ok" title="Update:Auto — applies a release by itself once idle">automatic</span>`;
+    if (update.allowFromHub) return `<span class="pill pill-muted" title="Update:AllowFromHub — waits for an admin to press Update">on request</span>`;
+    if (update.check) return `<span class="pill pill-muted" title="Update:Check only — reports releases, updated by hand on the box">report only</span>`;
+    return `<span class="pill pill-muted" title="Update:Check is off">off</span>`;
+  };
+
+  const renderUpdates = (status) => {
+    const tbody = document.getElementById("updates");
+    if (!tbody) return;
+
+    const nodes = status?.nodes ?? [];
+    if (nodes.length === 0) {
+      emptyRow("updates", 8, "No nodes connected.");
+      return;
+    }
+
+    tbody.innerHTML = nodes.map(node => {
+      const u = node.update;
+      if (!u) {
+        return `
+        <tr>
+          <td>${escapeHtml(node.name)}</td>
+          <td><code>${escapeHtml(node.version ?? "")}</code></td>
+          <td colspan="6"><span class="matrix-no">a release before v3.66 — updated by hand</span></td>
+        </tr>`;
+      }
+      const available = u.available
+        ? (u.releaseUrl ? `<a href="${escapeHtml(u.releaseUrl)}" target="_blank" rel="noopener"><code>${escapeHtml(u.available)}</code></a>` : `<code>${escapeHtml(u.available)}</code>`)
+        : `<span class="matrix-no">—</span>`;
+      const checked = u.lastCheckedUtc ? new Date(u.lastCheckedUtc).toLocaleString() : "never";
+      const note = u.lastError ?? (!u.canApply ? u.whyNot : null) ?? u.lastUpdate;
+      const busy = u.state === "downloading" || u.state === "applying";
+      const canUpdate = u.allowFromHub && u.canApply && !busy;
+      const buttons = [
+        (u.check || u.allowFromHub) ? `<button type="button" data-uaction="check" data-node="${encodeURIComponent(node.nodeId)}">Check</button>` : "",
+        canUpdate ? `<button type="button" data-uaction="apply" data-node="${encodeURIComponent(node.nodeId)}" data-target="${escapeHtml(u.available ?? "")}"${u.available ? "" : ` title="Checks first, then updates if there is a newer release"`}>Update</button>` : ""
+      ].join(" ");
+      return `
+        <tr class="${u.state === "failed" ? "row-error" : ""}">
+          <td>${escapeHtml(node.name)}</td>
+          <td><code>${escapeHtml(u.current)}</code></td>
+          <td>${available}</td>
+          <td>${updateStatePill(u)}</td>
+          <td>${updateMode(u)}</td>
+          <td>${escapeHtml(checked)}</td>
+          <td>${note ? `<span class="why">${escapeHtml(note)}</span>` : `<span class="matrix-no">—</span>`}</td>
+          <td>${buttons}</td>
+        </tr>`;
+    }).join("");
+  };
+
   // ------------------------------------------------------------------ colibri catalogue (phase 97)
 
   const colibriStatePill = (model) => {
@@ -1001,6 +1062,7 @@
       renderProviders(latestStatus);
       renderTools(latestStatus);
       renderEngines(latestStatus);
+      renderUpdates(latestStatus);
       renderColibri(latestStatus);
       renderStrata(latestStatus);
       renderCorpora(latestStatus);
@@ -1579,6 +1641,38 @@
       const button = event.target.closest("button[data-eaction]");
       if (!button) return;
       setEngineRunning(decodeURIComponent(button.dataset.node), decodeURIComponent(button.dataset.engine), button.dataset.eaction);
+    });
+  }
+
+  // Phase 101. Check / Update send the node one command; its state on the next polls shows the rest.
+  const sendNodeUpdate = async (nodeId, action, target) => {
+    if (action === "apply" && !window.confirm(
+      `Update this node${target ? ` to ${target}` : ""}? It finishes its running jobs (up to its drain timeout), stops for about a minute and comes back on the new version.`)) return;
+    try {
+      const res = await fetch(`/api/admin/nodes/${encodeURIComponent(nodeId)}/update/${action}`, {
+        method: "POST",
+        headers: adminHeaders()
+      });
+      if (res.status === 401) {
+        promptForKey("Admin key required for this action.");
+        return;
+      }
+      let body = {};
+      try { body = await res.json(); } catch { }
+      if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      toast(action === "apply" ? "Updating" : "Checking", body?.message ?? "", "ok");
+      pollStatusNow();
+    } catch (err) {
+      toast(action === "apply" ? "Could not update" : "Could not check", err.message, "err");
+    }
+  };
+
+  const updatesBody = document.getElementById("updates");
+  if (updatesBody) {
+    updatesBody.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-uaction]");
+      if (!button) return;
+      sendNodeUpdate(decodeURIComponent(button.dataset.node), button.dataset.uaction, button.dataset.target);
     });
   }
 

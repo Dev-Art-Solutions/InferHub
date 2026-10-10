@@ -29,22 +29,32 @@ namespace InferHub.Node;
 /// </remarks>
 public static class NodeHostFactory
 {
-    public static IHostApplicationBuilder Create(string[] args)
+    /// <param name="args">The process arguments.</param>
+    /// <param name="settingsFile">
+    /// Phase 101, D1: an optional JSON file layered after <c>appsettings*.json</c> and before environment
+    /// variables — the Windows setup's <c>%ProgramData%\InferHub\Node\node.settings.json</c>. Null for the
+    /// console host, which has none.
+    /// </param>
+    public static IHostApplicationBuilder Create(string[] args, string? settingsFile = null)
     {
         // Read before the options system exists — this decides which builder to construct, so it
-        // cannot come from DI.
+        // cannot come from DI. The settings file is in it too: a setup that chose solo mode wrote
+        // LocalApi:Enabled there, and a pre-read that missed it would build the worker host.
         var solo = new ConfigurationBuilder()
-            .AddInferHubNodeConfigurationSources(args)
+            .AddInferHubNodeConfigurationSources(args, settingsFile)
             .Build()
             .GetSection(LocalApiOptions.SectionName)
             .GetValue<bool>(nameof(LocalApiOptions.Enabled));
 
         if (!solo)
         {
-            return Host.CreateApplicationBuilder(args);
+            var worker = Host.CreateApplicationBuilder(args);
+            InsertSettingsFile(worker.Configuration, settingsFile);
+            return worker;
         }
 
         var web = WebApplication.CreateBuilder(args);
+        InsertSettingsFile(web.Configuration, settingsFile);
 
         var localApi = web.Configuration
             .GetSection(LocalApiOptions.SectionName)
@@ -80,17 +90,58 @@ public static class NodeHostFactory
     /// </summary>
     private static IConfigurationBuilder AddInferHubNodeConfigurationSources(
         this IConfigurationBuilder configuration,
-        string[] args)
+        string[] args,
+        string? settingsFile)
     {
         var environment = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT")
             ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")
             ?? "Production";
 
-        return configuration
+        configuration
             .SetBasePath(AppContext.BaseDirectory)
             .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false)
-            .AddJsonFile($"appsettings.{environment}.json", optional: true, reloadOnChange: false)
+            .AddJsonFile($"appsettings.{environment}.json", optional: true, reloadOnChange: false);
+
+        if (!string.IsNullOrWhiteSpace(settingsFile))
+        {
+            configuration.AddJsonFile(settingsFile, optional: true, reloadOnChange: false);
+        }
+
+        return configuration
             .AddEnvironmentVariables()
             .AddCommandLine(args);
+    }
+
+    /// <summary>
+    /// Puts the settings file right after the host's last <c>appsettings*.json</c>, so environment variables
+    /// and the command line still win over what a setup wrote (D1) — the order an operator expects.
+    /// </summary>
+    internal static void InsertSettingsFile(IConfigurationBuilder configuration, string? settingsFile)
+    {
+        if (string.IsNullOrWhiteSpace(settingsFile))
+        {
+            return;
+        }
+
+        var sources = configuration.Sources;
+        var index = 0;
+
+        for (var i = 0; i < sources.Count; i++)
+        {
+            if (sources[i] is Microsoft.Extensions.Configuration.Json.JsonConfigurationSource { Path: { } path }
+                && path.StartsWith("appsettings", StringComparison.OrdinalIgnoreCase))
+            {
+                index = i + 1;
+            }
+        }
+
+        var source = new Microsoft.Extensions.Configuration.Json.JsonConfigurationSource
+        {
+            Path = settingsFile,
+            Optional = true,
+            ReloadOnChange = false,
+        };
+        source.ResolveFileProvider();
+        sources.Insert(index, source);
     }
 }

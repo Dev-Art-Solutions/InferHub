@@ -32,6 +32,7 @@ public static class StatusEndpoint
             var backends = services.GetService(typeof(NodeBackendRegistry)) as NodeBackendRegistry;
             var colibri = services.GetService(typeof(NodeColibriRegistry)) as NodeColibriRegistry;
             var strata = services.GetService(typeof(NodeStrataRegistry)) as NodeStrataRegistry;
+            var updates = services.GetService(typeof(NodeUpdateRegistry)) as NodeUpdateRegistry;
 
             return Results.Ok(new StatusResponse(
                 version,
@@ -60,7 +61,8 @@ public static class StatusEndpoint
                     node.OnDemand,
                     backends?.Of(node.NodeId)?.Engines,
                     colibri?.Of(node.NodeId),
-                    strata?.Of(node.NodeId))).ToArray(),
+                    strata?.Of(node.NodeId),
+                    updates?.Of(node.NodeId))).ToArray(),
                 models,
                 registry.CapabilitySummary(),
                 snapshot,
@@ -423,7 +425,10 @@ public static class StatusEndpoint
         NodeCatalogState? Colibri = null,
         // The same for a Strata install (phase 99), plus what the node could install. Null for a node
         // without one, and a fleet of those keeps the pre-3.64 payload exactly.
-        NodeCatalogState? Strata = null);
+        NodeCatalogState? Strata = null,
+        // What the node said about its version and the newest release (phase 101). Null for a node
+        // before v3.66, and a fleet of those keeps the pre-3.66 payload exactly.
+        NodeUpdateState? Update = null);
 
     internal sealed record NodeProfileStatusBlock(
         string? Name,

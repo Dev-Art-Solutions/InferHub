@@ -199,6 +199,7 @@ public static class NodeHostBuilderExtensions
         // Before the engines' host, so the store's directories exist before a llama.cpp router checks its own.
         AddHuggingFace(builder);
         AddStrataInstaller(builder);
+        AddUpdates(builder);
         AddEngines(builder);
         AddOllamaSupervision(builder, ollamaOptions);
         AddToolRuntime(builder);
@@ -660,6 +661,57 @@ public static class NodeHostBuilderExtensions
         {
             builder.Services.AddSingleton<IBackendToolJobs>(services => services.GetRequiredService<MultiBackend>());
         }
+    }
+
+    /// <summary>
+    /// Phase 101. <c>Update:</c> — always registered, so every node reports its version; it looks for releases
+    /// only with <c>Update:Check</c>. The applier is the host's: the Windows service registers one before
+    /// calling <see cref="AddInferHubNode"/>, every other host gets the one that says why not (D5).
+    /// </summary>
+    private static void AddUpdates(IHostApplicationBuilder builder)
+    {
+        builder.Services
+            .AddOptions<Update.UpdateOptions>()
+            .Bind(builder.Configuration.GetSection(Update.UpdateOptions.SectionName))
+            .ValidateOnStart();
+        builder.Services.AddSingleton<IValidateOptions<Update.UpdateOptions>, Update.UpdateOptionsValidator>();
+        builder.Services.TryAddSingleton<Update.IUpdateApplier, Update.NoUpdateApplier>();
+
+        // A setup is ~70 MB: no overall timeout on the download client, a short one on the feed's.
+        builder.Services.AddHttpClient(Update.GitHubReleaseFeed.HttpClientName, http => http.Timeout = TimeSpan.FromSeconds(30));
+        builder.Services.AddHttpClient(Update.GitHubReleaseFeed.HttpClientName + ".Download", http => http.Timeout = Timeout.InfiniteTimeSpan)
+            .RemoveAllLoggers();
+
+        builder.Services.TryAddSingleton<Update.IReleaseFeed>(services => new Update.GitHubReleaseFeed(
+            services.GetRequiredService<IHttpClientFactory>().CreateClient(Update.GitHubReleaseFeed.HttpClientName),
+            new Uri(services.GetRequiredService<IOptions<Update.UpdateOptions>>().Value.Source)));
+        builder.Services.AddSingleton(services => new Update.UpdateDownloader(
+            services.GetRequiredService<IHttpClientFactory>().CreateClient(Update.GitHubReleaseFeed.HttpClientName + ".Download")));
+
+        builder.Services.AddSingleton(services =>
+        {
+            var node = services.GetRequiredService<IOptions<NodeOptions>>().Value;
+            var dataDirectory = string.IsNullOrWhiteSpace(node.DataDirectory)
+                ? services.GetRequiredService<IHostEnvironment>().ContentRootPath
+                : node.DataDirectory;
+
+            // Resolved per call, not here: the connection takes the manager, so taking the connection back
+            // at construction would be a cycle. Both counts, because a solo node's clients are jobs too.
+            int InFlight() =>
+                services.GetRequiredService<CoordinatorConnection>().InFlight
+                + (services.GetService<LocalConcurrencyGate>()?.InFlight ?? 0);
+
+            return new Update.UpdateManager(
+                services.GetRequiredService<IOptions<Update.UpdateOptions>>(),
+                services.GetRequiredService<Update.IReleaseFeed>(),
+                services.GetRequiredService<Update.UpdateDownloader>(),
+                services.GetRequiredService<Update.IUpdateApplier>(),
+                dataDirectory,
+                InFlight,
+                services.GetRequiredService<TimeProvider>(),
+                services.GetRequiredService<ILogger<Update.UpdateManager>>());
+        });
+        builder.Services.AddHostedService(services => services.GetRequiredService<Update.UpdateManager>());
     }
 
     /// <summary>

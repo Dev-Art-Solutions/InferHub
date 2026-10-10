@@ -988,3 +988,57 @@ process is gone after the request, the capability is still declared, and the nex
 
 > **Phases 93 (colibri), 94 (Brio) and 95 (`Backend:Engines` — several engines on one node, started
 > and stopped by the hub) live in `src/InferHub.Node/Backends/CLAUDE.md`** since phase 95.
+
+### Phase 101 (the Windows setup, and a node that updates itself) — also load-bearing
+
+Files: `Update/` (`UpdateOptions`, `ReleaseFeed.cs` — `GitHubReleaseFeed`, `NodeVersion`; `UpdateDownloader`,
+`UpdateManager`, `IUpdateApplier`/`NoUpdateApplier`), `Configuration/NodeSettingsFile.cs`, `NodeHostFactory`
+(`InsertSettingsFile`), `CoordinatorConnection` (`ReportUpdateState`, the `NodeUpdate` handler); the Windows
+host's `InstallerUpdateApplier` and `ServiceCommands` (`configure`, `update`); the setup is
+`deploy/windows/installer/InferHubNode.iss`. User-requested (Bulgarian): a Windows installer that asks how to
+run the node, and auto-update behind a flag — "and when it is off, another way".
+
+**D1 — the setup's answers live in `%ProgramData%\InferHub\Node\node.settings.json`, never in `Program Files`
+(load-bearing).** `NodeHostFactory.Create(args, settingsFile)` layers it after `appsettings*.json` and before
+environment variables — in the pre-read that picks solo vs worker host *and* the real builder (a solo answer
+read only by the second builds the wrong host). Only the Windows host passes it. The setup writes it through
+the exe's own `configure --input <temp file>` (C# merge, tested; the secret never on a command line), then
+ACLs it to SYSTEM + Administrators (+ read for a virtual account). So every update replaces every program
+file and loses nothing. `node.local.json` (82 D7) still layers last, as before.
+
+**D2 — three flags, all off in the shipped `appsettings.json`.** `Update:Check` (look and report),
+`Update:Auto` (apply when idle; refused at start without `Check`), `Update:AllowFromHub` (an admin may). A
+Docker or dev node phones nobody. The setup asks one question with four answers (automatic / when an admin
+says / report only / never) and writes the three.
+
+**D3 — a release counts once its setup *and* `.sha256` are attached.** Highest non-draft, non-prerelease
+`vX.Y.Z` above the running version (`NodeVersion`, `+commit` stripped). The workflow attaches them minutes
+after the tag, so a bare release is "not yet". `Update:Source` takes a mirror of the same JSON. The checksum
+is from the same release: it catches a broken download, not a hostile release — said in the README.
+
+**D4 — applying ends this process, so the outcome is read on the next boot.** Wait for idle (mesh jobs +
+the solo gate) up to `DrainTimeout`, then go anyway; download into `<DataDirectory>/updates`, verify, write
+`pending.json`, start the setup **detached** (not in a job object — only engines are, 95 — so it outlives the
+service it stops). At start `ReadMarker` turns it into `lastUpdate` ("updated X → Y") or `failed` naming
+the setup's log, and deletes it: a bad update is reported once per interval, never looped. A setup still
+not having stopped us after 10 min is reported failed. The setup restarts the service on failure too.
+
+**D5 — only the installed Windows service applies.** `IUpdateApplier` is a `TryAdd` default
+(`NoUpdateApplier`, with the sentence) that the Windows host replaces; its applier refuses without
+`unins000.exe` beside the exe (copied by hand) or without administrator rights (a virtual account). Every
+node still *reports*: `canApply:false` + `whyNot` is the console's reason for a grey button.
+
+**D6 — the hub's half is the 44 D6 mailbox plus one command, offloaded (98).** `ReportUpdateState` on
+registration, on the model loop and on every change; `NodeUpdate {kind: check|apply}` runs off the SignalR
+dispatch. The node refuses for itself what its operator did not allow (`Refused` → `lastError`); the hub's
+`NodeUpdateControl.Refuse` is a copy for the message (409), 43 D1's pattern.
+
+**The other way, when `Auto` is off:** the console's Versions & updates panel / `POST
+/api/admin/nodes/{id}/update/apply`, or on the box `InferHub.Node.Service.exe update [--check] [--yes]`
+(Start menu: "Check for InferHub Node updates"). The verb elevates itself — even to check, the settings are
+admin-only — and never pauses after starting the setup: a console holding the exe open would block the
+setup that replaces it (found live).
+
+Tests: `NodeUpdateTests`, `NodeSettingsFileTests` (Node), `NodeUpdateRegistryTests` (Coordinator),
+`NodeUpdateMeshTests` + `ConsoleContractTests` (Mesh). The setup itself has no automated test; the release
+notes record the live run on a real box.

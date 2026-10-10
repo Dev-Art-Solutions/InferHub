@@ -144,7 +144,23 @@ public class ConsoleContractTests
         "nodes[].tools.vram.measuredMiB",
         "nodes[].tools.vram.resident[].model",
         "nodes[].tools.vram.resident[].vramMiB",
-        "nodes[].tools.vram.resident[].inUse"
+        "nodes[].tools.vram.resident[].inUse",
+
+        // Phase 101 — the Versions & updates panel. Every field is populated in the fixture below,
+        // because the panel's note column falls back from one to the next and a null would hide
+        // exactly the field that was renamed.
+        "nodes[].update.current",
+        "nodes[].update.available",
+        "nodes[].update.state",
+        "nodes[].update.check",
+        "nodes[].update.auto",
+        "nodes[].update.allowFromHub",
+        "nodes[].update.canApply",
+        "nodes[].update.whyNot",
+        "nodes[].update.lastCheckedUtc",
+        "nodes[].update.lastError",
+        "nodes[].update.lastUpdate",
+        "nodes[].update.releaseUrl"
     ];
 
     /// <summary>
@@ -508,6 +524,7 @@ internal sealed class ConsoleFixture : IAsyncDisposable
         var profiles = new ProfileRegistry(new NoProfileStore(), Microsoft.Extensions.Logging.Abstractions.NullLogger<ProfileRegistry>.Instance);
         var corpora = new NodeCorpusRegistry();
         var tools = new NodeToolRegistry();
+        var updates = new NodeUpdateRegistry();
 
         profiles.Put("gpu-boxes", new NodeProfile(
             "gpu-boxes",
@@ -619,12 +636,29 @@ internal sealed class ConsoleFixture : IAsyncDisposable
                         Quantization: "nf4",
                         Media: ImageRecipeMedia.Video)
                 ]));
+
+            updates.Report(new NodeUpdateState(
+                "gpu-1",
+                Current: "3.66.0",
+                Available: "3.67.0",
+                NodeUpdatePhase.Failed,
+                Check: true,
+                Auto: false,
+                AllowFromHub: true,
+                CanApply: false,
+                WhyNot: "the node runs as NT SERVICE\\InferHubNode, which cannot run a setup",
+                LastCheckedUtc: now,
+                LastError: "could not apply the update: the setup exited with code 5",
+                LastUpdate: "updated 3.65.0 → 3.66.0",
+                ReleaseUrl: "https://example.invalid/releases/v3.67.0",
+                now));
         }
 
         builder.Services.AddSingleton<INodeRegistry>(registry);
         builder.Services.AddSingleton<IProfileRegistry>(profiles);
         builder.Services.AddSingleton(corpora);
         builder.Services.AddSingleton(tools);
+        builder.Services.AddSingleton(updates);
         builder.Services.AddSingleton<Metrics>();
         builder.Services.AddSingleton<AdmissionControl>();
         builder.Services.AddSingleton<ThroughputTracker>();

@@ -1,14 +1,91 @@
 # Running an InferHub node as a Windows service
 
-These scripts install the `InferHub.Node.WindowsService` host
-(`InferHub.Node.Service.exe`) as a native Windows service: auto-start on boot,
-restart-on-failure recovery, and logging to the Windows Event Log. The service reuses the
+## The setup (v3.66+) — the easy way
+
+Download `InferHub-Node-Setup-X.Y.Z-win-x64.exe` from the
+[releases page](https://github.com/Dev-Art-Solutions/InferHub/releases) and run it. It installs the node
+as the **InferHubNode** service (delayed automatic start, restart on failure, Event Log logging) and asks:
+
+| Page | What it sets |
+|---|---|
+| Node mode | join a coordinator, or **solo** (its own local API, no hub) |
+| Coordinator | `Coordinator:Url` and `Coordinator:EnrollmentSecret` (must match the hub's `Auth:NodeEnrollmentSecret`) |
+| Local API (solo) | `LocalApi:Urls` and an API key — a non-loopback address needs one, or the node refuses to start |
+| This node | `Node:Name`, `Node:Labels` (`gpu=3090, room=lab`), `Node:MaxConcurrency`, `Node:Vram:BudgetMiB` |
+| Ollama | `Ollama:Endpoint` |
+| Service account | LocalSystem (can apply updates) or the virtual account `NT SERVICE\InferHubNode` (least privilege, cannot) |
+| Updates | automatically / when an admin says / report only / never — see below |
+
+The answers go to **`C:\ProgramData\InferHub\Node\node.settings.json`**, readable by SYSTEM and
+Administrators only (it holds the secret), **not** into `Program Files` — so an update replaces every
+program file and keeps every setting. It layers after `appsettings.json` and before environment
+variables; anything the setup does not ask (other engines, tools, retrieval) goes in the same file by
+hand, as JSON. Running the setup again shows your previous answers; leave the secret empty to keep it.
+
+**Silent install** (every parameter optional):
+
+```powershell
+InferHub-Node-Setup-3.66.0-win-x64.exe /VERYSILENT /SUPPRESSMSGBOXES `
+  /Mode=mesh /CoordinatorUrl=https://hub.example:5080/ /EnrollmentSecret=<secret> `
+  /NodeName=gpu-01 /Labels=gpu=3090,room=lab /MaxConcurrency=4 /VramBudgetMiB=24000 `
+  /OllamaEndpoint=http://localhost:11434/ /Account=system /Updates=auto
+```
+
+`/Mode=solo /LocalApiUrls=http://0.0.0.0:5081 /LocalApiKey=<key>` for a solo node; `/UpdateSource=<url>`
+points the updater at a mirror of GitHub's release list. **A silent run with none of these keeps the
+current settings** — that is exactly how the node updates itself.
+
+**Uninstall** from *Apps* (or `unins000.exe /VERYSILENT`). The settings and the node's identity stay in
+`C:\ProgramData\InferHub\Node` so a reinstall comes back as the same node; the interactive uninstaller
+offers to delete them.
+
+### Updates
+
+| The setup's answer | `Update:Check` | `Update:Auto` | `Update:AllowFromHub` | What happens |
+|---|---|---|---|---|
+| Automatically | true | true | true | the node installs a new release by itself, once idle (waits up to 30 min for running jobs) |
+| When an admin says | true | false | true | the coordinator's console shows it under **Versions & updates**; **Update** applies it |
+| Report only | true | false | false | the console shows it; you update on the box |
+| Never | false | false | false | nothing is checked |
+
+Every node can also be updated **on the box**: Start menu → *Check for InferHub Node updates*, or
+
+```powershell
+& "C:\Program Files\InferHub\Node\InferHub.Node.Service.exe" update          # asks first
+& "C:\Program Files\InferHub\Node\InferHub.Node.Service.exe" update --check  # only looks
+```
+
+Releases come from `https://api.github.com/repos/Dev-Art-Solutions/InferHub/releases` every 6 hours. A
+release counts once its setup **and** its `.sha256` are attached. Applying one downloads the setup to
+`C:\ProgramData\InferHub\Node\updates`, checks the SHA-256, and runs it silently: it stops the service,
+replaces the files and starts it again — **also when it fails**, so a bad update never leaves the node
+down. The console then shows `updated 3.65.0 → 3.66.0`, or the failure with the setup's log path.
+
+> **What the checksum is for.** It is published in the same release as the setup, so it catches a broken
+> or truncated download — not a hostile release. A node that updates itself runs whatever is published
+> there; if that is not a trust you want to extend, choose *report only* and update by hand.
+
+Only a node **installed by the setup** and running as **LocalSystem** can apply an update. A node under
+the virtual account, a hand-copied `dotnet publish`, or a Docker container reports the release and says
+why it cannot apply it (`docker pull` is a container's updater).
+
+**Coming from `install-service.ps1`?** Run the setup over it: same service name, same directory. Move any
+edits you made to `appsettings.json` into `node.settings.json` (the setup replaces `appsettings.json`), and
+remove the machine variables the script set, which would otherwise override the setup's answers:
+`[Environment]::SetEnvironmentVariable('Coordinator__EnrollmentSecret', $null, 'Machine')`.
+
+## Without the setup — the scripts
+
+The scripts below install the `InferHub.Node.WindowsService` host
+(`InferHub.Node.Service.exe`) from your own build. The service reuses the
 node's exact composition root (`AddInferHubNode`), so it behaves identically to
-`dotnet run --project src/InferHub.Node` — only the packaging differs. Dev/console and
-Linux node paths are unchanged.
+`dotnet run --project src/InferHub.Node` — only the packaging differs. A node installed this way
+**cannot apply updates by itself** (there is no setup to run); it can still report them.
 
 > Linux equivalent: the same host pattern with `builder.Services.AddSystemd()` and a
 > `.service` unit file. Same composition root, different lifetime integration.
+
+To build the setup yourself: `./deploy/windows/installer/build-installer.ps1` (needs Inno Setup 6).
 
 ## 1. Publish
 

@@ -183,6 +183,9 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 96 | [All of llama.cpp](#all-of-llamacpp--a-router-models-from-hugging-face-its-own-routes-v361) — a router over many GGUFs, models pulled from Hugging Face, warmed, unloaded and deleted from the hub, `/v1/llamacpp/*` and `/v1/rerank` (done) | `v3.61.0` |
 | 97 | [Many colibri models on one node](#many-colibri-models-on-one-node--loaded-on-request-freed-when-idle-picked-from-the-hub-v362) — a catalogue of converted models, loaded on request, freed when idle, and the coordinator picks which stay loaded (done) | `v3.62.0` |
 | 98 | [Models from a Hugging Face link](#models-from-a-hugging-face-link--downloaded-once-by-the-node-served-by-llamacpp-or-colibri-v363) — the node downloads what the hub links: a GGUF for its llama.cpp router, a checkpoint converted for colibri (done) | `v3.63.0` |
+| 99 | [Strata](#strata--a-125b-model-on-one-gaming-gpu-its-sizes-picked-and-installed-from-the-hub-v364) — a 125B model on one gaming GPU, its sizes served as a catalogue, picked and installed from the hub (done) | `v3.64.0` |
+| 100 | [Strata pictures](#pictures-per-size-v365) — a size says whether it reads pictures, a picture it cannot read is a 400 before any load, and the hub adds the encoder (done) | `v3.65.0` |
+| 101 | [A Windows node from one setup, kept current](#a-windows-node-from-one-setup-kept-current-v366) — a setup that installs the service and asks how to run it, and updates applied by the node itself or by an admin from the console (done) | `v3.66.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -3008,6 +3011,47 @@ first byte in 40 ms.
 Strata's Anthropic and Responses routes are not used — the hub has its own edges. Sizes are removed
 with Strata's setup on the box — they share files, and only it knows which.
 
+## A Windows node from one setup, kept current (v3.66)
+
+`InferHub-Node-Setup-3.66.0-win-x64.exe`, attached to every release from v3.66, installs a node as the
+**InferHubNode** Windows service and asks how to run it: join a coordinator (URL and enrollment secret) or
+run solo (address and API key), the node's name, labels, job cap and VRAM budget, where Ollama answers,
+which account runs the service — and how it should stay current. Its answers go to
+`C:\ProgramData\InferHub\Node\node.settings.json` (SYSTEM and Administrators only — it holds the secret),
+never into `Program Files`, so an update replaces every program file and keeps every setting.
+
+| Updates | What happens |
+|---|---|
+| **Automatically** (`Update:Auto`) | the node finds a new release, waits for its running jobs (up to 30 min), and installs it itself |
+| **When an admin says** (`Update:AllowFromHub`) | the console's **Versions & updates** panel shows it; **Update** installs it |
+| **Report only** (`Update:Check`) | the panel shows it; you update on the box |
+| **Never** | nothing is checked |
+
+```
+GET  /api/status → nodes[].update  {"current":"3.65.99","available":"3.66.0","state":"available","auto":false,"allowFromHub":true,"canApply":true}
+POST /api/admin/nodes/{id}/update/check
+POST /api/admin/nodes/{id}/update/apply   → 202; 409 with the node's own reason when it may not
+```
+
+On the box, whatever the answer: Start menu → *Check for InferHub Node updates*, or
+`InferHub.Node.Service.exe update [--check] [--yes]`.
+
+- **A release counts once its setup and `.sha256` are attached** — a workflow builds them minutes after the
+  tag. The node downloads into `C:\ProgramData\InferHub\Node\updates`, checks the SHA-256, and runs the
+  setup silently; the setup stops the service, replaces it and starts it again, **on failure too**. After
+  the restart the panel says `updated 3.65.99 → 3.66.0`, or names the setup's log.
+- **The checksum catches a broken download, not a hostile release** — it is published beside the setup. A
+  node that updates itself runs what is published; choose *report only* if that is not a trust you extend.
+- **Only a node installed by the setup and running as LocalSystem applies updates.** Under the virtual
+  account, from a hand-copied build, or in Docker it reports the release and says why it cannot.
+- **Silent**: `/VERYSILENT /Mode=mesh /CoordinatorUrl=… /EnrollmentSecret=… /NodeName=… /Updates=auto` —
+  and a silent run with no parameters keeps every setting, which is how the node updates itself.
+
+Measured on a Windows 11 box against a real hub: an admin's **Update** took a node from 3.65.99 to 3.66.0
+in about 10 s, settings and identity kept; with *automatically* the node did it by itself a minute after
+starting; a setup whose checksum did not match was deleted and never run, and the service kept serving.
+Full runbook: [deploy/windows/README.md](deploy/windows/README.md).
+
 ## Inference backends
 
 A node runs one inference backend behind the `IInferenceBackend` seam — or, since v3.60, [several](#several-engines-on-one-node--ollama-llamacpp-and-colibri-v360). The coordinator does
@@ -3829,6 +3873,10 @@ machine-wide service**; that is reported as one line naming the privilege rather
 trace. See [deploy/windows/README.md](deploy/windows/README.md).
 
 ### Running a node as a Windows service
+
+**Since v3.66 the simplest way is the setup** — see [A Windows node from one setup, kept
+current](#a-windows-node-from-one-setup-kept-current-v366). What follows is the by-hand path from your own
+build; a node installed this way reports new releases but cannot apply them itself.
 
 For an always-on GPU box, run the node as a native Windows service — auto-start on boot,
 restart-on-failure recovery, and logging to the Windows Event Log. The service host

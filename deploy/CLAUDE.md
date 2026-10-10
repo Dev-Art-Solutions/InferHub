@@ -136,6 +136,20 @@ exact host.
 **Ask the image, not the dashboard.** GitHub Actions has reported a finished run as queued for
 hours; the honest question is whether the manifest is on GHCR.
 
+## The Windows setup (phase 101)
+
+`windows/installer/InferHubNode.iss` + `build-installer.ps1` (publish self-contained win-x64 → ISCC → a
+`.sha256` beside it in `sha256sum`'s shape). `.github/workflows/windows-installer.yml` runs that script on
+every `v*` tag on `windows-latest` (installing Inno Setup with choco when the image lacks it) and attaches
+both files to the release — **creating a placeholder release if it gets there before the hand-cut one**, so
+cut it with `gh release edit --notes-file` if `create` says it exists. The node's updater ignores a release
+until both files are attached. Three traps, all found on a real box and headed off in the script: the
+publish output carried `appsettings.Development.json` and a dev `data/` folder (excluded); a silent run with
+no parameters must keep every setting, because that is how the node updates itself (`NeedConfigure`); and
+anything still running the old exe blocks the file copy, so the setup stops the service, waits for the
+process and kills leftovers. Why the answers live in `%ProgramData%` and who may apply an update:
+`src/InferHub.Node/CLAUDE.md`'s phase-101 block.
+
 ## Related context
 
 - What runs inside them: `src/InferHub.Coordinator/CLAUDE.md`, `src/InferHub.Node/CLAUDE.md`
