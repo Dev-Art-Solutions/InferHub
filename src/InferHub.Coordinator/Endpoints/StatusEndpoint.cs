@@ -33,6 +33,7 @@ public static class StatusEndpoint
             var colibri = services.GetService(typeof(NodeColibriRegistry)) as NodeColibriRegistry;
             var strata = services.GetService(typeof(NodeStrataRegistry)) as NodeStrataRegistry;
             var updates = services.GetService(typeof(NodeUpdateRegistry)) as NodeUpdateRegistry;
+            var limits = services.GetService(typeof(NodeLimitsRegistry)) as NodeLimitsRegistry;
 
             return Results.Ok(new StatusResponse(
                 version,
@@ -62,7 +63,8 @@ public static class StatusEndpoint
                     backends?.Of(node.NodeId)?.Engines,
                     colibri?.Of(node.NodeId),
                     strata?.Of(node.NodeId),
-                    updates?.Of(node.NodeId))).ToArray(),
+                    updates?.Of(node.NodeId),
+                    limits?.Of(node.NodeId) is { Groups.Count: > 0 } reported ? reported : null)).ToArray(),
                 models,
                 registry.CapabilitySummary(),
                 snapshot,
@@ -428,7 +430,11 @@ public static class StatusEndpoint
         NodeCatalogState? Strata = null,
         // What the node said about its version and the newest release (phase 101). Null for a node
         // before v3.66, and a fleet of those keeps the pre-3.66 payload exactly.
-        NodeUpdateState? Update = null);
+        NodeUpdateState? Update = null,
+        // The node's runtime limits (phase 102): its own ceiling, what a profile asked for, what is in
+        // force and what each runtime uses. Null for a node that limits nothing (or before v3.67), and a
+        // fleet of those keeps the pre-3.67 payload exactly.
+        NodeLimitsState? Limits = null);
 
     internal sealed record NodeProfileStatusBlock(
         string? Name,

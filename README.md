@@ -186,6 +186,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 99 | [Strata](#strata--a-125b-model-on-one-gaming-gpu-its-sizes-picked-and-installed-from-the-hub-v364) — a 125B model on one gaming GPU, its sizes served as a catalogue, picked and installed from the hub (done) | `v3.64.0` |
 | 100 | [Strata pictures](#pictures-per-size-v365) — a size says whether it reads pictures, a picture it cannot read is a 400 before any load, and the hub adds the encoder (done) | `v3.65.0` |
 | 101 | [A Windows node from one setup, kept current](#a-windows-node-from-one-setup-kept-current-v366) — a setup that installs the service and asks how to run it, and updates applied by the node itself or by an admin from the console (done) | `v3.66.0` |
+| 102 | [Hard limits per runtime](#hard-limits-per-runtime--the-nodes-ceiling-the-hubs-narrowing-v367) — the node caps CPU, cores, memory, VRAM and GPUs for ollama, llama.cpp, colibri, Strata and tools; the coordinator sees the caps and may only go lower (in main, not yet released) | `v3.67.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -3051,6 +3052,55 @@ Measured on a Windows 11 box against a real hub: an admin's **Update** took a no
 in about 10 s, settings and identity kept; with *automatically* the node did it by itself a minute after
 starting; a setup whose checksum did not match was deleted and never run, and the service kept serving.
 Full runbook: [deploy/windows/README.md](deploy/windows/README.md).
+
+## Hard limits per runtime — the node's ceiling, the hub's narrowing (v3.67)
+
+A node can cap what each runtime it starts may use — **every process of that runtime together**:
+
+```jsonc
+"Node": {
+  "ResourceLimits": {
+    "Engines": {
+      "llamacpp": { "CpuPercent": 50, "Cores": 8, "MemoryMiB": 16384 },
+      "strata":   { "VramMiB": 20000, "Gpus": "0" },
+      "ollama":   { "Gpus": "1" },
+      "tools":    { "CpuPercent": 25, "Gpus": "none" }
+    }
+  }
+}
+```
+
+The runtimes are `ollama`, `llamacpp`, `colibri`, `strata` and `tools` (any other name fails startup).
+`CpuPercent` is a share of the whole machine, `Cores` the first N logical processors, `MemoryMiB` and
+`VramMiB` are summed over the runtime's processes — three `llama-server`s share one `llamacpp` budget —
+and `Gpus` is the list it may see (`"none"` for none).
+
+**These are the ceiling.** A coordinator sees them, and may set lower ones of its own — in the console's
+*Runtime limits* panel, with `PUT /api/admin/nodes/{id}/limits/{runtime}` (`{"cpuPercent": 30,
+"vramMiB": 12000}`), or in a profile's `limits` block. It can never raise or clear the node's: a value
+above it is a `409` naming the node's number, and a profile written around that is refused by the node
+itself, which keeps its own value. In force is the smaller of the two, per field. `DELETE` takes the
+hub's back.
+
+**How each one is held is reported, never assumed** — in `/api/status` (`nodes[].limits`), in the
+console, and on the node's own page:
+
+| Limit | Windows | Linux |
+|---|---|---|
+| `cpuPercent` | Job Object hard cap | cgroup `cpu.max`, if this process may make one — otherwise reported as **not held** |
+| `cores` | Job Object affinity | `sched_setaffinity`, every thread, re-applied each poll |
+| `memoryMiB` | Job Object memory limit — an allocation past it fails | cgroup `memory.max`, otherwise watched and the runtime stopped above it |
+| `vramMiB` | watched (`GPU Process Memory` counters) and stopped above it | watched (NVML) and stopped above it |
+| `gpus` | `CUDA_/HIP_/ROCR_/GGML_VK_VISIBLE_DEVICES` at launch; a change restarts the runtime | same |
+
+No operating system caps GPU memory, so VRAM is a watchdog: the runtime is stopped, its own supervisor
+starts it again, and the node counts the breach with the numbers. A cgroup on Linux needs a writable
+cgroup namespace in a container or `Delegate=yes` for a systemd service. Only processes **this node
+starts** are held — an Ollama running as its own service, or somebody else's server, is not.
+
+The node's own page, `/api/admin/engine-limits` (with `LocalApi:Enabled=true`, loopback only), shows
+every runtime's ceiling, the hub's request, what is in force, how it is held and what it uses now, and
+edits the ceiling: saved to `node.local.json` and in force within one `PollInterval`, no restart.
 
 ## Inference backends
 

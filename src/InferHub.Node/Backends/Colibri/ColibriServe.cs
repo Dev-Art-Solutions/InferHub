@@ -151,10 +151,14 @@ public sealed class ColibriServe(
 
     private async Task<int> RunOnceAsync(CancellationToken stoppingToken)
     {
-        var process = Process.Start(StartInfo(options))
+        var info = StartInfo(options);
+        Resources.Limits.EngineLimiter.PrepareLaunch(InferHub.Shared.Contracts.EngineLimitGroups.Colibri, info);
+
+        var process = Process.Start(info)
             ?? throw new InvalidOperationException("Process.Start returned no process.");
 
         child = process;
+        Resources.Limits.EngineLimiter.Adopt(InferHub.Shared.Contracts.EngineLimitGroups.Colibri, process);
 
         logger.LogInformation(
             "Started colibri (pid {Pid}) serving '{ModelId}' from {Model} on 127.0.0.1:{Port} with {KvSlots} KV slot(s).",

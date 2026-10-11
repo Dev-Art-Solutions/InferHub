@@ -191,6 +191,9 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
 
         ApplyEnvironment(startInfo, manifest, nodeEnvironment);
 
+        // Phase 102: after the manifest's environment, so the node's GPU limit is the last word.
+        InferHub.Node.Resources.Limits.EngineLimiter.PrepareLaunch(InferHub.Shared.Contracts.EngineLimitGroups.Tools, startInfo);
+
         var process = new Process { StartInfo = startInfo };
 
         try
@@ -210,6 +213,7 @@ internal sealed class ToolWorkerProcess : IAsyncDisposable
         // Windows — the one place a tool worker meets the hard cap, since this is the only file in
         // the node that ever spawns one (D1's own reasoning, one mechanism over).
         InferHub.Node.Resources.HardCpuCap.TryAssign(process);
+        InferHub.Node.Resources.Limits.EngineLimiter.Adopt(InferHub.Shared.Contracts.EngineLimitGroups.Tools, process);
 
         var worker = new ToolWorkerProcess(manifest, process, logger);
 

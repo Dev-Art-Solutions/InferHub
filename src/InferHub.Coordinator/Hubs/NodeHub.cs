@@ -203,6 +203,17 @@ public sealed class NodeHub(
     /// What a node said about its version and the newest release it could move to (phase 101). The
     /// mailbox again; a node before v3.66 sends none.
     /// </summary>
+    public Task ReportLimitsState(NodeLimitsState state)
+    {
+        // Phase 102: the node's runtime limits and what each runtime uses. The mailbox once more.
+        if (services.GetService(typeof(NodeLimitsRegistry)) is NodeLimitsRegistry limits)
+        {
+            limits.Report(state);
+        }
+
+        return Task.CompletedTask;
+    }
+
     public Task ReportUpdateState(NodeUpdateState state)
     {
         if (services.GetService(typeof(NodeUpdateRegistry)) is NodeUpdateRegistry updates)

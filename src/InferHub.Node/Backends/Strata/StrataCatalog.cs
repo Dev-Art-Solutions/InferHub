@@ -402,7 +402,8 @@ public sealed class StrataProcessLauncher(StrataOptions options, TimeProvider ti
                 ? $"'{server}' is not there; Strata:Root must be a Strata checkout"
                 : File.Exists(config) ? null : $"'{config}' is not a file this node can see",
             time,
-            logger);
+            logger,
+            InferHub.Shared.Contracts.EngineLimitGroups.Strata);
 
         process.Start();
         return new LaunchedCatalogProcess(process, $"http://127.0.0.1:{port}/v1");

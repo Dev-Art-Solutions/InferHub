@@ -36,7 +36,8 @@ public sealed class CoordinatorConnection(
     IEngineControl? engines = null,
     Backends.Colibri.IColibriControl? colibri = null,
     Backends.Strata.IStrataControl? strata = null,
-    Update.UpdateManager? updates = null) : IAsyncDisposable
+    Update.UpdateManager? updates = null,
+    Resources.Limits.IEngineLimiter? limiter = null) : IAsyncDisposable
 {
     /// <summary>
     /// Phase 97's catalogue report, one per engine that has a catalogue (99): each has its own hub
@@ -71,6 +72,7 @@ public sealed class CoordinatorConnection(
     private bool subscribedToEngines;
     private bool subscribedToCatalogs;
     private bool subscribedToUpdates;
+    private bool subscribedToLimits;
     private int onDemandBeatQueued;
     private LocalVectorStore? tailedStore;
 
@@ -82,6 +84,7 @@ public sealed class CoordinatorConnection(
         SubscribeToEngines();
         SubscribeToCatalogs();
         SubscribeToUpdates();
+        SubscribeToLimits();
         retrieval.CorpusChanged += OnCorpusChanged;
         return ConnectUntilSuccessfulAsync(cancellationToken);
     }
@@ -94,6 +97,7 @@ public sealed class CoordinatorConnection(
         UnsubscribeFromEngines();
         UnsubscribeFromCatalogs();
         UnsubscribeFromUpdates();
+        UnsubscribeFromLimits();
         retrieval.CorpusChanged -= OnCorpusChanged;
         UnsubscribeFromTailedStore();
         await lifetime.CancelAsync();
@@ -136,6 +140,7 @@ public sealed class CoordinatorConnection(
         UnsubscribeFromEngines();
         UnsubscribeFromCatalogs();
         UnsubscribeFromUpdates();
+        UnsubscribeFromLimits();
         retrieval.CorpusChanged -= OnCorpusChanged;
         UnsubscribeFromTailedStore();
         await lifetime.CancelAsync();
@@ -286,6 +291,70 @@ public sealed class CoordinatorConnection(
     /// Phase 101. A check found a release, a download started, a setup was launched: the console hears it
     /// now, because "applying" is exactly the state an admin who just pressed Update is watching for.
     /// </summary>
+    private void SubscribeToLimits()
+    {
+        if (limiter is null || subscribedToLimits)
+        {
+            return;
+        }
+
+        subscribedToLimits = true;
+        limiter.Changed += OnLimitsChanged;
+    }
+
+    private void UnsubscribeFromLimits()
+    {
+        if (!subscribedToLimits || limiter is null)
+        {
+            return;
+        }
+
+        subscribedToLimits = false;
+        limiter.Changed -= OnLimitsChanged;
+    }
+
+    private void OnLimitsChanged()
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ReportLimitsStateAsync(lifetime.Token);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "Could not report the runtime limits after they changed");
+            }
+        });
+    }
+
+    /// <summary>
+    /// Tells the hub this node's runtime limits (phase 102): its own ceiling, what the profile asked for,
+    /// what is in force, how each is held and what each runtime uses. Sent on registration, on the model
+    /// loop and on every change. A hub older than v3.67 has no such method: a debug line (40 D1).
+    /// </summary>
+    private async Task ReportLimitsStateAsync(CancellationToken cancellationToken)
+    {
+        var activeConnection = connection;
+
+        if (limiter is null || activeConnection is not { State: HubConnectionState.Connected })
+        {
+            return;
+        }
+
+        try
+        {
+            await activeConnection.InvokeAsync("ReportLimitsState", limiter.State(nodeId), cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "This coordinator did not accept a runtime limits report");
+        }
+    }
+
     private void SubscribeToUpdates()
     {
         if (updates is null || subscribedToUpdates)
@@ -763,6 +832,8 @@ public sealed class CoordinatorConnection(
         // Phase 101. Here as well as on the model loop, which returns early when the backend cannot list —
         // and a node whose engine is down is still a node an admin may want to update.
         await ReportUpdateStateAsync(cancellationToken);
+        // Phase 102, for the same reason: limits hold whether or not the engine is up.
+        await ReportLimitsStateAsync(cancellationToken);
 
         logger.LogInformation(
             "Registered node {NodeId} ({NodeName}) with coordinator",
@@ -1610,6 +1681,9 @@ public sealed class CoordinatorConnection(
 
         // Phase 101: which version, and whether a newer one is waiting.
         await ReportUpdateStateAsync(cancellationToken);
+
+        // Phase 102: the runtime limits and what each runtime uses now.
+        await ReportLimitsStateAsync(cancellationToken);
     }
 
     /// <summary>

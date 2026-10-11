@@ -218,6 +218,19 @@ public static class NodeHostBuilderExtensions
     /// </summary>
     private static void AddResourceGovernance(IHostApplicationBuilder builder)
     {
+        // Phase 102. Always registered: a coordinator may limit a runtime the box did not, so the
+        // limiter has to be holding every launched process from the first one. Installed for the
+        // launch sites when it is built — before any hosted service starts an engine.
+        builder.Services.TryAddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton(sp =>
+        {
+            var limiter = ActivatorUtilities.CreateInstance<Resources.Limits.EngineLimiter>(sp);
+            Resources.Limits.EngineLimiter.Install(limiter);
+            return limiter;
+        });
+        builder.Services.AddSingleton<Resources.Limits.IEngineLimiter>(sp => sp.GetRequiredService<Resources.Limits.EngineLimiter>());
+        builder.Services.AddHostedService(sp => sp.GetRequiredService<Resources.Limits.EngineLimiter>());
+
         var resourceLimits = (builder.Configuration
             .GetSection(NodeOptions.SectionName)
             .Get<NodeOptions>() ?? new NodeOptions()).ResourceLimits;

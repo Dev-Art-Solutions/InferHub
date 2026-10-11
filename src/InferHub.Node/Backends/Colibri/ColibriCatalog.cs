@@ -158,7 +158,8 @@ public sealed class ColibriProcessLauncher(ColibriOptions options, TimeProvider 
             () => ColibriServe.StartInfo(options, directory, model, port),
             () => Directory.Exists(directory) ? null : $"'{directory}' is not a directory this node can see",
             time,
-            logger);
+            logger,
+            InferHub.Shared.Contracts.EngineLimitGroups.Colibri);
 
         process.Start();
         return new LaunchedCatalogProcess(process, $"http://127.0.0.1:{port}/v1");

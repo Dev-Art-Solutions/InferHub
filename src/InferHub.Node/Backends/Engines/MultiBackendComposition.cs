@@ -81,7 +81,8 @@ public static class MultiBackendComposition
                         ? null
                         : $"{ColibriOptions.SectionName}:Serve:Model '{colibri.Serve.Model}' is not a directory this node can see; mount the converted model there.",
                     time,
-                    logger);
+                    logger,
+                    EngineLimitGroups.Colibri);
                 break;
 
             case BackendOptions.LlamaCpp when engine.Serve.IsEnabled:
@@ -92,7 +93,8 @@ public static class MultiBackendComposition
                     () => LlamaCppServe.StartInfo(engine, LlamaCppServe.WritePresets(name, engine)),
                     () => LlamaCppServe.Precondition(engine),
                     time,
-                    logger);
+                    logger,
+                    EngineLimitGroups.LlamaCpp);
                 break;
 
             default:

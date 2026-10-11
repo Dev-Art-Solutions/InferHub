@@ -73,6 +73,7 @@ public static class AdminEndpoints
             NodeToolRegistry tools,
             NodeBackendRegistry backends,
             NodeUpdateRegistry updates,
+            NodeLimitsRegistry limits,
             ILoggerFactory loggerFactory) =>
         {
             var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin");
@@ -98,6 +99,7 @@ public static class AdminEndpoints
             tools.Forget(nodeId);
             backends.Forget(nodeId);
             updates.Forget(nodeId);
+            limits.Forget(nodeId);
             audit.Record(nodeId, "deregister", ActorOf(context), DateTimeOffset.UtcNow);
 
             logger.LogInformation(
@@ -469,6 +471,31 @@ public static class AdminEndpoints
             INodeRegistry registry, NodeStrataRegistry strata, ModelCommandCoordinator commands, IAuditLog audit,
             ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
             await InstallStrataAsync(nodeId, body, context, registry, strata, commands, audit, loggerFactory, cancellationToken));
+
+        // Phase 102. A runtime's hard limits on one node: what the node holds itself (read-only here),
+        // what this hub asked for, what is in force. PUT writes limits[group] into the node's profile —
+        // at or below the node's own, or a 409 naming its number; DELETE takes the hub's back.
+        group.MapGet("/nodes/{nodeId}/limits", (string nodeId, INodeRegistry registry, NodeLimitsRegistry limits) =>
+        {
+            var node = registry.Snapshot(DateTimeOffset.UtcNow)
+                .FirstOrDefault(n => string.Equals(n.NodeId, nodeId, StringComparison.OrdinalIgnoreCase));
+
+            return node is null
+                ? Results.NotFound(new { error = $"node '{nodeId}' not found" })
+                : limits.Of(node.NodeId) is { } state
+                    ? Results.Ok(state)
+                    : Results.Ok(new NodeLimitsState(node.NodeId, Array.Empty<EngineLimitsGroupState>(), DateTimeOffset.UtcNow));
+        });
+
+        group.MapPut("/nodes/{nodeId}/limits/{runtime}", async (
+            string nodeId, string runtime, EngineLimits body, HttpContext context,
+            INodeRegistry registry, NodeLimitsControl control, CancellationToken cancellationToken) =>
+            await SetLimitsAsync(nodeId, runtime, body, context, registry, control, cancellationToken));
+
+        group.MapDelete("/nodes/{nodeId}/limits/{runtime}", async (
+            string nodeId, string runtime, HttpContext context,
+            INodeRegistry registry, NodeLimitsControl control, CancellationToken cancellationToken) =>
+            await SetLimitsAsync(nodeId, runtime, null, context, registry, control, cancellationToken));
 
         // Phase 101. Look for a release now, or apply the newest one. The node downloads and runs the setup
         // itself; progress arrives as its update state on /api/status, not on this response.
@@ -960,6 +987,35 @@ public static class AdminEndpoints
             null => Results.Ok(new { nodeId = node.NodeId, backend = outcome.Engine, running, profile = outcome.Profile }),
             BackendToggleOutcome.UnknownEngine => Results.NotFound(new { error = outcome.Error }),
             _ => Results.Conflict(new { error = outcome.Error })
+        };
+    }
+
+    /// <summary>Phase 102: 200 with the profile; 404 for an unknown node or runtime; 400 for a value no limit can be; 409 above the node's own.</summary>
+    private static async Task<IResult> SetLimitsAsync(
+        string nodeId,
+        string runtime,
+        EngineLimits? limits,
+        HttpContext context,
+        INodeRegistry registry,
+        NodeLimitsControl control,
+        CancellationToken cancellationToken)
+    {
+        var node = registry.Snapshot(DateTimeOffset.UtcNow)
+            .FirstOrDefault(n => string.Equals(n.NodeId, nodeId, StringComparison.OrdinalIgnoreCase));
+
+        if (node is null)
+        {
+            return Results.NotFound(new { error = $"node '{nodeId}' not found" });
+        }
+
+        var (refusal, error, profile) = await control.SetAsync(node, runtime, limits, ActorOf(context), cancellationToken);
+
+        return refusal switch
+        {
+            null => Results.Ok(new { nodeId = node.NodeId, runtime = EngineLimitGroups.Normalize(runtime), limits = profile?.Limits?.GetValueOrDefault(EngineLimitGroups.Normalize(runtime)!), profile }),
+            NodeLimitsControl.UnknownGroup => Results.NotFound(new { error }),
+            NodeLimitsControl.Invalid => Results.BadRequest(new { error }),
+            _ => Results.Conflict(new { error })
         };
     }
 

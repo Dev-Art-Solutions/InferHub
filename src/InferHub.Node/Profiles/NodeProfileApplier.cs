@@ -33,7 +33,8 @@ public sealed class NodeProfileApplier(
     ILogger<NodeProfileApplier> logger,
     IEngineControl? engines = null,
     Backends.Colibri.IColibriControl? colibri = null,
-    Backends.Strata.IStrataControl? strata = null)
+    Backends.Strata.IStrataControl? strata = null,
+    Resources.Limits.IEngineLimiter? limiter = null)
 {
     private readonly NodeOptions node = nodeOptions.Value;
     private readonly ToolOptions tools = toolOptions.Value;
@@ -114,6 +115,11 @@ public sealed class NodeProfileApplier(
             var strataChanges = strata is null
                 ? Array.Empty<string>()
                 : await strata.ApplyAsync(result.Effective.Strata, cancellationToken);
+
+            // Phase 102. The coordinator's runtime limits, each already at or below the box's own;
+            // the limiter applies them to running processes in place (43 D6) and keeps taking the
+            // smaller of the two, so a later lowering of the box's ceiling still wins.
+            limiter?.SetHubLimits(result.Effective.Limits);
 
             // Phase 44. The corpus is the one part of a profile whose application can fail against the
             // world rather than against the clamp — an engine that is not there, a credential this box
@@ -227,7 +233,8 @@ public sealed class NodeProfileApplier(
         colibri?.CatalogNames,
         colibri?.MaxLoaded ?? 0,
         strata?.CatalogNames,
-        strata?.MaxLoaded ?? 0);
+        strata?.MaxLoaded ?? 0,
+        limiter?.NodeCeilings);
 
     private void Log(NodeProfile? profile, NodeProfileState state)
     {

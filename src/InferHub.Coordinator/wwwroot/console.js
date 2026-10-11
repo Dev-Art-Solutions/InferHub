@@ -746,6 +746,76 @@
     }).join("");
   };
 
+  // ------------------------------------------------------------------ runtime limits (phase 102)
+
+  const limitFields = [["cpuPercent", "%"], ["cores", ""], ["memoryMiB", " MiB"], ["vramMiB", " MiB"], ["gpus", ""]];
+
+  const limitValue = (limits, field) => {
+    const v = limits ? limits[field] : null;
+    if (v === null || v === undefined) return null;
+    return Array.isArray(v) ? (v.length ? v.join(",") : "none") : String(v);
+  };
+
+  // One cell: what is in force, the node's own ceiling (which this hub sees and never changes), what
+  // this hub asked for, and — on hover — how the node holds it.
+  const limitCell = (group, field, unit) => {
+    const mine = limitValue(group.node, field);
+    const hub = limitValue(group.hub, field);
+    const eff = limitValue(group.effective, field);
+    const how = group.enforcement?.[field];
+    if (eff === null) return `<td><span class="matrix-no">—</span></td>`;
+    const held = how && how.startsWith("none") ? "pill-err" : "pill-ok";
+    return `<td><span class="pill ${held}" title="${escapeHtml(how ?? "")}">${escapeHtml(eff + unit)}</span>`
+      + (mine !== null ? `<div class="why" title="Node:ResourceLimits:Engines on the box — read-only here">node: ${escapeHtml(mine + unit)}</div>` : "")
+      + (hub !== null ? `<div class="why">hub: ${escapeHtml(hub + unit)}</div>` : "")
+      + `</td>`;
+  };
+
+  const renderLimits = (status) => {
+    const tbody = document.getElementById("limits");
+    if (!tbody) return;
+
+    const nodes = status?.nodes ?? [];
+    if (nodes.length === 0) {
+      emptyRow("limits", 9, "No nodes connected.");
+      return;
+    }
+
+    tbody.innerHTML = nodes.map(node => {
+      const groups = node.limits?.groups ?? [];
+      const add = `<button type="button" data-laction="add" data-node="${encodeURIComponent(node.nodeId)}">Limit a runtime…</button>`;
+      if (groups.length === 0) {
+        return `
+        <tr>
+          <td>${escapeHtml(node.name)}</td>
+          <td colspan="7"><span class="matrix-no">nothing limited</span></td>
+          <td>${add}</td>
+        </tr>`;
+      }
+      return groups.map((g, i) => {
+        const uses = [
+          g.processes ? `${g.processes} process(es)` : "not running",
+          g.cpuPercent !== null && g.cpuPercent !== undefined ? `CPU ${g.cpuPercent}%` : null,
+          g.memoryMiB !== null && g.memoryMiB !== undefined ? `${g.memoryMiB} MiB` : null,
+          g.vramMiB !== null && g.vramMiB !== undefined ? `VRAM ${g.vramMiB} MiB` : null
+        ].filter(Boolean).join(" · ");
+        const buttons = [
+          `<button type="button" data-laction="set" data-node="${encodeURIComponent(node.nodeId)}" data-group="${escapeHtml(g.group)}" data-current="${escapeHtml(JSON.stringify(g.hub ?? {}))}">Set…</button>`,
+          g.hub ? `<button type="button" data-laction="clear" data-node="${encodeURIComponent(node.nodeId)}" data-group="${escapeHtml(g.group)}">Clear hub's</button>` : "",
+          i === groups.length - 1 ? add : ""
+        ].join(" ");
+        return `
+        <tr class="${g.breaches ? "row-error" : ""}">
+          <td>${i === 0 ? escapeHtml(node.name) : ""}</td>
+          <td><code>${escapeHtml(g.group)}</code></td>
+          ${limitFields.map(([field, unit]) => limitCell(g, field, unit)).join("")}
+          <td>${escapeHtml(uses)}${g.breaches ? `<div class="why">stopped ${g.breaches}×: ${escapeHtml(g.lastBreach ?? "")}</div>` : ""}</td>
+          <td>${buttons}</td>
+        </tr>`;
+      }).join("");
+    }).join("");
+  };
+
   // ------------------------------------------------------------------ colibri catalogue (phase 97)
 
   const colibriStatePill = (model) => {
@@ -1063,6 +1133,7 @@
       renderTools(latestStatus);
       renderEngines(latestStatus);
       renderUpdates(latestStatus);
+      renderLimits(latestStatus);
       renderColibri(latestStatus);
       renderStrata(latestStatus);
       renderCorpora(latestStatus);
@@ -1673,6 +1744,78 @@
       const button = event.target.closest("button[data-uaction]");
       if (!button) return;
       sendNodeUpdate(decodeURIComponent(button.dataset.node), button.dataset.uaction, button.dataset.target);
+    });
+  }
+
+  // Phase 102. Set or clear this hub's limits on one runtime of one node. They go into the node's
+  // profile; the node takes the smaller of its own and these, refuses anything above its own, and
+  // re-reports, so the row changes on the next status poll.
+  const limitKeys = { cpu: "cpuPercent", cpupercent: "cpuPercent", cores: "cores", memory: "memoryMiB", memorymib: "memoryMiB", vram: "vramMiB", vrammib: "vramMiB", gpus: "gpus" };
+  const limitNames = { cpuPercent: "cpu", cores: "cores", memoryMiB: "memory", vramMiB: "vram", gpus: "gpus" };
+
+  const parseLimits = (text) => {
+    const limits = {};
+    for (const part of text.split(/[\s,;]+/).filter(Boolean)) {
+      const [key, value] = part.split("=");
+      const field = limitKeys[(key ?? "").toLowerCase()];
+      if (!field || value === undefined) throw new Error(`'${part}' is not a limit (cpu=, cores=, memory=, vram=, gpus=)`);
+      limits[field] = field === "gpus"
+        ? (value === "none" ? [] : value.split("+").map(Number))
+        : Number(value);
+    }
+    return limits;
+  };
+
+  const formatLimits = (limits) => Object.entries(limits ?? {})
+    .filter(([, v]) => v !== null && v !== undefined)
+    .map(([k, v]) => `${limitNames[k] ?? k}=${Array.isArray(v) ? (v.length ? v.join("+") : "none") : v}`)
+    .join(" ");
+
+  const sendLimits = async (nodeId, group, limits) => {
+    try {
+      const res = await fetch(`/api/admin/nodes/${encodeURIComponent(nodeId)}/limits/${encodeURIComponent(group)}`, {
+        method: limits ? "PUT" : "DELETE",
+        headers: adminHeaders(limits ? { "Content-Type": "application/json" } : undefined),
+        body: limits ? JSON.stringify(limits) : undefined
+      });
+      if (res.status === 401) {
+        promptForKey("Admin key required for this action.");
+        return;
+      }
+      let body = {};
+      try { body = await res.json(); } catch { }
+      if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      toast(limits ? "Limits set" : "Limits cleared", `${group} on ${nodeId}`, "ok");
+      pollStatusNow();
+    } catch (err) {
+      toast("Could not set limits", err.message, "err");
+    }
+  };
+
+  const limitsBody = document.getElementById("limits");
+  if (limitsBody) {
+    limitsBody.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-laction]");
+      if (!button) return;
+      const nodeId = decodeURIComponent(button.dataset.node);
+      let group = button.dataset.group;
+      if (button.dataset.laction === "clear") {
+        sendLimits(nodeId, group, null);
+        return;
+      }
+      if (button.dataset.laction === "add") {
+        group = prompt("Which runtime? ollama, llamacpp, colibri, strata or tools");
+        if (!group) return;
+      }
+      let current = {};
+      try { current = JSON.parse(button.dataset.current ?? "{}"); } catch { }
+      const text = prompt(`Limits for ${group} on ${nodeId}, at or below the node's own — e.g. cpu=50 cores=8 memory=16384 vram=12000 gpus=0+1 (gpus=none: no GPU). Empty clears this hub's.`, formatLimits(current));
+      if (text === null) return;
+      try {
+        sendLimits(nodeId, group.trim(), text.trim() === "" ? null : parseLimits(text));
+      } catch (err) {
+        toast("Could not set limits", err.message, "err");
+      }
     });
   }
 

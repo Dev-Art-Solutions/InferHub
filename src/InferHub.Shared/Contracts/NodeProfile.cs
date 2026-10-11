@@ -82,7 +82,14 @@ public sealed record NodeProfile(
     /// Phase 99. The same block for the node's Strata catalogue: which installed Strata models stay
     /// loaded, and whether idle ones are stopped. Names from the box's own installs only (43 D1).
     /// </summary>
-    [property: JsonPropertyName("strata")] CatalogProfile? Strata = null);
+    [property: JsonPropertyName("strata")] CatalogProfile? Strata = null,
+    /// <summary>
+    /// Phase 102. Runtime name (<see cref="EngineLimitGroups"/>) → hard limits on what it may use. Each
+    /// value can only be at or below the node's own <c>Node:ResourceLimits:Engines</c>; one above it is
+    /// refused by name and the node's stays (43 D1). The coordinator sees the node's ceiling in
+    /// <see cref="NodeLimitsState"/> and cannot change it.
+    /// </summary>
+    [property: JsonPropertyName("limits")] IReadOnlyDictionary<string, EngineLimits>? Limits = null);
 
 /// <summary>
 /// A corpus the coordinator wants a node to host (phase 44): which engine, where it is, which

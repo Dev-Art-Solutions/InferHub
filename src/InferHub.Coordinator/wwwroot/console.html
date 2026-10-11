@@ -325,6 +325,33 @@
   </section>
 
   <!--
+    Phase 102. Hard limits per runtime on each node. In force is the smaller of the node's own ceiling
+    (Node:ResourceLimits:Engines, shown and never changed from here) and this hub's, which Set writes
+    into the node's profile. A hub value above the node's is refused with the node's number.
+  -->
+  <section>
+    <h2>Runtime limits</h2>
+    <div class="table-wrap">
+      <table id="limits-table">
+        <thead>
+          <tr>
+            <th>Node</th>
+            <th>Runtime</th>
+            <th>CPU</th>
+            <th>Cores</th>
+            <th>Memory</th>
+            <th>VRAM</th>
+            <th>GPUs</th>
+            <th>Uses now</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="limits"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!--
     Phase 97. A colibri catalogue: every converted model a node may load, which are loaded, and
     which the hub pinned. Load and Unload write the node's profile (colibri.loaded); on a node that
     may hold one model, Load is a switch. On-demand stops idle, unpinned models to free their RAM.

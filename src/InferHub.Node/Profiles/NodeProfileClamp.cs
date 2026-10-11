@@ -70,6 +70,7 @@ public static class NodeProfileClamp
         var strata = ClampCatalog(
             "strata", "Strata:Root with a strata backend or engine", "Strata",
             desired.Strata, local.StrataCatalogue, local.StrataMaxLoaded, applied, refusals);
+        var limits = ClampLimits(local, desired, applied, refusals);
 
         return new ClampResult(
             new EffectiveProfile(
@@ -80,7 +81,8 @@ public static class NodeProfileClamp
                 disabledModels,
                 backends,
                 colibri,
-                strata),
+                strata,
+                limits),
             applied,
             refusals,
             ensure,
@@ -582,6 +584,51 @@ public static class NodeProfileClamp
         return new CatalogProfile(loaded, desired.OnDemand);
     }
 
+    /// <summary>
+    /// Phase 102. Hard limits per runtime, each value at or below the node's own
+    /// <c>Node:ResourceLimits:Engines</c> — the arithmetic ceiling again (48), and the same posture: a
+    /// value above it is refused with both numbers and the node's stays, a runtime the node did not
+    /// limit may be limited, because that is narrowing. A name that is no runtime is refused: it could
+    /// only be a typo, and a typo here is a limit that silently does not exist.
+    /// </summary>
+    private static IReadOnlyDictionary<string, EngineLimits>? ClampLimits(
+        LocalCeiling local,
+        NodeProfile desired,
+        List<string> applied,
+        List<NodeProfileRefusal> refusals)
+    {
+        if (desired.Limits is null)
+        {
+            return null;
+        }
+
+        var result = new Dictionary<string, EngineLimits>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var pair in desired.Limits)
+        {
+            if (pair.Value is null || string.IsNullOrWhiteSpace(pair.Key))
+            {
+                continue;
+            }
+
+            if (EngineLimitGroups.Normalize(pair.Key) is not { } group)
+            {
+                refusals.Add(new NodeProfileRefusal(
+                    $"limits:{pair.Key.Trim()}",
+                    $"'{pair.Key.Trim()}' names no runtime; a limit names one of {string.Join(", ", EngineLimitGroups.All)}"));
+
+                continue;
+            }
+
+            if (Resources.Limits.EngineLimitMath.Narrow(group, local.EngineLimits.GetValueOrDefault(group), pair.Value, applied, refusals) is { } kept)
+            {
+                result[group] = kept;
+            }
+        }
+
+        return result;
+    }
+
     private const string ProviderLocal = "local";
 
     private const string ProviderQdrant = "qdrant";
@@ -620,8 +667,13 @@ public sealed record LocalCeiling(
     int ColibriMaxLoaded = 0,
     /// <summary>The Strata catalogue's names (phase 99). Null: this node has no Strata install.</summary>
     IReadOnlyList<string>? StrataCatalogue = null,
-    int StrataMaxLoaded = 0)
+    int StrataMaxLoaded = 0,
+    /// <summary>The node's own runtime limits (phase 102), keyed by runtime. Null: none.</summary>
+    IReadOnlyDictionary<string, EngineLimits>? EngineLimitCeiling = null)
 {
+    public IReadOnlyDictionary<string, EngineLimits> EngineLimits =>
+        EngineLimitCeiling ?? new Dictionary<string, EngineLimits>();
+
     public IReadOnlyList<string> Engines => EngineNames ?? Array.Empty<string>();
 
     public IReadOnlyList<ImageRecipeInfo> ImageRecipes => ImageRecipeCatalogue ?? Array.Empty<ImageRecipeInfo>();
@@ -649,7 +701,12 @@ public sealed record EffectiveProfile(
     /// <summary>The colibri block after the clamp (phase 97). Null: the box's own <c>Preload</c> and <c>OnDemand</c>.</summary>
     CatalogProfile? Colibri = null,
     /// <summary>The strata block after the clamp (phase 99). Null: the box's own <c>Preload</c> and <c>OnDemand</c>.</summary>
-    CatalogProfile? Strata = null);
+    CatalogProfile? Strata = null,
+    /// <summary>
+    /// The coordinator's runtime limits that survived the clamp (phase 102). Null: the profile said
+    /// nothing, and only the node's own <c>Node:ResourceLimits:Engines</c> applies.
+    /// </summary>
+    IReadOnlyDictionary<string, EngineLimits>? Limits = null);
 
 public sealed record ClampResult(
     EffectiveProfile Effective,

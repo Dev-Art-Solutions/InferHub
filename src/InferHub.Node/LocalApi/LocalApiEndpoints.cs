@@ -106,6 +106,7 @@ public static class LocalApiEndpoints
         // Phase 82. The local configuring UI, mapped unconditionally like everything above — a cap
         // switched on for the first time should not need a URL that only appears after it exists.
         app.MapLocalResourceLimitsAdminEndpoints();
+        app.MapLocalEngineLimitsAdminEndpoints();
 
         var retrieval = app.Services.GetRequiredService<IOptions<LocalRetrievalOptions>>().Value;
 

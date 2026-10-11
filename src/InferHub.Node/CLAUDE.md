@@ -868,6 +868,7 @@ performance ceiling that overrides everything else, plus a local UI to configure
 performance ceiling is the operator's own final word over a coordinator they may not fully trust, and
 a profile that could narrow it would still be a coordinator with a hand on the dial. Unset (both
 percentages null) is byte-identical to v3.46.
+> Phase 102's per-runtime *hard* limits are the opposite case and are on the wire — see its D1 below.
 
 **D2 — soft by default: a debounced admission withdrawal, not a throttle on anything running.**
 `ResourceGovernorLogic` (pure, table-tested like `VramBudget`) takes a `ResourceSnapshot` plus the
@@ -1042,3 +1043,52 @@ setup that replaces it (found live).
 Tests: `NodeUpdateTests`, `NodeSettingsFileTests` (Node), `NodeUpdateRegistryTests` (Coordinator),
 `NodeUpdateMeshTests` + `ConsoleContractTests` (Mesh). The setup itself has no automated test; the release
 notes record the live run on a real box.
+
+### Phase 102 (hard limits per runtime — the node's ceiling, the hub's narrowing) — also load-bearing
+
+Files: `Resources/Limits/` (`EngineLimitMath`, `EngineLimiter`, `WindowsJobContainer`, `LinuxProcessContainer`,
+`ProcessInspector`, `GpuProcessMemory`), `Configuration/NodeOptions.cs` (`Node:ResourceLimits:Engines`),
+`Profiles/NodeProfileClamp.cs` (`ClampLimits`), `LocalApi/LocalEngineLimitsAdminEndpoints.cs`; the hub's
+`NodeLimitsRegistry`/`NodeLimitsControl`, `/api/admin/nodes/{id}/limits[/{runtime}]` and the console's Runtime
+limits panel. User-requested (Bulgarian): the node controls what strata, colibri, ollama, llama.cpp or any model
+may use, as a hard limit; the coordinator may set limits too, never above the node's, cannot override them, sees them.
+
+**D1 — the ceiling is the node's and the clamp runs on the node (43 D1, load-bearing).** Unlike 82 D1 this one
+*is* on the wire: `NodeProfile.Limits` may only go lower. Per field, a hub value above the node's is refused naming
+the key and both numbers and the node's stays; a field the node left unset may be set (narrowing); a GPU list must
+be a subset, else the whole list is refused; a name that is no runtime is refused (a typo is a limit that silently
+does not exist — the validator fails startup on one in config, too). The limiter recomputes min(node, hub) every
+poll, so a ceiling lowered later in `node.local.json` still wins over an older hub value. The hub refuses too, for
+a 409 with the node's number; a profile written around it is refused by the node (`EngineLimitMeshTests`).
+
+**D2 — one group per runtime, all its processes together** (`ollama`, `llamacpp`, `colibri`, `strata`, `tools`):
+three `llama-server`s share the llamacpp budget. Launch sites call `EngineLimiter.PrepareLaunch`/`Adopt` —
+statics like `ChildProcessJob`, because a Job Object belongs to the process. The group's job is joined *after*
+the lifetime job, so it nests inside it (Windows 8+) and 95 D3's kill-on-close still holds (killing the live node
+took its `llama-server` with it). Only processes this node starts: an Ollama service or someone else's server is
+not ours to cap (36 D1); the report counts processes, so "0" says so.
+
+**D3 — three ways a limit is held, and the report names which; never "held" when it is not.** *os*: Windows Job
+Object (CPU hard cap, affinity, job memory — all re-set live), Linux cgroup v2 `cpu.max`/`memory.max` when this
+process may make one (it moves itself into a leaf `inferhub-node` first — cgroup v2's no-internal-processes rule),
+`sched_setaffinity` per thread re-applied each poll. *launch*: the GPU list becomes `CUDA_/HIP_/ROCR_/
+GGML_VK_VISIBLE_DEVICES` (`-1` = none); the Vulkan llama.cpp ignores the CUDA one — found live; a change stops the
+runtime and its own supervisor restarts it under the new list. *watchdog*: GPU memory (no OS caps it) and memory
+on a cgroup-less Linux box — read every poll, the runtime stopped above it, a breach counted with the numbers.
+Otherwise `none: why`. A limit on a runtime not running yet makes **no** OS object ("applies when it starts") — on
+Linux making one moves the node into a cgroup.
+
+**D4 — VRAM per process is read where it really is.** Windows: the `GPU Process Memory(pid_*)\Dedicated Usage`
+counters via hand-rolled PDH — NVML under WDDM says "N/A" per process (`nvidia-smi` shows exactly that on this
+box). Linux: NVML's running compute processes; in a container those may be host pids, matching nothing — the VRAM
+reads 0 and cannot trip; said in the release notes. Rule 5: zero packages.
+
+**D5 — a breach stops the runtime; it does not throttle it.** There is nothing to throttle VRAM with, and a
+runtime past its memory is about to fail anyway. The supervisors already relaunch (95's backoff, 36's restart),
+so the cost of a limit set too low is a backoff loop that the breach count and `lastBreach` make visible.
+
+Live on this box (3090 Ti, Vulkan `llama-server`, qwen2.5-0.5b): affinity 4 → 2 cores by a `node.local.json`
+save with no restart; hub `cpuPercent:50` over the node's 10 → 409 naming 10%; hub `vramMiB:100` → PDH read
+255 MiB, stopped; `gpus:[]` → restarted, VRAM 206 → 0 MiB. Tests: `EngineLimitTests` (Node),
+`EngineLimitProcessTests` (Mesh — a real Job Object refuses a 400 MB allocation under 150 MB and holds a busy loop
+under 1%; Linux affinity and the watchdog on CI), `EngineLimitMeshTests` (Mesh, hub ↔ node).

@@ -191,6 +191,37 @@ public sealed class NodeOptionsValidator : IValidateOptions<NodeOptions>
         {
             failures.Add($"{prefix}{nameof(ResourceLimitOptions.RecoverPolls)} must be >= 1 (got {options.RecoverPolls}).");
         }
+
+        // Phase 102. A runtime name nobody runs is a typo, and a limit written against a typo is a
+        // limit that silently does not exist — the one failure a ceiling must not have.
+        foreach (var (name, engine) in options.Engines)
+        {
+            var key = $"{prefix}Engines:{name}:";
+
+            if (EngineLimitGroups.Normalize(name) is null)
+            {
+                failures.Add($"{prefix}Engines:{name} names no runtime; use one of {string.Join(", ", EngineLimitGroups.All)}.");
+                continue;
+            }
+
+            if (engine.CpuPercent is { } cpuLimit && (cpuLimit < 1 || cpuLimit > 100))
+            {
+                failures.Add($"{key}{nameof(EngineLimitOptions.CpuPercent)} must be between 1 and 100 when set (got {cpuLimit}).");
+            }
+
+            foreach (var (field, value) in new[] { (nameof(EngineLimitOptions.Cores), engine.Cores), (nameof(EngineLimitOptions.MemoryMiB), engine.MemoryMiB), (nameof(EngineLimitOptions.VramMiB), engine.VramMiB) })
+            {
+                if (value is < 1)
+                {
+                    failures.Add($"{key}{field} must be at least 1 when set (got {value}).");
+                }
+            }
+
+            if (!EngineLimitOptions.TryParseGpus(engine.Gpus, out _))
+            {
+                failures.Add($"{key}{nameof(EngineLimitOptions.Gpus)} must be GPU indexes separated by commas (\"0,1\") or \"none\" (got '{engine.Gpus}').");
+            }
+        }
     }
 }
 

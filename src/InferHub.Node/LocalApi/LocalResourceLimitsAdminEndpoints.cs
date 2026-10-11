@@ -135,6 +135,12 @@ internal static class LocalResourceLimitsAdminEndpoints
             limits["RecoverPolls"] = recover;
         }
 
+        // Phase 102 writes Engines into the same object; a soft-cap save must not wipe it.
+        if ((node["ResourceLimits"] as JsonObject)?["Engines"] is { } engines)
+        {
+            limits["Engines"] = engines.DeepClone();
+        }
+
         node["ResourceLimits"] = limits;
         root["Node"] = node;
 
@@ -192,6 +198,7 @@ internal static class LocalResourceLimitsAdminEndpoints
         </form>
         <div id="live">loading current readings…</div>
         <div id="note" style="display:none"></div>
+        <p><a href="/api/admin/engine-limits">Hard limits per runtime (ollama, llama.cpp, colibri, Strata, tools)</a></p>
         <script>
           const q = (id) => document.getElementById(id);
           async function refresh() {

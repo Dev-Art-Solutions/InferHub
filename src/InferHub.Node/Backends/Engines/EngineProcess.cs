@@ -18,7 +18,8 @@ public sealed class EngineProcess(
     Func<ProcessStartInfo> startInfo,
     Func<string?> precondition,
     TimeProvider time,
-    ILogger logger) : IAsyncDisposable
+    ILogger logger,
+    string? limitGroup = null) : IAsyncDisposable
 {
     private static readonly TimeSpan FirstBackoff = TimeSpan.FromSeconds(2);
 
@@ -173,6 +174,13 @@ public sealed class EngineProcess(
     private async Task<int> RunOnceAsync(CancellationToken token)
     {
         var info = startInfo();
+
+        if (limitGroup is not null)
+        {
+            // Phase 102: the GPU list this runtime may see is part of how it starts.
+            Resources.Limits.EngineLimiter.PrepareLaunch(limitGroup, info);
+        }
+
         var process = Process.Start(info)
             ?? throw new InvalidOperationException("Process.Start returned no process.");
 
@@ -186,6 +194,12 @@ public sealed class EngineProcess(
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Engine '{Engine}' runs, but is not tied to this node's lifetime; a node killed outright would leave it running.", name);
+        }
+
+        if (limitGroup is not null)
+        {
+            // After the lifetime job, so this one nests inside it (102 D2).
+            Resources.Limits.EngineLimiter.Adopt(limitGroup, process);
         }
 
         logger.LogInformation(

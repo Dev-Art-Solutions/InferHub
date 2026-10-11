@@ -209,6 +209,10 @@ public sealed class OllamaProcessControl(
 
         startInfo.ArgumentList.Add("serve");
 
+        // Phase 102. Only an Ollama this node spawns is held to the ollama limits; a service or
+        // somebody else's server is not ours to cap (36 D1).
+        Resources.Limits.EngineLimiter.PrepareLaunch(InferHub.Shared.Contracts.EngineLimitGroups.Ollama, startInfo);
+
         Process process;
 
         try
@@ -234,6 +238,7 @@ public sealed class OllamaProcessControl(
         process.BeginErrorReadLine();
 
         spawned = process;
+        Resources.Limits.EngineLimiter.Adopt(InferHub.Shared.Contracts.EngineLimitGroups.Ollama, process);
 
         if (process.WaitForExit((int)SpawnGrace.TotalMilliseconds))
         {

@@ -130,6 +130,76 @@ public sealed class ResourceLimitOptions
     public int? HardCpuCapPercent { get; set; }
 
     public bool IsConfigured => MaxCpuPercent is not null || MaxGpuPercent is not null;
+
+    /// <summary>
+    /// Phase 102. Runtime (<c>ollama</c>, <c>llamacpp</c>, <c>colibri</c>, <c>strata</c>, <c>tools</c>) →
+    /// hard limits on what every process of it together may use. Unlike the soft cap above these are
+    /// on the wire: a coordinator's profile may set its own, at or below these, and sees these but
+    /// cannot change them (43 D1). Empty = no runtime is limited, v3.66 exactly.
+    /// </summary>
+    public Dictionary<string, EngineLimitOptions> Engines { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+}
+
+/// <summary>
+/// <c>Node:ResourceLimits:Engines:{runtime}</c> (phase 102). Every field unset = no limit on it.
+/// </summary>
+public sealed class EngineLimitOptions
+{
+    /// <summary>Share of the whole machine's CPU, 1–100. Windows: a Job Object hard cap; Linux: cgroup <c>cpu.max</c> when this process may write one.</summary>
+    public int? CpuPercent { get; set; }
+
+    /// <summary>How many logical processors (the first N) the runtime may run on. Both platforms.</summary>
+    public int? Cores { get; set; }
+
+    /// <summary>Memory in MiB over every process of the runtime. Windows: a Job Object limit; Linux: cgroup <c>memory.max</c>, else the watchdog stops it.</summary>
+    public int? MemoryMiB { get; set; }
+
+    /// <summary>Dedicated GPU memory in MiB over every process of the runtime. No OS can cap it: the watchdog stops the runtime above it.</summary>
+    public int? VramMiB { get; set; }
+
+    /// <summary>
+    /// The GPUs the runtime may see, as <c>CUDA_VISIBLE_DEVICES</c> writes them: <c>"0,1"</c>, or
+    /// <c>"none"</c> for no GPU at all. A string rather than a list on purpose: configuration merges
+    /// lists by index, so <c>node.local.json</c> saying <c>[0]</c> over an <c>appsettings.json</c>
+    /// <c>[0, 1]</c> would still mean both.
+    /// </summary>
+    public string? Gpus { get; set; }
+
+    /// <summary>The GPU list, parsed; null when unset or unreadable (the validator names the second).</summary>
+    public IReadOnlyList<int>? ParsedGpus() => TryParseGpus(Gpus, out var devices) ? devices : null;
+
+    public static bool TryParseGpus(string? text, out IReadOnlyList<int>? devices)
+    {
+        devices = null;
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return true;
+        }
+
+        if (string.Equals(text.Trim(), "none", StringComparison.OrdinalIgnoreCase))
+        {
+            devices = Array.Empty<int>();
+            return true;
+        }
+
+        var list = new List<int>();
+
+        foreach (var part in text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (!int.TryParse(part, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var index))
+            {
+                return false;
+            }
+
+            list.Add(index);
+        }
+
+        devices = list.Distinct().Order().ToArray();
+        return true;
+    }
+
+    public InferHub.Shared.Contracts.EngineLimits ToContract() => new(CpuPercent, Cores, MemoryMiB, VramMiB, ParsedGpus());
 }
 
 /// <summary>

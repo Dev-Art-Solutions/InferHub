@@ -131,6 +131,8 @@ builder.Services.AddSingleton<NodeStrataRegistry>();
 // Phase 101: what each node said about its version, and the one command that acts on it.
 builder.Services.AddSingleton<NodeUpdateRegistry>();
 builder.Services.AddSingleton<NodeUpdateControl>();
+builder.Services.AddSingleton<NodeLimitsRegistry>();
+builder.Services.AddSingleton<NodeLimitsControl>();
 
 // Phase 47. The async image-job surface. Registered unconditionally and inert on a fleet with no
 // image capability: the store holds nothing, the pump reads an empty queue, and the sweeper ticks
