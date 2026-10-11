@@ -108,3 +108,24 @@ every field the new panel reads. `dotnet test InferHub.sln`: 2 094 passed, 63 sk
   (a process is put in the job right after `Process.Start`); the runtimes here start theirs much later.
 - **The VRAM watchdog stops a runtime that keeps going over again and again**, each time after its
   supervisor's backoff — visible as a rising breach count, not prevented.
+
+## Addendum — the published binaries, on the same box
+
+`inferhub-node:3.67.0` and `inferhub-coordinator:3.67.0` pulled from GHCR (layers read through the registry
+API, `app/` extracted; both carry revision label `66f402c`, the tagged commit) and run natively on Windows —
+**binaries, not a container**, so this says nothing about the images' OS layer. The node launched the same
+Vulkan `llama-server` with the same ceiling (`CpuPercent 10, Cores 4, MemoryMiB 4096`):
+
+- All three reported `os (Job Object …)`; Windows showed the server's affinity as **15** (four cores).
+- Hub `cpuPercent: 50` → **409** naming the node's 10%.
+- Hub `vramMiB: 100` → the counters read **398 MiB** and the server was stopped, twice, each after its
+  supervisor's backoff; the breach count and sentence reached `/api/status`.
+- Hub `vramMiB: 2000` → 398 MiB, nothing stopped; then `gpus: []` → restarted, **0 MiB**.
+- *Clear* → the node's own limits; the server restarted once more, because the GPU list in force changed
+  back from none to any — as designed, and worth knowing: clearing a GPU limit restarts the runtime too.
+- **The console panel was opened** (headless Chrome against the published coordinator,
+  `.claude/verification-v3.67.0-console.png`): the row shows in force `5% / 4 / 4096 MiB / 3000 MiB`, under
+  each the node's ceiling and the hub's value, the usage, and the last stop as a sentence.
+
+`InferHub-Node-Setup-3.67.0-win-x64.exe` and its `.sha256` were attached by `windows-installer.yml`; the setup
+was not run for this release (it carries the same node).
