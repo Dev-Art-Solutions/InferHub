@@ -160,7 +160,23 @@ public class ConsoleContractTests
         "nodes[].update.lastCheckedUtc",
         "nodes[].update.lastError",
         "nodes[].update.lastUpdate",
-        "nodes[].update.releaseUrl"
+        "nodes[].update.releaseUrl",
+
+        // Phase 102 — the Runtime limits panel: the node's ceiling, the hub's request, what is in
+        // force, how each is held, and what the runtime uses.
+        "nodes[].limits.groups[].group",
+        "nodes[].limits.groups[].node.cpuPercent",
+        "nodes[].limits.groups[].hub.memoryMiB",
+        "nodes[].limits.groups[].effective.vramMiB",
+        "nodes[].limits.groups[].effective.gpus",
+        "nodes[].limits.groups[].effective.cores",
+        "nodes[].limits.groups[].enforcement",
+        "nodes[].limits.groups[].processes",
+        "nodes[].limits.groups[].cpuPercent",
+        "nodes[].limits.groups[].memoryMiB",
+        "nodes[].limits.groups[].vramMiB",
+        "nodes[].limits.groups[].breaches",
+        "nodes[].limits.groups[].lastBreach"
     ];
 
     /// <summary>
@@ -525,6 +541,7 @@ internal sealed class ConsoleFixture : IAsyncDisposable
         var corpora = new NodeCorpusRegistry();
         var tools = new NodeToolRegistry();
         var updates = new NodeUpdateRegistry();
+        var limits = new NodeLimitsRegistry();
 
         profiles.Put("gpu-boxes", new NodeProfile(
             "gpu-boxes",
@@ -652,6 +669,24 @@ internal sealed class ConsoleFixture : IAsyncDisposable
                 LastUpdate: "updated 3.65.0 → 3.66.0",
                 ReleaseUrl: "https://example.invalid/releases/v3.67.0",
                 now));
+
+            limits.Report(new NodeLimitsState(
+                "gpu-1",
+                [
+                    new EngineLimitsGroupState(
+                        "llamacpp",
+                        Node: new EngineLimits(CpuPercent: 50, MemoryMiB: 16384),
+                        Hub: new EngineLimits(MemoryMiB: 8192, VramMiB: 6000),
+                        Effective: new EngineLimits(CpuPercent: 50, Cores: 8, MemoryMiB: 8192, VramMiB: 6000, Gpus: [0]),
+                        Enforcement: new Dictionary<string, string> { ["vramMiB"] = "watchdog (stops the runtime above it)" },
+                        Processes: 2,
+                        CpuPercent: 12.5,
+                        MemoryMiB: 5120,
+                        VramMiB: 4100,
+                        Breaches: 1,
+                        LastBreach: "llamacpp used 6100 MiB of GPU memory, over its limit of 6000 MiB")
+                ],
+                now));
         }
 
         builder.Services.AddSingleton<INodeRegistry>(registry);
@@ -659,6 +694,7 @@ internal sealed class ConsoleFixture : IAsyncDisposable
         builder.Services.AddSingleton(corpora);
         builder.Services.AddSingleton(tools);
         builder.Services.AddSingleton(updates);
+        builder.Services.AddSingleton(limits);
         builder.Services.AddSingleton<Metrics>();
         builder.Services.AddSingleton<AdmissionControl>();
         builder.Services.AddSingleton<ThroughputTracker>();

@@ -186,7 +186,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 99 | [Strata](#strata--a-125b-model-on-one-gaming-gpu-its-sizes-picked-and-installed-from-the-hub-v364) — a 125B model on one gaming GPU, its sizes served as a catalogue, picked and installed from the hub (done) | `v3.64.0` |
 | 100 | [Strata pictures](#pictures-per-size-v365) — a size says whether it reads pictures, a picture it cannot read is a 400 before any load, and the hub adds the encoder (done) | `v3.65.0` |
 | 101 | [A Windows node from one setup, kept current](#a-windows-node-from-one-setup-kept-current-v366) — a setup that installs the service and asks how to run it, and updates applied by the node itself or by an admin from the console (done) | `v3.66.0` |
-| 102 | [Hard limits per runtime](#hard-limits-per-runtime--the-nodes-ceiling-the-hubs-narrowing-v367) — the node caps CPU, cores, memory, VRAM and GPUs for ollama, llama.cpp, colibri, Strata and tools; the coordinator sees the caps and may only go lower (in main, not yet released) | `v3.67.0` |
+| 102 | [Hard limits per runtime](#hard-limits-per-runtime--the-nodes-ceiling-the-hubs-narrowing-v367) — the node caps CPU, cores, memory, VRAM and GPUs for ollama, llama.cpp, colibri, Strata and tools; the coordinator sees the caps and may only go lower (done) | `v3.67.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
