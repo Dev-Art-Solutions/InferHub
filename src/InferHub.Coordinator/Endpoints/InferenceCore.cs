@@ -183,7 +183,7 @@ internal static class InferenceCore
                     if (node is null)
                     {
                         return DispatchOutcome.Failure(
-                            StatusCodes.Status502BadGateway,
+                            ProviderFailureStatus(ex),
                             $"no node holds model '{model}' and the fallback upstream failed: {ex.Message}");
                     }
 
@@ -195,7 +195,7 @@ internal static class InferenceCore
                     if (!decision.NodeIsBackstop)
                     {
                         return DispatchOutcome.Failure(
-                            StatusCodes.Status502BadGateway,
+                            ProviderFailureStatus(ex),
                             $"the provider serving model '{model}' failed and no other route was "
                             + $"permitted for this request: {ex.Message}");
                     }
@@ -428,4 +428,17 @@ internal static class InferenceCore
             return DispatchOutcome.Blocking(result.ResponseJson ?? "{}");
         }
     }
+
+    /// <summary>
+    /// 502 for every provider failure, as since phase 22 — <b>except a ChatGPT provider's</b> (phase
+    /// 103), whose status is the recovery: 429 is the plan's usage limit, 403 a permission or region,
+    /// 401 a session to sign in again. Flattening those to 502 sends an operator to the wrong fix. The
+    /// other four types keep their 502, so nothing that worked yesterday answers differently.
+    /// </summary>
+    private static int ProviderFailureStatus(Exception ex)
+        => ex is InferHub.Shared.ChatGpt.ChatGptUpstreamException { StatusCode: >= 400 and < 600 } upstream
+            ? upstream.StatusCode
+            : ex is InferHub.Shared.ChatGpt.ChatGptUnavailableException unavailable
+                ? unavailable.StatusCode
+                : StatusCodes.Status502BadGateway;
 }

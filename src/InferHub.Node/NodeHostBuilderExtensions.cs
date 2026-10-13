@@ -176,12 +176,23 @@ public static class NodeHostBuilderExtensions
                         services.GetRequiredService<Resources.GpuArbiter>(),
                         services.GetRequiredService<OllamaBackend>().UnloadAsync),
                 BackendOptions.Ollama => services.GetRequiredService<OllamaBackend>(),
+                // Phase 103. Its own class, beside UpstreamBackend rather than inside it.
+                BackendOptions.ChatGpt => services.GetRequiredService<Backends.ChatGpt.ChatGptBackend>(),
                 _ when options.IsUpstream() => services.GetRequiredService<UpstreamBackend>(),
                 var type => throw new InvalidOperationException($"Unsupported inference backend '{type}'.")
             };
         });
         builder.Services.AddSingleton<OllamaBackend>();
         builder.Services.AddSingleton<UpstreamBackend>();
+
+        // Phase 103. Registered always and inert: nothing reads ChatGpt: or touches its directory
+        // unless a chatgpt backend or engine is configured and somebody signs in.
+        builder.Services.Configure<Backends.ChatGpt.ChatGptNodeOptions>(
+            builder.Configuration.GetSection(Backends.ChatGpt.ChatGptNodeOptions.SectionName));
+        builder.Services.AddHttpClient(Backends.ChatGpt.NodeChatGpt.HttpClientName).RemoveAllLoggers();
+        builder.Services.AddHttpClient(Backends.ChatGpt.ChatGptBackend.HttpClientName);
+        builder.Services.AddSingleton<Backends.ChatGpt.NodeChatGpt>();
+        builder.Services.AddSingleton<Backends.ChatGpt.ChatGptBackend>();
         builder.Services.TryAddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<Resources.GpuArbiter>();
         builder.Services.AddSingleton<InferenceExecutor>();

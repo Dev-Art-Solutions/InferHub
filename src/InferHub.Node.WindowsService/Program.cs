@@ -10,6 +10,14 @@ if (ServiceCommands.Handles(args))
     return await ServiceCommands.RunAsync(args);
 }
 
+// Phase 103: the service's own ChatGPT sign-in. Run at the console as the user whose browser is used —
+// the service itself never opens one. The service resolves a relative data directory against its exe.
+if (InferHub.Node.Backends.ChatGpt.ChatGptCommands.Handles(args))
+{
+    return await InferHub.Node.Backends.ChatGpt.ChatGptCommands.RunAsync(
+        args, AppContext.BaseDirectory, NodeSettingsFile.DefaultPath, Console.Out, Console.Error);
+}
+
 // Same factory the console host uses (phase 37), so the two cannot drift on host shape any more
 // than they can on services: a web host when solo mode is on, the plain worker host otherwise.
 // Phase 101, D1: plus the setup's settings file in %ProgramData%, which no update overwrites.

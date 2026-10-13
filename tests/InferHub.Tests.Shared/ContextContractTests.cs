@@ -69,6 +69,7 @@ public class ContextContractTests
         // Phase 95. The node's file hit 1079 and the engine blocks (colibri, Brio, Backend:Engines)
         // were the largest coherent subtree the rest of the node has nothing to do with (95).
         ("src/InferHub.Node/Backends/CLAUDE.md", ScopedBudget),
+        ("src/InferHub.Shared/ChatGpt/CLAUDE.md", ScopedBudget),
         ("python/CLAUDE.md", ScopedBudget),
         ("tests/CLAUDE.md", ScopedBudget),
         ("deploy/CLAUDE.md", ScopedBudget),

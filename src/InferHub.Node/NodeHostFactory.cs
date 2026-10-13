@@ -71,6 +71,13 @@ public static class NodeHostFactory
     }
 
     /// <summary>Builds the host and maps the local API when there is one.</summary>
+    /// <summary>
+    /// The configuration a node built from these arguments would read, without building one — for the
+    /// verbs that run and exit beside a running node (phase 103's <c>chatgpt</c>).
+    /// </summary>
+    public static IConfiguration ReadConfiguration(string[] args, string? settingsFile = null)
+        => new ConfigurationBuilder().AddInferHubNodeConfigurationSources(args, settingsFile).Build();
+
     public static IHost Build(IHostApplicationBuilder builder)
     {
         if (builder is not WebApplicationBuilder web)

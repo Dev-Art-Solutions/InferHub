@@ -187,6 +187,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 100 | [Strata pictures](#pictures-per-size-v365) — a size says whether it reads pictures, a picture it cannot read is a 400 before any load, and the hub adds the encoder (done) | `v3.65.0` |
 | 101 | [A Windows node from one setup, kept current](#a-windows-node-from-one-setup-kept-current-v366) — a setup that installs the service and asks how to run it, and updates applied by the node itself or by an admin from the console (done) | `v3.66.0` |
 | 102 | [Hard limits per runtime](#hard-limits-per-runtime--the-nodes-ceiling-the-hubs-narrowing-v367) — the node caps CPU, cores, memory, VRAM and GPUs for ollama, llama.cpp, colibri, Strata and tools; the coordinator sees the caps and may only go lower (done) | `v3.67.0` |
+| 103 | [Sign in with ChatGPT](#sign-in-with-chatgpt--your-plan-on-the-coordinator-and-on-a-node-v368) — a `chatgpt` provider on the coordinator and a `chatgpt` backend on a node, each signed in with its own ChatGPT account in a browser, never an API key (in main, not yet released) | `v3.68.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -3101,6 +3102,78 @@ starts** are held — an Ollama running as its own service, or somebody else's s
 The node's own page, `/api/admin/engine-limits` (with `LocalApi:Enabled=true`, loopback only), shows
 every runtime's ceiling, the hub's request, what is in force, how it is held and what it uses now, and
 edits the ceiling: saved to `node.local.json` and in force within one `PollInterval`, no restart.
+
+## Sign in with ChatGPT — your plan, on the coordinator and on a node (v3.68)
+
+OpenAI lets an open-source, self-hosted app run requests on a user's **ChatGPT plan** through its
+Responses API, after a browser sign-in — no API key. InferHub has it in two places, and they are two
+separate things: **the coordinator** signs in as one account and serves it as a cloud provider, and
+**a node** signs in as its own account (the same one or another) and serves it as a backend. Neither
+ever sees the other's tokens, and neither ever falls back to a paid API key.
+
+**On the coordinator**, it is a provider of `Type: chatgpt`:
+
+```jsonc
+"Providers": {
+  "plan": {
+    "Type": "chatgpt",
+    "Policy": "only",
+    "ModelMap": { "chatgpt": "@selected", "sol": "gpt-6.1-sol" }
+  }
+}
+```
+
+The map is still the consent. A value is the account's model slug, or `@selected` for the model you
+pick in the console. Then, in the console: **Cloud providers → ChatGPT (Coordinator) → Continue with
+ChatGPT**. The coordinator is usually on another machine, and a sign-in comes back to `127.0.0.1` —
+which is *your* computer, not the server — so the console gives you a one-time pairing code and you
+run the helper where your browser is:
+
+```text
+inferhub-signin --hub https://hub.example.com
+Pairing code from the coordinator's console: ihp_…
+Waiting for the browser on http://127.0.0.1:1234/auth/callback …
+Signed in as you@example.com. Handing the session to the coordinator …
+The coordinator's provider 'plan' is signed in and may use the ChatGPT plan.
+```
+
+`inferhub-signin` is attached to each release for Windows, Linux and macOS; a Windows node's
+`InferHub.Node.Service.exe chatgpt pair --hub …` does the same. The helper signs in with the
+*coordinator's* host id and a nonce the coordinator chose, exchanges the code itself and hands the
+result over once, in a request body, over HTTPS. The code works once and expires in ten minutes. Port
+1234 is preferred; if it is taken, another free port is used, and only the port ever changes.
+
+**On a node**, it is `Backend:Type=chatgpt`, or one engine beside Ollama:
+
+```jsonc
+"Backend": { "Engines": { "ollama": { "Type": "ollama" }, "plan": { "Type": "chatgpt" } } }
+```
+
+Sign it in at the node itself — `InferHub.Node chatgpt login`, or `InferHub.Node.Service.exe chatgpt
+login` for the Windows service, run as the user whose browser should open (a service never opens one).
+The running node picks the session up with no restart, reports the account's models to the coordinator
+by name, and runs them in solo mode or when the coordinator routes a job here. `chatgpt status`,
+`chatgpt logout` and `chatgpt use --account <id>` do what they say; a solo node also has a page at
+`/api/admin/chatgpt`.
+
+**What it will and will not do.**
+
+- **Signed in is not allowed.** Plan usage is the `chatgpt.tokens.use.direct` permission granted at
+  sign-in. Without it the account is shown as signed in, and every request is a `403` naming the fix.
+- **The status is the vendor's.** A plan usage limit is a `429` (and pauses that account for
+  `ChatGpt:UsageLimitPauseSeconds`), a region or permission refusal a `403`, an ended session a `401`.
+  The other provider types keep their `502`.
+- **Ollama options are dropped.** The route refuses `temperature`, `top_p`, `num_predict` and the rest,
+  so they are not sent. A request that declares **tools** is refused with a `400` rather than answered
+  without them. Chat only — no embeddings.
+- **No token leaves where it belongs.** Sessions are encrypted at rest (AES-GCM, key file beside them,
+  owner-only) under `ChatGpt:DataDirectory` on the hub and `<Node:DataDirectory>/chatgpt` on a node. No
+  token is in a URL, the console, `/api/status` or a log.
+- **The `openai-compatible` provider and the node's `openai` backend, with an API key, are unchanged.**
+  A `chatgpt` provider or engine with an `ApiKey` fails startup.
+
+Whether a ChatGPT plan may be used through a self-hosted app — and from a remote server — is OpenAI's
+to decide; the sign-in shows what was granted.
 
 ## Inference backends
 

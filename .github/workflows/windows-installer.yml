@@ -46,10 +46,36 @@ jobs:
             ./deploy/windows/installer/build-installer.ps1 -OutputDirectory artifacts/installer
           }
 
+      # PHASE 103. The ChatGPT sign-in helper for a remote coordinator runs on the administrator's own
+      # computer (a 127.0.0.1 callback reaches the browser's machine, never the server), so it ships as
+      # three self-contained single files beside the setup. Its own folder: the node's updater looks for
+      # the setup and its .sha256 by name, and nothing here may look like either.
+      - name: Build the ChatGPT sign-in helper
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.TrimStart('v') } else { 'dev' }
+          New-Item -ItemType Directory -Force artifacts/signin | Out-Null
+          foreach ($rid in 'win-x64', 'linux-x64', 'osx-arm64') {
+            dotnet publish tools/InferHub.SignIn/InferHub.SignIn.csproj -c Release -r $rid --self-contained true `
+              -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -o "artifacts/signin-$rid"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $exe = if ($rid -like 'win-*') { 'inferhub-signin.exe' } else { 'inferhub-signin' }
+            $ext = if ($rid -like 'win-*') { '.exe' } else { '' }
+            Copy-Item "artifacts/signin-$rid/$exe" "artifacts/signin/inferhub-signin-$version-$rid$ext"
+          }
+          Get-ChildItem artifacts/signin | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)"
+          } | Set-Content -Encoding ascii "artifacts/signin/inferhub-signin-$version.sha256"
+
       - uses: actions/upload-artifact@v4
         with:
           name: node-setup
           path: artifacts/installer/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-signin
+          path: artifacts/signin/*
 
       # The release is normally cut by hand with its notes; if this run gets there first it creates a
       # placeholder the hand-cut step then edits (`gh release edit --notes-file`), rather than failing.
@@ -65,3 +91,4 @@ jobs:
             gh release create $tag --repo $env:GITHUB_REPOSITORY --verify-tag --title $tag --notes "Release notes follow."
           }
           gh release upload $tag (Get-ChildItem artifacts/installer/*).FullName --repo $env:GITHUB_REPOSITORY --clobber
+          gh release upload $tag (Get-ChildItem artifacts/signin/*).FullName --repo $env:GITHUB_REPOSITORY --clobber

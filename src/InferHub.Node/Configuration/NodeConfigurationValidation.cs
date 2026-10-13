@@ -392,7 +392,8 @@ public sealed class UpstreamBackendOptionsValidator(
     {
         var type = backend.Value.Normalized();
 
-        if (type == BackendOptions.Ollama)
+        // Phase 103: a chatgpt node reads ChatGpt:, not Upstream: — there is nothing here for it.
+        if (type is BackendOptions.Ollama or BackendOptions.ChatGpt)
         {
             return ValidateOptionsResult.Success;
         }
@@ -403,7 +404,7 @@ public sealed class UpstreamBackendOptionsValidator(
         {
             failures.Add(
                 $"{BackendOptions.SectionName}:{nameof(BackendOptions.Type)} is '{type}', which is not a backend this "
-                + $"release knows. Supported: {BackendOptions.Ollama}, {string.Join(", ", BackendOptions.UpstreamTypes)}.");
+                + $"release knows. Supported: {BackendOptions.Ollama}, {string.Join(", ", BackendOptions.UpstreamTypes)}, {BackendOptions.ChatGpt}.");
 
             return ValidateOptionsResult.Fail(failures);
         }

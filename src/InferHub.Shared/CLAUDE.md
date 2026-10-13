@@ -34,6 +34,7 @@ options objects, so nothing here needs `ILogger` or `IOptions<T>`.
 - The hosts that consume this: `src/InferHub.Coordinator/CLAUDE.md`, `src/InferHub.Node/CLAUDE.md`
 - The mask convention this project *names* and the worker *applies*: `python/CLAUDE.md` (50 D2)
 - The tool protocol whose frames live here, driven from the node: `src/InferHub.Node/CLAUDE.md` (41 D1)
+- The fifth upstream dialect, ChatGPT plan usage over the Responses API (103): `src/InferHub.Shared/ChatGpt/CLAUDE.md`
 
 ## Decisions recorded here
 

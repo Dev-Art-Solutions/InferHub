@@ -565,7 +565,10 @@
         ? `<span class="matrix-no" title="the Fallback: section does not report this — write a Providers: block to see it">—</span>`
         : p.credential === "absent"
           ? `<span class="pill pill-warn">absent</span>`
-          : `<span class="matrix-yes">configured</span>`;
+          // Phase 103: a chatgpt provider's credential is a sign-in, reported as its state.
+          : p.credential === "signed-out" || p.credential === "no-plan-usage"
+            ? `<span class="pill pill-warn">${escapeHtml(p.credential)}</span>`
+            : `<span class="matrix-yes">${escapeHtml(p.credential === "signed-in" ? "signed in" : "configured")}</span>`;
       // The vendor's own sentence, which is the whole reason to open this panel: a 401 that says
       // "incorrect API key" ends the investigation the 502 in front of a user started.
       const last = p.lastError
@@ -587,6 +590,180 @@
         </tr>`;
     }).join("");
   };
+
+  // ------------------------------------------------------ ChatGPT sign-in (phase 103)
+  //
+  // Only for a `Type: chatgpt` provider. The panel never holds a token: it shows the account's state from
+  // /api/admin/chatgpt/{id}, and "Continue with ChatGPT" creates a one-time pairing code for the sign-in
+  // helper, which runs on THIS computer (a 127.0.0.1 callback reaches the browser's machine, not the hub).
+  let chatGptLoadedFor = null;
+
+  const chatGptProviderIds = (status) =>
+    (status?.providers ?? []).filter(p => p.type === "chatgpt").map(p => p.id);
+
+  const selectedChatGpt = () => document.getElementById("cg-provider")?.value || null;
+
+  // A read the page makes on its own never prompts — the panel says what it needs instead. Only a
+  // button the operator pressed asks for the admin key, as every other action on this page does.
+  const chatGptCall = async (method, path, body, interactive = true) => {
+    if (interactive && !adminKey && !promptForKey("Admin key required for ChatGPT sign-in.")) {
+      throw new Error("admin key not provided");
+    }
+    const res = await fetch(`/api/admin/chatgpt/${path}`, {
+      method,
+      headers: adminHeaders(body === undefined ? undefined : { "Content-Type": "application/json" }),
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+    if (res.status === 401) {
+      if (!interactive) throw new Error("the admin key is needed to read this panel — set it at the top of the page, then Refresh");
+      if (!promptForKey("Admin key rejected.")) throw new Error("admin key rejected");
+      return chatGptCall(method, path, body);
+    }
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.error ?? `HTTP ${res.status}`);
+    return payload;
+  };
+
+  const renderChatGpt = (status) => {
+    const section = document.getElementById("chatgpt-section");
+    const select = document.getElementById("cg-provider");
+    if (!section || !select) return;
+
+    const ids = chatGptProviderIds(status);
+    section.style.display = ids.length ? "" : "none";
+    if (!ids.length) return;
+
+    const current = [...select.options].map(o => o.value).join(",");
+    if (current !== ids.join(",")) {
+      const prev = select.value;
+      select.innerHTML = ids.map(id => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`).join("");
+      if (ids.includes(prev)) select.value = prev;
+    }
+
+    // Detail is fetched on demand, not on every poll: it asks OpenAI for the model list.
+    if (chatGptLoadedFor !== select.value) {
+      chatGptLoadedFor = select.value;
+      loadChatGpt(false).catch(err => {
+        const box = document.getElementById("cg-account");
+        if (box) box.innerHTML = `<span class="why">${escapeHtml(err.message)}</span>`;
+      });
+    }
+  };
+
+  const loadChatGpt = async (interactive = true) => {
+    const id = selectedChatGpt();
+    if (!id) return;
+    const detail = await chatGptCall("GET", encodeURIComponent(id), undefined, interactive);
+    const account = detail.account ?? {};
+    const box = document.getElementById("cg-account");
+
+    const state = !account.signedIn
+      ? `<span class="pill pill-muted">signed out</span>`
+      : account.planUsage
+        ? `<span class="pill pill-ok">signed in</span>`
+        : `<span class="pill pill-warn">signed in · plan usage not granted</span>`;
+    const who = account.email ? ` as <code>${escapeHtml(account.email)}</code>` : "";
+    const paused = account.usagePausedUntilUtc
+      ? ` <span class="pill pill-err" title="${escapeHtml(account.usagePauseReason ?? "")}">usage limit · paused until ${escapeHtml(new Date(account.usagePausedUntilUtc).toLocaleTimeString())}</span>`
+      : "";
+    const error = account.lastError ? `<div class="why">${escapeHtml(account.lastError)}</div>` : "";
+    const noPlan = account.signedIn && !account.planUsage
+      ? `<div class="why">This account did not grant <code>chatgpt.tokens.use.direct</code>, so this provider refuses inference — nothing is sent to a billable API instead. Reconnect and allow ChatGPT plan usage.</div>`
+      : "";
+    box.innerHTML = `${state}${who}${paused} <span class="meta">host <code>${escapeHtml(detail.hostId ?? "—")}</code></span>${noPlan}${error}`;
+
+    document.getElementById("cg-connect").textContent = account.signedIn ? "Reconnect" : "Continue with ChatGPT";
+    document.getElementById("cg-disconnect").disabled = !account.signedIn;
+
+    const modelSelect = document.getElementById("cg-model");
+    const models = detail.models ?? [];
+    modelSelect.innerHTML = `<option value="">— none —</option>` + models.map(m =>
+      `<option value="${escapeHtml(m.slug)}">${escapeHtml(m.displayName)} (${escapeHtml(m.slug)})</option>`).join("");
+    modelSelect.value = account.selectedModel ?? "";
+    modelSelect.disabled = models.length === 0;
+    document.getElementById("cg-model-save").disabled = models.length === 0;
+
+    const mapped = (detail.mappedModels ?? []).map(m => `<code>${escapeHtml(m.model)}</code> → <code>${escapeHtml(m.upstream)}</code>`).join(", ");
+    document.getElementById("cg-models-note").innerHTML =
+      (detail.modelsError ? `<span class="why">${escapeHtml(detail.modelsError)}</span> ` : "")
+      + (models.length ? `${models.length} model${models.length === 1 ? "" : "s"} available to this account. ` : account.signedIn ? "" : "Sign in to see this account's models. ")
+      + (mapped ? `Mapped here: ${mapped}.` : "This provider maps no model yet — add one to its ModelMap.");
+
+    const regs = account.registrations ?? [];
+    const tbody = document.getElementById("cg-registrations");
+    tbody.innerHTML = regs.length === 0
+      ? `<tr><td colspan="4" class="empty">No ChatGPT account is registered on this coordinator yet.</td></tr>`
+      : regs.map(r => `
+        <tr>
+          <td><code>${escapeHtml(r.email ?? r.id)}</code>${r.active ? ` <span class="pill pill-ok">active</span>` : ""}</td>
+          <td>${r.signedIn ? `<span class="matrix-yes">yes</span>` : `<span class="matrix-no">no</span>`}</td>
+          <td>${r.planUsage ? `<span class="matrix-yes">granted</span>` : `<span class="matrix-no">—</span>`}</td>
+          <td>
+            ${r.active ? "" : `<button data-cg-activate="${escapeHtml(r.id)}">Use</button>`}
+            <button data-cg-reconnect="${escapeHtml(r.id)}">Reconnect</button>
+          </td>
+        </tr>`).join("");
+  };
+
+  const startChatGptPairing = async (body) => {
+    const id = selectedChatGpt();
+    if (!id) return;
+    const pairing = await chatGptCall("POST", `${encodeURIComponent(id)}/pairing`, body);
+    const hub = window.location.origin;
+    const box = document.getElementById("cg-pairing");
+    box.style.display = "";
+    box.innerHTML = `
+      <div class="meta">On <b>this</b> computer, run the sign-in helper and paste the code when it asks. It opens your browser,
+      listens on <code>http://127.0.0.1:1234/auth/callback</code> (or the next free port), and hands the session to this coordinator.
+      The code works once and expires at ${escapeHtml(new Date(pairing.expiresAtUtc).toLocaleTimeString())}.</div>
+      <pre style="white-space:pre-wrap;margin:8px 0">inferhub-signin --hub ${escapeHtml(hub)}</pre>
+      <div class="meta">Pairing code: <code id="cg-code">${escapeHtml(pairing.code)}</code> <button id="cg-copy">Copy</button></div>`;
+    document.getElementById("cg-copy")?.addEventListener("click", () => {
+      navigator.clipboard?.writeText(pairing.code).then(() => toast("Copied", "Pairing code copied", "ok")).catch(() => {});
+    });
+  };
+
+  document.getElementById("cg-provider")?.addEventListener("change", () => {
+    chatGptLoadedFor = null;
+    document.getElementById("cg-pairing").style.display = "none";
+    renderChatGpt(latestStatus);
+  });
+  document.getElementById("cg-refresh")?.addEventListener("click", () => loadChatGpt().catch(err => toast("ChatGPT", err.message, "err")));
+  document.getElementById("cg-connect")?.addEventListener("click", () =>
+    startChatGptPairing({}).catch(err => toast("ChatGPT", err.message, "err")));
+  document.getElementById("cg-add")?.addEventListener("click", () =>
+    startChatGptPairing({ newAccount: true }).catch(err => toast("ChatGPT", err.message, "err")));
+  document.getElementById("cg-disconnect")?.addEventListener("click", async () => {
+    const id = selectedChatGpt();
+    if (!id || !confirm(`Sign provider '${id}' out of ChatGPT? Its requests stop until somebody signs in again.`)) return;
+    try {
+      const result = await chatGptCall("POST", `${encodeURIComponent(id)}/disconnect`, {});
+      toast("ChatGPT", result.note, result.revoked ? "ok" : "err");
+      await loadChatGpt();
+    } catch (err) { toast("ChatGPT", err.message, "err"); }
+  });
+  document.getElementById("cg-model-save")?.addEventListener("click", async () => {
+    const id = selectedChatGpt();
+    if (!id) return;
+    try {
+      await chatGptCall("PUT", `${encodeURIComponent(id)}/model`, { model: document.getElementById("cg-model").value || null });
+      toast("ChatGPT", "Model saved", "ok");
+      await loadChatGpt();
+    } catch (err) { toast("ChatGPT", err.message, "err"); }
+  });
+  document.getElementById("cg-registrations")?.addEventListener("click", async (event) => {
+    const activate = event.target.closest("[data-cg-activate]")?.dataset.cgActivate;
+    const reconnect = event.target.closest("[data-cg-reconnect]")?.dataset.cgReconnect;
+    const id = selectedChatGpt();
+    try {
+      if (activate) {
+        await chatGptCall("POST", `${encodeURIComponent(id)}/activate`, { account: activate });
+        await loadChatGpt();
+      } else if (reconnect) {
+        await startChatGptPairing({ account: reconnect });
+      }
+    } catch (err) { toast("ChatGPT", err.message, "err"); }
+  });
 
   // A pool inside its restart budget is still "running" — it has not given up, and saying it had
   // would be wrong. But it holds no worker and the most recent thing that happened to it was a
@@ -1130,6 +1307,7 @@
       syncDocumentCollections(latestStatus.vector);
       renderCapabilityMatrix(latestStatus);
       renderProviders(latestStatus);
+      renderChatGpt(latestStatus);
       renderTools(latestStatus);
       renderEngines(latestStatus);
       renderUpdates(latestStatus);

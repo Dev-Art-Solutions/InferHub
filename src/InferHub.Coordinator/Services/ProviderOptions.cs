@@ -62,6 +62,24 @@ public sealed class ProviderDefinition
     public const string GeminiBaseUrl = InferHub.Shared.Upstream.UpstreamDefaults.GeminiBaseUrl;
 
     /// <summary>
+    /// ChatGPT plan usage (phase 103) — OpenAI's Responses API with a <b>ChatGPT sign-in</b> instead of
+    /// an API key. A type of its own rather than <see cref="TypeOpenAiCompatible"/> with another
+    /// credential: the dialect is different (Responses, always streamed, most sampling fields
+    /// refused) and the credential is a session the hub refreshes, not a string in config. The
+    /// <c>openai-compatible</c> type with an API key is untouched by it.
+    /// </summary>
+    public const string TypeChatGpt = "chatgpt";
+
+    /// <summary>Used when a <c>Type: chatgpt</c> provider names no <see cref="BaseUrl"/>.</summary>
+    public const string ChatGptBaseUrl = InferHub.Shared.ChatGpt.ChatGptOAuth.Resource;
+
+    /// <summary>
+    /// A <c>ModelMap</c> value meaning "the model picked for this account in the console" (103 D8)
+    /// rather than a fixed slug. The key is still the consent; only the upstream name moves.
+    /// </summary>
+    public const string SelectedModel = "@selected";
+
+    /// <summary>
     /// Off is off: a disabled provider maps nothing, so its models are simply not eligible. It is
     /// here so an operator can park a provider without deleting the map they spent time on.
     /// </summary>
@@ -212,6 +230,7 @@ public sealed class ProviderDefinition
             TypeOpenRouter => OpenRouterBaseUrl,
             TypeAnthropic => AnthropicBaseUrl,
             TypeGemini => GeminiBaseUrl,
+            TypeChatGpt => ChatGptBaseUrl,
             _ => null
         };
     }

@@ -70,7 +70,10 @@ public static class StatusEndpoint
                 snapshot,
                 vectorBlock,
                 BuildFallbackBlock(fallback.Value, snapshot),
-                BuildProviderBlocks(services.GetService(typeof(IProviderRegistry)) as IProviderRegistry, snapshot),
+                BuildProviderBlocks(
+                    services.GetService(typeof(IProviderRegistry)) as IProviderRegistry,
+                    snapshot,
+                    services.GetService(typeof(InferHub.Coordinator.ChatGpt.ChatGptAccounts)) as InferHub.Coordinator.ChatGpt.ChatGptAccounts),
                 BuildQueueBlock(queue),
                 BuildClusterBlock(membership)));
         });
@@ -168,7 +171,8 @@ public static class StatusEndpoint
     /// </remarks>
     internal static IReadOnlyList<ProviderStatusBlock>? BuildProviderBlocks(
         IProviderRegistry? providers,
-        MetricsSnapshot metrics)
+        MetricsSnapshot metrics,
+        InferHub.Coordinator.ChatGpt.ChatGptAccounts? chatGpt = null)
     {
         if (providers is null || providers.Configured.Count == 0)
         {
@@ -183,6 +187,12 @@ public static class StatusEndpoint
             {
                 dispatched.TryGetValue(route.Id, out var counter);
 
+                // Phase 103. A ChatGPT provider has no key: its credential is a sign-in, reported as
+                // its state and never as any part of a token.
+                var account = route.Definition.NormalizedType() == ProviderDefinition.TypeChatGpt && chatGpt is not null
+                    ? chatGpt.Session(route.Id).State()
+                    : null;
+
                 return new ProviderStatusBlock(
                     route.Id,
                     route.Definition.NormalizedType(),
@@ -191,7 +201,9 @@ public static class StatusEndpoint
                     // whichever key it read first, and this block has no console panel until 66.
                     route.Definition.NormalizedPolicy(),
                     ModelPolicies(route.Definition),
-                    string.IsNullOrWhiteSpace(route.Definition.ApiKey) ? "absent" : "configured",
+                    account is not null
+                        ? account.SignedIn ? account.PlanUsage ? "signed-in" : "no-plan-usage" : "signed-out"
+                        : string.IsNullOrWhiteSpace(route.Definition.ApiKey) ? "absent" : "configured",
                     route.Definition.ModelMap.Keys.OrderBy(model => model, StringComparer.OrdinalIgnoreCase).ToArray(),
                     counter?.Dispatched ?? 0,
                     counter?.LastModel,
@@ -200,7 +212,16 @@ public static class StatusEndpoint
                     // a dash there, exactly as the tools panel does for a tool that has not.
                     counter?.Failed ?? 0,
                     counter?.LastError,
-                    counter?.LastErrorAtUtc);
+                    counter?.LastErrorAtUtc,
+                    account is null
+                        ? null
+                        : new ChatGptStatusBlock(
+                            account.SignedIn,
+                            account.PlanUsage,
+                            account.SelectedModel,
+                            account.UsagePausedUntilUtc,
+                            account.LastError,
+                            account.LastErrorAtUtc));
             })
             .ToArray();
     }
@@ -380,6 +401,24 @@ public static class StatusEndpoint
         string? LastModel,
         DateTimeOffset? LastAtUtc,
         long Failed,
+        string? LastError,
+        DateTimeOffset? LastErrorAtUtc,
+        // Phase 103: a `chatgpt` provider's account, omitted for every other type so their blocks
+        // keep the exact v3.67 shape.
+        [property: System.Text.Json.Serialization.JsonIgnore(
+            Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        ChatGptStatusBlock? ChatGpt = null);
+
+    /// <summary>
+    /// Phase 103. What a status reader may know about a ChatGPT provider's account — <b>not who it
+    /// is</b>: an inference key can read this payload, and the account's email is the
+    /// administrator's business, answered on <c>/api/admin/chatgpt/{id}</c>.
+    /// </summary>
+    internal sealed record ChatGptStatusBlock(
+        bool SignedIn,
+        bool PlanUsage,
+        string? SelectedModel,
+        DateTimeOffset? UsagePausedUntilUtc,
         string? LastError,
         DateTimeOffset? LastErrorAtUtc);
 

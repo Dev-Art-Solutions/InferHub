@@ -107,6 +107,12 @@ public sealed partial class BackendOptionsValidator(IConfiguration configuration
                     failures.Add($"{key}:BaseUrl is not read for an ollama engine; its address is Ollama:Endpoint.");
                     break;
 
+                // Phase 103. Its address and its credential are ChatGpt:'s — a sign-in, not a key.
+                case BackendOptions.ChatGpt when !string.IsNullOrWhiteSpace(engine.BaseUrl) || !string.IsNullOrWhiteSpace(engine.ApiKey):
+                    failures.Add($"{key}: a chatgpt engine takes no BaseUrl or ApiKey. It uses this node's own ChatGPT sign-in "
+                                 + "(the 'chatgpt login' verb) and ChatGpt:BaseUrl; for API-key billing use an openai engine.");
+                    break;
+
                 case BackendOptions.OpenAi when string.IsNullOrWhiteSpace(engine.BaseUrl):
                     failures.Add($"{key}:BaseUrl must be set for an openai engine; the node does not launch one.");
                     break;
@@ -187,7 +193,7 @@ public sealed partial class BackendOptionsValidator(IConfiguration configuration
         }
 
         // 95 D2: the two engines whose configuration is a whole section of its own are one each.
-        foreach (var single in new[] { BackendOptions.Ollama, BackendOptions.Colibri, BackendOptions.Strata })
+        foreach (var single in new[] { BackendOptions.Ollama, BackendOptions.Colibri, BackendOptions.Strata, BackendOptions.ChatGpt })
         {
             var named = options.Engines
                 .Where(pair => pair.Value.NormalizedType() == single)
@@ -198,7 +204,7 @@ public sealed partial class BackendOptionsValidator(IConfiguration configuration
             {
                 failures.Add(
                     $"{Section} names {named.Length} {single} engines ({string.Join(", ", named)}). "
-                    + $"A node runs at most one: its configuration is the {(single switch { BackendOptions.Ollama => "Ollama:", BackendOptions.Colibri => "Colibri:", _ => "Strata:" })} section, and there is one of those.");
+                    + $"A node runs at most one: its configuration is the {(single switch { BackendOptions.Ollama => "Ollama:", BackendOptions.Colibri => "Colibri:", BackendOptions.ChatGpt => "ChatGpt:", _ => "Strata:" })} section, and there is one of those.");
             }
         }
 

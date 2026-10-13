@@ -73,6 +73,11 @@ ENV Fleet__Profiles__DataDirectory=/data/profiles
 # unlinked the moment it is delivered, evicted or expires.
 ENV Images__Jobs__DataDirectory=/data/images
 
+# ChatGPT sign-in (phase 103) keeps this coordinator's host id and its encrypted sessions under /data
+# — the eighth instance. Inert unless a `Type: chatgpt` provider is configured. Mount a
+# volume at /data or a container restart forgets the sign-in (and the host id with it).
+ENV ChatGpt__DataDirectory=/data/chatgpt
+
 EXPOSE 8080
 
 # Non-root. The runtime image ships this user for exactly this purpose.

@@ -16,6 +16,7 @@ vector stores split out in phase 62** — see below.
 - `/metrics`, the `Metrics` registry and the OTLP push exporter: `src/InferHub.Coordinator/Observability/CLAUDE.md`
 - The other side of every job: `src/InferHub.Node/CLAUDE.md`
 - The images this ships in, and their permissions traps: `deploy/CLAUDE.md`
+- The `chatgpt` provider type, its console panel and the sign-in pairing (103): `src/InferHub.Shared/ChatGpt/CLAUDE.md`
 
 ## Coordinator anatomy
 

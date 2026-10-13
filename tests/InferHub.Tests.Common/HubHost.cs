@@ -42,7 +42,9 @@ internal sealed class HubHost : IAsyncDisposable
         string? failure = null,
         IReadOnlyList<ModelInfo>? models = null,
         bool retrieval = false,
-        ProviderOptions? providers = null)
+        ProviderOptions? providers = null,
+        Action<WebApplicationBuilder>? configure = null,
+        Action<WebApplication>? map = null)
     {
         var host = new HubHost();
         host.Dispatcher.BlockingResponse = blockingResponse;
@@ -95,9 +97,13 @@ internal sealed class HubHost : IAsyncDisposable
             AddRetrieval(builder, host.dataDirectory);
         }
 
+        // Phase 103: a test adds the services and routes its feature needs on top of this fixture's.
+        configure?.Invoke(builder);
+
         host.app = builder.Build();
         host.app.MapInferenceEndpoints();
         host.app.MapOpenAiEndpoints();
+        map?.Invoke(host.app);
 
         if (retrieval)
         {

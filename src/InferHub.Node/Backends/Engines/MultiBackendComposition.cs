@@ -54,6 +54,12 @@ public static class MultiBackendComposition
             return new Engine(name, type, backend, engine.Autostart, engine.Models, unload: ollama.UnloadAsync);
         }
 
+        // Phase 103. This node's own ChatGPT account: one session, whichever way the node names it.
+        if (type == BackendOptions.ChatGpt)
+        {
+            return new Engine(name, type, services.GetRequiredService<ChatGpt.ChatGptBackend>(), engine.Autostart, engine.Models);
+        }
+
         // Phase 97. A catalogue launches one coli serve per loaded model itself; the engine's start and
         // stop reach it through IEngineLifecycle, and its listing is the catalogue.
         if (type == BackendOptions.Colibri && colibri.Serve.IsCatalog)

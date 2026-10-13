@@ -272,6 +272,43 @@
   </section>
 
   <!--
+    Phase 103. The coordinator's own ChatGPT sign-in, shown only when a `Type: chatgpt` provider exists.
+    The browser that opens this page is usually NOT on the coordinator, so the sign-in runs in a small
+    helper on this computer and reaches the hub through a one-time pairing code. No token ever comes to
+    this page: everything below is read from /api/admin/chatgpt as state.
+  -->
+  <section id="chatgpt-section" style="display:none">
+    <h2>ChatGPT (Coordinator)</h2>
+    <div class="card" style="margin-bottom:12px">
+      <div class="actions" style="flex-wrap:wrap;gap:8px;align-items:center">
+        <select id="cg-provider" style="min-width:160px" title="the Type: chatgpt provider this panel is about"></select>
+        <button id="cg-connect">Continue with ChatGPT</button>
+        <button id="cg-add" title="Register a second ChatGPT account on this coordinator">Add another account</button>
+        <button id="cg-disconnect">Disconnect</button>
+        <button id="cg-refresh">Refresh</button>
+      </div>
+      <div id="cg-account" class="meta" style="padding:8px 0 0"></div>
+      <div id="cg-pairing" style="display:none;padding:8px 0 0"></div>
+    </div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="actions" style="flex-wrap:wrap;gap:8px;align-items:center">
+        <span class="meta">Model for <code>@selected</code> mappings</span>
+        <select id="cg-model" style="min-width:220px"></select>
+        <button id="cg-model-save">Save</button>
+      </div>
+      <div id="cg-models-note" class="meta" style="padding:8px 0 0"></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Account</th><th>Signed in</th><th>Plan usage</th><th></th></tr>
+        </thead>
+        <tbody id="cg-registrations"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!--
     Phase 95. The engines a Backend:Engines node may run — ollama, llama.cpp, colibri — and which of
     them are running. Start and Stop write the node's profile; the node's own list is the ceiling,
     so an engine it never configured never appears here to be started.

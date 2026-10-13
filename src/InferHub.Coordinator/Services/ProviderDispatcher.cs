@@ -1,8 +1,10 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
+using InferHub.Coordinator.ChatGpt;
 using InferHub.Coordinator.Observability;
 using InferHub.Shared.Anthropic;
+using InferHub.Shared.ChatGpt;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.Gemini;
 using InferHub.Shared.OpenAi;
@@ -75,7 +77,8 @@ public sealed class ProviderDispatcher(
     INodeRegistry registry,
     IProviderRegistry providers,
     Metrics metrics,
-    ILogger<ProviderDispatcher> logger) : IProviderDispatcher
+    ILogger<ProviderDispatcher> logger,
+    ChatGptAccounts? chatGpt = null) : IProviderDispatcher
 {
     public const string HttpClientName = "inferhub-provider";
 
@@ -167,7 +170,8 @@ public sealed class ProviderDispatcher(
             ?? throw new InvalidOperationException($"model '{model}' is not mapped to any provider");
 
         // The upstream knows the request by *its* name for the model, not ours.
-        var upstreamJson = RewriteModel(rawJson, route.UpstreamModel);
+        var upstreamModel = UpstreamModel(route);
+        var upstreamJson = RewriteModel(rawJson, upstreamModel);
 
         metrics.RecordProviderDispatched(route.Id, model);
 
@@ -178,7 +182,7 @@ public sealed class ProviderDispatcher(
             kind,
             model,
             route.Id,
-            route.UpstreamModel);
+            upstreamModel);
 
         if (!stream)
         {
@@ -284,7 +288,7 @@ public sealed class ProviderDispatcher(
     /// provider that failed to be understood must not become a request that fails at dispatch,
     /// hours later, in front of a user.
     /// </summary>
-    private static IUpstreamDialect Dialect(ProviderRoute route, HttpClient http)
+    private IUpstreamDialect Dialect(ProviderRoute route, HttpClient http)
         => route.Definition.NormalizedType() switch
         {
             // Phase 62. OpenRouter *is* the OpenAI dialect — the identity is the claim, not an
@@ -302,6 +306,11 @@ public sealed class ProviderDispatcher(
             ProviderDefinition.TypeGemini
                 => new GeminiUpstreamClient(http, route.Definition.ThinkingBudget),
 
+            // Phase 103. The Responses API on a ChatGPT sign-in: this provider's own session, which
+            // supplies and refreshes the bearer per request. Never a node's, never an API key.
+            ProviderDefinition.TypeChatGpt
+                => new ChatGptResponsesClient(http, ChatGpt.Session(route.Id), ChatGpt.UsagePause),
+
             var type => throw new InvalidOperationException($"provider type '{type}' has no dialect")
         };
 
@@ -312,6 +321,12 @@ public sealed class ProviderDispatcher(
     private HttpClient CreateHttpClient(ProviderRoute route)
     {
         var pooled = httpClientFactory.CreateClient(HttpClientName);
+
+        if (route.Definition.NormalizedType() == ProviderDefinition.TypeChatGpt)
+        {
+            // No credential header here: the session's token is added per request, refreshed.
+            return ChatGptResponsesClient.Configure(pooled, route.Definition.ResolvedBaseUrl()!, route.Definition.TimeoutSeconds);
+        }
 
         if (route.Definition.NormalizedType() == ProviderDefinition.TypeAnthropic)
         {
@@ -350,6 +365,29 @@ public sealed class ProviderDispatcher(
 
         return http;
     }
+
+    /// <summary>
+    /// The mapped upstream name — or, for a ChatGPT provider's <c>@selected</c> (103 D8), the model
+    /// picked for its account in the console. None picked is a refusal naming the fix, not a guess.
+    /// </summary>
+    private string UpstreamModel(ProviderRoute route)
+    {
+        if (route.Definition.NormalizedType() != ProviderDefinition.TypeChatGpt
+            || route.UpstreamModel.Trim() != ProviderDefinition.SelectedModel)
+        {
+            return route.UpstreamModel;
+        }
+
+        return ChatGpt.Session(route.Id).SelectedModel()
+            ?? throw new ChatGptUnavailableException(409, "no_model_selected",
+                $"provider '{route.Id}' maps this model to '{ProviderDefinition.SelectedModel}' and no model is "
+                + "selected for its ChatGPT account yet; pick one in the console's ChatGPT panel.");
+    }
+
+    // Registered in every host; optional only so a test that builds a dispatcher for the four
+    // key-authenticated types does not have to build a sign-in it never reaches.
+    private ChatGptAccounts ChatGpt
+        => chatGpt ?? throw new InvalidOperationException("a chatgpt provider was dispatched without ChatGptAccounts registered");
 
     private static void AddIfPresent(HttpClient http, string header, string? value)
     {

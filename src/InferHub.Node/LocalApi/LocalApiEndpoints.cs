@@ -107,6 +107,7 @@ public static class LocalApiEndpoints
         // switched on for the first time should not need a URL that only appears after it exists.
         app.MapLocalResourceLimitsAdminEndpoints();
         app.MapLocalEngineLimitsAdminEndpoints();
+        app.MapLocalChatGptAdminEndpoints();
 
         var retrieval = app.Services.GetRequiredService<IOptions<LocalRetrievalOptions>>().Value;
 

@@ -55,13 +55,26 @@ public sealed partial class ProviderOptionsValidator(IOptions<FallbackOptions> f
             if (type is not (ProviderDefinition.TypeOpenAiCompatible
                 or ProviderDefinition.TypeOpenRouter
                 or ProviderDefinition.TypeAnthropic
-                or ProviderDefinition.TypeGemini))
+                or ProviderDefinition.TypeGemini
+                or ProviderDefinition.TypeChatGpt))
             {
                 failures.Add($"Providers:{id}:Type is '{provider.Type}'. The types this release knows "
                              + $"are: {ProviderDefinition.TypeOpenAiCompatible}, "
                              + $"{ProviderDefinition.TypeOpenRouter}, "
                              + $"{ProviderDefinition.TypeAnthropic}, "
-                             + $"{ProviderDefinition.TypeGemini}.");
+                             + $"{ProviderDefinition.TypeGemini}, "
+                             + $"{ProviderDefinition.TypeChatGpt}.");
+            }
+
+            // Phase 103. A ChatGPT provider signs in; it has no key to hold. One written here is
+            // somebody expecting it to be used — and the only way it could be is as a paid API
+            // call the operator did not choose, which is the one thing this type must never do.
+            if (type == ProviderDefinition.TypeChatGpt && !string.IsNullOrWhiteSpace(provider.ApiKey))
+            {
+                failures.Add($"Providers:{id} is Type {ProviderDefinition.TypeChatGpt} and sets an ApiKey. "
+                             + "This type uses a ChatGPT sign-in from the console and never an API key; "
+                             + "for API-key billing declare a separate provider of Type "
+                             + $"{ProviderDefinition.TypeOpenAiCompatible}.");
             }
 
             // Phase 65. `Policy` is `Trigger` with two more values, so the two must not be able to
@@ -154,6 +167,15 @@ public sealed partial class ProviderOptionsValidator(IOptions<FallbackOptions> f
                 // right". Gemini's id is *normalized* rather than checked, in the translator, for
                 // the reason 64 D2 gives: it is a URL path segment, and `gemini-3-pro`,
                 // `models/gemini-3-pro` and a Vertex `publishers/google/models/…` are all legal.
+                // `@selected` is a ChatGPT provider's word for "the model picked in the console";
+                // anywhere else it would be sent to a vendor as a model id and refused.
+                if (upstream.Trim() == ProviderDefinition.SelectedModel && type != ProviderDefinition.TypeChatGpt)
+                {
+                    failures.Add($"Providers:{id}:ModelMap:{model} is '{ProviderDefinition.SelectedModel}', which "
+                                 + $"only a provider of Type {ProviderDefinition.TypeChatGpt} understands.");
+                    continue;
+                }
+
                 if (type == ProviderDefinition.TypeOpenRouter && !OpenRouterModelId().IsMatch(upstream.Trim()))
                 {
                     failures.Add($"Providers:{id}:ModelMap:{model} is '{upstream}', which is not an "

@@ -45,7 +45,7 @@ public sealed class InferenceExecutor(
             logger.LogWarning("Inference job {JobId} was canceled", job.JobId);
             return InferenceResult.Failed(job.JobId, "inference job was canceled");
         }
-        catch (Backends.Catalog.CatalogException ex) when (ex.Status is { } status)
+        catch (Exception ex) when (RefusalStatus(ex) is { } status)
         {
             // Phase 100: the request's fault, said in the backend's sentence — no stack trace for it.
             logger.LogInformation("Inference job {JobId} refused ({Status}): {Reason}", job.JobId, status, ex.Message);
@@ -94,7 +94,7 @@ public sealed class InferenceExecutor(
                     error = ex;
                 }
 
-                if (error is Backends.Catalog.CatalogException { Status: { } status })
+                if (error is not null && RefusalStatus(error) is { } status)
                 {
                     logger.LogInformation("Streaming inference job {JobId} refused ({Status}): {Reason}", job.JobId, status, error.Message);
                     yield return new InferenceChunk(job.JobId, SerializeError(error.Message, status), true);
@@ -220,4 +220,17 @@ public sealed class InferenceExecutor(
     {
         return JsonSerializer.Serialize(new { done = true }, JsonOptions);
     }
+
+    /// <summary>
+    /// The 4xx a failure keeps on its way to a client: a catalogue's refusal (phase 100), and since phase
+    /// 103 a ChatGPT account's — 401 sign in again, 403 plan usage not granted, 429 the plan's limit.
+    /// Anything else is a failure and stays a 502.
+    /// </summary>
+    private static int? RefusalStatus(Exception ex) => ex switch
+    {
+        Backends.Catalog.CatalogException { Status: { } status } => status,
+        InferHub.Shared.ChatGpt.ChatGptUnavailableException { StatusCode: >= 400 and < 500 } unavailable => unavailable.StatusCode,
+        InferHub.Shared.ChatGpt.ChatGptUpstreamException { StatusCode: >= 400 and < 500 } upstream => upstream.StatusCode,
+        _ => null
+    };
 }

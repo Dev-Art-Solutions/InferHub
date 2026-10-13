@@ -50,6 +50,14 @@ public sealed class BackendOptions
     public const string Strata = "strata";
 
     /// <summary>
+    /// Phase 103. This node's own ChatGPT account over the Responses API — a sign-in, never an API
+    /// key, and not driven by <see cref="UpstreamBackend"/>. Allowed as one engine beside the local
+    /// ones as well as a single backend: it is started and stopped by signing in and out, and a box
+    /// with a GPU and a ChatGPT plan is the deployment that wants both.
+    /// </summary>
+    public const string ChatGpt = "chatgpt";
+
+    /// <summary>
     /// The seven types driven by <see cref="UpstreamBackend"/> — everything that is not the local
     /// Ollama. Kept as a list so the validator, the composition root and the supervisor guard all
     /// ask the same question rather than each writing their own <c>!= ollama</c>.
@@ -61,7 +69,7 @@ public sealed class BackendOptions
     /// start, stop and route between, plus <c>openai</c> for one already running beside it. A cloud
     /// vendor is not an engine anybody starts or stops, so it stays a single-backend type.
     /// </summary>
-    public static readonly string[] EngineTypes = [Ollama, LlamaCpp, Colibri, OpenAi, Strata];
+    public static readonly string[] EngineTypes = [Ollama, LlamaCpp, Colibri, OpenAi, Strata, ChatGpt];
 
     public string Type { get; set; } = Ollama;
 

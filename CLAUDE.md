@@ -54,6 +54,8 @@ tools/
   InferHub.Eval/          Retrieval eval harness (phase 24). Standalone console, no project refs, NOT in the images.
   InferHub.Migrate/       Cross-provider vector migration (phase 35). Standalone console; references the
                           Coordinator to compose real stores through the one composition root. NOT in the images.
+  InferHub.SignIn/        `inferhub-signin`, the ChatGPT sign-in helper for a remote coordinator (phase 103).
+                          References only InferHub.Shared; attached to releases, NOT in the images.
 ```
 
 - TFM: `net10.0`, `Nullable enable`, `LangVersion latest` — set in [Directory.Build.props](Directory.Build.props).
@@ -93,6 +95,7 @@ longer pays for the Qdrant connector's UUID mapping and the cluster lease's spli
 |---|---|---|
 | `src/InferHub.Shared/` | `src/InferHub.Shared/CLAUDE.md` | contracts, the OpenAI/Ollama dialects, the retrieval core, the vector stores, the image and video envelopes, the upstream dialects (OpenAI, Anthropic and Gemini) · phases 24, 29, 33, 34, 40, 46, 47, 57, 61, 63, 64, 70 |
 | `src/InferHub.Shared.Postgres/` | `src/InferHub.Shared/CLAUDE.md` (its "Phase 71" note) | the Postgres+pgvector store and bootstrap, shared by the coordinator and a node · phase 71 |
+| `src/InferHub.Shared/ChatGpt/`, `src/InferHub.Coordinator/ChatGpt/`, `src/InferHub.Node/Backends/ChatGpt/`, `tools/InferHub.SignIn/` | `src/InferHub.Shared/ChatGpt/CLAUDE.md` | Sign in with ChatGPT: the Responses dialect, the OAuth flow, the encrypted store, the coordinator's pairing, the node's own sign-in · phase 103 |
 | `src/InferHub.Coordinator/` | `src/InferHub.Coordinator/CLAUDE.md` | endpoints, routing, admission, cluster, the console, the cloud providers · phases 21–23, 25, 26, 30, 32, 45, 51, 57, 59–65, 69, 70 |
 | `src/InferHub.Coordinator/Vector/` | `src/InferHub.Coordinator/Vector/CLAUDE.md` | the three vector providers, replication and healing, collection ownership, cross-provider migration, federated retrieval · phases 31, 35, 44, 75 (split out in phase 62) |
 | `src/InferHub.Coordinator/Observability/` | `src/InferHub.Coordinator/Observability/CLAUDE.md` | `/metrics`, the `Metrics` registry, the OTLP push exporter · phases 28, 66, 81 (split out in phase 81) |
@@ -201,6 +204,10 @@ as load-bearing:
    reverting to the operator-configured default on each box — never a wrong answer, and never a
    capability nobody granted**, because the node's own config remains the authority for what is
    *possible* and a profile is only a preference over it. See phase-43 D1/D3. Default is `none`.
+
+   **Fifth recorded exception (phase 103): ChatGPT sessions.** A host that signs in to ChatGPT keeps its
+   host id and its tokens (AES-GCM, owner-only) under `ChatGpt:DataDirectory` / `<Node:DataDirectory>/chatgpt`.
+   Nothing is written until the ChatGPT panel or a sign-in asks; losing it costs a sign-in, never a wrong answer. See 103 D1/D7.
 5. **No new heavy dependencies.** The dependency surface is deliberately minimal (ASP.NET Core,
    SignalR, OllamaClient on the node, xunit for tests). There are exactly **two** recorded
    exceptions, feature-scoped and inert unless the feature is on:

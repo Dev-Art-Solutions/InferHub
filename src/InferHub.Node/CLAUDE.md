@@ -16,6 +16,7 @@ to `src/InferHub.Node/Tools/CLAUDE.md` in phase 67** (D6).
 - The workers this runtime spawns: `python/CLAUDE.md`
 - The four node images: `deploy/CLAUDE.md`
 - colibri, Brio and several engines on one node (93–95): `src/InferHub.Node/Backends/CLAUDE.md`
+- `Backend:Type=chatgpt`, the node's own ChatGPT sign-in and the `chatgpt` verb (103): `src/InferHub.Shared/ChatGpt/CLAUDE.md`
 
 ## Node anatomy
 

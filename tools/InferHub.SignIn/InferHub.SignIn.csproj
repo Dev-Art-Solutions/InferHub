@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The ChatGPT sign-in helper for a COORDINATOR (phase 103). Runs on the administrator's own computer,
+    because a 127.0.0.1 callback reaches the machine with the browser and never a remote hub: it signs in
+    there and hands the session to the coordinator over a one-time pairing code from its console.
+    A standalone console referencing only InferHub.Shared, NOT in any image. The release attaches
+    self-contained single-file builds of it (windows-installer.yml).
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>InferHub.SignIn</RootNamespace>
+    <AssemblyName>inferhub-signin</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\InferHub.Shared\InferHub.Shared.csproj" />
+  </ItemGroup>
+
+</Project>

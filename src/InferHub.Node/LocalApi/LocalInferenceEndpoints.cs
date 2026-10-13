@@ -96,7 +96,8 @@ internal static class LocalInferenceEndpoints
                     // The unwrapping the hub does (phase-29 D6), for the same reason and with more
                     // force: there is no coordinator between the user and Ollama here, so a raw
                     // triple-encoded refusal would land straight in their terminal.
-                    return Error(StatusCodes.Status502BadGateway, NodeErrorText.Readable(result.Error));
+                    // A refusal keeps its 4xx (100 D3), as the hub's Ollama surface already does.
+                    return Error(InferenceResult.HttpStatusOf(result.Status), NodeErrorText.Readable(result.Error));
                 }
 
                 return Results.Text(result.ResponseJson ?? "{}", "application/json");

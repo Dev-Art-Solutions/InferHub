@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Reflection;
 using InferHub.Coordinator.Auth;
 using InferHub.Coordinator.Cluster;
@@ -211,6 +212,15 @@ builder.Services.AddSingleton<IProviderRegistry, ProviderRegistry>();
 builder.Services.AddHttpClient(ProviderDispatcher.HttpClientName);
 builder.Services.AddSingleton<IProviderDispatcher, ProviderDispatcher>();
 
+// ChatGPT sign-in (phase 103). Registered always and inert unless a `Type: chatgpt` provider exists:
+// nothing is created on disk until its console panel is opened or somebody signs one in.
+builder.Services.Configure<InferHub.Coordinator.ChatGpt.ChatGptOptions>(
+    builder.Configuration.GetSection(InferHub.Coordinator.ChatGpt.ChatGptOptions.SectionName));
+builder.Services.TryAddSingleton(TimeProvider.System);
+builder.Services.AddHttpClient(InferHub.Coordinator.ChatGpt.ChatGptAccounts.HttpClientName)
+    .RemoveAllLoggers();
+builder.Services.AddSingleton<InferHub.Coordinator.ChatGpt.ChatGptAccounts>();
+
 // High availability (phase 32). Off by default and inert when off: no lease, no Postgres
 // connection, and SingleCoordinatorMembership reports Enabled=false so the role header, the
 // standby 503 and the status block never appear — byte-identical to v2.13.
@@ -326,6 +336,7 @@ app.MapVideoEndpoints();
 // Phase 59. The one route that dialect refuses and a console cannot be built without (59 D4).
 app.MapVideoJobEndpoints();
 app.MapAdminEndpoints();
+InferHub.Coordinator.ChatGpt.ChatGptEndpoints.MapChatGptEndpoints(app);
 
 if (vectorStoreEnabled)
 {
