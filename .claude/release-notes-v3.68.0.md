@@ -128,3 +128,16 @@ provider creates nothing on disk and answers every route as v3.67 did.
 Tests: `ChatGptSignInTests`, `ChatGptDialectTests` (Shared — a real loopback listener, really-signed RS256 ID
 tokens, the encrypted store), `ChatGptProviderTests` (Coordinator — a real Kestrel hub: pairing, inference
 through `/api/chat`, 401/409/429), `ChatGptBackendTests` (Node). Whole suite: **2147 passed, 63 skipped**.
+
+## The published artifacts, checked after the tag
+
+- **`ghcr.io/dev-art-solutions/inferhub-coordinator:3.68.0`** (revision label `26d484a` = the tag), run as a
+  container with a fresh volume at `/data` and a `Type: chatgpt` provider: `/api/status` reported the
+  provider `signed-out` with no identity; opening the admin panel created `/data/chatgpt/host.json` owned by
+  `app`, directory `0700`, file `0600` — the eighth instance of the `/data` permissions trap, headed off;
+  a chat for its model was a `401` naming "Continue with ChatGPT"; a console pairing code was accepted.
+- **`inferhub-signin-3.68.0-win-x64.exe`** from the release (sha256 matches the attached `.sha256`) against
+  that container: it listened on `127.0.0.1:1234` and built the authorize URL with **the container's** host
+  id. `inferhub-signin-3.68.0-linux-x64` runs under WSL and refuses plain HTTP to a remote hub.
+- The node was checked from source at the tag (solo, `Backend:Type=chatgpt`), not from an image: its own
+  host id, the `/api/admin/chatgpt` page, `chatgpt status` reading the same store, and a 401 on both surfaces.
