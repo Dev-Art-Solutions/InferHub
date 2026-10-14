@@ -192,6 +192,23 @@ public sealed class CloudMediaProviderTests : IAsyncLifetime
         Assert.Empty(vendor.Requests);
     }
 
+    /// <summary>Found by the v3.69 live run: a refusal that never left the hub was counted as the provider failing.</summary>
+    [Fact]
+    public async Task ARequestRefusedBeforeTheCallIsNeitherADispatchNorAProviderFailure()
+    {
+        var refused = await client.PostAsJsonAsync("/v1/audio/speech", new { model = "gemini-tts", input = "hi", response_format = "mp3" });
+        Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
+
+        var served = await client.PostAsJsonAsync("/v1/audio/speech", new { model = "gemini-tts", input = "hi", response_format = "wav" });
+        Assert.Equal(HttpStatusCode.OK, served.StatusCode);
+
+        var google = app.Services.GetRequiredService<Metrics>().Snapshot(DateTimeOffset.UtcNow).PerProvider!
+            .Single(provider => provider.Provider == "google");
+
+        Assert.Equal(1, google.Dispatched);
+        Assert.Equal(0, google.Failed);
+    }
+
     [Fact]
     public async Task TheGenericToolRouteReachesACloudProviderToo()
     {

@@ -91,23 +91,29 @@ public sealed class MediaProviders
     /// </summary>
     public async Task<ToolResult> RunAsync(CloudMediaRoute route, ToolJob job, CancellationToken cancellationToken)
     {
-        metrics.RecordProviderDispatched(route.ProviderId, route.LocalModel);
+        var (result, sent) = await client.RunReportedAsync(job, route, attachments: null, cancellationToken);
 
-        var result = await client.RunAsync(job, route, attachments: null, cancellationToken);
-
-        if (!result.Success && !string.Equals(result.ErrorCode, ToolErrorCodes.Cancelled, StringComparison.Ordinal))
+        // Counted only when something left the hub: a request refused before the call (104 D4) is the
+        // caller's 400, and a provider that was never asked neither served nor failed it.
+        if (sent)
         {
-            metrics.RecordProviderFailed(route.ProviderId, route.LocalModel, result.Error ?? "the provider failed");
+            metrics.RecordProviderDispatched(route.ProviderId, route.LocalModel);
+
+            if (!result.Success && !string.Equals(result.ErrorCode, ToolErrorCodes.Cancelled, StringComparison.Ordinal))
+            {
+                metrics.RecordProviderFailed(route.ProviderId, route.LocalModel, result.Error ?? "the provider failed");
+            }
         }
 
         logger.LogInformation(
-            "{Capability} job {JobId} ({Model}) on provider {ProviderId} ({Upstream}): success={Success}",
+            "{Capability} job {JobId} ({Model}) on provider {ProviderId} ({Upstream}): success={Success}, sent={Sent}",
             route.Capability,
             job.JobId,
             route.LocalModel,
             route.ProviderId,
             route.UpstreamModel,
-            result.Success);
+            result.Success,
+            sent);
 
         return result;
     }

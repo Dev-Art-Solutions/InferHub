@@ -36,12 +36,33 @@ public sealed class CloudMediaClient(HttpClient http)
         CloudMediaRoute route,
         IReadOnlyList<ToolAttachment>? attachments,
         CancellationToken cancellationToken)
+        => (await RunReportedAsync(job, route, attachments, cancellationToken)).Result;
+
+    /// <summary>
+    /// The same call, saying whether anything reached the vendor. A request refused before the call
+    /// (104 D4) is the caller's mistake and not the provider's failure, and a host's counters must not
+    /// say a vendor failed — or was even asked — when nothing was sent (found by the v3.69 live run).
+    /// </summary>
+    public async Task<CloudMediaOutcome> RunReportedAsync(
+        ToolJob job,
+        CloudMediaRoute route,
+        IReadOnlyList<ToolAttachment>? attachments,
+        CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, route.TimeoutSeconds)));
 
         var call = new CloudMediaCall(http, job, route, attachments ?? job.Attachments ?? [], timeout.Token);
+        var result = await RunCoreAsync(call, job, route, cancellationToken);
+        return new CloudMediaOutcome(result, call.Sent);
+    }
 
+    private static async Task<ToolResult> RunCoreAsync(
+        CloudMediaCall call,
+        ToolJob job,
+        CloudMediaRoute route,
+        CancellationToken cancellationToken)
+    {
         try
         {
             using var payload = ParsePayload(job.Payload);
@@ -103,6 +124,9 @@ public sealed class CloudMediaClient(HttpClient http)
     }
 }
 
+/// <summary>A cloud job's answer, and whether any request reached the vendor to produce it.</summary>
+public sealed record CloudMediaOutcome(ToolResult Result, bool Sent);
+
 /// <summary>A request refused before the vendor is called (104 D4) — rendered as a 400.</summary>
 internal sealed class CloudMediaRefusal(string message, string code = ToolErrorCodes.InvalidRequest) : Exception(message)
 {
@@ -124,6 +148,9 @@ internal sealed class CloudMediaCall(
     public IReadOnlyList<ToolAttachment> Attachments { get; } = attachments;
 
     public CancellationToken CancellationToken { get; } = cancellationToken;
+
+    /// <summary>True once a request has been handed to the vendor's socket.</summary>
+    public bool Sent { get; private set; }
 
     public ToolAttachment? Attachment(string name) =>
         Attachments.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
@@ -147,6 +174,7 @@ internal sealed class CloudMediaCall(
             }
         }
 
+        Sent = true;
         var response = await http.SendAsync(request, HttpCompletionOption.ResponseContentRead, CancellationToken);
 
         if (response.IsSuccessStatusCode)

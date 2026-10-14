@@ -132,7 +132,7 @@ internal static class CloudImages
 
         throw new CloudMediaRefusal(
             $"size {asked} is the aspect ratio {ratio}, and provider '{route.ProviderId}' ({route.UpstreamModel}) draws only " +
-            $"{string.Join(", ", allowed)}. Send a size with one of those ratios, e.g. 1024x1024 (1:1) or 1600x900 (16:9); the vendor picks the pixels.");
+            $"{string.Join(", ", allowed)}. Send a size with one of those ratios, e.g. 1024x1024 (1:1) or 1024x576 (16:9); the vendor picks the pixels.");
     }
 
     private static int Gcd(int a, int b)

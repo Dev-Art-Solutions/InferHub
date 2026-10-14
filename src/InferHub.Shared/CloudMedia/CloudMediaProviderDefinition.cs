@@ -92,5 +92,5 @@ public sealed record CloudMediaRoute(
     public string ServedBy => $"provider:{ProviderId}";
 
     public override string ToString() =>
-        $"{ProviderId} ({Dialect}) {Capability}/{LocalModel} → {UpstreamModel}";
+        $"{ProviderId} ({Dialect}) {Capability}/{LocalModel} -> {UpstreamModel}";
 }
