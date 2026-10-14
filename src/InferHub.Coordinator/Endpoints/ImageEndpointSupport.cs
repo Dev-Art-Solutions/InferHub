@@ -59,7 +59,10 @@ internal static class ImageEndpointSupport
     {
         var router = httpContext.RequestServices.GetRequiredService<Services.IRouter>();
 
-        if (router.Route(model, capability: capability) is not null)
+        // Phase 104: a provider that claims the pair is somewhere for the job to go, whatever the
+        // fleet holds — the job registry decides node-or-provider with the policy when it starts it.
+        if (httpContext.RequestServices.GetService<Services.MediaProviders>()?.Claims(capability, model) == true
+            || router.Route(model, capability: capability) is not null)
         {
             return null;
         }

@@ -188,6 +188,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 101 | [A Windows node from one setup, kept current](#a-windows-node-from-one-setup-kept-current-v366) — a setup that installs the service and asks how to run it, and updates applied by the node itself or by an admin from the console (done) | `v3.66.0` |
 | 102 | [Hard limits per runtime](#hard-limits-per-runtime--the-nodes-ceiling-the-hubs-narrowing-v367) — the node caps CPU, cores, memory, VRAM and GPUs for ollama, llama.cpp, colibri, Strata and tools; the coordinator sees the caps and may only go lower (done) | `v3.67.0` |
 | 103 | [Sign in with ChatGPT](#sign-in-with-chatgpt--your-plan-on-the-coordinator-and-on-a-node-v368) — a `chatgpt` provider on the coordinator and a `chatgpt` backend on a node, each signed in with its own ChatGPT account in a browser, never an API key (done) | `v3.68.0` |
+| 104 | [Pictures, voices and transcripts from OpenAI and Google](#pictures-voices-and-transcripts-from-openai-and-google--with-an-api-key-v369) — a provider's `Media` map on the coordinator and a node's own `CloudMedia` section, served through the image and audio routes a GPU node answers; a ChatGPT sign-in reads pictures and makes none (in main, not yet released) | `v3.69.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -3174,6 +3175,70 @@ by name, and runs them in solo mode or when the coordinator routes a job here. `
 
 Whether a ChatGPT plan may be used through a self-hosted app — and from a remote server — is OpenAI's
 to decide; the sign-in shows what was granted.
+
+## Pictures, voices and transcripts from OpenAI and Google — with an API key (v3.69)
+
+A box with no GPU can now answer `/v1/images/generations`, `/v1/images/edits`, `/v1/audio/speech` and
+`/v1/audio/transcriptions` from a vendor, through the same routes, envelopes and usage units a GPU node's
+workers use. It works in two places, each with its own keys: **a coordinator provider's `Media` map**, and
+**a node's own `CloudMedia` section**.
+
+**What a ChatGPT sign-in can do here: read pictures, not make them.** OpenAI's Sign in with ChatGPT lists
+image generation, audio and transcription as unsupported, so those need an API key. A picture *in* a chat
+is supported, and a `chatgpt` provider already passes an OpenAI `image_url` part (or an Ollama `images`
+entry) through as an `input_image`.
+
+**On the coordinator**, add `Media` to an `openai-compatible` or `gemini` provider. The local name is the
+consent, exactly like `ModelMap`, and each name belongs to one provider per capability:
+
+```jsonc
+"Providers": {
+  "openai": {
+    "Type": "openai-compatible",
+    "BaseUrl": "https://api.openai.com/v1",
+    "Media": {
+      "image":      { "gpt-image": "gpt-image-1.5" },
+      "image-edit": { "gpt-image": "gpt-image-1.5" },
+      "speak":      { "tts": "gpt-4o-mini-tts" },
+      "transcribe": { "whisper": "whisper-1" }
+    }
+  },
+  "google": {
+    "Type": "gemini",
+    "Media": {
+      "image":      { "imagen": "imagen-4.0-generate-001", "nano-banana": "gemini-2.5-flash-image" },
+      "image-edit": { "nano-banana": "gemini-2.5-flash-image" },
+      "speak":      { "gemini-tts": "gemini-2.5-flash-preview-tts" },
+      "transcribe": { "gemini-stt": "gemini-2.5-flash" }
+    }
+  }
+}
+```
+
+Keys come from the environment (`Providers__openai__ApiKey`, `Providers__google__ApiKey`). The answer
+carries `X-InferHub-Served-By: provider:<id>`. `Policy` decides node or vendor per name. Under `no-node`
+(the default) the vendor serves a name only when no node declares it. Under `prefer` or `only` the vendor
+goes first. **A failed vendor call is not retried on a node**, because the vendor may already have charged.
+
+**On a node**, the same map goes under `CloudMedia:Providers` with `Type` `openai` or `gemini`, and the
+node's own key (`CloudMedia__Providers__openai__ApiKey`). The node declares those names as tool
+capabilities, so a hub routes to them like any tool and a profile can narrow them. Solo mode serves them
+too. The hub never sends a node a key.
+
+**What a vendor cannot do is refused before anything is sent**, with a 400 that says what works:
+
+- a negative prompt
+- panorama seam repair or reprojection
+- a mask to Gemini, or a `luminance` mask to OpenAI
+- a Gemini voice in anything but `wav`/`pcm` (it answers raw 24 kHz PCM), or with a `speed`
+- a size that is not one of Gemini's aspect ratios
+- `stream_format` on a cloud voice
+
+`steps`, `guidance` and `seed` are answered without and listed in the response's `warnings`. Usage is
+metered the same way: a cloud picture counts one step per megapixel, a voice counts characters, and a
+transcript counts the seconds the vendor reports (whisper-1) or a WAV header's length, otherwise zero.
+Uploads over `Tools:MaxAttachmentBytes` stream to nodes only. The vendors' own limits are 25 MB (OpenAI)
+and 20 MB per inline request (Gemini).
 
 ## Inference backends
 

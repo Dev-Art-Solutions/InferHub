@@ -185,7 +185,11 @@ public static class ImageEndpoints
 
         var finished = await ImageJobWait.ForTerminalAsync(jobs.Store, record, budget, cancellationToken);
 
-        httpContext.Response.Headers[InferenceCore.ServedByHeader] = "node";
+        // Phase 104: a job a cloud provider ran says so, in the same spelling a chat provider uses.
+        httpContext.Response.Headers[InferenceCore.ServedByHeader] =
+            jobs.Store.Peek(record.Id)?.NodeId is { } servedBy && servedBy.StartsWith("provider:", StringComparison.Ordinal)
+                ? servedBy
+                : "node";
 
         if (!finished)
         {

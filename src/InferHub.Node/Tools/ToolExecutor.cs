@@ -44,9 +44,17 @@ public sealed class ToolExecutor(
     IOptions<ToolOptions> toolOptions,
     ILogger<ToolExecutor> logger,
     IClosedSetScorer? scorer = null,
-    IBackendToolJobs? backendJobs = null)
+    IBackendToolJobs? backendJobs = null,
+    CloudMediaRuntime? cloud = null)
 {
     private readonly ToolOptions options = toolOptions.Value;
+
+    /// <summary>
+    /// What this node declares for tool work: the worker pool's live list, and since phase 104 its
+    /// cloud media beside it (104 D8). The one list both the hub's report and solo status read.
+    /// </summary>
+    public IReadOnlyList<NodeCapability> ToolCapabilities =>
+        cloud is null ? runtime.Capabilities : cloud.Merge(runtime.Capabilities);
 
     /// <summary>Whether this node can serve the pair at all — the question the edge asks first.</summary>
     /// <remarks>
@@ -56,7 +64,7 @@ public sealed class ToolExecutor(
     public bool Provides(string capability, string model) =>
         IsScore(capability)
             ? scorer is not null
-            : backendJobs?.Serves(capability, model) == true || runtime.Capabilities.Any(c =>
+            : backendJobs?.Serves(capability, model) == true || cloud?.Serves(capability, model) == true || runtime.Capabilities.Any(c =>
                 string.Equals(c.Kind, capability, StringComparison.OrdinalIgnoreCase)
                 && c.Models.Any(m => string.Equals(m, model, StringComparison.OrdinalIgnoreCase)));
 
@@ -111,6 +119,14 @@ public sealed class ToolExecutor(
                 answered.Success);
 
             return answered;
+        }
+
+        // 104 D8: a cloud picture, voice or transcript, before the worker pool — no scratch
+        // directory, no worker slot, nothing on this box's disk.
+        if (cloud is not null && cloud.Serves(job.Capability, job.Model))
+        {
+            var ceiling = options.MaxStreamedBytes > 0 ? options.MaxStreamedBytes : options.MaxAttachmentBytes;
+            return await cloud.RunAsync(job, upload, ceiling, cancellationToken);
         }
 
         var scratch = CreateScratch(job.JobId);
@@ -310,6 +326,13 @@ public sealed class ToolExecutor(
         {
             // 96 D4's non-goal: the engine's streaming routes are /v1/completions and /api/generate.
             yield return Terminal(job.JobId, $"'{job.Capability}' is answered once; send the request without stream");
+            yield break;
+        }
+
+        if (cloud is not null && cloud.Serves(job.Capability, job.Model))
+        {
+            // 104's non-goals: a cloud voice is answered once.
+            yield return Terminal(job.JobId, $"model '{job.Model}' is a cloud model and is answered once; send the request without stream_format");
             yield break;
         }
 

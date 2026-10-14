@@ -137,9 +137,9 @@ public static class AudioEndpoints
 
         using var lease = admission.Lease;
 
-        var node = router.Route(request.Model, capability: CapabilityKinds.Transcribe);
+        var (node, cloud) = Target(httpContext, router, CapabilityKinds.Transcribe, request.Model);
 
-        if (node is null)
+        if (node is null && cloud is null)
         {
             return NoNode(httpContext, registry, CapabilityKinds.Transcribe, request.Model);
         }
@@ -157,19 +157,19 @@ public static class AudioEndpoints
                 string.IsNullOrWhiteSpace(file.ContentType) ? "application/octet-stream" : file.ContentType,
                 buffer.ToArray())]);
 
-        var result = await tools.DispatchToolAsync(node, job, cancellationToken);
+        var result = await DispatchAsync(httpContext, tools, node, cloud, job, cancellationToken);
         var outcome = AudioRenderer.Transcription(result, request);
 
         // Model, seconds, outcome. Not the filename the caller chose, and never the text.
         logger.LogInformation(
-            "Transcription {JobId} ({Model}) on node {NodeId}: {Status}, {Seconds:F1}s of audio",
+            "Transcription {JobId} ({Model}) on {Target}: {Status}, {Seconds:F1}s of audio",
             job.JobId,
             request.Model,
-            node.NodeId,
+            cloud?.ServedBy ?? $"node {node!.NodeId}",
             outcome.Status,
             outcome.Units);
 
-        httpContext.Response.Headers[InferenceCore.ServedByHeader] = "node";
+        httpContext.Response.Headers[InferenceCore.ServedByHeader] = cloud?.ServedBy ?? "node";
         Meter(context, metrics, outcome, CapabilityKinds.Transcribe, request.Model);
 
         return Render(httpContext, outcome);
@@ -234,10 +234,10 @@ public static class AudioEndpoints
         // D5. A fleet with capable nodes but none that can pull a stream is fleet state, so it gets
         // the phase-40 D4 shape — never a silent fall back to the buffered path, which would work
         // right up to the 25 MB it cannot do.
-        var node = router.Route(
-            request.Model,
-            capability: CapabilityKinds.Transcribe,
-            requireStreamedAttachments: true);
+        // Phase 104: under an `only` policy no node may take it, and a provider cannot take a stream.
+        var node = Media(httpContext)?.NodesAllowed(CapabilityKinds.Transcribe, request.Model) != false
+            ? router.Route(request.Model, capability: CapabilityKinds.Transcribe, requireStreamedAttachments: true)
+            : null;
 
         if (node is null)
         {
@@ -319,12 +319,55 @@ public static class AudioEndpoints
     /// separately, because "no node provides transcribe" is wrong and misleading on a fleet that
     /// provides it perfectly well and simply cannot take a 300 MB upload.
     /// </summary>
+    /// <summary>
+    /// Where this request goes (104 D7): a node the router found, or the provider whose policy says
+    /// it serves — never both. Under an <c>only</c> policy the router is not asked at all.
+    /// </summary>
+    internal static (RoutableNode? Node, InferHub.Shared.CloudMedia.CloudMediaRoute? Cloud) Target(
+        HttpContext httpContext,
+        Services.IRouter router,
+        string capability,
+        string model)
+    {
+        var media = Media(httpContext);
+        var node = media?.NodesAllowed(capability, model) != false ? router.Route(model, capability: capability) : null;
+        var cloud = media?.Choose(capability, model, node is not null);
+        return cloud is not null ? (null, cloud) : (node, null);
+    }
+
+    /// <summary>Absent in a host that never registered it (a test fixture) — read as "no media providers".</summary>
+    internal static MediaProviders? Media(HttpContext httpContext) =>
+        httpContext.RequestServices.GetService<MediaProviders>();
+
+    internal static Task<ToolResult> DispatchAsync(
+        HttpContext httpContext,
+        IToolDispatcher tools,
+        RoutableNode? node,
+        InferHub.Shared.CloudMedia.CloudMediaRoute? cloud,
+        ToolJob job,
+        CancellationToken cancellationToken) =>
+        cloud is not null
+            ? httpContext.RequestServices.GetRequiredService<MediaProviders>().RunAsync(cloud, job, cancellationToken)
+            : tools.DispatchToolAsync(node!, job, cancellationToken);
+
     private static IResult NoStreamingNode(
         HttpContext httpContext,
         INodeRegistry registry,
         string capability,
         string model)
     {
+        // Phase 104: a body this large streams to nodes only; a cloud provider takes it buffered and
+        // the vendors' own ceilings (25 MB, 20 MB inline) are at or under Tools:MaxAttachmentBytes.
+        if (Media(httpContext)?.Claims(capability, model) == true)
+        {
+            return Error(
+                413,
+                $"this upload is over Tools:MaxAttachmentBytes and model '{model}' can be served by a cloud provider, which " +
+                "takes no streamed upload and accepts at most 25 MB. Send a smaller or more compressed file.",
+                OpenAiErrorTypes.InvalidRequest,
+                param: "file");
+        }
+
         if (registry.FindNodesWithModel(model, capability).Count > 0)
         {
             httpContext.Response.Headers.RetryAfter = ToolEndpoints.CapabilityRetryAfterSeconds.ToString();
@@ -393,27 +436,27 @@ public static class AudioEndpoints
                 httpContext, router, registry, tools, metrics, logger, context, request, cancellationToken);
         }
 
-        var node = router.Route(request.Model, capability: CapabilityKinds.Speak);
+        var (node, cloud) = Target(httpContext, router, CapabilityKinds.Speak, request.Model);
 
-        if (node is null)
+        if (node is null && cloud is null)
         {
             return NoNode(httpContext, registry, CapabilityKinds.Speak, request.Model);
         }
 
         var job = new ToolJob(Guid.NewGuid(), CapabilityKinds.Speak, request.Model, request.ToToolPayload());
-        var result = await tools.DispatchToolAsync(node, job, cancellationToken);
+        var result = await DispatchAsync(httpContext, tools, node, cloud, job, cancellationToken);
         var outcome = AudioRenderer.Speech(result, request);
 
         // The character count, never the characters.
         logger.LogInformation(
-            "Speech {JobId} ({Model}) on node {NodeId}: {Status}, {Characters} characters",
+            "Speech {JobId} ({Model}) on {Target}: {Status}, {Characters} characters",
             job.JobId,
             request.Model,
-            node.NodeId,
+            cloud?.ServedBy ?? $"node {node!.NodeId}",
             outcome.Status,
             request.Characters);
 
-        httpContext.Response.Headers[InferenceCore.ServedByHeader] = "node";
+        httpContext.Response.Headers[InferenceCore.ServedByHeader] = cloud?.ServedBy ?? "node";
         Meter(context, metrics, outcome, CapabilityKinds.Speak, request.Model);
 
         return Render(httpContext, outcome);
@@ -441,10 +484,23 @@ public static class AudioEndpoints
         SpeechRequest request,
         CancellationToken cancellationToken)
     {
-        var node = router.Route(
-            request.Model,
-            capability: CapabilityKinds.Speak,
-            requireStreamedSpeech: true);
+        // Phase 104: a cloud voice is answered once (104's non-goals). Said before anything is sent,
+        // whenever the provider would be the one serving this request.
+        var media = Media(httpContext);
+
+        var node = media?.NodesAllowed(CapabilityKinds.Speak, request.Model) != false
+            ? router.Route(request.Model, capability: CapabilityKinds.Speak, requireStreamedSpeech: true)
+            : null;
+
+        if (media?.Choose(CapabilityKinds.Speak, request.Model, node is not null) is { } cloud)
+        {
+            return Error(
+                400,
+                $"model '{request.Model}' is a cloud voice (provider '{cloud.ProviderId}') and is answered once; " +
+                "send the request without stream_format.",
+                OpenAiErrorTypes.InvalidRequest,
+                param: "stream_format");
+        }
 
         if (node is null)
         {

@@ -43,6 +43,7 @@ public sealed class ImageJobRegistry
     private readonly UsageMeter usage;
     private readonly Metrics metrics;
     private readonly ILogger<ImageJobRegistry> logger;
+    private readonly MediaProviders? media;
 
     private readonly ConcurrentDictionary<Guid, PendingImageJob> pending = new();
 
@@ -59,7 +60,8 @@ public sealed class ImageJobRegistry
         UsageMeter usage,
         Metrics metrics,
         IImageJobArchive archive,
-        ILogger<ImageJobRegistry> logger)
+        ILogger<ImageJobRegistry> logger,
+        MediaProviders? media = null)
     {
         // Phase 56. The archive is `NoImageJobArchive` unless Images:Jobs:Persistence=file, in which
         // case constructing the store is also what reads the last run's jobs back — see
@@ -71,6 +73,7 @@ public sealed class ImageJobRegistry
         this.usage = usage;
         this.metrics = metrics;
         this.logger = logger;
+        this.media = media;
     }
 
     public ImageJobStore Store => store;
@@ -197,7 +200,25 @@ public sealed class ImageJobRegistry
                     continue;
                 }
 
-                var node = Route(record.Model, job.Request.Capability);
+                // Phase 104 D7: a provider takes the job when its policy says so — and under the
+                // default `no-node` only when no node declares the pair at all, so a busy fleet is
+                // waited for rather than quietly billed to a vendor.
+                if (media?.Choose(
+                        job.Request.Capability,
+                        record.Model,
+                        nodeAvailable: nodes.FindNodesWithModel(record.Model, job.Request.Capability).Count > 0) is { } cloud)
+                {
+                    if (store.TryTransition(record.Id, ImageJobStates.Running, nodeId: cloud.ServedBy))
+                    {
+                        _ = RunAsync(record.Id, null, cloud, job);
+                    }
+
+                    continue;
+                }
+
+                var node = media?.NodesAllowed(job.Request.Capability, record.Model) == false
+                    ? null
+                    : Route(record.Model, job.Request.Capability);
 
                 if (node is null)
                 {
@@ -212,7 +233,7 @@ public sealed class ImageJobRegistry
                 }
 
                 busyNodes[node.NodeId] = record.Id;
-                _ = RunAsync(record.Id, node, job);
+                _ = RunAsync(record.Id, node, null, job);
             }
         }
         finally
@@ -262,8 +283,14 @@ public sealed class ImageJobRegistry
         }
     }
 
-    private async Task RunAsync(Guid id, RoutableNode node, PendingImageJob job)
+    /// <param name="cloud">
+    /// Phase 104: the provider that runs this job instead of a node. It holds no node slot and reports
+    /// no progress — a vendor call has no steps to report — and it is never retried (104 D7).
+    /// </param>
+    private async Task RunAsync(Guid id, RoutableNode? node, InferHub.Shared.CloudMedia.CloudMediaRoute? cloud, PendingImageJob job)
     {
+        var target = cloud?.ServedBy ?? $"node {node!.NodeId}";
+
         var toolJob = new ToolJob(
             id,
             job.Request.Capability,
@@ -285,7 +312,9 @@ public sealed class ImageJobRegistry
 
         try
         {
-            var result = await tools.DispatchToolAsync(node, toolJob, progress, job.Cancellation.Token);
+            var result = cloud is not null
+                ? await media!.RunAsync(cloud, toolJob, job.Cancellation.Token)
+                : await tools.DispatchToolAsync(node!, toolJob, progress, job.Cancellation.Token);
 
             // One dispatch path, two renderings (phase-57 D10). The queue, the progress, the cancel,
             // the retention and the archive are the same for a clip as for a picture; what differs is
@@ -296,11 +325,11 @@ public sealed class ImageJobRegistry
                 : ImageRenderer.Render(result, job.Request, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
 
             logger.LogInformation(
-                "{Capability} job {JobId} ({Model}) on node {NodeId}: {Status}, {Images} image(s), {Units:F1} megapixel-steps",
+                "{Capability} job {JobId} ({Model}) on {Target}: {Status}, {Images} image(s), {Units:F1} megapixel-steps",
                 job.Request.Capability,
                 id,
                 job.Request.Model,
-                node.NodeId,
+                target,
                 outcome.Status,
                 outcome.ImageCount,
                 outcome.Units);
@@ -349,7 +378,7 @@ public sealed class ImageJobRegistry
 
             Forget(id);
         }
-        catch (NodeDisconnectedException ex)
+        catch (NodeDisconnectedException ex) when (node is not null)
         {
             logger.LogWarning(
                 "Image job {JobId} lost node {NodeId}: {Message}. It is NOT retried.",
@@ -371,7 +400,11 @@ public sealed class ImageJobRegistry
         finally
         {
             // Remove *this* job's claim on the node, never whatever claimed it since.
-            busyNodes.TryRemove(new KeyValuePair<string, Guid>(node.NodeId, id));
+            if (node is not null)
+            {
+                busyNodes.TryRemove(new KeyValuePair<string, Guid>(node.NodeId, id));
+            }
+
             Pump();
         }
     }

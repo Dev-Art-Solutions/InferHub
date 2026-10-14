@@ -70,6 +70,7 @@ public class ContextContractTests
         // were the largest coherent subtree the rest of the node has nothing to do with (95).
         ("src/InferHub.Node/Backends/CLAUDE.md", ScopedBudget),
         ("src/InferHub.Shared/ChatGpt/CLAUDE.md", ScopedBudget),
+        ("src/InferHub.Shared/CloudMedia/CLAUDE.md", ScopedBudget),
         ("python/CLAUDE.md", ScopedBudget),
         ("tests/CLAUDE.md", ScopedBudget),
         ("deploy/CLAUDE.md", ScopedBudget),

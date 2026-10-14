@@ -1627,7 +1627,7 @@ public sealed class CoordinatorConnection(
             filtered,
             backend.Kinds,
             node.Capabilities,
-            toolRuntime.Capabilities,
+            toolExecutor.ToolCapabilities,
             profiles.Effective.DisabledCapabilities,
             profiles.Effective.DisabledModels,
             backend as IModelKinds);

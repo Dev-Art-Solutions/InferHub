@@ -191,6 +191,40 @@ public sealed class ProviderDefinition
     /// <summary>A narrower allowlist within the map. Empty means every mapped model.</summary>
     public List<string> AllowedModels { get; set; } = new();
 
+    /// <summary>
+    /// Pictures, voices and transcripts (104 D2): capability → (local model name → this provider's
+    /// model id). The key is the consent, exactly as <see cref="ModelMap"/>'s is for chat, and it is a
+    /// separate map so one name never means a chat model and a picture model at once.
+    /// </summary>
+    /// <remarks>
+    /// Only an <see cref="TypeOpenAiCompatible"/> (OpenAI's Images and Audio APIs) or a
+    /// <see cref="TypeGemini"/> provider may carry it (104 D3); the validator refuses it elsewhere —
+    /// on <see cref="TypeChatGpt"/> above all, because a sign-in must never become a paid API call (103 D5).
+    /// </remarks>
+    public Dictionary<string, Dictionary<string, string>> Media { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The cloud media dialect a provider type speaks, or null when it serves no media (104 D3).</summary>
+    public static string? MediaDialect(string? type) => type?.Trim().ToLowerInvariant() switch
+    {
+        TypeOpenAiCompatible or InferHub.Shared.CloudMedia.CloudMediaDialects.OpenAi => InferHub.Shared.CloudMedia.CloudMediaDialects.OpenAi,
+        TypeGemini => InferHub.Shared.CloudMedia.CloudMediaDialects.Gemini,
+        _ => null
+    };
+
+    /// <summary>
+    /// This provider's media half in the shape both hosts resolve routes through. <c>Type</c> keeps
+    /// the hub's own word when it has no media dialect, so the shared validator can name it.
+    /// </summary>
+    public InferHub.Shared.CloudMedia.CloudMediaProviderDefinition ToCloudMedia() => new()
+    {
+        Enabled = Enabled,
+        Type = MediaDialect(NormalizedType()) ?? NormalizedType(),
+        BaseUrl = ResolvedBaseUrl(),
+        ApiKey = ApiKey,
+        TimeoutSeconds = TimeoutSeconds,
+        Media = Media
+    };
+
     public string NormalizedTrigger()
         => string.Equals(Trigger?.Trim(), FallbackOptions.TriggerNoNodeOrSaturated, StringComparison.OrdinalIgnoreCase)
             ? FallbackOptions.TriggerNoNodeOrSaturated

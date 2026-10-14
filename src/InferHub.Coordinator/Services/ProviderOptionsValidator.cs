@@ -107,7 +107,8 @@ public sealed partial class ProviderOptionsValidator(IOptions<FallbackOptions> f
                                  + $"this release knows are: {string.Join(", ", ProviderPolicy.All)}.");
                 }
 
-                if (!provider.ModelMap.ContainsKey(model))
+                // Phase 104: a media model's local name is mapped too, under its capability.
+                if (!provider.ModelMap.ContainsKey(model) && !provider.Media.Values.Any(map => map.ContainsKey(model)))
                 {
                     failures.Add($"Providers:{id}:ModelPolicy:{model} names a model this provider "
                                  + "does not map. A policy without a mapping is a route that does "
@@ -197,6 +198,13 @@ public sealed partial class ProviderOptionsValidator(IOptions<FallbackOptions> f
                 claimed[model] = $"Providers:{id}";
             }
         }
+
+        // Phase 104. The media maps: a type that has a media dialect, a key, and one claimant per
+        // (capability, model) — the same checks a node runs over its own CloudMedia section.
+        failures.AddRange(InferHub.Shared.CloudMedia.CloudMediaCatalog.Validate(
+            options.Entries.Select(entry => KeyValuePair.Create(entry.Key, entry.Value.ToCloudMedia())),
+            "Providers",
+            ProviderDefinition.MediaDialect));
 
         return failures.Count == 0
             ? ValidateOptionsResult.Success

@@ -221,9 +221,22 @@ public static class StatusEndpoint
                             account.SelectedModel,
                             account.UsagePausedUntilUtc,
                             account.LastError,
-                            account.LastErrorAtUtc));
+                            account.LastErrorAtUtc),
+                    MediaOf(route.Definition));
             })
             .ToArray();
+    }
+
+    private static IReadOnlyDictionary<string, IReadOnlyList<string>>? MediaOf(ProviderDefinition definition)
+    {
+        var media = definition.Media
+            .Where(entry => entry.Value is { Count: > 0 })
+            .OrderBy(entry => entry.Key, StringComparer.Ordinal)
+            .ToDictionary(
+                entry => entry.Key.ToLowerInvariant(),
+                entry => (IReadOnlyList<string>)entry.Value.Keys.OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToArray());
+
+        return media.Count == 0 ? null : media;
     }
 
     // Returns null when the vector store is disabled — matches the phase-13 contract that
@@ -407,7 +420,12 @@ public static class StatusEndpoint
         // keep the exact v3.67 shape.
         [property: System.Text.Json.Serialization.JsonIgnore(
             Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-        ChatGptStatusBlock? ChatGpt = null);
+        ChatGptStatusBlock? ChatGpt = null,
+        // Phase 104: capability → the local names this provider serves pictures, voices or
+        // transcripts under. Omitted where there are none, so every v3.68 block keeps its shape.
+        [property: System.Text.Json.Serialization.JsonIgnore(
+            Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? Media = null);
 
     /// <summary>
     /// Phase 103. What a status reader may know about a ChatGPT provider's account — <b>not who it

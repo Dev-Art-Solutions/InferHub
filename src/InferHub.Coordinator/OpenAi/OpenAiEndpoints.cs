@@ -310,7 +310,27 @@ public static class OpenAiEndpoints
                 created,
                 "inferhub",
                 CapabilitiesOf(registry, providers, capabilities, model.Name)))
-            .ToArray();
+            .ToList();
+
+        // Phase 104: a picture, voice or transcript model only a cloud provider serves is listed with
+        // the kinds it claims — a client can call it, so it can see it (65 D5's rule). A name the fleet
+        // or a chat provider already lists keeps that entry. /api/tags is untouched: it is Ollama's
+        // list of language models.
+        if (services.GetService<MediaProviders>() is { Catalog.IsEmpty: false } media)
+        {
+            var listed = models.Select(model => model.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            models.AddRange(media.Catalog.Routes
+                .GroupBy(route => route.LocalModel, StringComparer.OrdinalIgnoreCase)
+                .Where(group => !listed.Contains(group.Key))
+                .Select(group => new OpenAiModel(
+                    group.Key,
+                    created,
+                    "inferhub",
+                    group.Select(route => route.Capability).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.Ordinal).ToArray())));
+
+            models.Sort((a, b) => StringComparer.OrdinalIgnoreCase.Compare(a.Id, b.Id));
+        }
 
         return Results.Json(new ModelList(models), JsonOptions);
     }

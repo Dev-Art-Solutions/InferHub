@@ -212,6 +212,11 @@ builder.Services.AddSingleton<IProviderRegistry, ProviderRegistry>();
 builder.Services.AddHttpClient(ProviderDispatcher.HttpClientName);
 builder.Services.AddSingleton<IProviderDispatcher, ProviderDispatcher>();
 
+// Cloud pictures, voices and transcripts (phase 104). Inert with no provider `Media` map. No loggers
+// on its HttpClient: a request URL is harmless, but a body logged at Trace would be a prompt (rule 7).
+builder.Services.AddHttpClient(MediaProviders.HttpClientName).RemoveAllLoggers();
+builder.Services.AddSingleton<MediaProviders>();
+
 // ChatGPT sign-in (phase 103). Registered always and inert unless a `Type: chatgpt` provider exists:
 // nothing is created on disk until its console panel is opened or somebody signs one in.
 builder.Services.Configure<InferHub.Coordinator.ChatGpt.ChatGptOptions>(

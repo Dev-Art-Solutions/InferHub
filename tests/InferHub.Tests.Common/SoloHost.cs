@@ -31,8 +31,18 @@ internal sealed class SoloHost : IAsyncDisposable
 
     public string Url { get; private set; } = null!;
 
-    public static async Task<SoloHost> StartAsync(
+    /// <summary>The node's own container, for a test that asserts on a service rather than a route (phase 104).</summary>
+    public IServiceProvider Services => app.Services;
+
+    public static Task<SoloHost> StartAsync(
         ScriptedBackend? backend = null,
+        params string[] settings)
+        => StartAsync(backend, configure: null, settings);
+
+    /// <param name="configure">Phase 104: services a test adds after the node's own, e.g. a fake vendor behind an HttpClient.</param>
+    public static async Task<SoloHost> StartAsync(
+        ScriptedBackend? backend,
+        Action<WebApplicationBuilder>? configure,
         params string[] settings)
     {
         var host = new SoloHost
@@ -60,6 +70,7 @@ internal sealed class SoloHost : IAsyncDisposable
 
         builder.AddInferHubNode();
         builder.Services.AddSingleton<IInferenceBackend>(host.Backend);
+        configure?.Invoke(builder);
 
         host.app = (WebApplication)NodeHostFactory.Build(builder);
         await host.app.StartAsync();

@@ -86,7 +86,24 @@ public static class ToolEndpoints
             return Error(StatusCodes.Status400BadRequest, "model is required");
         }
 
-        var node = router.Route(body.Model, capability: capability);
+        var (node, cloud) = InferHub.Coordinator.OpenAi.AudioEndpoints.Target(httpContext, router, capability, body.Model);
+
+        if (cloud is not null)
+        {
+            // Phase 104: a cloud provider answers once, and never with a stream.
+            if (body.Stream)
+            {
+                return Error(StatusCodes.Status400BadRequest,
+                    $"model '{body.Model}' is served by cloud provider '{cloud.ProviderId}', which answers once; send it without stream");
+            }
+
+            var cloudJob = new ToolJob(Guid.NewGuid(), capability, body.Model, body.Payload, body.Attachments);
+            httpContext.Response.Headers["X-InferHub-Served-By"] = cloud.ServedBy;
+            var answered = await httpContext.RequestServices.GetRequiredService<MediaProviders>()
+                .RunAsync(cloud, cloudJob, cancellationToken);
+
+            return Render(httpContext, answered);
+        }
 
         if (node is null)
         {

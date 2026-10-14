@@ -183,6 +183,35 @@ public sealed class ChatGptProviderTests : IAsyncLifetime
         Assert.Contains("\"store\":false", call.Body);
     }
 
+    /// <summary>
+    /// Phase 104: what a ChatGPT sign-in may do with a picture is <em>read</em> it — the vendor lists
+    /// image input as supported and image generation as not. An OpenAI client's <c>image_url</c> part
+    /// arrives at the Responses API as an <c>input_image</c> data URL, end to end through the hub.
+    /// </summary>
+    [Fact]
+    public async Task APictureInAnOpenAiChatReachesTheResponsesApiAsAnInputImage()
+    {
+        await PairAsync();
+
+        var png = Convert.ToBase64String(FakeMediaVendor.Png(8, 8));
+        var response = await hub.Client.PostAsync("/v1/chat/completions", Json($$$"""
+            {"model":"sol","messages":[{"role":"user","content":[
+              {"type":"text","text":"what is in this picture?"},
+              {"type":"image_url","image_url":{"url":"data:image/png;base64,{{{png}}}"}}]}]}
+            """));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("provider:plan", response.Headers.GetValues("X-InferHub-Served-By").Single());
+
+        var call = openAi.Requests.Last(r => r.Uri.AbsolutePath.EndsWith("/responses", StringComparison.Ordinal));
+        using var sent = JsonDocument.Parse(call.Body);
+        var parts = sent.RootElement.GetProperty("input")[0].GetProperty("content");
+
+        Assert.Equal("input_text", parts[0].GetProperty("type").GetString());
+        Assert.Equal("input_image", parts[1].GetProperty("type").GetString());
+        Assert.Equal($"data:image/png;base64,{png}", parts[1].GetProperty("image_url").GetString());
+    }
+
     [Fact]
     public async Task SelectedMapsToTheModelPickedInTheConsoleAndRefusesUntilOneIs()
     {
