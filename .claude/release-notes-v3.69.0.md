@@ -117,3 +117,17 @@ Tests: `CloudMediaClientTests` (Shared — each dialect and capability through t
 (Coordinator — a real Kestrel hub with no node, the real job registry, privacy at Trace, the dispatch counters),
 `CloudMediaNodeTests` (Node — a solo node through its composition root), and the ChatGPT picture-input test. Whole
 suite: **2186 passed, 63 skipped**.
+
+## The published artifacts, checked after the tag
+
+`inferhub-coordinator:3.69.0` and `inferhub-node:3.69.0` from GHCR (revision label `c0d4fc2` = the tag), their `app/`
+extracted and run as binaries on Windows — **not as containers**, so the images' OS layer was not exercised. The
+coordinator was configured through the environment with an OpenAI and a Google provider, a node joined it with its own
+`CloudMedia` key, both pointed at a stand-in vendor:
+
+- `gpt-image` → `200`, `X-InferHub-Served-By: provider:openai`; `imagen` at `1024x576`, `n=2` → two pictures at the
+  vendor's `1408x768`, with the "sent as the aspect ratio 16:9" warning; a Gemini `wav` voice → `200` from
+  `provider:google`, an `mp3` one → `400` before any call; `whisper-1` → real `srt` subtitles.
+- `node-voice`, which only the node maps → `200`, `X-InferHub-Served-By: node`, and the stand-in saw the **node's** key.
+- `/api/status`: `google` `dispatched: 2, failed: 0` — the refused mp3 counted as neither, the fix this release made.
+- No key, prompt or filename in either process's log.
