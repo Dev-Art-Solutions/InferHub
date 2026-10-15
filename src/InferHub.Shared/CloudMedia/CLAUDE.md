@@ -26,6 +26,15 @@ supported — which v3.68 already sends as `input_image`. **OpenAI with a key**:
 `:predict` (`sampleCount`, five aspect ratios), image models and TTS models through `:generateContent` with
 `responseModalities` (TTS answers `audio/L16;codec=pcm;rate=24000`), 20 MB per inline request.
 
+**Video, read 2026-10-15.** OpenAI shut Sora 2 and its Videos API down on 2026-09-24. **Veo 3.1**
+(`veo-3.1-generate-preview`, `-fast-`, `-lite-`): `POST models/{id}:predictLongRunning` with
+`parameters.aspectRatio` 16:9|9:16, `resolution` 720p|1080p|4k, `durationSeconds` "4"|"6"|"8" (1080p and 4k need 8);
+an operation polled at `GET {base}/{name}` until `done`; the clip at
+`response.generateVideoResponse.generatedSamples[0].video.uri`, fetched with the key and a redirect; 11 s to 6 min;
+kept two days. **Gemini Omni Flash** (`gemini-omni-1.1-flash`): `POST /interactions` with
+`response_format: {type: "video", aspect_ratio, resolution 360p…4k}` — synchronous, the clip base64 in
+`steps[].content[]` (`type: "video"`) under 4 MB, no duration parameter.
+
 ## Decisions recorded here
 
 ### Phase 104 (pictures, speech and transcripts from OpenAI and Google with an API key) — load-bearing
@@ -85,8 +94,36 @@ that one list, so `Node:Capabilities:Disabled` and a profile's disabled models n
 streamed upload is read into memory up to the node's own ceiling. **Rejected: the hub pushing keys to nodes** — 103
 D1's argument, for API keys.
 
+### Phase 105 (video from Google with an API key, on the coordinator and on a node)
+
+**D1 — A cloud clip is one `ToolJob` that polls inside the client, answering in the worker's envelope (load-bearing).**
+[GeminiVideo](src/InferHub.Shared/CloudMedia/GeminiVideo.cs) submits, polls, downloads and answers one MP4 plus
+`{videos:[{width,height,seconds}], megapixel_steps, warnings}`, so `VideoRenderer`, the job store and phase 56's
+archive did not change. Polling reports a `progress` frame per poll — seconds elapsed of the seconds allowed, the one
+fraction that is true, since an operation reports no percentage — through the `IProgress<ToolChunk>` the job runners
+already pass, so `/api/videos/*/events` moves. **Rejected: a second registry for remote jobs** (57 D10).
+
+**D2 — Durations and sizes are the vendor's lists or a refusal before the call.** Veo renders 4, 6 or 8 seconds and
+1080p only at 8; a size is one of `1280x720`, `720x1280`, `1920x1080`, `1080x1920` (ratio + resolution), anything else
+refused naming them. `VideoSizes.VendorSizes` admits the two 1080 sizes off the 16-pixel grid by name; a GPU recipe that
+does not offer them still refuses them. Omni takes no duration, so `seconds` is a warning and the real length is read
+from the MP4's `mvhd` header (`MediaBytes.Mp4Seconds` — no frame decoded). A negative prompt is refused (104 D4); steps,
+guidance and seed are warnings. On the async routes a refusal fails the job with the 400 sentence, as a GPU recipe's does.
+
+**D3 — One step per megapixel per second.** The renderer reads a worker report's own `megapixel_steps` when present.
+`video_seconds` is the MP4 header's length, else the requested label, never a byte count.
+
+**D4 — Never resubmitted; cancel is best effort; ten minutes at least.** A poll or download failure fails the job
+saying it was not submitted again (56). A cancel stops polling; Veo documents no cancel, so the vendor may finish.
+A video route's timeout is `max(TimeoutSeconds, 600)`.
+
+**D5 — The key goes only to the vendor's host.** A URI on another host is refused before anything is sent. Both hosts
+build the media client with **redirects off** and `CloudMediaCall.DownloadAsync` follows them by hand, dropping the key
+on a hop to another host — .NET strips only `Authorization` on a redirect, and Google's key is `x-goog-api-key`. The
+download is capped at `Tools:MaxAttachmentBytes`. A `video` map on an OpenAI provider fails startup naming the shutdown.
+
 Tests: `CloudMediaClientTests` (Shared — each dialect and capability through the real renderers), `CloudMediaProviderTests`
 (Coordinator — real Kestrel, no node, the real job registry; privacy at Trace), `CloudMediaNodeTests` (Node — a solo node
 through its composition root), `ChatGptProviderTests.APictureInAnOpenAiChatReachesTheResponsesApiAsAnInputImage`.
-`FakeMediaVendor` in `Tests.Common` is both vendors as one handler. **No test calls OpenAI or Google**; what that leaves
+`CloudVideoTests` (Shared) and `CloudVideoNodeTests` (Node) are 105's. `FakeMediaVendor` in `Tests.Common` is both vendors as one handler. **No test calls OpenAI or Google**; what that leaves
 unestablished is in the release notes.

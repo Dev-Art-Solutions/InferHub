@@ -75,6 +75,7 @@ public sealed class CloudMediaProviderTests : IAsyncLifetime
         builder.Services.AddSingleton<IProviderRegistry, ProviderRegistry>();
         builder.Services.AddHttpClient(MediaProviders.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => vendor.Borrowed());
         builder.Services.AddSingleton<MediaProviders>();
+        builder.Services.AddSingleton(new CloudMediaTiming(TimeSpan.FromMilliseconds(10)));
 
         app = builder.Build();
 
@@ -90,6 +91,8 @@ public sealed class CloudMediaProviderTests : IAsyncLifetime
         app.MapImageJobEndpoints();
         app.MapToolEndpoints();
         app.MapOpenAiEndpoints();
+        app.MapVideoEndpoints();
+        app.MapVideoJobEndpoints();
 
         await app.StartAsync();
         client = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
@@ -128,7 +131,8 @@ public sealed class CloudMediaProviderTests : IAsyncLifetime
             Media = new(StringComparer.OrdinalIgnoreCase)
             {
                 ["image"] = new() { ["imagen"] = "imagen-4.0-generate-001" },
-                ["speak"] = new() { ["gemini-tts"] = "gemini-2.5-flash-preview-tts" }
+                ["speak"] = new() { ["gemini-tts"] = "gemini-2.5-flash-preview-tts" },
+                ["video"] = new() { ["veo"] = "veo-3.1-generate-preview", ["omni"] = "gemini-omni-1.1-flash" }
             }
         };
 
@@ -315,6 +319,80 @@ public sealed class CloudMediaProviderTests : IAsyncLifetime
         var media = new MediaProviders(Options.Create(options), new StubFactory(), new Metrics(), Microsoft.Extensions.Logging.Abstractions.NullLogger<MediaProviders>.Instance);
         Assert.True(media.Catalog.IsEmpty);
         Assert.Null(media.Choose("image", "gpt", nodeAvailable: false));
+    }
+
+    // ---- phase 105: video ----------------------------------------------------------------------
+
+    [Fact]
+    public async Task AClipFromVeoIsQueuedPolledAndFetchedThroughTheVideosRoutesWithNoNode()
+    {
+        using var created = await client.PostAsync("/v1/videos", Json(new { model = "veo", prompt = Prompt, seconds = "8", size = "1280x720" }));
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+        var id = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetString()!;
+
+        var video = await WaitForVideoAsync(id);
+        Assert.Equal("completed", video.GetProperty("status").GetString());
+        Assert.Equal("1280x720", video.GetProperty("size").GetString());
+        Assert.Equal(8, video.GetProperty("seconds").GetDouble());
+
+        using var content = await client.GetAsync($"/v1/videos/{id}/content");
+        Assert.Equal(HttpStatusCode.OK, content.StatusCode);
+        Assert.Equal("video/mp4", content.Content.Headers.ContentType!.MediaType);
+        Assert.Equal(FakeMediaVendor.Mp4(8), await content.Content.ReadAsByteArrayAsync());
+
+        await ledger.WaitForAsync(record => record.Model == "veo" && record.UnitKind == UsageUnitKinds.VideoSeconds && record.Units == 8);
+        await ledger.WaitForAsync(record => record.Model == "veo" && record.UnitKind == UsageUnitKinds.MegapixelSteps
+                                            && Math.Abs(record.Units - 1280 * 720 / 1e6 * 8) < 1e-3);
+
+        // Rule 7 at Trace, and the key nowhere.
+        Assert.False(logs.Contains(Prompt), "the prompt reached a log line");
+        Assert.False(logs.Contains(GoogleKey), "the Google key reached a log line");
+        Assert.DoesNotContain(vendor.Requests, r => r.Host == "storage.example" && r.Headers.ContainsKey("x-goog-api-key"));
+    }
+
+    [Fact]
+    public async Task ADurationVeoDoesNotRenderIsA400AndNothingLeavesTheHub()
+    {
+        using var created = await client.PostAsync("/v1/videos", Json(new { model = "veo", prompt = Prompt, seconds = "5" }));
+        var id = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetString()!;
+
+        var video = await WaitForVideoAsync(id);
+
+        Assert.Equal("failed", video.GetProperty("status").GetString());
+        Assert.Contains("renders 4, 6, 8 seconds", video.GetProperty("error").GetProperty("message").GetString());
+        Assert.DoesNotContain(vendor.Requests, r => r.Path.Contains("veo", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task AnOmniClipIsServedByTheSameRoutes()
+    {
+        using var created = await client.PostAsync("/v1/videos", Json(new { model = "omni", prompt = Prompt, size = "720x1280" }));
+        var id = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetString()!;
+
+        var video = await WaitForVideoAsync(id);
+
+        Assert.Equal("completed", video.GetProperty("status").GetString());
+        Assert.Equal("720x1280", video.GetProperty("size").GetString());
+        Assert.Contains(vendor.Requests, r => r.Path.EndsWith("/interactions", StringComparison.Ordinal));
+    }
+
+    private static StringContent Json(object body) => new(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+
+    private async Task<JsonElement> WaitForVideoAsync(string id)
+    {
+        for (var i = 0; i < 400; i++)
+        {
+            var video = await client.GetFromJsonAsync<JsonElement>($"/v1/videos/{id}");
+
+            if (video.GetProperty("status").GetString() is "completed" or "failed")
+            {
+                return video;
+            }
+
+            await Task.Delay(25);
+        }
+
+        throw new TimeoutException($"video {id} did not finish");
     }
 
     private sealed class RecordingLedger : IUsageLedger

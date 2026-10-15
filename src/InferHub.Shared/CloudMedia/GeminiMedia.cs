@@ -330,7 +330,7 @@ internal static class GeminiMedia
         model.Contains("imagen", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The model as a URL path: <c>models/x</c> unless the id already is a path (64 D2, normalised the same way).</summary>
-    private static string ModelPath(string model)
+    internal static string ModelPath(string model)
     {
         var trimmed = model.Trim().TrimStart('/');
         return trimmed.Contains('/') ? trimmed : "models/" + trimmed;

@@ -323,6 +323,40 @@ public sealed class ChatGptSession(
     public string? SelectedModel() => Current().ActiveRegistration()?.SelectedModel;
 
     /// <summary>
+    /// The active account's ChatGPT account id, read from the ID token stored at sign-in (already
+    /// validated then) — the <c>ChatGPT-Account-Id</c> the usage endpoint wants (106 D3). Null when the
+    /// token carries none. The claim is the vendor's and treated as opaque beyond being echoed back.
+    /// </summary>
+    public string? ActiveAccountId()
+    {
+        try
+        {
+            var token = Current().ActiveRegistration()?.IdToken;
+            var parts = token?.Split('.');
+
+            if (parts is not { Length: 3 })
+            {
+                return null;
+            }
+
+            var payload = parts[1].Replace('-', '+').Replace('_', '/');
+            payload = payload.PadRight(payload.Length + (4 - payload.Length % 4) % 4, '=');
+
+            using var document = JsonDocument.Parse(Convert.FromBase64String(payload));
+            return document.RootElement.TryGetProperty("https://api.openai.com/auth", out var auth)
+                   && auth.ValueKind == JsonValueKind.Object
+                   && auth.TryGetProperty("chatgpt_account_id", out var id)
+                   && id.ValueKind == JsonValueKind.String
+                ? id.GetString()
+                : null;
+        }
+        catch (Exception ex) when (ex is FormatException or JsonException or ChatGptStoreException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// The active account's own catalogue, from <c>GET /v1/models</c> with its own token: the models
     /// whose <c>visibility</c> is <c>list</c>, in the server's order.
     /// </summary>

@@ -71,6 +71,7 @@ public class ContextContractTests
         ("src/InferHub.Node/Backends/CLAUDE.md", ScopedBudget),
         ("src/InferHub.Shared/ChatGpt/CLAUDE.md", ScopedBudget),
         ("src/InferHub.Shared/CloudMedia/CLAUDE.md", ScopedBudget),
+        ("src/InferHub.Shared/Quota/CLAUDE.md", ScopedBudget),
         ("python/CLAUDE.md", ScopedBudget),
         ("tests/CLAUDE.md", ScopedBudget),
         ("deploy/CLAUDE.md", ScopedBudget),

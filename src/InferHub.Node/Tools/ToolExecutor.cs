@@ -126,7 +126,7 @@ public sealed class ToolExecutor(
         if (cloud is not null && cloud.Serves(job.Capability, job.Model))
         {
             var ceiling = options.MaxStreamedBytes > 0 ? options.MaxStreamedBytes : options.MaxAttachmentBytes;
-            return await cloud.RunAsync(job, upload, ceiling, cancellationToken);
+            return await cloud.RunAsync(job, upload, ceiling, cancellationToken, progress);
         }
 
         var scratch = CreateScratch(job.JobId);

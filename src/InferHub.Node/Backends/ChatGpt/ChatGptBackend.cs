@@ -26,6 +26,9 @@ public sealed class ChatGptBackend(
 
     public string Name => BackendOptions.ChatGpt;
 
+    /// <summary>Phase 106: one account per node, so one subject however many engines name it.</summary>
+    public const string QuotaSubject = BackendOptions.ChatGpt;
+
     public string Endpoint => chatGpt.Options.BaseUrl;
 
     public IReadOnlyList<string> Kinds => ChatOnly;
@@ -65,12 +68,14 @@ public sealed class ChatGptBackend(
 
     public async Task<string> ChatAsync(string requestJson, CancellationToken cancellationToken)
     {
+        using var quota = InferHub.Shared.Quota.QuotaScope.Enter(QuotaSubject);
         using var http = CreateHttpClient();
         return await Dialect(http).ChatAsync(requestJson, cancellationToken);
     }
 
     public async Task<string> GenerateAsync(string requestJson, CancellationToken cancellationToken)
     {
+        using var quota = InferHub.Shared.Quota.QuotaScope.Enter(QuotaSubject);
         using var http = CreateHttpClient();
         return await Dialect(http).GenerateAsync(requestJson, cancellationToken);
     }
@@ -86,6 +91,7 @@ public sealed class ChatGptBackend(
         string requestJson,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        using var quota = InferHub.Shared.Quota.QuotaScope.Enter(QuotaSubject);
         using var http = CreateHttpClient();
 
         await foreach (var chunk in Dialect(http).StreamAsync(kind, requestJson, cancellationToken))

@@ -20,7 +20,12 @@ namespace InferHub.Shared.CloudMedia;
 /// 104 D6). The caller logs the capability, the model, the provider and the outcome.
 /// </para>
 /// </remarks>
-public sealed class CloudMediaClient(HttpClient http)
+/// <param name="maxDownloadBytes">
+/// The largest clip a vendor URI may hand back (105 D5) — the host's <c>Tools:MaxAttachmentBytes</c>, like
+/// any worker's output.
+/// </param>
+/// <param name="pollInterval">How often a vendor's long-running operation is asked about (105 D1). Ten seconds when null.</param>
+public sealed class CloudMediaClient(HttpClient http, long maxDownloadBytes = ToolAttachmentLimits.DefaultMaxBytes, TimeSpan? pollInterval = null)
 {
     internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
@@ -43,16 +48,32 @@ public sealed class CloudMediaClient(HttpClient http)
     /// (104 D4) is the caller's mistake and not the provider's failure, and a host's counters must not
     /// say a vendor failed — or was even asked — when nothing was sent (found by the v3.69 live run).
     /// </summary>
+    /// <param name="progress">
+    /// Where a clip's polling reports itself (105 D1), as the <c>progress</c> frames a worker sends, so
+    /// <c>/api/videos/*/events</c> moves for a cloud clip too. Null for everything that is one request.
+    /// </param>
     public async Task<CloudMediaOutcome> RunReportedAsync(
         ToolJob job,
         CloudMediaRoute route,
         IReadOnlyList<ToolAttachment>? attachments,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<ToolChunk>? progress = null)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, route.TimeoutSeconds)));
+        // A clip takes minutes (105 D4): a provider's default of 300 s would cut Veo off at its own peak.
+        var seconds = string.Equals(route.Capability, CapabilityKinds.Video, StringComparison.OrdinalIgnoreCase)
+            ? Math.Max(route.TimeoutSeconds, GeminiVideo.MinTimeoutSeconds)
+            : route.TimeoutSeconds;
 
-        var call = new CloudMediaCall(http, job, route, attachments ?? job.Attachments ?? [], timeout.Token);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, seconds)));
+
+        var call = new CloudMediaCall(http, job, route, attachments ?? job.Attachments ?? [], timeout.Token)
+        {
+            Progress = progress,
+            PollInterval = pollInterval ?? TimeSpan.FromSeconds(10),
+            MaxDownloadBytes = maxDownloadBytes,
+            TimeoutSeconds = seconds
+        };
         var result = await RunCoreAsync(call, job, route, cancellationToken);
         return new CloudMediaOutcome(result, call.Sent);
     }
@@ -78,6 +99,8 @@ public sealed class CloudMediaClient(HttpClient http)
                 (CloudMediaDialects.Gemini, CapabilityKinds.ImageEdit) => await GeminiMedia.EditAsync(call, root),
                 (CloudMediaDialects.Gemini, CapabilityKinds.Speak) => await GeminiMedia.SpeakAsync(call, root),
                 (CloudMediaDialects.Gemini, CapabilityKinds.Transcribe) => await GeminiMedia.TranscribeAsync(call, root),
+                (CloudMediaDialects.Gemini, CapabilityKinds.Video) => await GeminiVideo.GenerateAsync(call, root),
+                (CloudMediaDialects.OpenAi, CapabilityKinds.Video) => throw new CloudMediaRefusal(CloudMediaDialects.NoOpenAiVideo),
                 _ => ToolResult.Failed(job.JobId, $"provider '{route.ProviderId}' ({route.Dialect}) does not serve '{route.Capability}'")
             };
         }
@@ -93,7 +116,7 @@ public sealed class CloudMediaClient(HttpClient http)
         {
             return ToolResult.Failed(
                 job.JobId,
-                $"provider '{route.ProviderId}' did not answer within {route.TimeoutSeconds}s (its TimeoutSeconds)");
+                $"provider '{route.ProviderId}' did not answer within {call.TimeoutSeconds}s (its TimeoutSeconds)");
         }
         catch (HttpRequestException ex)
         {
@@ -124,6 +147,12 @@ public sealed class CloudMediaClient(HttpClient http)
     }
 }
 
+/// <summary>
+/// How often a vendor's long-running operation is polled (105 D1). Registered by nobody in production —
+/// the client's ten seconds is the answer there — and by a test that cannot wait for it.
+/// </summary>
+public sealed record CloudMediaTiming(TimeSpan PollInterval);
+
 /// <summary>A cloud job's answer, and whether any request reached the vendor to produce it.</summary>
 public sealed record CloudMediaOutcome(ToolResult Result, bool Sent);
 
@@ -151,6 +180,112 @@ internal sealed class CloudMediaCall(
 
     /// <summary>True once a request has been handed to the vendor's socket.</summary>
     public bool Sent { get; private set; }
+
+    public IProgress<ToolChunk>? Progress { get; init; }
+
+    public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(10);
+
+    public long MaxDownloadBytes { get; init; } = ToolAttachmentLimits.DefaultMaxBytes;
+
+    /// <summary>The whole call's allowance, which a clip's progress is measured against.</summary>
+    public int TimeoutSeconds { get; init; }
+
+    /// <summary>
+    /// A clip's progress as a worker's frame: seconds elapsed of the seconds this provider is allowed
+    /// (105 D1). A vendor's operation reports no percentage, and this is the one fraction that is true.
+    /// </summary>
+    public void ReportProgress(DateTimeOffset started)
+    {
+        if (Progress is null)
+        {
+            return;
+        }
+
+        var elapsed = (int)Math.Max(0, (DateTimeOffset.UtcNow - started).TotalSeconds);
+        Progress.Report(new ToolChunk(
+            Job.JobId,
+            JsonSerializer.Serialize(new { type = "progress", step = elapsed, totalSteps = Math.Max(1, TimeoutSeconds) }),
+            Done: false));
+    }
+
+    /// <summary>
+    /// Fetches a URI the vendor chose (105 D5). The key goes only to the vendor's own host: a URI on any
+    /// other host is refused before anything is sent, and a redirect is followed here, by hand, without
+    /// the key — the hosts build this client with redirects off, because .NET strips only
+    /// <c>Authorization</c> on a redirect and Google's key travels in <c>x-goog-api-key</c>.
+    /// </summary>
+    public async Task<byte[]> DownloadAsync(string uri)
+    {
+        if (!Uri.TryCreate(uri, UriKind.Absolute, out var target) || (target.Scheme != Uri.UriSchemeHttps && target.Scheme != Uri.UriSchemeHttp))
+        {
+            throw new InvalidDataException($"provider '{Route.ProviderId}' named a download that is not an http(s) URL");
+        }
+
+        var home = new Uri(Route.BaseUrl, UriKind.Absolute);
+
+        if (!string.Equals(target.Host, home.Host, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                $"provider '{Route.ProviderId}' named a download on '{target.Host}', not its own host '{home.Host}'; the key is not sent there");
+        }
+
+        var withKey = true;
+
+        for (var hop = 0; hop < 5; hop++)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, target);
+
+            if (withKey && !string.IsNullOrWhiteSpace(Route.ApiKey))
+            {
+                if (Route.Dialect == CloudMediaDialects.Gemini)
+                {
+                    request.Headers.TryAddWithoutValidation("x-goog-api-key", Route.ApiKey.Trim());
+                }
+                else
+                {
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Route.ApiKey.Trim());
+                }
+            }
+
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, CancellationToken);
+
+            if ((int)response.StatusCode is >= 300 and < 400 && response.Headers.Location is { } location)
+            {
+                target = location.IsAbsoluteUri ? location : new Uri(target, location);
+                withKey = string.Equals(target.Host, home.Host, StringComparison.OrdinalIgnoreCase);
+                continue;
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new InvalidDataException($"downloading the clip from provider '{Route.ProviderId}' answered {(int)response.StatusCode}");
+            }
+
+            if (response.Content.Headers.ContentLength is { } length && length > MaxDownloadBytes)
+            {
+                throw new InvalidDataException($"the clip from provider '{Route.ProviderId}' is {length} bytes, over {MaxDownloadBytes} (Tools:MaxAttachmentBytes)");
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(CancellationToken);
+            using var buffer = new MemoryStream();
+            var chunk = new byte[81920];
+            int read;
+
+            while ((read = await stream.ReadAsync(chunk, CancellationToken)) > 0)
+            {
+                if (buffer.Length + read > MaxDownloadBytes)
+                {
+                    throw new InvalidDataException($"the clip from provider '{Route.ProviderId}' is over {MaxDownloadBytes} bytes (Tools:MaxAttachmentBytes)");
+                }
+
+                buffer.Write(chunk, 0, read);
+            }
+
+            return buffer.ToArray();
+        }
+
+        throw new InvalidDataException($"downloading the clip from provider '{Route.ProviderId}' redirected more than five times");
+    }
 
     public ToolAttachment? Attachment(string name) =>
         Attachments.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));

@@ -328,7 +328,8 @@ public sealed class CloudMediaClientTests : IDisposable
         var errors = CloudMediaCatalog.Validate(providers, "CloudMedia:Providers", type => type);
 
         Assert.Contains(errors, e => e.Contains("'pic' for 'image' is claimed by both", StringComparison.Ordinal));
-        Assert.Contains(errors, e => e.Contains("cloud video is not in this release", StringComparison.Ordinal));
+        // Since phase 105 video is a Gemini capability, so this map is no longer one of the errors.
+        Assert.DoesNotContain(errors, e => e.Contains("Media:video", StringComparison.Ordinal));
 
         var catalog = new CloudMediaCatalog(providers);
         Assert.True(catalog.TryResolve("speak", "VOICE", out var route));

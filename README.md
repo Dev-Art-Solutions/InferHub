@@ -189,6 +189,8 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 102 | [Hard limits per runtime](#hard-limits-per-runtime--the-nodes-ceiling-the-hubs-narrowing-v367) — the node caps CPU, cores, memory, VRAM and GPUs for ollama, llama.cpp, colibri, Strata and tools; the coordinator sees the caps and may only go lower (done) | `v3.67.0` |
 | 103 | [Sign in with ChatGPT](#sign-in-with-chatgpt--your-plan-on-the-coordinator-and-on-a-node-v368) — a `chatgpt` provider on the coordinator and a `chatgpt` backend on a node, each signed in with its own ChatGPT account in a browser, never an API key (done) | `v3.68.0` |
 | 104 | [Pictures, voices and transcripts from OpenAI and Google](#pictures-voices-and-transcripts-from-openai-and-google--with-an-api-key-v369) — a provider's `Media` map on the coordinator and a node's own `CloudMedia` section, served through the image and audio routes a GPU node answers; a ChatGPT sign-in reads pictures and makes none (done) | `v3.69.0` |
+| 105 | [Video from Google](#video-from-google--veo-and-gemini-omni-with-an-api-key-v370) — Veo and Gemini Omni through the Videos routes a GPU clip uses, on the coordinator and on a node; no OpenAI video (Sora was shut down) (done) | `v3.70.0` |
+| 106 | [Provider limits](#provider-limits--the-five-hour-and-weekly-windows-rate-limits-and-spend-v370) — a ChatGPT plan's five-hour and weekly windows, rate limits, and the month's spend against a budget, for the coordinator and for each node (done) | `v3.70.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -3239,6 +3241,81 @@ metered the same way: a cloud picture counts one step per megapixel, a voice cou
 transcript counts the seconds the vendor reports (whisper-1) or a WAV header's length, otherwise zero.
 Uploads over `Tools:MaxAttachmentBytes` stream to nodes only. The vendors' own limits are 25 MB (OpenAI)
 and 20 MB per inline request (Gemini).
+
+## Video from Google — Veo and Gemini Omni, with an API key (v3.70)
+
+`/v1/videos` and `/api/videos/*` now work on a box with no GPU. A `gemini` provider's `Media` map (or a node's
+`CloudMedia` section) can name `video`, and the clip is queued, reports progress, and is fetched once from
+`/content` exactly like a clip from a GPU node.
+
+```jsonc
+"Providers": {
+  "google": {
+    "Type": "gemini",
+    "Media": {
+      "video": { "veo": "veo-3.1-generate-preview", "veo-fast": "veo-3.1-fast-generate-preview", "omni": "gemini-omni-1.1-flash" }
+    }
+  }
+}
+```
+
+```python
+video = client.videos.create(model="veo", prompt="waves on black rocks at dusk", seconds="8", size="1280x720")
+```
+
+- **Veo** is a long-running job: the hub submits it, asks every ten seconds, and fetches the file when it is done.
+  It renders **4, 6 or 8 seconds**, and 1080p only at 8.
+- **Gemini Omni** answers in one call and chooses its own length; `seconds` becomes a warning, and the real length
+  is read from the MP4's header.
+- `size` is `1280x720`, `720x1280`, `1920x1080` or `1080x1920` (default `1280x720`). Anything else, a duration Veo
+  does not render, or a `negative_prompt` fails the job with a 400 sentence **before the vendor is called**.
+- The clip is fetched with your key **only from Google's own host**. Google's download redirects to storage; the
+  redirect is followed without the key.
+- A clip is never submitted twice. A cancel stops the polling; Veo has no cancel, so it may still be billed.
+- Usage: `video_seconds`, and one megapixel-step per megapixel per second.
+
+**There is no OpenAI video.** OpenAI shut Sora 2 and its Videos API down on 2026-09-24, so `video` on an OpenAI
+provider fails startup and says so.
+
+## Provider limits — the five-hour and weekly windows, rate limits and spend (v3.70)
+
+The console's **Provider limits** panel, and `GET /api/admin/quota` (admin key), list every cloud provider —
+**the coordinator's own and each node's own, side by side** — with how close it is to a limit:
+
+- **A ChatGPT sign-in:** the percentage of the **five-hour** and the **weekly** window used, and when each resets.
+- **An API key:** the requests-per-minute and tokens-per-minute windows OpenAI and Anthropic report on every
+  response.
+- **Billing:** this month's spend against `Billing:MonthlyBudgetUsd`, when the vendor will say what you spent.
+- **A refusal:** the vendor's last 429 or 402, in its own words (`insufficient_quota`,
+  `subscription_sharing_usage_limit_exceeded`, `RESOURCE_EXHAUSTED`), until the next request succeeds.
+
+It refreshes on every response and every `Quota:RefreshSeconds` (300); the panel re-reads it every 30 seconds, and
+**Refresh** asks the coordinator's vendors now.
+
+```jsonc
+"Providers": {
+  "openai": { "Type": "openai-compatible", "Billing": { "MonthlyBudgetUsd": 50, "WarnPercent": 80 } }
+}
+// env: Providers__openai__Billing__AdminApiKey=sk-admin-...
+```
+
+**Where each number comes from:**
+
+| Provider | Windows | Spend |
+|---|---|---|
+| ChatGPT sign-in | `x-codex-*` response headers, then OpenAI's Codex usage endpoint (`Quota:ChatGptUsageUrl`, `""` turns it off) | none — a plan has windows, not a bill |
+| OpenAI key | `x-ratelimit-*` | `/v1/organization/costs` with an **admin** key (`Billing:AdminApiKey`) |
+| Anthropic key | `anthropic-ratelimit-*` | `/v1/organizations/cost_report` with an **admin** key |
+| OpenRouter | — | `/key`, with the ordinary key, including a limit set on the key itself |
+| Gemini | — | none; a Cloud Billing cap shows only as the 429 it causes |
+
+A node lists its own vendor backend and engines (`Upstream:Billing`, `Backend:Engines:<name>:Billing`) and its own
+ChatGPT sign-in, and reports them to the hub. An `openai` backend pointed at a vLLM is left out.
+
+**Nothing is estimated and nothing is enforced.** A percentage is one the vendor stated, or the vendor's spend over
+your budget. A budget reached turns the row red; the vendor's own cap is the one that refuses. Sign in with ChatGPT
+documents no usage API at all: the Codex endpoint is undocumented, and when it refuses, the panel says so and waits
+for the headers of the next real request.
 
 ## Inference backends
 

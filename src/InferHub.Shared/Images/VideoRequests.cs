@@ -81,6 +81,9 @@ public static class VideoSizes
     /// </summary>
     public const int MaxDimension = 2048;
 
+    /// <summary>The cloud sizes off the grid (105 D2).</summary>
+    public static readonly IReadOnlySet<(int Width, int Height)> VendorSizes = new HashSet<(int, int)> { (1920, 1080), (1080, 1920) };
+
     public static bool TryParse(string? value, out ImageSize size, out string error)
     {
         size = default;
@@ -108,7 +111,9 @@ public static class VideoSizes
             return false;
         }
 
-        if (width % Grid != 0 || height % Grid != 0)
+        // 105 D2: 1920x1080 is how a vendor's 1080p is written, and 1080 is not a multiple of 16. Admitted by
+        // name; a GPU recipe that does not offer it still refuses it naming its own list.
+        if ((width % Grid != 0 || height % Grid != 0) && !VendorSizes.Contains((width, height)))
         {
             error = $"size '{value}' must have both sides a multiple of {Grid} — a video pipeline "
                     + "downsamples by 16 where an image pipeline downsamples by 8, and this is one "

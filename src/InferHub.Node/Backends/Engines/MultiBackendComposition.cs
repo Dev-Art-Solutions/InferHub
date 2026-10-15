@@ -122,7 +122,9 @@ public static class MultiBackendComposition
                 TimeoutSeconds = engine.TimeoutSeconds
             }),
             services.GetRequiredService<ILogger<UpstreamBackend>>(),
-            kinds);
+            kinds,
+            // Phase 106: an openai engine's limits are this engine's, by its name.
+            quotaSubject: type == BackendOptions.OpenAi ? name : null);
 
         if (type != BackendOptions.LlamaCpp)
         {

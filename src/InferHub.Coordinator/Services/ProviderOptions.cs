@@ -203,6 +203,13 @@ public sealed class ProviderDefinition
     /// </remarks>
     public Dictionary<string, Dictionary<string, string>> Media { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// The month's budget and, for OpenAI and Anthropic, the admin key that reads the spend (106 D2).
+    /// Read only by the quota refresh; nothing routes on it — a budget reached is shown, never enforced
+    /// here, because the vendor's own cap is the one that refuses.
+    /// </summary>
+    public InferHub.Shared.Quota.QuotaBillingOptions Billing { get; set; } = new();
+
     /// <summary>The cloud media dialect a provider type speaks, or null when it serves no media (104 D3).</summary>
     public static string? MediaDialect(string? type) => type?.Trim().ToLowerInvariant() switch
     {

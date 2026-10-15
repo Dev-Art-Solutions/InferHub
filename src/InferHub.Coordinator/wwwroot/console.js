@@ -817,6 +817,115 @@
     }).join("");
   };
 
+  // ------------------------------------------------------------------ provider limits (phase 106)
+
+  const QUOTA_POLL_MS = 30000;
+  let quotaPollHandle = null;
+
+  const quotaPill = (level) => {
+    const cls = level === "ok" ? "pill-ok" : level === "warn" ? "pill-warn" : level === "limit" ? "pill-err" : "pill-muted";
+    const text = level === "limit" ? "at limit" : level === "unknown" ? "no data yet" : level;
+    return `<span class="pill ${cls}">${escapeHtml(text)}</span>`;
+  };
+
+  const quotaWhen = (iso) => {
+    if (!iso) return "";
+    const at = new Date(iso);
+    const minutes = Math.round((at - Date.now()) / 60000);
+    if (minutes <= 0) return "now";
+    if (minutes < 90) return `in ${minutes} min`;
+    if (minutes < 48 * 60) return `in ${Math.round(minutes / 60)} h`;
+    return at.toLocaleString();
+  };
+
+  const quotaBar = (percent, warnAt) => {
+    const p = Math.max(0, Math.min(100, Number(percent) || 0));
+    const cls = p >= 100 ? "pill-err" : p >= warnAt ? "pill-warn" : "pill-ok";
+    return `<span class="quota-bar"><span class="${cls}" style="width:${p}%"></span></span>`;
+  };
+
+  const quotaWindowCell = (w, warnAt) => w
+    ? `${quotaBar(w.usedPercent, warnAt)} <strong>${w.usedPercent}%</strong>`
+      + (w.resetsAtUtc ? `<div class="meta">resets ${escapeHtml(quotaWhen(w.resetsAtUtc))}</div>` : "")
+      + `<div class="meta">${w.source === "headers" ? "from a response" : "from the usage endpoint"} · ${escapeHtml(new Date(w.atUtc).toLocaleTimeString())}</div>`
+    : `<span class="matrix-no">—</span>`;
+
+  const quotaMoney = (v) => v === null || v === undefined ? "?" : `$${Number(v).toFixed(2)}`;
+
+  const quotaBilling = (b) => {
+    if (!b) return `<span class="matrix-no">—</span>`;
+    const hasPercent = b.usedPercent !== null && b.usedPercent !== undefined;
+    const head = b.budgetUsd
+      ? `${quotaBar(b.usedPercent ?? 0, b.warnPercent)} <strong>${quotaMoney(b.spentUsd)}</strong> of ${quotaMoney(b.budgetUsd)}${hasPercent ? ` (${b.usedPercent}%)` : ""}`
+      : `<strong>${quotaMoney(b.spentUsd)}</strong> spent`;
+    const source = b.spendSource ? ` · ${escapeHtml(b.spendSource)}` : "";
+    const error = b.error ? `<div class="why">${escapeHtml(b.error)}</div>` : "";
+    return `${head}<div class="meta">${escapeHtml(b.period)}${b.budgetSource === "vendor" ? " · the key's own limit" : ""}${source}</div>${error}`;
+  };
+
+  const quotaRows = (where, providers, warnAt) => providers.map(q => {
+    const windows = q.windows ?? [];
+    const five = windows.find(w => w.kind === "plan" && w.windowMinutes === 300)
+      ?? windows.find(w => w.kind === "plan" && w.name === "primary");
+    const weekly = windows.find(w => w.kind === "plan" && w.windowMinutes === 10080)
+      ?? windows.find(w => w.kind === "plan" && w.name === "secondary");
+    const others = windows.filter(w => w !== five && w !== weekly);
+    const rateCell = others.length
+      ? others.map(w => `<div>${escapeHtml(w.name)} ${quotaBar(w.usedPercent, warnAt)} ${w.usedPercent}%`
+        + (w.remaining !== null && w.remaining !== undefined ? ` <span class="meta">(${w.remaining} left)</span>` : "")
+        + `</div>`).join("")
+      : `<span class="matrix-no">—</span>`;
+    const notes = [
+      q.limitReached ? `<div class="why"><strong>${escapeHtml(q.limitReached)}</strong>${q.retryAtUtc ? ` — retry ${escapeHtml(quotaWhen(q.retryAtUtc))}` : ""}</div>` : "",
+      q.note ? `<div class="meta">${escapeHtml(q.note)}</div>` : ""
+    ].join("");
+    return `
+      <tr class="${q.level === "limit" ? "row-error" : ""}">
+        <td>${where}</td>
+        <td><code>${escapeHtml(q.subject)}</code> <span class="meta">${escapeHtml(q.type)}${q.plan ? ` · ${escapeHtml(q.plan)}` : ""}</span></td>
+        <td>${quotaPill(q.level)}</td>
+        <td>${quotaWindowCell(five, warnAt)}</td>
+        <td>${quotaWindowCell(weekly, warnAt)}</td>
+        <td>${rateCell}</td>
+        <td>${quotaBilling(q.billing)}</td>
+        <td>${notes || `<span class="matrix-no">—</span>`}</td>
+      </tr>`;
+  }).join("");
+
+  const renderQuota = (data) => {
+    const tbody = document.getElementById("quota");
+    if (!tbody) return;
+    const warnAt = data.warnPercent ?? 80;
+    const rows = quotaRows("Coordinator", data.coordinator ?? [], warnAt)
+      + (data.nodes ?? []).map(n => quotaRows(`Node <strong>${escapeHtml(n.name)}</strong>`, n.providers ?? [], warnAt)).join("");
+    if (!rows) {
+      emptyRow("quota", 8, "No cloud provider is configured on the coordinator or on any node.");
+    } else {
+      tbody.innerHTML = rows;
+    }
+    const meta = document.getElementById("quota-meta");
+    if (meta) {
+      meta.textContent = `refreshed every ${data.refreshSeconds}s`
+        + (data.lastRefreshUtc ? ` · coordinator last asked ${new Date(data.lastRefreshUtc).toLocaleTimeString()}` : "");
+    }
+  };
+
+  // Admin-only, like every /api/admin read; a page with no key yet simply shows nothing here.
+  const loadQuota = async (refresh = false) => {
+    const res = await fetch(refresh ? "/api/admin/quota/refresh" : "/api/admin/quota", {
+      method: refresh ? "POST" : "GET",
+      headers: adminHeaders()
+    });
+    if (!res.ok) {
+      if (refresh) throw new Error(`HTTP ${res.status}`);
+      return;
+    }
+    renderQuota(await res.json());
+  };
+
+  document.getElementById("quota-refresh")?.addEventListener("click", () =>
+    loadQuota(true).catch(err => toast("Provider limits", err.message, "err")));
+
   // ------------------------------------------------------------------ engines (phase 95)
 
   const engineStatePill = (engine) => {
@@ -3479,5 +3588,7 @@
   pollStatusNow();
   statusPollHandle = setInterval(pollStatusNow, STATUS_POLL_MS);
   ensureNodesPolling();
+  loadQuota().catch(() => {});
+  quotaPollHandle = setInterval(() => loadQuota().catch(() => {}), QUOTA_POLL_MS);
   streamLoop();
 })();

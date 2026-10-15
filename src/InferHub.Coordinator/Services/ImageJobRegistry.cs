@@ -284,8 +284,8 @@ public sealed class ImageJobRegistry
     }
 
     /// <param name="cloud">
-    /// Phase 104: the provider that runs this job instead of a node. It holds no node slot and reports
-    /// no progress — a vendor call has no steps to report — and it is never retried (104 D7).
+    /// Phase 104: the provider that runs this job instead of a node. It holds no node slot and it is never
+    /// retried (104 D7). A cloud clip reports progress while it is polled (105 D1); a picture has none.
     /// </param>
     private async Task RunAsync(Guid id, RoutableNode? node, InferHub.Shared.CloudMedia.CloudMediaRoute? cloud, PendingImageJob job)
     {
@@ -313,7 +313,7 @@ public sealed class ImageJobRegistry
         try
         {
             var result = cloud is not null
-                ? await media!.RunAsync(cloud, toolJob, job.Cancellation.Token)
+                ? await media!.RunAsync(cloud, toolJob, job.Cancellation.Token, progress)
                 : await tools.DispatchToolAsync(node!, toolJob, progress, job.Cancellation.Token);
 
             // One dispatch path, two renderings (phase-57 D10). The queue, the progress, the cancel,

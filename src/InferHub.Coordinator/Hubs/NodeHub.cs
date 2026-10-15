@@ -214,6 +214,17 @@ public sealed class NodeHub(
         return Task.CompletedTask;
     }
 
+    /// <summary>What a node said about its own cloud providers' limits (phase 106). The mailbox again; a node before v3.70 sends none.</summary>
+    public Task ReportQuotaState(InferHub.Shared.Quota.NodeQuotaState state)
+    {
+        if (services.GetService(typeof(NodeQuotaRegistry)) is NodeQuotaRegistry quotas)
+        {
+            quotas.Report(state);
+        }
+
+        return Task.CompletedTask;
+    }
+
     public Task ReportUpdateState(NodeUpdateState state)
     {
         if (services.GetService(typeof(NodeUpdateRegistry)) is NodeUpdateRegistry updates)

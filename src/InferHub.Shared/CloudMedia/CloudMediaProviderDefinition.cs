@@ -24,19 +24,32 @@ public static class CloudMediaDialects
     };
 
     /// <summary>
-    /// The capabilities a cloud provider can serve in this release. Video is phase 105; a map naming
-    /// it fails startup rather than declaring a kind nothing here can answer.
+    /// The capabilities a cloud provider can serve in this release. <c>video</c> since phase 105, and on
+    /// Gemini only (<see cref="Serves"/>).
     /// </summary>
     public static readonly IReadOnlyList<string> Capabilities =
     [
         CapabilityKinds.Image,
         CapabilityKinds.ImageEdit,
         CapabilityKinds.Speak,
-        CapabilityKinds.Transcribe
+        CapabilityKinds.Transcribe,
+        CapabilityKinds.Video
     ];
+
+    /// <summary>
+    /// Why OpenAI serves no video (105): the vendor shut the API down, so a map naming it fails startup
+    /// with this sentence rather than a 404 on the first clip.
+    /// </summary>
+    public const string NoOpenAiVideo =
+        "OpenAI shut down Sora 2 and its Videos API on 2026-09-24 and offers no replacement; map video on a gemini provider (Veo or Gemini Omni) instead.";
 
     public static bool IsSupportedCapability(string? capability) =>
         Capabilities.Contains(capability ?? string.Empty, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Whether this dialect can answer this capability at all.</summary>
+    public static bool Serves(string dialect, string? capability) =>
+        IsSupportedCapability(capability)
+        && !(dialect == OpenAi && string.Equals(capability, CapabilityKinds.Video, StringComparison.OrdinalIgnoreCase));
 }
 
 /// <summary>

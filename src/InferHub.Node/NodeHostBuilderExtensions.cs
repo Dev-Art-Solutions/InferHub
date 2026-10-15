@@ -87,7 +87,9 @@ public static class NodeHostBuilderExtensions
             .Bind(builder.Configuration.GetSection(CloudMediaOptions.SectionName))
             .ValidateOnStart();
         builder.Services.AddSingleton<IValidateOptions<CloudMediaOptions>, CloudMediaOptionsValidator>();
-        builder.Services.AddHttpClient(CloudMediaRuntime.HttpClientName).RemoveAllLoggers();
+        // 105 D5: redirects off, so a clip's download is followed by hand and the key stays on the vendor's host.
+        builder.Services.AddHttpClient(CloudMediaRuntime.HttpClientName).RemoveAllLoggers()
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
         builder.Services.AddSingleton<CloudMediaRuntime>();
 
         // Phase 46. The same section name and the same class the coordinator binds
@@ -157,7 +159,16 @@ public static class NodeHostBuilderExtensions
         });
         // The upstream client's timeout and auth are per-request (they come from options, which
         // can reload); the factory is here only to own the pooled handler.
-        builder.Services.AddHttpClient(UpstreamBackend.HttpClientName);
+        // Phase 106: every upstream response passes the quota handler, which reads the vendor's limit
+        // headers when a backend said whose they are, and does nothing otherwise.
+        builder.Services.Configure<InferHub.Shared.Quota.QuotaOptions>(builder.Configuration.GetSection(InferHub.Shared.Quota.QuotaOptions.SectionName));
+        builder.Services.AddSingleton(_ => new InferHub.Shared.Quota.QuotaTracker());
+        builder.Services.AddHttpClient(UpstreamBackend.HttpClientName)
+            .AddHttpMessageHandler(services => new InferHub.Shared.Quota.QuotaObservingHandler(services.GetRequiredService<InferHub.Shared.Quota.QuotaTracker>()));
+        // No loggers: an admin key travels in its headers.
+        builder.Services.AddHttpClient(Quota.NodeQuotaService.HttpClientName, http => http.Timeout = TimeSpan.FromSeconds(30)).RemoveAllLoggers();
+        builder.Services.AddSingleton<Quota.NodeQuotaService>();
+        builder.Services.AddHostedService(services => services.GetRequiredService<Quota.NodeQuotaService>());
 
         builder.Services.AddSingleton<INodeIdentity, FileNodeIdentity>();
         builder.Services.AddSingleton<IInferenceBackend>(services =>
@@ -200,7 +211,8 @@ public static class NodeHostBuilderExtensions
         builder.Services.Configure<Backends.ChatGpt.ChatGptNodeOptions>(
             builder.Configuration.GetSection(Backends.ChatGpt.ChatGptNodeOptions.SectionName));
         builder.Services.AddHttpClient(Backends.ChatGpt.NodeChatGpt.HttpClientName).RemoveAllLoggers();
-        builder.Services.AddHttpClient(Backends.ChatGpt.ChatGptBackend.HttpClientName);
+        builder.Services.AddHttpClient(Backends.ChatGpt.ChatGptBackend.HttpClientName)
+            .AddHttpMessageHandler(services => new InferHub.Shared.Quota.QuotaObservingHandler(services.GetRequiredService<InferHub.Shared.Quota.QuotaTracker>()));
         builder.Services.AddSingleton<Backends.ChatGpt.NodeChatGpt>();
         builder.Services.AddSingleton<Backends.ChatGpt.ChatGptBackend>();
         builder.Services.TryAddSingleton(TimeProvider.System);

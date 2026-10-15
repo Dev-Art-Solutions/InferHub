@@ -14,7 +14,7 @@ namespace InferHub.Tests;
 /// </summary>
 internal sealed class FakeMediaVendor : HttpMessageHandler
 {
-    public sealed record Seen(string Method, string Path, string? ContentType, IReadOnlyDictionary<string, string> Headers, byte[] Body)
+    public sealed record Seen(string Method, string Path, string? ContentType, IReadOnlyDictionary<string, string> Headers, byte[] Body, string Host = "")
     {
         public string Text => Encoding.UTF8.GetString(Body);
 
@@ -33,6 +33,20 @@ internal sealed class FakeMediaVendor : HttpMessageHandler
 
     public static readonly byte[] Mp3 = [.. "ID3"u8, 3, 0, 0, 0, 0, 0, 1, 0xFF, 0xFB, 0x90, 0x00];
 
+    /// <summary>Phase 105: how many polls a Veo operation answers <c>done: false</c> before it is done.</summary>
+    public int VeoPendingPolls { get; set; } = 1;
+
+    /// <summary>Phase 105: where a finished operation says the clip is. Null means this vendor's own <c>/files/clip-1:download</c>.</summary>
+    public string? VeoVideoUri { get; set; }
+
+    /// <summary>Phase 105: the download answers a 302 to another host, as Google's file download does.</summary>
+    public bool RedirectDownload { get; set; } = true;
+
+    /// <summary>Phase 105: the length the clips this vendor renders claim in their MP4 header.</summary>
+    public double ClipSeconds { get; set; } = 8;
+
+    private int polls;
+
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         var body = request.Content is null ? [] : await request.Content.ReadAsByteArrayAsync(cancellationToken);
@@ -48,7 +62,8 @@ internal sealed class FakeMediaVendor : HttpMessageHandler
             request.RequestUri!.AbsolutePath,
             request.Content?.Headers.ContentType?.ToString(),
             headers,
-            body);
+            body,
+            request.RequestUri.Host);
 
         Requests.Enqueue(seen);
 
@@ -96,6 +111,76 @@ internal sealed class FakeMediaVendor : HttpMessageHandler
                     ["segments"] = new JsonArray(new JsonObject { ["id"] = 0, ["start"] = 0.0, ["end"] = 2.5, ["text"] = TranscriptText })
                 }
                 : new JsonObject { ["text"] = TranscriptText, ["usage"] = new JsonObject { ["type"] = "tokens", ["input_tokens"] = 10 } });
+        }
+
+        // ---- phase 105: Veo's long-running operation, Google's file download, Gemini Omni --------------
+        if (path.EndsWith(":predictLongRunning", StringComparison.Ordinal))
+        {
+            Interlocked.Exchange(ref polls, 0);
+            return Json(new JsonObject { ["name"] = "models/veo-3.1-generate-preview/operations/op-1" });
+        }
+
+        if (path.Contains("/operations/", StringComparison.Ordinal))
+        {
+            if (Interlocked.Increment(ref polls) <= VeoPendingPolls)
+            {
+                return Json(new JsonObject { ["name"] = "models/veo-3.1-generate-preview/operations/op-1", ["done"] = false });
+            }
+
+            var uri = VeoVideoUri ?? $"https://{seen.Host}/v1beta/files/clip-1:download?alt=media";
+
+            return Json(new JsonObject
+            {
+                ["name"] = "models/veo-3.1-generate-preview/operations/op-1",
+                ["done"] = true,
+                ["response"] = new JsonObject
+                {
+                    ["generateVideoResponse"] = new JsonObject
+                    {
+                        ["generatedSamples"] = new JsonArray(new JsonObject { ["video"] = new JsonObject { ["uri"] = uri } })
+                    }
+                }
+            });
+        }
+
+        if (path.EndsWith("/files/clip-1:download", StringComparison.Ordinal))
+        {
+            if (RedirectDownload)
+            {
+                var redirect = new HttpResponseMessage(HttpStatusCode.Found);
+                redirect.Headers.Location = new Uri("https://storage.example/clip-1.mp4?signature=x");
+                return redirect;
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(Mp4(ClipSeconds)) };
+        }
+
+        if (seen.Host == "storage.example")
+        {
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(Mp4(ClipSeconds)) };
+        }
+
+        if (path.EndsWith("/interactions", StringComparison.Ordinal))
+        {
+            return Json(new JsonObject
+            {
+                ["id"] = "v1_1",
+                ["object"] = "interaction",
+                ["status"] = "completed",
+                ["model"] = seen.Json.GetProperty("model").GetString(),
+                ["steps"] = new JsonArray(
+                    new JsonObject { ["type"] = "user_input", ["content"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = "…" }) },
+                    new JsonObject
+                    {
+                        ["type"] = "model_output",
+                        ["content"] = new JsonArray(new JsonObject
+                        {
+                            ["type"] = "video",
+                            ["mime_type"] = "video/mp4",
+                            ["data"] = Convert.ToBase64String(Mp4(ClipSeconds))
+                        })
+                    })
+            });
         }
 
         if (path.EndsWith(":predict", StringComparison.Ordinal))
@@ -162,6 +247,26 @@ internal sealed class FakeMediaVendor : HttpMessageHandler
         BinaryPrimitives.WriteInt32BigEndian(bytes.AsSpan(20), height);
         bytes[24] = 8;
         bytes[25] = 6;
+        return bytes;
+    }
+
+    /// <summary>
+    /// The smallest MP4 a header reader walks: <c>ftyp</c>, then <c>moov</c> holding an <c>mvhd</c> whose
+    /// timescale is 1000 and whose duration is the clip's length — and some <c>mdat</c> padding.
+    /// </summary>
+    public static byte[] Mp4(double seconds)
+    {
+        var bytes = new byte[16 + 8 + 100 + 64];
+        BinaryPrimitives.WriteUInt32BigEndian(bytes, 16);
+        "ftypisom"u8.CopyTo(bytes.AsSpan(4));
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(16), 108);
+        "moov"u8.CopyTo(bytes.AsSpan(20));
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(24), 100);
+        "mvhd"u8.CopyTo(bytes.AsSpan(28));
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(44), 1000);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(48), (uint)(seconds * 1000));
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(124), 64);
+        "mdat"u8.CopyTo(bytes.AsSpan(128));
         return bytes;
     }
 

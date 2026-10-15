@@ -209,12 +209,25 @@ builder.Services.AddOptions<ProviderOptions>()
     .ValidateOnStart();
 builder.Services.AddSingleton<IValidateOptions<ProviderOptions>, ProviderOptionsValidator>();
 builder.Services.AddSingleton<IProviderRegistry, ProviderRegistry>();
-builder.Services.AddHttpClient(ProviderDispatcher.HttpClientName);
+// Phase 106. Every provider response passes the quota handler, which reads the vendor's limit headers
+// and nothing else; the refresh asks for spend and a ChatGPT plan's windows on its own loop.
+builder.Services.Configure<InferHub.Shared.Quota.QuotaOptions>(builder.Configuration.GetSection(InferHub.Shared.Quota.QuotaOptions.SectionName));
+builder.Services.AddSingleton(_ => new InferHub.Shared.Quota.QuotaTracker());
+builder.Services.AddHttpClient(ProviderDispatcher.HttpClientName)
+    .AddHttpMessageHandler(services => new InferHub.Shared.Quota.QuotaObservingHandler(services.GetRequiredService<InferHub.Shared.Quota.QuotaTracker>()));
 builder.Services.AddSingleton<IProviderDispatcher, ProviderDispatcher>();
+// No loggers: an admin key travels in its headers.
+builder.Services.AddHttpClient(CoordinatorQuotaService.HttpClientName, http => http.Timeout = TimeSpan.FromSeconds(30)).RemoveAllLoggers();
+builder.Services.AddSingleton<NodeQuotaRegistry>();
+builder.Services.AddSingleton<CoordinatorQuotaService>();
+builder.Services.AddHostedService(services => services.GetRequiredService<CoordinatorQuotaService>());
 
 // Cloud pictures, voices and transcripts (phase 104). Inert with no provider `Media` map. No loggers
 // on its HttpClient: a request URL is harmless, but a body logged at Trace would be a prompt (rule 7).
-builder.Services.AddHttpClient(MediaProviders.HttpClientName).RemoveAllLoggers();
+// 105 D5: no automatic redirects, so a clip's download is followed by hand and the key never leaves the vendor's host.
+builder.Services.AddHttpClient(MediaProviders.HttpClientName).RemoveAllLoggers()
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false })
+    .AddHttpMessageHandler(services => new InferHub.Shared.Quota.QuotaObservingHandler(services.GetRequiredService<InferHub.Shared.Quota.QuotaTracker>()));
 builder.Services.AddSingleton<MediaProviders>();
 
 // ChatGPT sign-in (phase 103). Registered always and inert unless a `Type: chatgpt` provider exists:
@@ -342,6 +355,7 @@ app.MapVideoEndpoints();
 app.MapVideoJobEndpoints();
 app.MapAdminEndpoints();
 InferHub.Coordinator.ChatGpt.ChatGptEndpoints.MapChatGptEndpoints(app);
+app.MapQuotaEndpoints();
 
 if (vectorStoreEnabled)
 {

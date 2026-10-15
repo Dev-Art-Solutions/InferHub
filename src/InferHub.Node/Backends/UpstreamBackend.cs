@@ -39,7 +39,8 @@ public sealed class UpstreamBackend(
     IOptions<BackendOptions> backend,
     IOptions<UpstreamBackendOptions> options,
     ILogger<UpstreamBackend> logger,
-    IReadOnlyList<string>? declaredKinds = null) : IInferenceBackend, IClosedSetScorer
+    IReadOnlyList<string>? declaredKinds = null,
+    string? quotaSubject = null) : IInferenceBackend, IClosedSetScorer
 {
     public const string HttpClientName = "openai-upstream";
 
@@ -88,6 +89,13 @@ public sealed class UpstreamBackend(
 
     private string Type => backend.Value.Normalized();
 
+    /// <summary>
+    /// Phase 106: whose limits a response's headers are — the engine's name, or the backend type on a
+    /// single-backend node. Null for a local engine, which has no vendor limit to read.
+    /// </summary>
+    public string? QuotaSubject => quotaSubject ?? (Type is BackendOptions.OpenAi or BackendOptions.OpenRouter
+        or BackendOptions.Anthropic or BackendOptions.Gemini ? Type : null);
+
     public async Task<IReadOnlyList<ModelInfo>?> ListModelsAsync(CancellationToken cancellationToken)
     {
         try
@@ -120,18 +128,21 @@ public sealed class UpstreamBackend(
 
     public async Task<string> ChatAsync(string requestJson, CancellationToken cancellationToken)
     {
+        using var quota = InferHub.Shared.Quota.QuotaScope.Enter(QuotaSubject);
         using var http = CreateHttpClient();
         return await Dialect(http).ChatAsync(requestJson, cancellationToken);
     }
 
     public async Task<string> GenerateAsync(string requestJson, CancellationToken cancellationToken)
     {
+        using var quota = InferHub.Shared.Quota.QuotaScope.Enter(QuotaSubject);
         using var http = CreateHttpClient();
         return await Dialect(http).GenerateAsync(requestJson, cancellationToken);
     }
 
     public async Task<string> EmbedAsync(string requestJson, CancellationToken cancellationToken)
     {
+        using var quota = InferHub.Shared.Quota.QuotaScope.Enter(QuotaSubject);
         using var http = CreateHttpClient();
         return await Dialect(http).EmbedAsync(requestJson, cancellationToken);
     }
@@ -143,6 +154,8 @@ public sealed class UpstreamBackend(
     {
         // The client is disposed when the enumeration ends — including when the coordinator
         // abandons it — so an abandoned stream does not leak an upstream connection.
+        // The vendor's headers arrive before the first chunk, inside this scope (106).
+        using var quota = InferHub.Shared.Quota.QuotaScope.Enter(QuotaSubject);
         using var http = CreateHttpClient();
 
         await foreach (var chunk in Dialect(http).StreamAsync(kind, requestJson, cancellationToken))

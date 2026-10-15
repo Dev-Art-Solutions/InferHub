@@ -8,6 +8,7 @@ using InferHub.Shared.ChatGpt;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.Gemini;
 using InferHub.Shared.OpenAi;
+using InferHub.Shared.Quota;
 using InferHub.Shared.Upstream;
 
 namespace InferHub.Coordinator.Services;
@@ -186,6 +187,8 @@ public sealed class ProviderDispatcher(
 
         if (!stream)
         {
+            // Phase 106: whatever the vendor says about its limits on this call is this provider's.
+            using var quota = QuotaScope.Enter(route.Id);
             using var http = CreateHttpClient(route);
             var client = Dialect(route, http);
 
@@ -240,6 +243,7 @@ public sealed class ProviderDispatcher(
         {
             try
             {
+                using var quota = QuotaScope.Enter(route.Id);
                 using var http = CreateHttpClient(route);
 
                 await foreach (var chunk in Dialect(route, http).StreamAsync(kind, upstreamJson, cancellationToken))

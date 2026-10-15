@@ -42,6 +42,9 @@ public sealed class EngineOptions
 
     public int TimeoutSeconds { get; set; } = 300;
 
+    /// <summary>The budget and admin key for an <c>openai</c> engine that is OpenAI itself (106 D2). Shown, never enforced.</summary>
+    public InferHub.Shared.Quota.QuotaBillingOptions Billing { get; set; } = new();
+
     /// <summary>
     /// <c>llamacpp</c> / <c>openai</c>: this server is an embedding server. <c>llama-server
     /// --embeddings</c> serves <em>only</em> embeddings, so the engine declares <c>embed</c> and not

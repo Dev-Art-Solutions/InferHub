@@ -74,6 +74,7 @@ public static class AdminEndpoints
             NodeBackendRegistry backends,
             NodeUpdateRegistry updates,
             NodeLimitsRegistry limits,
+            NodeQuotaRegistry quotas,
             ILoggerFactory loggerFactory) =>
         {
             var logger = loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Admin");
@@ -100,6 +101,7 @@ public static class AdminEndpoints
             backends.Forget(nodeId);
             updates.Forget(nodeId);
             limits.Forget(nodeId);
+            quotas.Forget(nodeId);
             audit.Record(nodeId, "deregister", ActorOf(context), DateTimeOffset.UtcNow);
 
             logger.LogInformation(

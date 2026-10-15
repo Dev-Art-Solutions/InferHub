@@ -66,7 +66,8 @@ public static class VideoRenderer
         return new ImageOutcome
         {
             Status = 200,
-            Units = MegapixelSteps(produced),
+            // 105 D3: a vendor clip states its own count (one step per megapixel per second) — it has no frames or steps.
+            Units = report?.MegapixelSteps ?? MegapixelSteps(produced),
             UnitKind = UsageUnitKinds.MegapixelSteps,
 
             // Both, always — see UsageUnitKinds.VideoSeconds. The quota is spent in the first and the
@@ -269,7 +270,7 @@ public static class VideoRenderer
 /// produced a video, and failing the request over a missing field would turn a bookkeeping gap into
 /// a user-visible outage.
 /// </summary>
-public sealed record VideoWorkerReport(int? Steps, GeneratedVideo? Video, IReadOnlyList<string>? Warnings)
+public sealed record VideoWorkerReport(int? Steps, GeneratedVideo? Video, IReadOnlyList<string>? Warnings, double? MegapixelSteps = null)
 {
     public static VideoWorkerReport? TryParse(string? payloadJson)
     {
@@ -312,7 +313,7 @@ public sealed record VideoWorkerReport(int? Steps, GeneratedVideo? Video, IReadO
                 }
             }
 
-            return new VideoWorkerReport(steps, video, Strings(root, "warnings"));
+            return new VideoWorkerReport(steps, video, Strings(root, "warnings"), Number(root, "megapixel_steps"));
         }
         catch (JsonException)
         {

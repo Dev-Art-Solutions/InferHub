@@ -26,6 +26,82 @@ internal static class MediaBytes
     }
 
     /// <summary>
+    /// A clip's length from its MP4 <c>moov/mvhd</c> box — the container's own header, read the way
+    /// <see cref="PngSize"/> reads a picture's (105 D3). No frame is decoded. Null when the bytes are
+    /// not an MP4 this can walk.
+    /// </summary>
+    public static double? Mp4Seconds(ReadOnlySpan<byte> bytes)
+    {
+        var position = 0;
+
+        while (position + 8 <= bytes.Length)
+        {
+            long size = BinaryPrimitives.ReadUInt32BigEndian(bytes[position..]);
+            var header = 8;
+
+            if (size == 1 && position + 16 <= bytes.Length)
+            {
+                size = (long)BinaryPrimitives.ReadUInt64BigEndian(bytes[(position + 8)..]);
+                header = 16;
+            }
+            else if (size == 0)
+            {
+                size = bytes.Length - position;
+            }
+
+            if (size < header || position + size > bytes.Length)
+            {
+                return null;
+            }
+
+            if (IsAscii(bytes, position + 4, "moov"))
+            {
+                // Descend: mvhd is a direct child of moov.
+                var child = position + header;
+                var end = position + (int)size;
+
+                while (child + 8 <= end)
+                {
+                    var childSize = (int)BinaryPrimitives.ReadUInt32BigEndian(bytes[child..]);
+
+                    if (childSize < 8 || child + childSize > end)
+                    {
+                        return null;
+                    }
+
+                    if (IsAscii(bytes, child + 4, "mvhd") && child + 32 <= end)
+                    {
+                        var version = bytes[child + 8];
+                        uint timescale;
+                        ulong duration;
+
+                        if (version == 1 && child + 44 <= end)
+                        {
+                            timescale = BinaryPrimitives.ReadUInt32BigEndian(bytes[(child + 28)..]);
+                            duration = BinaryPrimitives.ReadUInt64BigEndian(bytes[(child + 32)..]);
+                        }
+                        else
+                        {
+                            timescale = BinaryPrimitives.ReadUInt32BigEndian(bytes[(child + 20)..]);
+                            duration = BinaryPrimitives.ReadUInt32BigEndian(bytes[(child + 24)..]);
+                        }
+
+                        return timescale > 0 && duration > 0 ? Math.Round((double)duration / timescale, 3) : null;
+                    }
+
+                    child += childSize;
+                }
+
+                return null;
+            }
+
+            position += (int)size;
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Seconds of audio in a canonical PCM WAV, read from its <c>fmt </c> and <c>data</c> chunks.
     /// Null for anything else — a transcript's units are never guessed from a byte count (104 D5).
     /// </summary>

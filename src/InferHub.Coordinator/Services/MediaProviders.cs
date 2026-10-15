@@ -33,7 +33,9 @@ public sealed class MediaProviders
         IOptions<ProviderOptions> options,
         IHttpClientFactory httpClients,
         Metrics metrics,
-        ILogger<MediaProviders> logger)
+        ILogger<MediaProviders> logger,
+        IOptions<InferHub.Coordinator.Endpoints.ToolEdgeOptions>? tools = null,
+        CloudMediaTiming? timing = null)
     {
         this.options = options.Value;
         this.metrics = metrics;
@@ -48,7 +50,8 @@ public sealed class MediaProviders
 
         // Each route carries its own timeout (TimeoutSeconds); the client's must not cut it short.
         http.Timeout = Timeout.InfiniteTimeSpan;
-        client = new CloudMediaClient(http);
+        // 105 D5: a clip a vendor hands back is held to the same ceiling as any worker's output.
+        client = new CloudMediaClient(http, tools?.Value.MaxAttachmentBytes ?? ToolAttachmentLimits.DefaultMaxBytes, timing?.PollInterval);
     }
 
     public CloudMediaCatalog Catalog { get; }
@@ -89,9 +92,12 @@ public sealed class MediaProviders
     /// (61 D4/66): the counters, the provider's last error — and the capability, model, provider and
     /// outcome in the log, never the prompt, the audio or the picture (rule 7).
     /// </summary>
-    public async Task<ToolResult> RunAsync(CloudMediaRoute route, ToolJob job, CancellationToken cancellationToken)
+    /// <param name="progress">A clip's polling, as a worker's progress frames (105 D1). Null for one-request work.</param>
+    public async Task<ToolResult> RunAsync(CloudMediaRoute route, ToolJob job, CancellationToken cancellationToken, IProgress<ToolChunk>? progress = null)
     {
-        var (result, sent) = await client.RunReportedAsync(job, route, attachments: null, cancellationToken);
+        // Phase 106: the vendor's limit headers on this call are this provider's.
+        using var scope = InferHub.Shared.Quota.QuotaScope.Enter(route.ProviderId);
+        var (result, sent) = await client.RunReportedAsync(job, route, attachments: null, cancellationToken, progress);
 
         // Counted only when something left the hub: a request refused before the call (104 D4) is the
         // caller's 400, and a provider that was never asked neither served nor failed it.

@@ -150,10 +150,13 @@ public sealed class CloudMediaCatalog
                 if (!CloudMediaDialects.IsSupportedCapability(capability))
                 {
                     errors.Add($"{path}:Media:{capability} is not a capability a cloud provider serves. " +
-                               $"Use one of: {string.Join(", ", CloudMediaDialects.Capabilities)}" +
-                               (string.Equals(capability, CapabilityKinds.Video, StringComparison.OrdinalIgnoreCase)
-                                   ? " (cloud video is not in this release)."
-                                   : "."));
+                               $"Use one of: {string.Join(", ", CloudMediaDialects.Capabilities)}.");
+                    continue;
+                }
+
+                if (!CloudMediaDialects.Serves(dialect, capability))
+                {
+                    errors.Add($"{path}:Media:{capability}: {CloudMediaDialects.NoOpenAiVideo}");
                     continue;
                 }
 

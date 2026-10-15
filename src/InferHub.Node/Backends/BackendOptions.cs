@@ -190,6 +190,12 @@ public sealed class UpstreamBackendOptions
     public string? Title { get; set; }
 
     /// <summary>
+    /// The month's budget and the admin key that reads the spend (106 D2) — this node's own, for this
+    /// node's own credential. Shown on the hub's console; nothing routes on it.
+    /// </summary>
+    public InferHub.Shared.Quota.QuotaBillingOptions Billing { get; set; } = new();
+
+    /// <summary>
     /// The base URL to point an <c>HttpClient</c> at: the operator's when they named one, and the
     /// vendor's own when the type supplies it. Null for <c>openai</c> with nothing configured, which
     /// is the startup failure the validator raises.

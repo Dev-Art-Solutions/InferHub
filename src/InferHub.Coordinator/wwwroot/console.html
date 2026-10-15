@@ -38,6 +38,11 @@
     .pill-ok { background: rgba(74, 222, 128, 0.12); color: var(--ok); }
     .pill-warn { background: rgba(250, 204, 21, 0.12); color: var(--warn); }
     .pill-err { background: rgba(248, 113, 113, 0.12); color: var(--err); }
+    .quota-bar { display: inline-block; width: 72px; height: 8px; border-radius: 4px; background: rgba(127, 127, 127, 0.25); vertical-align: middle; overflow: hidden; }
+    .quota-bar > span { display: block; height: 100%; }
+    .quota-bar > .pill-ok { background: var(--ok); }
+    .quota-bar > .pill-warn { background: var(--warn); }
+    .quota-bar > .pill-err { background: var(--err); }
     .pill-muted { background: rgba(139, 148, 167, 0.18); color: var(--muted); }
     .empty { color: var(--muted); font-style: italic; padding: 16px; text-align: center; }
     .actions { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -267,6 +272,37 @@
           </tr>
         </thead>
         <tbody id="providers"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!--
+    Phase 106. How close each cloud provider is to a limit: a ChatGPT plan's five-hour and weekly
+    windows, a key's rate limits, the month's spend against a budget, and the vendor's last refusal.
+    The coordinator's own providers and each node's own, side by side - never added up, because each
+    holds its own credential and spends its own limit. Read from /api/admin/quota every 30 seconds.
+  -->
+  <section id="quota-section">
+    <h2>Provider limits</h2>
+    <div class="actions" style="flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px">
+      <button id="quota-refresh" title="Ask the coordinator's vendors now. Nodes refresh on their own loop.">Refresh</button>
+      <span id="quota-meta" class="meta"></span>
+    </div>
+    <div class="table-wrap">
+      <table id="quota-table">
+        <thead>
+          <tr>
+            <th>Where</th>
+            <th>Provider</th>
+            <th>State</th>
+            <th>5-hour</th>
+            <th>Weekly</th>
+            <th>Rate limits</th>
+            <th>Billing</th>
+            <th>Note</th>
+          </tr>
+        </thead>
+        <tbody id="quota"></tbody>
       </table>
     </div>
   </section>

@@ -24,14 +24,17 @@ public sealed class CloudMediaRuntime
     public CloudMediaRuntime(
         IOptions<CloudMediaOptions> options,
         IHttpClientFactory httpClients,
-        ILogger<CloudMediaRuntime> logger)
+        ILogger<CloudMediaRuntime> logger,
+        IOptions<ToolOptions>? tools = null,
+        CloudMediaTiming? timing = null)
     {
         this.logger = logger;
         Catalog = new CloudMediaCatalog(options.Value.Providers);
 
         var http = httpClients.CreateClient(HttpClientName);
         http.Timeout = Timeout.InfiniteTimeSpan;
-        client = new CloudMediaClient(http);
+        // 105 D5: a vendor's clip is held to the node's own attachment ceiling.
+        client = new CloudMediaClient(http, tools?.Value.MaxAttachmentBytes ?? ToolAttachmentLimits.DefaultMaxBytes, timing?.PollInterval);
         Capabilities = Catalog.Capabilities();
 
         if (!Catalog.IsEmpty)
@@ -75,7 +78,8 @@ public sealed class CloudMediaRuntime
         ToolJob job,
         IStreamedAttachmentSource? upload,
         long maxBytes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<ToolChunk>? progress = null)
     {
         if (!Catalog.TryResolve(job.Capability, job.Model, out var route))
         {
@@ -97,7 +101,7 @@ public sealed class CloudMediaRuntime
             }
         }
 
-        var result = await client.RunAsync(job, route, attachments, cancellationToken);
+        var result = (await client.RunReportedAsync(job, route, attachments, cancellationToken, progress)).Result;
 
         // The capability, the model, the provider and the outcome — never the prompt, the audio or
         // the picture (rule 7), and never the key.

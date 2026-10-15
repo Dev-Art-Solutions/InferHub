@@ -37,7 +37,8 @@ public sealed class CoordinatorConnection(
     Backends.Colibri.IColibriControl? colibri = null,
     Backends.Strata.IStrataControl? strata = null,
     Update.UpdateManager? updates = null,
-    Resources.Limits.IEngineLimiter? limiter = null) : IAsyncDisposable
+    Resources.Limits.IEngineLimiter? limiter = null,
+    InferHub.Shared.Quota.QuotaTracker? quota = null) : IAsyncDisposable
 {
     /// <summary>
     /// Phase 97's catalogue report, one per engine that has a catalogue (99): each has its own hub
@@ -73,6 +74,11 @@ public sealed class CoordinatorConnection(
     private bool subscribedToCatalogs;
     private bool subscribedToUpdates;
     private bool subscribedToLimits;
+    private bool subscribedToQuota;
+    private int quotaReportQueued;
+
+    /// <summary>How long a change to the provider limits waits before it is reported, so a burst of responses is one report.</summary>
+    internal TimeSpan QuotaReportDelay { get; set; } = TimeSpan.FromSeconds(10);
     private int onDemandBeatQueued;
     private LocalVectorStore? tailedStore;
 
@@ -85,6 +91,7 @@ public sealed class CoordinatorConnection(
         SubscribeToCatalogs();
         SubscribeToUpdates();
         SubscribeToLimits();
+        SubscribeToQuota();
         retrieval.CorpusChanged += OnCorpusChanged;
         return ConnectUntilSuccessfulAsync(cancellationToken);
     }
@@ -98,6 +105,7 @@ public sealed class CoordinatorConnection(
         UnsubscribeFromCatalogs();
         UnsubscribeFromUpdates();
         UnsubscribeFromLimits();
+        UnsubscribeFromQuota();
         retrieval.CorpusChanged -= OnCorpusChanged;
         UnsubscribeFromTailedStore();
         await lifetime.CancelAsync();
@@ -352,6 +360,92 @@ public sealed class CoordinatorConnection(
         catch (Exception ex)
         {
             logger.LogDebug(ex, "This coordinator did not accept a runtime limits report");
+        }
+    }
+
+    /// <summary>
+    /// Phase 106. Every vendor response can move a window, so a change is reported at most every ten
+    /// seconds rather than once per request.
+    /// </summary>
+    private void SubscribeToQuota()
+    {
+        if (quota is null || subscribedToQuota)
+        {
+            return;
+        }
+
+        subscribedToQuota = true;
+        quota.Changed += OnQuotaChanged;
+    }
+
+    private void UnsubscribeFromQuota()
+    {
+        if (!subscribedToQuota || quota is null)
+        {
+            return;
+        }
+
+        subscribedToQuota = false;
+        quota.Changed -= OnQuotaChanged;
+    }
+
+    private void OnQuotaChanged()
+    {
+        if (Interlocked.Exchange(ref quotaReportQueued, 1) == 1)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(QuotaReportDelay, lifetime.Token);
+                Volatile.Write(ref quotaReportQueued, 0);
+                await ReportQuotaStateAsync(lifetime.Token);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                Volatile.Write(ref quotaReportQueued, 0);
+                logger.LogDebug(ex, "Could not report the provider limits after they changed");
+            }
+        });
+    }
+
+    /// <summary>
+    /// Tells the hub how close this node's own providers are to a limit (phase 106). Sent on registration,
+    /// on the model loop and (throttled) on every change, by a node that has any. A hub older than v3.70
+    /// has no such method: a debug line (40 D1).
+    /// </summary>
+    private async Task ReportQuotaStateAsync(CancellationToken cancellationToken)
+    {
+        var activeConnection = connection;
+
+        if (quota is null || activeConnection is not { State: HubConnectionState.Connected })
+        {
+            return;
+        }
+
+        var providers = quota.Snapshot();
+
+        if (providers.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await activeConnection.InvokeAsync(
+                "ReportQuotaState",
+                new InferHub.Shared.Quota.NodeQuotaState(nodeId, providers, DateTimeOffset.UtcNow),
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "This coordinator did not accept a provider limits report");
         }
     }
 
@@ -834,6 +928,8 @@ public sealed class CoordinatorConnection(
         await ReportUpdateStateAsync(cancellationToken);
         // Phase 102, for the same reason: limits hold whether or not the engine is up.
         await ReportLimitsStateAsync(cancellationToken);
+        // Phase 106: a provider at its limit is exactly when the engine may look down.
+        await ReportQuotaStateAsync(cancellationToken);
 
         logger.LogInformation(
             "Registered node {NodeId} ({NodeName}) with coordinator",
@@ -1684,6 +1780,9 @@ public sealed class CoordinatorConnection(
 
         // Phase 102: the runtime limits and what each runtime uses now.
         await ReportLimitsStateAsync(cancellationToken);
+
+        // Phase 106: how close this node's own cloud providers are to a limit.
+        await ReportQuotaStateAsync(cancellationToken);
     }
 
     /// <summary>
