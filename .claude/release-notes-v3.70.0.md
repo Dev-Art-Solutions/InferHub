@@ -69,6 +69,10 @@ The stand-in itself needed one fix: InferHub's upstream clients send **chunked**
 `http.server` reads none without `Content-Length` — the 429 test was answering an empty body until it learned to
 read chunks. (Known from v3.62; recorded again because it cost a run.)
 
+## The published binaries
+
+The published `inferhub-coordinator:3.70.0` and `inferhub-node:3.70.0` images (revision label `1e4843a`, the tag commit) were pulled from GHCR and their `/app` binaries run natively against the same stand-in: a hub provider chat and a node chat both read their rate windows (92% of requests), spend showed on both hosts (hub 62.5% of $20, node 125% of $10, `limit`), and a **1920x1080** Veo clip was submitted at 16:9 / 1080p / 8 s, polled, and fetched with the key from the vendor host and without it from the redirect target. This exercised the binaries, not the containers' OS layer.
+
 ## Not established
 
 - **No real ChatGPT account's windows were read.** Sign in with ChatGPT documents no usage endpoint and no usage
