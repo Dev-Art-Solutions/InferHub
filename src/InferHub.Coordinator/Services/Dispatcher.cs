@@ -89,14 +89,6 @@ public sealed class Dispatcher(
         registry.IncrementInFlight(node.ConnectionId);
         metrics.RecordRequestStart(node.NodeId);
 
-        using var registration = cancellationToken.Register(
-            static state =>
-            {
-                var (dispatcher, connectionId, jobId) = ((Dispatcher, string, Guid))state!;
-                dispatcher.SendCancelJob(connectionId, jobId);
-            },
-            (this, node.ConnectionId, job.JobId));
-
         try
         {
             logger.LogInformation(
@@ -109,6 +101,16 @@ public sealed class Dispatcher(
             await hubContext.Clients.Client(node.ConnectionId).SendAsync("RunJob", job, cancellationToken);
 
             return await tcs.Task.WaitAsync(deadline.Timeout, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Phase 107: told here, not from a registration on the caller's token. WaitAsync's own
+            // registration runs first and resumes this method inline, so a `using` registration was
+            // disposed before its callback ran — a cancelled image or video job never reached the
+            // node, which rendered it to the end. Serial dispatch on the node hid it: the next job
+            // simply waited behind the one nobody had stopped.
+            SendCancelJob(node.ConnectionId, job.JobId);
+            throw;
         }
         catch (TimeoutException)
         {
@@ -167,6 +169,13 @@ public sealed class Dispatcher(
                 registry.DecrementInFlight(removed.ConnectionId);
                 removed.CancellationRegistration.Dispose();
                 removed.Channel.Writer.TryComplete();
+
+                // Phase 107: a caller who leaves before the first chunk lands here, not in
+                // CancelStream — the wait resumed inline and took the pending entry first.
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    SendCancelJob(removed.ConnectionId, job.JobId);
+                }
             }
 
             throw;
@@ -202,14 +211,6 @@ public sealed class Dispatcher(
         registry.IncrementInFlight(node.ConnectionId);
         metrics.RecordRequestStart(node.NodeId);
 
-        using var registration = cancellationToken.Register(
-            static state =>
-            {
-                var (dispatcher, connectionId, jobId) = ((Dispatcher, string, Guid))state!;
-                dispatcher.SendCancelJob(connectionId, jobId);
-            },
-            (this, node.ConnectionId, job.JobId));
-
         try
         {
             // The capability, the model and the node — never the payload and never an attachment.
@@ -223,6 +224,16 @@ public sealed class Dispatcher(
             await hubContext.Clients.Client(node.ConnectionId).SendAsync("ExecuteToolJob", job, cancellationToken);
 
             return await tcs.Task.WaitAsync(deadline.Timeout, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Phase 107: told here, not from a registration on the caller's token. WaitAsync's own
+            // registration runs first and resumes this method inline, so a `using` registration was
+            // disposed before its callback ran — a cancelled image or video job never reached the
+            // node, which rendered it to the end. Serial dispatch on the node hid it: the next job
+            // simply waited behind the one nobody had stopped.
+            SendCancelJob(node.ConnectionId, job.JobId);
+            throw;
         }
         catch (TimeoutException)
         {
@@ -276,6 +287,13 @@ public sealed class Dispatcher(
                 registry.DecrementInFlight(removed.ConnectionId);
                 removed.CancellationRegistration.Dispose();
                 removed.Channel.Writer.TryComplete();
+
+                // Phase 107: a caller who leaves before the first chunk lands here, not in
+                // CancelStream — the wait resumed inline and took the pending entry first.
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    SendCancelJob(removed.ConnectionId, job.JobId);
+                }
             }
 
             throw;
@@ -547,6 +565,8 @@ public sealed class Dispatcher(
             pending.Channel.Writer.TryComplete(exception);
         }
     }
+
+    public void RequestCancel(RoutableNode node, Guid jobId) => SendCancelJob(node.ConnectionId, jobId);
 
     private void SendCancelJob(string connectionId, Guid jobId)
     {

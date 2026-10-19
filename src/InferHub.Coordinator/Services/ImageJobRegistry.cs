@@ -314,7 +314,7 @@ public sealed class ImageJobRegistry
         {
             var result = cloud is not null
                 ? await media!.RunAsync(cloud, toolJob, job.Cancellation.Token, progress)
-                : await tools.DispatchToolAsync(node!, toolJob, progress, job.Cancellation.Token);
+                : await DispatchToNodeAsync(node!, toolJob, progress, job.Cancellation.Token);
 
             // One dispatch path, two renderings (phase-57 D10). The queue, the progress, the cancel,
             // the retention and the archive are the same for a clip as for a picture; what differs is
@@ -407,6 +407,25 @@ public sealed class ImageJobRegistry
 
             Pump();
         }
+    }
+
+    /// <summary>
+    /// Phase 107. A cancel asks the node and goes on waiting for its answer, which is what 47 D3
+    /// always said and what the dispatch did not do: it gave up on the caller's token, freed the node
+    /// here at once, and the pump sent the next job to a worker still winding down — a
+    /// <c>tool_busy</c> as soon as a node ran jobs side by side. The dispatch deadline still bounds
+    /// the wait, and a node that goes away still fails it.
+    /// </summary>
+    private async Task<ToolResult> DispatchToNodeAsync(
+        RoutableNode node,
+        ToolJob toolJob,
+        IProgress<ToolChunk> progress,
+        CancellationToken cancelRequested)
+    {
+        cancelRequested.ThrowIfCancellationRequested();
+
+        using var ask = cancelRequested.Register(() => tools.RequestCancel(node, toolJob.JobId));
+        return await tools.DispatchToolAsync(node, toolJob, progress, CancellationToken.None);
     }
 
     /// <summary>

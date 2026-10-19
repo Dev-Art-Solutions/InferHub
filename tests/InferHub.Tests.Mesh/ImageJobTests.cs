@@ -136,7 +136,9 @@ public class ImageJobTests
     [Fact]
     public async Task AWorkerThatIgnoresACancelIsTerminatedPastTheGraceAndTheNodeKeepsServing()
     {
-        await using var mesh = await Mesh("--ignore-cancel");
+        // A one-second grace inside a 2.4-second job, so the grace — not the job — ends it. Until
+        // phase 107 no hub cancel reached the node, and this passed on the hub's own say-so.
+        await using var mesh = await Mesh("--ignore-cancel", cancelGraceSeconds: 1);
 
         var id = await Submit(mesh);
         await WaitForStep(mesh, id, atLeast: 2);
@@ -146,6 +148,7 @@ public class ImageJobTests
         var final = await WaitForTerminal(mesh, id, timeout: TimeSpan.FromSeconds(40));
 
         Assert.Equal(ImageJobStates.Cancelled, final.GetProperty("state").GetString());
+        Assert.Contains("did not stop within", final.GetProperty("error").GetString());
 
         // A tool failure is a failed job and never a failed node (phase-41 D6): the node is still
         // registered and still serves the next one.
@@ -228,9 +231,11 @@ public class ImageJobTests
 
     private static Task<ImageMesh> Mesh(
         string? workerArgument = null,
-        Action<InferHub.Shared.Images.ImageEdgeOptions>? configureImages = null)
+        Action<InferHub.Shared.Images.ImageEdgeOptions>? configureImages = null,
+        int? cancelGraceSeconds = null)
         => ImageMesh.StartAsync(
             configureImages: configureImages,
+            cancelGraceSeconds: cancelGraceSeconds,
             workerArguments: workerArgument is null
                 ? ["--image-step-ms", StepMs.ToString()]
                 : ["--image-step-ms", StepMs.ToString(), workerArgument]);

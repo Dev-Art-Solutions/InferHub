@@ -172,6 +172,7 @@ public class CrossEncoderRerankerTests
 
         public bool CompleteTool(ToolResult result) => true;
         public bool WriteToolChunk(ToolChunk chunk) => true;
+        public void RequestCancel(RoutableNode node, Guid jobId) => throw new NotImplementedException();
         public IDisposable RegisterUpload(Guid jobId, StreamedUpload upload) => throw new NotImplementedException();
         public IAsyncEnumerable<AttachmentChunk> ReadUploadAsync(Guid jobId, CancellationToken cancellationToken) => throw new NotImplementedException();
     }

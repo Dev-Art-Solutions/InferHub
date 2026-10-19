@@ -189,6 +189,12 @@ internal sealed class ImageMesh : IAsyncDisposable
     /// </summary>
     private string? seamRepair;
 
+    /// <summary>
+    /// <c>Tools:CancelGraceSeconds</c>, so a test can make a deaf worker's grace expire inside a job
+    /// rather than after it (phase 107: before then no hub cancel reached the node at all).
+    /// </summary>
+    private int? cancelGraceSeconds;
+
     public HttpClient Client { get; private set; } = null!;
 
     public NodeRegistry Registry { get; } = new();
@@ -225,10 +231,12 @@ internal sealed class ImageMesh : IAsyncDisposable
         string? seamRepair = null,
         bool video = false,
         IReadOnlyDictionary<string, int>? deadlines = null,
+        int? cancelGraceSeconds = null,
         params string[] workerArguments)
     {
         var mesh = new ImageMesh
         {
+            cancelGraceSeconds = cancelGraceSeconds,
             deadlines = deadlines,
             seamRepair = seamRepair,
             manifests = ImageFixture.Manifests(video, workerArguments),
@@ -363,6 +371,11 @@ internal sealed class ImageMesh : IAsyncDisposable
         if (maxAttachmentBytes is { } cap)
         {
             toolOptions.MaxAttachmentBytes = cap;
+        }
+
+        if (cancelGraceSeconds is { } grace)
+        {
+            toolOptions.CancelGraceSeconds = grace;
         }
 
         runtime = new ProcessToolRuntime(

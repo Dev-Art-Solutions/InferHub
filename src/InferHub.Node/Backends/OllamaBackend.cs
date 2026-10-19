@@ -1,3 +1,4 @@
+using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Runtime.CompilerServices;
@@ -18,11 +19,19 @@ namespace InferHub.Node.Backends;
 public sealed class OllamaBackend(
     IOllamaHttpClient client,
     IOptions<OllamaOptions> options,
-    ILogger<OllamaBackend> logger) : IInferenceBackend
+    ILogger<OllamaBackend> logger,
+    IHttpClientFactory? http = null) : IInferenceBackend
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
+
+    /// <summary>What OllamaClient reads a stream's lines with, so a chunk deserializes exactly as it did.</summary>
+    private static readonly JsonSerializerOptions NdjsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
     public string Name => "ollama";
@@ -99,7 +108,11 @@ public sealed class OllamaBackend(
     {
         var request = Deserialize<OllamaGenerateStreamRequest>(requestJson);
 
-        await foreach (var chunk in client.Generate(request, cancellationToken).WithCancellation(cancellationToken))
+        var chunks = http is null
+            ? client.Generate(request, cancellationToken)
+            : ReadStreamAsync<OllamaClient.Models.GenerateResponse>("generate", request, cancellationToken);
+
+        await foreach (var chunk in chunks.WithCancellation(cancellationToken))
         {
             yield return JsonSerializer.Serialize(chunk, JsonOptions);
         }
@@ -111,7 +124,11 @@ public sealed class OllamaBackend(
     {
         var request = Deserialize<OllamaChatStreamRequest>(requestJson);
 
-        await foreach (var chunk in client.SendChat(request, cancellationToken).WithCancellation(cancellationToken))
+        var chunks = http is null
+            ? client.SendChat(request, cancellationToken)
+            : ReadStreamAsync<OllamaClient.Models.ChatResponse>("chat", request, cancellationToken);
+
+        await foreach (var chunk in chunks.WithCancellation(cancellationToken))
         {
             yield return JsonSerializer.Serialize(chunk, JsonOptions);
         }
@@ -125,7 +142,11 @@ public sealed class OllamaBackend(
     {
         var request = new OllamaPullStreamRequest { Name = model };
 
-        await foreach (var chunk in client.Pull(request, cancellationToken).WithCancellation(cancellationToken))
+        var chunks = http is null
+            ? client.Pull(request, cancellationToken)
+            : ReadStreamAsync<OllamaClient.Models.PullResponse>("pull", request, cancellationToken);
+
+        await foreach (var chunk in chunks.WithCancellation(cancellationToken))
         {
             yield return new ModelPullProgress(chunk.Status, chunk.Total, chunk.Completed);
         }
@@ -193,6 +214,41 @@ public sealed class OllamaBackend(
         var lastSegment = trimmed[(trimmed.LastIndexOf('/') + 1)..];
 
         return trimmed.Length == 0 || lastSegment.Contains(':') ? trimmed : trimmed + ":latest";
+    }
+
+    /// <summary>
+    /// Phase 107, found by running it: OllamaClient 2.0.1 posts a stream with <c>PostAsJsonAsync</c>,
+    /// whose default reads the <b>whole body</b> before returning, so every streamed answer from an
+    /// Ollama node — on the hub and in solo mode — arrived in one piece at the end (first line at 6.3 s
+    /// of a 6.3 s answer; 0.45 s straight from Ollama), and a pull's progress only when it was done.
+    /// The same request and the same DTOs, read as the lines come. OllamaClient's own fix is its own
+    /// release; until a node takes it, this is the path.
+    /// </summary>
+    private async IAsyncEnumerable<T> ReadStreamAsync<T>(
+        string action,
+        object request,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        using var httpClient = http!.CreateClient(nameof(OllamaHttpClient));
+        var url = new Uri(new Uri(options.Value.Endpoint.TrimEnd('/') + "/"), $"api/{action}");
+        using var message = new HttpRequestMessage(HttpMethod.Post, url) { Content = JsonContent.Create(request, request.GetType()) };
+        using var response = await httpClient.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new OllamaClient.Exceptions.OllamaException(await response.Content.ReadAsStringAsync(cancellationToken));
+        }
+
+        await using var body = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var reader = new StreamReader(body);
+
+        while (await reader.ReadLineAsync(cancellationToken) is { } line)
+        {
+            if (line.Length > 0)
+            {
+                yield return JsonSerializer.Deserialize<T>(line, NdjsonOptions)!;
+            }
+        }
     }
 
     private static T Deserialize<T>(string requestJson)

@@ -737,21 +737,45 @@ public sealed class CoordinatorConnection(
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Phase 107. A hub job runs off SignalR's dispatch, so a node runs as many at once as the hub
+    /// sends it (the hub holds them to <c>Node:MaxConcurrency</c>) and a <c>CancelJob</c> is no longer
+    /// queued behind the job it cancels. The job is tracked <em>here</em>, before the hand-off: the
+    /// next call SignalR dispatches may be that cancel, and a job not yet in <c>activeJobs</c> would
+    /// miss it and run to the end.
+    /// </summary>
+    private Task RunOffDispatch(Guid jobId, Func<CancellationTokenSource, Task> run)
+    {
+        var jobCts = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        activeJobs[jobId] = jobCts;
+
+        return Offload(async () =>
+        {
+            try
+            {
+                await run(jobCts);
+            }
+            finally
+            {
+                activeJobs.TryRemove(new KeyValuePair<Guid, CancellationTokenSource>(jobId, jobCts));
+                jobCts.Dispose();
+            }
+        });
+    }
+
     private void RegisterConnectionHandlers(HubConnection hubConnection)
     {
-        hubConnection.On<InferenceJob>("RunJob", RunJobAsync);
-        hubConnection.On<InferenceJob>("RunStreamingJob", RunStreamingJobAsync);
+        hubConnection.On<InferenceJob>("RunJob", job => RunOffDispatch(job.JobId, jobCts => RunJobAsync(job, jobCts)));
+        hubConnection.On<InferenceJob>("RunStreamingJob", job => RunOffDispatch(job.JobId, jobCts => RunStreamingJobAsync(job, jobCts)));
 
         // Phase 98, found on the published image: SignalR hands a client the hub's calls ONE AT A
         // TIME and waits for each handler, so a model command that awaited a whole pull or conversion
         // held every job sent to this node until it finished — a four-minute colibri convert, a
         // forty-minute Ollama pull. The command reports its outcome on its own progress stream, so it
-        // runs off the dispatch. (The jobs above are dispatched the same way and so run one at a time
-        // per node; making them concurrent exposed hub-side ordering — a cancelled image job's worker
-        // still busy when the next arrived — and is a phase of its own, not a side effect of this one.)
+        // runs off the dispatch — and since phase 107 so do the jobs above (RunOffDispatch).
         hubConnection.On<ModelCommand>("ExecuteModelCommand", command => Offload(() => RunModelCommandAsync(command)));
-        hubConnection.On<ToolJob>("ExecuteToolJob", RunToolJobAsync);
-        hubConnection.On<ToolJob>("ExecuteStreamingToolJob", RunStreamingToolJobAsync);
+        hubConnection.On<ToolJob>("ExecuteToolJob", job => RunOffDispatch(job.JobId, jobCts => RunToolJobAsync(job, jobCts)));
+        hubConnection.On<ToolJob>("ExecuteStreamingToolJob", job => RunOffDispatch(job.JobId, jobCts => RunStreamingToolJobAsync(job, jobCts)));
         hubConnection.On<NodeProfile>("ApplyNodeProfile", OnApplyNodeProfile);
         hubConnection.On("ClearNodeProfile", () => OnApplyNodeProfile(null));
         hubConnection.On<Guid>("CancelJob", CancelJob);
@@ -1151,7 +1175,7 @@ public sealed class CoordinatorConnection(
         await connection.InvokeAsync("Heartbeat", heartbeat, cancellationToken);
     }
 
-    private async Task RunJobAsync(InferenceJob job)
+    private async Task RunJobAsync(InferenceJob job, CancellationTokenSource jobCts)
     {
         var activeConnection = connection;
 
@@ -1162,21 +1186,22 @@ public sealed class CoordinatorConnection(
         }
 
         Interlocked.Increment(ref inFlight);
-        using var jobCts = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
 
         try
         {
-            activeJobs[job.JobId] = jobCts;
             logger.LogInformation("Running {JobKind} job {JobId}", job.Kind, job.JobId);
             var result = await inferenceExecutor.RunAsync(job, jobCts.Token);
 
-            if (activeConnection.State is HubConnectionState.Connected)
+            // A cancelled blocking job has nobody waiting for it: the hub dropped it when it sent the
+            // cancel. Unlike a tool job (whose cancel is answered, 47 D3) there is nothing to return.
+            if (activeConnection.State is HubConnectionState.Connected && !jobCts.IsCancellationRequested)
             {
                 await activeConnection.InvokeAsync("JobResult", result, jobCts.Token);
             }
         }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested || jobCts.IsCancellationRequested)
         {
+            logger.LogInformation("Job {JobId} was canceled", job.JobId);
         }
         catch (Exception ex)
         {
@@ -1184,12 +1209,11 @@ public sealed class CoordinatorConnection(
         }
         finally
         {
-            activeJobs.TryRemove(job.JobId, out _);
             Interlocked.Decrement(ref inFlight);
         }
     }
 
-    private async Task RunStreamingJobAsync(InferenceJob job)
+    private async Task RunStreamingJobAsync(InferenceJob job, CancellationTokenSource jobCts)
     {
         var activeConnection = connection;
 
@@ -1200,11 +1224,9 @@ public sealed class CoordinatorConnection(
         }
 
         Interlocked.Increment(ref inFlight);
-        using var jobCts = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
 
         try
         {
-            activeJobs[job.JobId] = jobCts;
             logger.LogInformation("Running streaming {JobKind} job {JobId}", job.Kind, job.JobId);
 
             await activeConnection.InvokeAsync(
@@ -1222,7 +1244,6 @@ public sealed class CoordinatorConnection(
         }
         finally
         {
-            activeJobs.TryRemove(job.JobId, out _);
             Interlocked.Decrement(ref inFlight);
         }
     }
@@ -1271,7 +1292,7 @@ public sealed class CoordinatorConnection(
     /// (phase-26 D1). No inbound port appears on a GPU box because a node grew a second kind of
     /// engine.
     /// </summary>
-    private async Task RunToolJobAsync(ToolJob job)
+    private async Task RunToolJobAsync(ToolJob job, CancellationTokenSource jobCts)
     {
         var activeConnection = connection;
 
@@ -1282,11 +1303,9 @@ public sealed class CoordinatorConnection(
         }
 
         Interlocked.Increment(ref inFlight);
-        using var jobCts = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
 
         try
         {
-            activeJobs[job.JobId] = jobCts;
 
             // The capability and the model, never the payload and never an attachment: a tool
             // request may be a recording of somebody's voice (rule 7).
@@ -1340,12 +1359,11 @@ public sealed class CoordinatorConnection(
         }
         finally
         {
-            activeJobs.TryRemove(job.JobId, out _);
             Interlocked.Decrement(ref inFlight);
         }
     }
 
-    private async Task RunStreamingToolJobAsync(ToolJob job)
+    private async Task RunStreamingToolJobAsync(ToolJob job, CancellationTokenSource jobCts)
     {
         var activeConnection = connection;
 
@@ -1356,11 +1374,9 @@ public sealed class CoordinatorConnection(
         }
 
         Interlocked.Increment(ref inFlight);
-        using var jobCts = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
 
         try
         {
-            activeJobs[job.JobId] = jobCts;
             logger.LogInformation(
                 "Running streaming {Capability} tool job {JobId} for model {Model}",
                 job.Capability,
@@ -1384,7 +1400,6 @@ public sealed class CoordinatorConnection(
         }
         finally
         {
-            activeJobs.TryRemove(job.JobId, out _);
             Interlocked.Decrement(ref inFlight);
         }
     }
@@ -1394,7 +1409,15 @@ public sealed class CoordinatorConnection(
         if (activeJobs.TryGetValue(jobId, out var jobCts))
         {
             logger.LogInformation("Canceling job {JobId} at coordinator request", jobId);
-            jobCts.Cancel();
+
+            try
+            {
+                jobCts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The job finished between the lookup and the cancel; there is nothing left to stop.
+            }
         }
     }
 

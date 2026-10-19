@@ -15,7 +15,7 @@ to `src/InferHub.Node/Tools/CLAUDE.md` in phase 67** (D6).
 - The hub that dispatches to it: `src/InferHub.Coordinator/CLAUDE.md`
 - The workers this runtime spawns: `python/CLAUDE.md`
 - The four node images: `deploy/CLAUDE.md`
-- colibri, Brio and several engines on one node (93–95): `src/InferHub.Node/Backends/CLAUDE.md`
+- colibri, Brio and several engines on one node (93–95), hard limits per runtime (102): `src/InferHub.Node/Backends/CLAUDE.md`
 - `Backend:Type=chatgpt`, the node's own ChatGPT sign-in and the `chatgpt` verb (103): `src/InferHub.Shared/ChatGpt/CLAUDE.md`
 
 ## Node anatomy
@@ -869,7 +869,7 @@ performance ceiling that overrides everything else, plus a local UI to configure
 performance ceiling is the operator's own final word over a coordinator they may not fully trust, and
 a profile that could narrow it would still be a coordinator with a hand on the dial. Unset (both
 percentages null) is byte-identical to v3.46.
-> Phase 102's per-runtime *hard* limits are the opposite case and are on the wire — see its D1 below.
+> Phase 102's per-runtime *hard* limits are the opposite case and are on the wire — see its D1 in `src/InferHub.Node/Backends/CLAUDE.md`.
 
 **D2 — soft by default: a debounced admission withdrawal, not a throttle on anything running.**
 `ResourceGovernorLogic` (pure, table-tested like `VramBudget`) takes a `ResourceSnapshot` plus the
@@ -1045,51 +1045,46 @@ Tests: `NodeUpdateTests`, `NodeSettingsFileTests` (Node), `NodeUpdateRegistryTes
 `NodeUpdateMeshTests` + `ConsoleContractTests` (Mesh). The setup itself has no automated test; the release
 notes record the live run on a real box.
 
-### Phase 102 (hard limits per runtime — the node's ceiling, the hub's narrowing) — also load-bearing
+> **Phase 102 (hard limits per runtime) lives in `src/InferHub.Node/Backends/CLAUDE.md`** since phase 107 — the runtimes it caps are that file's.
 
-Files: `Resources/Limits/` (`EngineLimitMath`, `EngineLimiter`, `WindowsJobContainer`, `LinuxProcessContainer`,
-`ProcessInspector`, `GpuProcessMemory`), `Configuration/NodeOptions.cs` (`Node:ResourceLimits:Engines`),
-`Profiles/NodeProfileClamp.cs` (`ClampLimits`), `LocalApi/LocalEngineLimitsAdminEndpoints.cs`; the hub's
-`NodeLimitsRegistry`/`NodeLimitsControl`, `/api/admin/nodes/{id}/limits[/{runtime}]` and the console's Runtime
-limits panel. User-requested (Bulgarian): the node controls what strata, colibri, ollama, llama.cpp or any model
-may use, as a hard limit; the coordinator may set limits too, never above the node's, cannot override them, sees them.
+### Phase 107 (a node runs the hub's jobs side by side, and a cancel reaches them) — also load-bearing
 
-**D1 — the ceiling is the node's and the clamp runs on the node (43 D1, load-bearing).** Unlike 82 D1 this one
-*is* on the wire: `NodeProfile.Limits` may only go lower. Per field, a hub value above the node's is refused naming
-the key and both numbers and the node's stays; a field the node left unset may be set (narrowing); a GPU list must
-be a subset, else the whole list is refused; a name that is no runtime is refused (a typo is a limit that silently
-does not exist — the validator fails startup on one in config, too). The limiter recomputes min(node, hub) every
-poll, so a ceiling lowered later in `node.local.json` still wins over an older hub value. The hub refuses too, for
-a 409 with the node's number; a profile written around it is refused by the node (`EngineLimitMeshTests`).
+Files: `CoordinatorConnection.cs` (`RunOffDispatch`, `CancelJob`), `Backends/OllamaBackend.cs` (`ReadStreamAsync`); the hub's `Services/Dispatcher.cs` (the cancel in
+the `catch`, `RequestCancel`) and `Services/ImageJobRegistry.cs` (`DispatchToNodeAsync`). Found from 98's note on
+SignalR's serial dispatch, which named this as a phase of its own.
 
-**D2 — one group per runtime, all its processes together** (`ollama`, `llamacpp`, `colibri`, `strata`, `tools`):
-three `llama-server`s share the llamacpp budget. Launch sites call `EngineLimiter.PrepareLaunch`/`Adopt` —
-statics like `ChildProcessJob`, because a Job Object belongs to the process. The group's job is joined *after*
-the lifetime job, so it nests inside it (Windows 8+) and 95 D3's kill-on-close still holds (killing the live node
-took its `llama-server` with it). Only processes this node starts: an Ollama service or someone else's server is
-not ours to cap (36 D1); the report counts processes, so "0" says so.
+**D1 — a hub job runs off SignalR's dispatch, and is tracked before the hand-off (load-bearing).** The client hands
+a connection's calls over one at a time and waits for each handler, so every node ran one job at a time whatever
+`MaxConcurrency` it declared, and a `CancelJob` queued behind the job it cancelled. `RunJob`, `RunStreamingJob`,
+`ExecuteToolJob` and `ExecuteStreamingToolJob` now go through `RunOffDispatch`, which puts the job's token in
+`activeJobs` *synchronously* and only then hands the work to the pool: the very next call dispatched may be its cancel.
+`ConcurrentJobsMeshTests` (Mesh) holds both — two held jobs inside the backend at once, and a cancel reaching the
+backend's own token — and both go red with this file reverted.
 
-**D3 — three ways a limit is held, and the report names which; never "held" when it is not.** *os*: Windows Job
-Object (CPU hard cap, affinity, job memory — all re-set live), Linux cgroup v2 `cpu.max`/`memory.max` when this
-process may make one (it moves itself into a leaf `inferhub-node` first — cgroup v2's no-internal-processes rule),
-`sched_setaffinity` per thread re-applied each poll. *launch*: the GPU list becomes `CUDA_/HIP_/ROCR_/
-GGML_VK_VISIBLE_DEVICES` (`-1` = none); the Vulkan llama.cpp ignores the CUDA one — found live; a change stops the
-runtime and its own supervisor restarts it under the new list. *watchdog*: GPU memory (no OS caps it) and memory
-on a cgroup-less Linux box — read every poll, the runtime stopped above it, a breach counted with the numbers.
-Otherwise `none: why`. A limit on a runtime not running yet makes **no** OS object ("applies when it starts") — on
-Linux making one moves the node into a cgroup.
+**D2 — no node-side gate for mesh jobs; the hub's queue is the cap (25 D5).** The hub already holds a node to its
+declared `MaxConcurrency`, and `Node:MaxConcurrency: 1` is the way back to one at a time. **Rejected: a semaphore here
+when the cap is unset** — that is the accidental queue this phase removes. *Cost, stated:* a burst at a one-worker tool
+now waits in the pool's own queue (`Tools:QueueMaxWaitSeconds`, 30 s) and then gets the 503 + `Retry-After` solo mode
+has always given, instead of waiting in SignalR's loop until the hub's deadline.
 
-**D4 — VRAM per process is read where it really is.** Windows: the `GPU Process Memory(pid_*)\Dedicated Usage`
-counters via hand-rolled PDH — NVML under WDDM says "N/A" per process (`nvidia-smi` shows exactly that on this
-box). Linux: NVML's running compute processes; in a container those may be host pids, matching nothing — the VRAM
-reads 0 and cannot trip; said in the release notes. Rule 5: zero packages.
+**D3 — the hub tells the node from the `catch`, never from a registration on the caller's token.** `WaitAsync`
+registers on that token after the dispatcher does, runs first, and resumes the dispatch inline — which disposed the
+`using` registration before its callback ran. **No cancelled blocking job (a chat whose caller left, an image or a
+video) had ever reached a node**; the serial loop hid it, because the next job simply waited behind the one nobody
+stopped, and `ImageJobTests` passed on the hub's own word. A stream had the same hole before its first chunk: the
+dispatch's own `catch` took the pending entry ahead of `CancelStream`, and now sends the cancel itself.
 
-**D5 — a breach stops the runtime; it does not throttle it.** There is nothing to throttle VRAM with, and a
-runtime past its memory is about to fail anyway. The supervisors already relaunch (95's backoff, 36's restart),
-so the cost of a limit set too low is a backoff loop that the breach count and `lastBreach` make visible.
+**D4 — an image or video cancel asks, and keeps waiting for the node's answer.** 47 D3 always said a cancelled job
+may still finish; the dispatch gave up at once, freed the node in `busyNodes`, and the pump sent the next job to a
+worker still winding down — `tool_busy` the moment jobs ran side by side. `DispatchToNodeAsync` sends `RequestCancel`
+and waits on the result, bounded by the dispatch deadline; a node that goes away still fails it (`node_lost`). The
+deaf-worker test now sets a one-second grace so the grace, not the job, ends it.
 
-Live on this box (3090 Ti, Vulkan `llama-server`, qwen2.5-0.5b): affinity 4 → 2 cores by a `node.local.json`
-save with no restart; hub `cpuPercent:50` over the node's 10 → 409 naming 10%; hub `vramMiB:100` → PDH read
-255 MiB, stopped; `gpus:[]` → restarted, VRAM 206 → 0 MiB. Tests: `EngineLimitTests` (Node),
-`EngineLimitProcessTests` (Mesh — a real Job Object refuses a 400 MB allocation under 150 MB and holds a busy loop
-under 1%; Linux affinity and the watchdog on CI), `EngineLimitMeshTests` (Mesh, hub ↔ node).
+**D5 — an Ollama stream is read as Ollama writes it (found by running it).** OllamaClient 2.0.1 posts a stream with
+`PostAsJsonAsync`, which reads the **whole body** before returning, so every streamed answer from an Ollama node, meshed
+or solo, arrived in one piece at the end — first line at 6.3 s of a 6.3 s answer, 0.45 s straight from Ollama; 0.016 s
+after. And with nothing arriving early, *every* stream a client left was in D3's before-the-first-chunk hole.
+`OllamaBackend.ReadStreamAsync` sends the same DTO with `ResponseHeadersRead` and reads the same DTOs line by line, for
+chat, generate and pull; the chunk JSON is unchanged. **Rejected: yielding Ollama's raw lines** — closer to rule 6, and
+a change to every chunk's shape inside a phase about timing. The package's own fix is its own release.
+`OllamaBackendTests.AStreamedChatYieldsEachLineAsOllamaWritesIt` withholds the second line until the first is read.

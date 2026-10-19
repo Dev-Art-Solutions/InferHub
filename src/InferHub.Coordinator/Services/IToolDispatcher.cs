@@ -64,4 +64,11 @@ public interface IToolDispatcher
     /// forgotten the job must fail the job, not the connection.
     /// </summary>
     IAsyncEnumerable<AttachmentChunk> ReadUploadAsync(Guid jobId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Asks the node to stop a job without giving up on its answer (phase 107). An image or video job
+    /// is cancelled cooperatively and may still finish (47 D3); the caller keeps waiting on the
+    /// dispatch, so the node stays busy at the hub until its worker has actually let go.
+    /// </summary>
+    void RequestCancel(RoutableNode node, Guid jobId);
 }

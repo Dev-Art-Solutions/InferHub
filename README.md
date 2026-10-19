@@ -191,6 +191,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 104 | [Pictures, voices and transcripts from OpenAI and Google](#pictures-voices-and-transcripts-from-openai-and-google--with-an-api-key-v369) — a provider's `Media` map on the coordinator and a node's own `CloudMedia` section, served through the image and audio routes a GPU node answers; a ChatGPT sign-in reads pictures and makes none (done) | `v3.69.0` |
 | 105 | [Video from Google](#video-from-google--veo-and-gemini-omni-with-an-api-key-v370) — Veo and Gemini Omni through the Videos routes a GPU clip uses, on the coordinator and on a node; no OpenAI video (Sora was shut down) (done) | `v3.70.0` |
 | 106 | [Provider limits](#provider-limits--the-five-hour-and-weekly-windows-rate-limits-and-spend-v370) — a ChatGPT plan's five-hour and weekly windows, rate limits, and the month's spend against a budget, for the coordinator and for each node (done) | `v3.70.0` |
+| 107 | [Jobs side by side, and a cancel that arrives](#jobs-side-by-side-and-a-cancel-that-arrives-v371) — a node runs the jobs the hub sends it at once instead of one after another, and a cancelled chat, picture or video now stops on the node (done) | `v3.71.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -3316,6 +3317,34 @@ ChatGPT sign-in, and reports them to the hub. An `openai` backend pointed at a v
 your budget. A budget reached turns the row red; the vendor's own cap is the one that refuses. Sign in with ChatGPT
 documents no usage API at all: the Codex endpoint is undocumented, and when it refuses, the panel says so and waits
 for the headers of the next real request.
+
+## Jobs side by side, and a cancel that arrives (v3.71)
+
+**Until v3.71 a meshed node ran one hub job at a time**, whatever `Node:MaxConcurrency` it declared and however many
+the hub had sent it: SignalR hands a client the hub's calls one by one and waits for each, and the node waited for the
+whole job. A second chat to a node already answering one sat in line — 5.6 seconds in one measurement — while the
+backend was idle enough to take it. Now each job runs off that line, so a node takes as many at once as the hub sends,
+and the hub still holds it to `Node:MaxConcurrency` exactly as before. `Node:MaxConcurrency: 1` is the way back to one
+at a time.
+
+**And a cancel now reaches the node.** Looking at why that change broke three cancel tests found something older: a
+blocking job whose caller went away — a chat whose client hung up, a picture or a clip `DELETE`d mid-render — was
+marked cancelled at the hub and **never cancelled on the node**, which carried on to the last token or the last step.
+The hub now tells the node every time, and a cancelled picture or clip waits for the node's answer before the next job
+goes to that worker; a job cancelled on its last step may still come back `succeeded`, as the API always said.
+
+**And an Ollama node's stream now streams.** Running it found the reason so many abandoned streams were never
+stopped: the client library a node uses for Ollama read a whole streamed answer before handing over its first line, so
+`stream: true` through an Ollama node — on a hub or in solo mode — arrived all at once at the end. Measured on a warm
+`qwen2.5:0.5b`: first line at 6.3 s of a 6.3 s answer before, 0.016 s after. The chunks are byte-for-byte what they
+were; only when they arrive changed. A model pull's progress moves while it downloads for the same reason.
+
+Two things behave differently with no config changed, and all of it is the point:
+
+- A burst at a tool with one worker now waits in that pool's own queue (`Tools:QueueMaxWaitSeconds`, 30 s) and then
+  gets `503` + `Retry-After` — what a solo node always answered — instead of waiting out of sight until the hub's
+  deadline.
+- A local Ollama now receives a node's jobs in parallel; `OLLAMA_NUM_PARALLEL` decides how many it runs at once.
 
 ## Inference backends
 

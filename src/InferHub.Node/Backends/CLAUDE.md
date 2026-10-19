@@ -357,10 +357,9 @@ redirects — the client has no loggers.
 **v3.63.1, found on the published image: a model command no longer holds the node's connection.**
 SignalR hands a client the hub's calls one at a time and awaits each handler; the model-command handler
 awaited the whole command, so a conversion (or, since 26, a long Ollama pull) stopped the node receiving
-jobs. `CoordinatorConnection` now runs it off the dispatch (`Offload`). **Jobs are dispatched the same way
-and still run one at a time per node, whatever `MaxConcurrency`** (measured); making them concurrent broke
-three cancel tests — the hub dispatches the next image job while a cancelled one's worker is finishing — so
-it is a phase of its own, not done here.
+jobs. `CoordinatorConnection` now runs it off the dispatch (`Offload`). Jobs stayed one at a time per node
+until **phase 107** ran them off it too, which also found the hub had never sent a cancel for a blocking job —
+see that block in `src/InferHub.Node/CLAUDE.md`.
 
 Tests: `HfReferenceTests` (Shared), `HuggingFaceStoreTests` (Node — a Hub-shaped socket in `Tests.Common`:
 resume by `Range`, sha256, gated 401, quants, mmproj, conversion via a fake converter), `HuggingFaceMeshTests`
@@ -469,3 +468,52 @@ launch blocking and streamed, kept choices, add-pictures re-run, loaded refusal,
 encoder), `StrataMeshTests` (Mesh: 400 on the job, `vision` across the wire, `images` at the hub),
 `OpenAiStreamingTests` + `SoloStreamRefusalTests` (the 4xx on both edges), `StrataModelsTests` (Shared:
 optional fields read both ways). Live run: `.claude/release-notes-v3.65.0.md`.
+
+### Phase 102 (hard limits per runtime — the node's ceiling, the hub's narrowing) — also load-bearing
+
+Files: `Resources/Limits/` (`EngineLimitMath`, `EngineLimiter`, `WindowsJobContainer`, `LinuxProcessContainer`,
+`ProcessInspector`, `GpuProcessMemory`), `Configuration/NodeOptions.cs` (`Node:ResourceLimits:Engines`),
+`Profiles/NodeProfileClamp.cs` (`ClampLimits`), `LocalApi/LocalEngineLimitsAdminEndpoints.cs`; the hub's
+`NodeLimitsRegistry`/`NodeLimitsControl`, `/api/admin/nodes/{id}/limits[/{runtime}]` and the console's Runtime
+limits panel. User-requested (Bulgarian): the node controls what strata, colibri, ollama, llama.cpp or any model
+may use, as a hard limit; the coordinator may set limits too, never above the node's, cannot override them, sees them.
+
+**D1 — the ceiling is the node's and the clamp runs on the node (43 D1, load-bearing).** Unlike 82 D1 this one
+*is* on the wire: `NodeProfile.Limits` may only go lower. Per field, a hub value above the node's is refused naming
+the key and both numbers and the node's stays; a field the node left unset may be set (narrowing); a GPU list must
+be a subset, else the whole list is refused; a name that is no runtime is refused (a typo is a limit that silently
+does not exist — the validator fails startup on one in config, too). The limiter recomputes min(node, hub) every
+poll, so a ceiling lowered later in `node.local.json` still wins over an older hub value. The hub refuses too, for
+a 409 with the node's number; a profile written around it is refused by the node (`EngineLimitMeshTests`).
+
+**D2 — one group per runtime, all its processes together** (`ollama`, `llamacpp`, `colibri`, `strata`, `tools`):
+three `llama-server`s share the llamacpp budget. Launch sites call `EngineLimiter.PrepareLaunch`/`Adopt` —
+statics like `ChildProcessJob`, because a Job Object belongs to the process. The group's job is joined *after*
+the lifetime job, so it nests inside it (Windows 8+) and 95 D3's kill-on-close still holds (killing the live node
+took its `llama-server` with it). Only processes this node starts: an Ollama service or someone else's server is
+not ours to cap (36 D1); the report counts processes, so "0" says so.
+
+**D3 — three ways a limit is held, and the report names which; never "held" when it is not.** *os*: Windows Job
+Object (CPU hard cap, affinity, job memory — all re-set live), Linux cgroup v2 `cpu.max`/`memory.max` when this
+process may make one (it moves itself into a leaf `inferhub-node` first — cgroup v2's no-internal-processes rule),
+`sched_setaffinity` per thread re-applied each poll. *launch*: the GPU list becomes `CUDA_/HIP_/ROCR_/
+GGML_VK_VISIBLE_DEVICES` (`-1` = none); the Vulkan llama.cpp ignores the CUDA one — found live; a change stops the
+runtime and its own supervisor restarts it under the new list. *watchdog*: GPU memory (no OS caps it) and memory
+on a cgroup-less Linux box — read every poll, the runtime stopped above it, a breach counted with the numbers.
+Otherwise `none: why`. A limit on a runtime not running yet makes **no** OS object ("applies when it starts") — on
+Linux making one moves the node into a cgroup.
+
+**D4 — VRAM per process is read where it really is.** Windows: the `GPU Process Memory(pid_*)\Dedicated Usage`
+counters via hand-rolled PDH — NVML under WDDM says "N/A" per process (`nvidia-smi` shows exactly that on this
+box). Linux: NVML's running compute processes; in a container those may be host pids, matching nothing — the VRAM
+reads 0 and cannot trip; said in the release notes. Rule 5: zero packages.
+
+**D5 — a breach stops the runtime; it does not throttle it.** There is nothing to throttle VRAM with, and a
+runtime past its memory is about to fail anyway. The supervisors already relaunch (95's backoff, 36's restart),
+so the cost of a limit set too low is a backoff loop that the breach count and `lastBreach` make visible.
+
+Live on this box (3090 Ti, Vulkan `llama-server`, qwen2.5-0.5b): affinity 4 → 2 cores by a `node.local.json`
+save with no restart; hub `cpuPercent:50` over the node's 10 → 409 naming 10%; hub `vramMiB:100` → PDH read
+255 MiB, stopped; `gpus:[]` → restarted, VRAM 206 → 0 MiB. Tests: `EngineLimitTests` (Node),
+`EngineLimitProcessTests` (Mesh — a real Job Object refuses a 400 MB allocation under 150 MB and holds a busy loop
+under 1%; Linux affinity and the watchdog on CI), `EngineLimitMeshTests` (Mesh, hub ↔ node).

@@ -556,6 +556,8 @@ public class ToolMeshTests
                 return inner.DispatchToolAsync(node, job, progress, cancellationToken);
             }
 
+            public void RequestCancel(RoutableNode node, Guid jobId) => inner.RequestCancel(node, jobId);
+
             public Task<System.Threading.Channels.ChannelReader<ToolChunk>> DispatchToolStreamAsync(
                 RoutableNode node,
                 ToolJob job,

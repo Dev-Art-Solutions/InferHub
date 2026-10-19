@@ -70,6 +70,68 @@ public class OllamaBackendTests
         Assert.Empty(models);
     }
 
+    /// <summary>
+    /// Phase 107. OllamaClient 2.0.1 buffered a whole stream before returning its first chunk, so an
+    /// Ollama node's streamed answer arrived in one piece at the end. Here the second line is never
+    /// written until the first chunk has been read — a buffering reader cannot get past the first.
+    /// </summary>
+    [Fact]
+    public async Task AStreamedChatYieldsEachLineAsOllamaWritesIt()
+    {
+        var secondLine = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handler = new LineByLineHandler(
+            """{"model":"llama3","message":{"role":"assistant","content":"Hel"},"done":false}""",
+            secondLine.Task,
+            """{"model":"llama3","message":{"role":"assistant","content":"lo"},"done":true,"eval_count":2}""");
+        var backend = new OllamaBackend(
+            new FakeOllamaHttpClient(new GetModelsResponse { Models = [] }),
+            Options.Create(new OllamaOptions { Endpoint = "http://ollama.test:11434" }),
+            NullLogger<OllamaBackend>.Instance,
+            new SingleClientFactory(handler));
+
+        await using var chunks = backend
+            .StreamAsync("chat", """{"model":"llama3","messages":[],"stream":true}""", CancellationToken.None)
+            .GetAsyncEnumerator();
+
+        Assert.True(await chunks.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Contains("Hel", chunks.Current);
+
+        secondLine.SetResult();
+
+        Assert.True(await chunks.MoveNextAsync());
+        Assert.Contains("lo", chunks.Current);
+        Assert.False(await chunks.MoveNextAsync());
+        Assert.Equal("http://ollama.test:11434/api/chat", handler.Requested?.ToString());
+    }
+
+    private sealed class SingleClientFactory(HttpMessageHandler handler) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
+    }
+
+    private sealed class LineByLineHandler(string first, Task gate, string second) : HttpMessageHandler
+    {
+        public Uri? Requested { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Requested = request.RequestUri;
+            var pipe = new System.IO.Pipelines.Pipe();
+
+            _ = Task.Run(async () =>
+            {
+                await pipe.Writer.WriteAsync(System.Text.Encoding.UTF8.GetBytes(first + "\n"));
+                await gate;
+                await pipe.Writer.WriteAsync(System.Text.Encoding.UTF8.GetBytes(second + "\n"));
+                await pipe.Writer.CompleteAsync();
+            });
+
+            var content = new StreamContent(pipe.Reader.AsStream());
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-ndjson");
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = content });
+        }
+    }
+
     private sealed class FakeOllamaHttpClient : IOllamaHttpClient
     {
         private readonly GetModelsResponse? response;
