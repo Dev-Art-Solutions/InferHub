@@ -1,3 +1,4 @@
+<!-- live 2026-10-20 as ID 6ad69642cf78f0772ae61015 (EN visible, BG hidden), created by this session -->
 slug: inferhub-3-71-jobs-side-by-side-and-a-cancel-that-arrives
 title: InferHub 3.71: jobs side by side, and a cancel that arrives
 excerpt: A node now runs the jobs the coordinator sends it at the same time instead of one after another. Getting there found that a cancelled chat, picture or video had never actually stopped on the node, and that an Ollama node's streams arrived in one piece at the end. All three are fixed.

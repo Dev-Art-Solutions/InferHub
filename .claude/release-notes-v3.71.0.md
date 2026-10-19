@@ -47,7 +47,12 @@ A real coordinator and a real meshed node from source, against the Ollama on thi
 
 ## The published binaries
 
-See the addendum below — filled in after the tag, from the images GHCR published.
+The published `inferhub-coordinator:3.71.0` and `inferhub-node:3.71.0` images (revision label `502be59`, the tag
+commit) were pulled from GHCR and their `/app` binaries run natively against the Ollama on this box: two concurrent
+chats both `Running` before either `Completed`; a blocking chat dropped after 1 s gave `Canceling job … at coordinator
+request` and `was canceled`; a stream's first line at **0.017 s** of a 5.8 s answer; a stream dropped after 2 s gave
+`Canceling job …` and `Streaming job … was canceled`; no exception anywhere in the node's log. This exercised the
+binaries, not the containers' OS layer.
 
 ## Not established
 
