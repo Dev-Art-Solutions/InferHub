@@ -43,6 +43,16 @@ few tokens, so the probes saw two idle nodes. A check whose setup did not hold i
 Both nodes sat on **one** Ollama here, so node-b's probe still queued behind node-a's story in the same `qwen2.5`
 runner. That run proves the routing decision, not the latency it saves, which needs two machines.
 
+## The published binaries
+
+The published `inferhub-coordinator:3.72.0` and `inferhub-node:3.72.0` images (revision label `9459215`, the tag
+commit) were pulled from GHCR and their `/app` binaries run natively — one coordinator, two nodes, the Ollama on this
+box. Both nodes registered as `3.72.0` with `modelSlots: 1`. Four idle `qwen2.5:0.5b` probes went a, b, a, b. With a
+3000-token `qwen2.5:0.5b` story on node-a and a `gemma:2b` story on node-b, `/api/status` read
+`node-a load=1 {qwen2.5:0.5b: 1} | node-b load=1 {gemma:2b: 1}` before each probe, and **all four probes went to
+node-b**. Afterwards both counters were back to 0 and `modelsInFlight` absent; no exception in any log. This exercised
+the binaries, not the containers' OS layer.
+
 ## Not established
 
 - **An Ollama whose environment the node cannot see.** A separately installed Ollama service started with its own
