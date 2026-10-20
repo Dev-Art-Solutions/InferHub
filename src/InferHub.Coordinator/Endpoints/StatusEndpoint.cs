@@ -64,7 +64,9 @@ public static class StatusEndpoint
                     colibri?.Of(node.NodeId),
                     strata?.Of(node.NodeId),
                     updates?.Of(node.NodeId),
-                    limits?.Of(node.NodeId) is { Groups.Count: > 0 } reported ? reported : null)).ToArray(),
+                    limits?.Of(node.NodeId) is { Groups.Count: > 0 } reported ? reported : null,
+                    node.ModelSlots,
+                    node.ModelsInFlight is { Count: > 0 } busy ? busy : null)).ToArray(),
                 models,
                 registry.CapabilitySummary(),
                 snapshot,
@@ -491,7 +493,12 @@ public static class StatusEndpoint
         // The node's runtime limits (phase 102): its own ceiling, what a profile asked for, what is in
         // force and what each runtime uses. Null for a node that limits nothing (or before v3.67), and a
         // fleet of those keeps the pre-3.67 payload exactly.
-        NodeLimitsState? Limits = null);
+        NodeLimitsState? Limits = null,
+        // Requests one model runs at once on this node, as it declared (phase 108), and the hub's own
+        // jobs on it by model. Null for a node before v3.72 or a backend that declares nothing; the
+        // second is null while nothing is in flight.
+        int? ModelSlots = null,
+        IReadOnlyDictionary<string, int>? ModelsInFlight = null);
 
     internal sealed record NodeProfileStatusBlock(
         string? Name,

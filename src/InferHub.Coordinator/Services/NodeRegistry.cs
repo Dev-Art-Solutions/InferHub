@@ -9,6 +9,10 @@ public sealed class NodeRegistry : INodeRegistry
     private readonly ConcurrentDictionary<string, NodeRegistryEntry> nodes = new();
     private readonly ConcurrentDictionary<string, StrongBox<int>> localInFlight = new();
 
+    // Phase 108 D3: keyed (connection, model key). Released with the node's own counter, so an
+    // entry never outlives the connection that owns it.
+    private readonly ConcurrentDictionary<(string ConnectionId, string Model), StrongBox<int>> modelInFlight = new();
+
     public event Action? Changed;
 
     private void RaiseChanged() => Changed?.Invoke();
@@ -22,7 +26,8 @@ public sealed class NodeRegistry : INodeRegistry
             OllamaEndpoint = Normalize(registration.OllamaEndpoint, "unknown"),
             Version = Normalize(registration.Version, "unknown"),
             Labels = NormalizeLabels(registration.Labels),
-            MaxConcurrency = NormalizeMaxConcurrency(registration.MaxConcurrency)
+            MaxConcurrency = NormalizeMaxConcurrency(registration.MaxConcurrency),
+            ModelSlots = NormalizeMaxConcurrency(registration.ModelSlots)
         };
 
         nodes.AddOrUpdate(
@@ -134,6 +139,7 @@ public sealed class NodeRegistry : INodeRegistry
     public bool Remove(string connectionId)
     {
         localInFlight.TryRemove(connectionId, out _);
+        ForgetModels(connectionId);
         if (!nodes.TryRemove(connectionId, out _))
         {
             return false;
@@ -354,6 +360,64 @@ public sealed class NodeRegistry : INodeRegistry
         return value;
     }
 
+    public int IncrementInFlight(string connectionId, string? model)
+    {
+        if (ModelKey(model) is { } key)
+        {
+            var box = modelInFlight.GetOrAdd((connectionId, key), _ => new StrongBox<int>(0));
+            Interlocked.Increment(ref box.Value);
+        }
+
+        return IncrementInFlight(connectionId);
+    }
+
+    public int DecrementInFlight(string connectionId, string? model)
+    {
+        if (ModelKey(model) is { } key && modelInFlight.TryGetValue((connectionId, key), out var box)
+            && Interlocked.Decrement(ref box.Value) < 0)
+        {
+            Interlocked.Exchange(ref box.Value, 0);
+        }
+
+        return DecrementInFlight(connectionId);
+    }
+
+    public int GetModelInFlight(string connectionId, string model) =>
+        ModelKey(model) is { } key && modelInFlight.TryGetValue((connectionId, key), out var box)
+            ? Math.Max(0, Volatile.Read(ref box.Value))
+            : 0;
+
+    public int? GetModelSlots(string connectionId) =>
+        nodes.TryGetValue(connectionId, out var entry) ? entry.Registration.ModelSlots : null;
+
+    private IReadOnlyDictionary<string, int> ModelsInFlight(string connectionId) =>
+        modelInFlight
+            .Where(pair => pair.Key.ConnectionId == connectionId && Volatile.Read(ref pair.Value.Value) > 0)
+            .ToDictionary(pair => pair.Key.Model, pair => Volatile.Read(ref pair.Value.Value), StringComparer.Ordinal);
+
+    private void ForgetModels(string connectionId)
+    {
+        foreach (var key in modelInFlight.Keys.Where(key => key.ConnectionId == connectionId))
+        {
+            modelInFlight.TryRemove(key, out _);
+        }
+    }
+
+    /// <summary>
+    /// The name Ollama would resolve: case-insensitive, and a bare name is its <c>:latest</c>.
+    /// Null for a job that names no model, which then counts against the node only.
+    /// </summary>
+    internal static string? ModelKey(string? model)
+    {
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            return null;
+        }
+
+        var key = model.Trim().ToLowerInvariant();
+        return key.EndsWith(":latest", StringComparison.Ordinal) ? key[..^":latest".Length] : key;
+    }
+
     public int GetLocalInFlight(string connectionId)
     {
         if (!localInFlight.TryGetValue(connectionId, out var box))
@@ -378,6 +442,7 @@ public sealed class NodeRegistry : INodeRegistry
             if (nodes.TryRemove(pair.Key, out var removed))
             {
                 localInFlight.TryRemove(pair.Key, out _);
+                ForgetModels(pair.Key);
                 evicted.Add(ToSnapshot(pair.Key, removed, now));
             }
         }
@@ -416,7 +481,9 @@ public sealed class NodeRegistry : INodeRegistry
             entry.Registration.VramBudgetMiB,
             entry.Registration.VramReserveMiB,
             entry.ResourceThrottled,
-            entry.OnDemand);
+            entry.OnDemand,
+            entry.Registration.ModelSlots,
+            ModelsInFlight(connectionId));
     }
 
     /// <summary>

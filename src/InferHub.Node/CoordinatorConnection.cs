@@ -942,7 +942,10 @@ public sealed class CoordinatorConnection(
             // is read — reported as-is, not translated to null, so the coordinator sees the same
             // "not declared" the node itself sees.
             VramBudgetMiB: node.Vram.BudgetMiB,
-            VramReserveMiB: node.Vram.ReserveMiB);
+            VramReserveMiB: node.Vram.ReserveMiB,
+            // Phase 108 D2: the operator's number wins; otherwise what the engine declares, which is
+            // nothing for every backend but Ollama.
+            ModelSlots: node.ModelSlots ?? backend.ModelSlots);
 
         await connection.InvokeAsync("Register", registration, cancellationToken);
         await RequestProfileAsync(cancellationToken);

@@ -103,6 +103,12 @@ public sealed class NodeOptionsValidator : IValidateOptions<NodeOptions>
                 $"{NodeOptions.SectionName}:{nameof(NodeOptions.MaxConcurrency)} must be >= 1 when set (got {cap}).");
         }
 
+        if (options.ModelSlots is { } slots && slots < 1)
+        {
+            failures.Add(
+                $"{NodeOptions.SectionName}:{nameof(NodeOptions.ModelSlots)} must be >= 1 when set (got {slots}).");
+        }
+
         // A typo here is silent by construction — capability kinds are open strings on the wire
         // (phase-40 D1), so "chatt" disables nothing and the box quietly keeps taking the traffic
         // the operator meant to move off it. Names are checked; the wire is still not.

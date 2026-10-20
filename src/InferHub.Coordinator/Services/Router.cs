@@ -45,6 +45,11 @@ public sealed class Router(
         // is one tier and this is the identity, which is the whole byte-identity argument.
         candidates = WarmestTier(candidates, capability);
 
+        // Phase 108 D1, inside the warm tier and for the same reason: a node whose engine is already
+        // running all it can of this model would queue the request in its own engine while another
+        // holder's sits idle. No node declaring slots, or every one full, is the identity.
+        candidates = FreeSlotTier(candidates, model);
+
         var loads = candidates
             .Select(node => (Node: node, Load: registry.GetLocalInFlight(node.ConnectionId)))
             .ToArray();
@@ -121,6 +126,26 @@ public sealed class Router(
         }
 
         return warm.Count > 0 ? warm : free.Count > 0 ? free : cold;
+    }
+
+    /// <summary>
+    /// Phase 108 D1: nodes with a free slot for <paramref name="model"/> — fewer of the hub's own jobs
+    /// for it than the node declared — or with no declaration at all. A preference, never a filter:
+    /// when every candidate is full they all stay, and the engine queues as it always did.
+    /// </summary>
+    private IReadOnlyCollection<RoutableNode> FreeSlotTier(IReadOnlyCollection<RoutableNode> candidates, string model)
+    {
+        if (candidates.Count < 2)
+        {
+            return candidates;
+        }
+
+        var free = candidates
+            .Where(node => registry.GetModelSlots(node.ConnectionId) is not { } slots
+                || registry.GetModelInFlight(node.ConnectionId, model) < slots)
+            .ToArray();
+
+        return free.Length > 0 ? free : candidates;
     }
 
     private static int Temperature(Shared.Contracts.OnDemandState? state, string capability)

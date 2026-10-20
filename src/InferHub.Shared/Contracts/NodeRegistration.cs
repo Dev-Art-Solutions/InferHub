@@ -49,7 +49,12 @@ public sealed record NodeRegistration(
     /// declared 0: nothing to check against, so it admits rather than guessing. A modern node always
     /// sends its real figures, including 0 when the operator never set a budget.
     int? VramBudgetMiB = null,
-    int? VramReserveMiB = null);
+    int? VramReserveMiB = null,
+    /// Phase 108. How many requests for <em>one</em> model this node's engine runs at once — an
+    /// Ollama's <c>OLLAMA_NUM_PARALLEL</c>, 1 unless set. **Null is no opinion**, which is every node
+    /// before v3.72 and every backend that declares nothing; the router then balances by node load
+    /// alone, exactly as before.
+    int? ModelSlots = null);
 
 /// <summary>
 /// One row of a node's on-disk vector replica inventory, reported at registration so the

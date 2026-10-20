@@ -65,6 +65,13 @@ public interface IInferenceBackend
     /// </summary>
     bool SupportsPull => SupportsModelManagement;
 
+    /// <summary>
+    /// How many requests for one model this engine runs at once (phase 108), or <b>null for no
+    /// opinion</b>. Declared, never probed: timing requests to learn it would spend GPU time on a
+    /// number the operator set. <c>Node:ModelSlots</c> overrides it.
+    /// </summary>
+    int? ModelSlots => null;
+
     /// <summary>Download a model, streaming progress. Only called when <see cref="SupportsModelManagement"/>.</summary>
     IAsyncEnumerable<ModelPullProgress> PullAsync(string model, CancellationToken cancellationToken);
 

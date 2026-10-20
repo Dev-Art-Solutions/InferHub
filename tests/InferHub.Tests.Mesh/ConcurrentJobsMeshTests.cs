@@ -84,8 +84,67 @@ public class ConcurrentJobsMeshTests
         await mesh.WaitForAsync(() => mesh.Backend.Cancelled == 1);
     }
 
-    private static InferenceJob Chat(bool stream = false)
-        => new(Guid.NewGuid(), "chat", stream ? """{"model":"llama3","messages":[],"stream":true}""" : """{"model":"llama3","messages":[]}""");
+    [Theory]
+    [InlineData(null, null, null)]
+    [InlineData(null, 3, 3)]
+    [InlineData(2, 3, 2)]
+    [InlineData(2, null, 2)]
+    public async Task TheNodeDeclaresItsModelSlotsAndTheOperatorsNumberWins(int? configured, int? backend, int? expected)
+    {
+        // Phase 108 D2, through a real registration: Node:ModelSlots over what the backend declares.
+        await using var mesh = await JobMesh.StartAsync(configured, backend);
+
+        Assert.Equal(expected, mesh.Registry.GetModelSlots(mesh.Node().ConnectionId));
+    }
+
+    [Fact]
+    public async Task AJobHoldsItsModelsSlotAtTheHubUntilItsAnswerArrives()
+    {
+        await using var mesh = await JobMesh.StartAsync(configuredSlots: 1);
+        var connection = mesh.Node().ConnectionId;
+
+        var blocking = mesh.Dispatcher.DispatchAsync(mesh.Node(), Chat(), CancellationToken.None);
+        // The stream's dispatch returns at its first chunk, which the held backend sends only on release.
+        var streamed = mesh.Dispatcher.DispatchStreamAsync(mesh.Node(), Chat(stream: true, model: "qwen2.5"), CancellationToken.None);
+        await mesh.WaitForAsync(() => mesh.Backend.Running == 2);
+
+        // Phase 108 D3: per model, beside the node's own counter.
+        Assert.Equal(1, mesh.Registry.GetModelInFlight(connection, "llama3"));
+        Assert.Equal(1, mesh.Registry.GetModelInFlight(connection, "qwen2.5:latest"));
+        Assert.Equal(2, mesh.Registry.GetLocalInFlight(connection));
+
+        mesh.Backend.Release();
+        Assert.True((await blocking).Success);
+        await foreach (var _ in (await streamed).ReadAllAsync())
+        {
+        }
+
+        await mesh.WaitForAsync(() => mesh.Registry.GetLocalInFlight(connection) == 0);
+        Assert.Equal(0, mesh.Registry.GetModelInFlight(connection, "llama3"));
+        Assert.Equal(0, mesh.Registry.GetModelInFlight(connection, "qwen2.5"));
+    }
+
+    [Fact]
+    public async Task ACancelledJobGivesItsModelsSlotBack()
+    {
+        await using var mesh = await JobMesh.StartAsync(configuredSlots: 1);
+        var connection = mesh.Node().ConnectionId;
+        using var caller = new CancellationTokenSource();
+
+        var dispatch = mesh.Dispatcher.DispatchAsync(mesh.Node(), Chat(), caller.Token);
+        await mesh.WaitForAsync(() => mesh.Registry.GetModelInFlight(connection, "llama3") == 1);
+
+        caller.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => dispatch);
+
+        Assert.Equal(0, mesh.Registry.GetModelInFlight(connection, "llama3"));
+        Assert.Equal(0, mesh.Registry.GetLocalInFlight(connection));
+    }
+
+    private static InferenceJob Chat(bool stream = false, string model = "llama3")
+        => new(Guid.NewGuid(), "chat", stream
+            ? $$"""{"model":"{{model}}","messages":[],"stream":true}"""
+            : $$"""{"model":"{{model}}","messages":[]}""");
 
     private sealed class JobMesh : IAsyncDisposable
     {
@@ -102,9 +161,16 @@ public class ConcurrentJobsMeshTests
 
         public Dispatcher Dispatcher { get; private set; } = null!;
 
-        public static async Task<JobMesh> StartAsync()
+        private int? configuredSlots;
+
+        public static async Task<JobMesh> StartAsync(int? configuredSlots = null, int? backendSlots = null)
         {
-            var mesh = new JobMesh { scratch = Path.Combine(Path.GetTempPath(), "inferhub-concurrent-" + Guid.NewGuid().ToString("N")) };
+            var mesh = new JobMesh
+            {
+                scratch = Path.Combine(Path.GetTempPath(), "inferhub-concurrent-" + Guid.NewGuid().ToString("N")),
+                configuredSlots = configuredSlots
+            };
+            mesh.Backend.ModelSlots = backendSlots;
             await mesh.StartCoordinatorAsync();
             await mesh.StartNodeAsync();
             return mesh;
@@ -164,7 +230,7 @@ public class ConcurrentJobsMeshTests
             var replicas = new ReplicaStore(
                 Options.Create(new VectorReplicaOptions { ReplicaDirectory = Path.Combine(scratch, "replicas") }),
                 NullLogger<ReplicaStore>.Instance);
-            var nodeOptions = Options.Create(new NodeOptions { Name = NodeId, MaxConcurrency = 4 });
+            var nodeOptions = Options.Create(new NodeOptions { Name = NodeId, MaxConcurrency = 4, ModelSlots = configuredSlots });
 
             node = new CoordinatorConnection(
                 Options.Create(new CoordinatorOptions
@@ -256,8 +322,10 @@ public class ConcurrentJobsMeshTests
 
         public bool SupportsModelManagement => false;
 
+        public int? ModelSlots { get; set; }
+
         public Task<IReadOnlyList<ModelInfo>?> ListModelsAsync(CancellationToken cancellationToken)
-            => Task.FromResult<IReadOnlyList<ModelInfo>?>([new ModelInfo("llama3", "sha256:a", 1)]);
+            => Task.FromResult<IReadOnlyList<ModelInfo>?>([new ModelInfo("llama3", "sha256:a", 1), new ModelInfo("qwen2.5", "sha256:b", 1)]);
 
         public async Task<string> ChatAsync(string requestJson, CancellationToken cancellationToken)
         {

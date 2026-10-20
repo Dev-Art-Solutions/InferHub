@@ -192,6 +192,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 105 | [Video from Google](#video-from-google--veo-and-gemini-omni-with-an-api-key-v370) — Veo and Gemini Omni through the Videos routes a GPU clip uses, on the coordinator and on a node; no OpenAI video (Sora was shut down) (done) | `v3.70.0` |
 | 106 | [Provider limits](#provider-limits--the-five-hour-and-weekly-windows-rate-limits-and-spend-v370) — a ChatGPT plan's five-hour and weekly windows, rate limits, and the month's spend against a budget, for the coordinator and for each node (done) | `v3.70.0` |
 | 107 | [Jobs side by side, and a cancel that arrives](#jobs-side-by-side-and-a-cancel-that-arrives-v371) — a node runs the jobs the hub sends it at once instead of one after another, and a cancelled chat, picture or video now stops on the node (done) | `v3.71.0` |
+| 108 | [A free slot for the model](#a-free-slot-for-the-model-v372) — the hub sends a chat to a node whose engine can start it now, not to one where it would wait behind the same model (done) | `v3.72.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -3345,6 +3346,27 @@ Two things behave differently with no config changed, and all of it is the point
   gets `503` + `Retry-After` — what a solo node always answered — instead of waiting out of sight until the hub's
   deadline.
 - A local Ollama now receives a node's jobs in parallel; `OLLAMA_NUM_PARALLEL` decides how many it runs at once.
+
+## A free slot for the model (v3.72)
+
+**Ollama runs one request per model at a time unless told otherwise.** Its `OLLAMA_NUM_PARALLEL` defaults to 1: six
+chats sent at once to a warm `qwen2.5:0.5b` here finished at 0.9, 1.4, 2.0, 2.5, 3.0 and 3.5 seconds — one after
+another. Different models do run at once. The hub did not know that. It balanced by **jobs per node**, so with two
+nodes holding a model — one answering a chat with it, the other busy embedding with a different model — both looked
+equally busy, and every other new chat went to the first node, where it waited inside Ollama while the second node's
+copy of the model sat idle.
+
+Since v3.72 a node tells the hub how many requests one model runs at once, and the hub counts its own jobs per node
+**and per model**. A request now goes first to a node with a free slot for that model, then by load as before.
+
+- **An Ollama node reads `OLLAMA_NUM_PARALLEL`** from its own environment — the same one Ollama reads in the images,
+  the Windows service and a supervised Ollama — and declares 1 when it is unset, as Ollama does. If Ollama runs with
+  settings this process cannot see, say so with `Node:ModelSlots`.
+- **It is a preference, never a refusal.** When every node holding the model is full, the request goes where it went
+  before and Ollama queues it as it always did. A single node, or a fleet of backends that declare nothing (every
+  non-Ollama backend, and a node with several engines), routes exactly as in v3.71. `Node:MaxConcurrency` is still the
+  way to make the hub queue.
+- `GET /api/status` shows it: `nodes[].modelSlots`, and `nodes[].modelsInFlight` while the hub has jobs out.
 
 ## Inference backends
 

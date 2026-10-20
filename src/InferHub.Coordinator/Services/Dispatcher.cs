@@ -78,15 +78,16 @@ public sealed class Dispatcher(
         CancellationToken cancellationToken)
     {
         var deadline = options.Value.DeadlineFor(job);
+        var model = ModelOf(job);
         var tcs = new TaskCompletionSource<InferenceResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var pending = new PendingResult<InferenceResult>(node.ConnectionId, node.NodeId, tcs);
+        var pending = new PendingResult<InferenceResult>(node.ConnectionId, node.NodeId, tcs, model);
 
         if (!pendingResults.TryAdd(job.JobId, pending))
         {
             throw new InvalidOperationException($"Job '{job.JobId}' is already pending.");
         }
 
-        registry.IncrementInFlight(node.ConnectionId);
+        registry.IncrementInFlight(node.ConnectionId, model);
         metrics.RecordRequestStart(node.NodeId);
 
         try
@@ -126,7 +127,7 @@ public sealed class Dispatcher(
             // blocking job the hub ever gave up on (the stream paths always counted it).
             if (pendingResults.TryRemove(job.JobId, out _))
             {
-                registry.DecrementInFlight(node.ConnectionId);
+                registry.DecrementInFlight(node.ConnectionId, model);
                 metrics.RecordRequestFail(node.NodeId);
             }
         }
@@ -137,9 +138,9 @@ public sealed class Dispatcher(
         InferenceJob job,
         CancellationToken cancellationToken)
     {
-        var pending = CreatePendingStream(node, job.JobId, pendingStreams, cancellationToken);
+        var pending = CreatePendingStream(node, job.JobId, pendingStreams, cancellationToken, ModelOf(job));
 
-        registry.IncrementInFlight(node.ConnectionId);
+        registry.IncrementInFlight(node.ConnectionId, pending.Model);
         metrics.RecordRequestStart(node.NodeId);
 
         try
@@ -166,7 +167,7 @@ public sealed class Dispatcher(
         {
             if (pendingStreams.TryRemove(job.JobId, out var removed))
             {
-                registry.DecrementInFlight(removed.ConnectionId);
+                registry.DecrementInFlight(removed.ConnectionId, removed.Model);
                 removed.CancellationRegistration.Dispose();
                 removed.Channel.Writer.TryComplete();
 
@@ -284,7 +285,7 @@ public sealed class Dispatcher(
         {
             if (pendingToolStreams.TryRemove(job.JobId, out var removed))
             {
-                registry.DecrementInFlight(removed.ConnectionId);
+                registry.DecrementInFlight(removed.ConnectionId, removed.Model);
                 removed.CancellationRegistration.Dispose();
                 removed.Channel.Writer.TryComplete();
 
@@ -308,7 +309,7 @@ public sealed class Dispatcher(
             return false;
         }
 
-        registry.DecrementInFlight(pending.ConnectionId);
+        registry.DecrementInFlight(pending.ConnectionId, pending.Model);
 
         if (result.Success)
         {
@@ -332,7 +333,7 @@ public sealed class Dispatcher(
             return false;
         }
 
-        registry.DecrementInFlight(pending.ConnectionId);
+        registry.DecrementInFlight(pending.ConnectionId, pending.Model);
 
         // No ThroughputTracker call, deliberately: it reads Ollama's eval_count / eval_duration,
         // which a transcription does not have and must not be asked to invent. Tools are metered
@@ -367,7 +368,7 @@ public sealed class Dispatcher(
 
         if (chunk.Done && pendingStreams.TryRemove(chunk.JobId, out var completed))
         {
-            registry.DecrementInFlight(completed.ConnectionId);
+            registry.DecrementInFlight(completed.ConnectionId, completed.Model);
             metrics.RecordRequestComplete(completed.NodeId);
             throughput.RecordFromResponse(completed.NodeId, chunk.ResponseJson);
             completed.CancellationRegistration.Dispose();
@@ -399,7 +400,7 @@ public sealed class Dispatcher(
 
         if (chunk.Done && pendingToolStreams.TryRemove(chunk.JobId, out var completed))
         {
-            registry.DecrementInFlight(completed.ConnectionId);
+            registry.DecrementInFlight(completed.ConnectionId, completed.Model);
             metrics.RecordRequestComplete(completed.NodeId);
             completed.CancellationRegistration.Dispose();
             completed.Channel.Writer.TryComplete();
@@ -426,7 +427,7 @@ public sealed class Dispatcher(
         {
             if (pending.ConnectionId == connectionId && pendings.TryRemove(jobId, out var removed))
             {
-                registry.DecrementInFlight(removed.ConnectionId);
+                registry.DecrementInFlight(removed.ConnectionId, removed.Model);
                 metrics.RecordRequestFail(removed.NodeId);
 
                 var error = new NodeDisconnectedException(
@@ -448,7 +449,7 @@ public sealed class Dispatcher(
         {
             if (pending.ConnectionId == connectionId && pendings.TryRemove(jobId, out var removed))
             {
-                registry.DecrementInFlight(removed.ConnectionId);
+                registry.DecrementInFlight(removed.ConnectionId, removed.Model);
                 metrics.RecordRequestFail(removed.NodeId);
                 removed.CancellationRegistration.Dispose();
 
@@ -481,7 +482,8 @@ public sealed class Dispatcher(
         RoutableNode node,
         Guid jobId,
         ConcurrentDictionary<Guid, PendingStream<T>> pendings,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? model = null)
     {
         var channel = Channel.CreateUnbounded<T>(new UnboundedChannelOptions
         {
@@ -489,7 +491,7 @@ public sealed class Dispatcher(
             SingleWriter = false
         });
 
-        var pending = new PendingStream<T>(node.ConnectionId, node.NodeId, channel);
+        var pending = new PendingStream<T>(node.ConnectionId, node.NodeId, channel, model);
 
         // The client walking away has to reach the node, or a cancelled request leaves a GPU
         // finishing an answer nobody will read.
@@ -521,7 +523,7 @@ public sealed class Dispatcher(
 
             if (pendings.TryRemove(jobId, out var pending))
             {
-                registry.DecrementInFlight(pending.ConnectionId);
+                registry.DecrementInFlight(pending.ConnectionId, pending.Model);
                 metrics.RecordRequestFail(pending.NodeId);
                 pending.CancellationRegistration.Dispose();
 
@@ -557,7 +559,7 @@ public sealed class Dispatcher(
     {
         if (pendings.TryRemove(jobId, out var pending))
         {
-            registry.DecrementInFlight(pending.ConnectionId);
+            registry.DecrementInFlight(pending.ConnectionId, pending.Model);
             metrics.RecordRequestFail(pending.NodeId);
             pending.CancellationRegistration.Dispose();
             SendCancelJob(connectionId, jobId);
@@ -579,18 +581,57 @@ public sealed class Dispatcher(
                 TaskScheduler.Default);
     }
 
+    /// <summary>
+    /// Phase 108 D3. The model an inference job names, read once from its Ollama JSON so every
+    /// release site can give back the model's slot with the node's. Null — counted against the node
+    /// only — for a body without one, or one that is not JSON at all (the node will say why).
+    /// </summary>
+    internal static string? ModelOf(InferenceJob job)
+    {
+        try
+        {
+            var reader = new System.Text.Json.Utf8JsonReader(System.Text.Encoding.UTF8.GetBytes(job.RequestJson));
+
+            if (!reader.Read() || reader.TokenType != System.Text.Json.JsonTokenType.StartObject)
+            {
+                return null;
+            }
+
+            while (reader.Read() && reader.TokenType == System.Text.Json.JsonTokenType.PropertyName)
+            {
+                var isModel = reader.ValueTextEquals("model");
+                reader.Read();
+
+                if (isModel)
+                {
+                    return reader.TokenType == System.Text.Json.JsonTokenType.String ? reader.GetString() : null;
+                }
+
+                reader.Skip();
+            }
+        }
+        catch (System.Text.Json.JsonException)
+        {
+        }
+
+        return null;
+    }
+
     private sealed record PendingResult<T>(
         string ConnectionId,
         string NodeId,
-        TaskCompletionSource<T> Completion);
+        TaskCompletionSource<T> Completion,
+        string? Model = null);
 
-    private sealed class PendingStream<T>(string connectionId, string nodeId, Channel<T> channel)
+    private sealed class PendingStream<T>(string connectionId, string nodeId, Channel<T> channel, string? model = null)
     {
         private int started;
 
         public string ConnectionId { get; } = connectionId;
 
         public string NodeId { get; } = nodeId;
+
+        public string? Model { get; } = model;
 
         public Channel<T> Channel { get; } = channel;
 

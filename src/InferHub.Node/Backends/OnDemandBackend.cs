@@ -57,6 +57,8 @@ public sealed class OnDemandBackend : IInferenceBackend
 
     public bool SupportsModelManagement => inner.SupportsModelManagement;
 
+    public int? ModelSlots => inner.ModelSlots;
+
     public Task<IReadOnlyList<ModelInfo>?> ListModelsAsync(CancellationToken cancellationToken)
         => inner.ListModelsAsync(cancellationToken);
 

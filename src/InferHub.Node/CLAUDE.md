@@ -1088,3 +1088,13 @@ after. And with nothing arriving early, *every* stream a client left was in D3's
 chat, generate and pull; the chunk JSON is unchanged. **Rejected: yielding Ollama's raw lines** — closer to rule 6, and
 a change to every chunk's shape inside a phase about timing. The package's own fix is its own release.
 `OllamaBackendTests.AStreamedChatYieldsEachLineAsOllamaWritesIt` withholds the second line until the first is read.
+
+### Phase 108 (one model's slots: the node declares, the hub's router prefers a free one) — the hub half is `Services/Router.cs`
+
+Ollama runs `OLLAMA_NUM_PARALLEL` requests per loaded model (default **1**, measured: six at once finished one after another), so after 107 a node busy with a model queued the next request in its own engine while another holder sat idle
+— `PickLeastBusy` counts jobs per *node*.
+`NodeRegistration.ModelSlots` = `Node:ModelSlots` ?? `IInferenceBackend.ModelSlots` (Ollama: its env var, parsed as Ollama does; every other backend and `MultiBackend`: null = no opinion).
+The hub counts its own jobs per (node, model) — `Dispatcher.ModelOf` reads the job's top-level `model` once and the pending entry carries it to every release site —
+and `Router.FreeSlotTier` runs after 86's warm tier: nodes with a free slot or no declaration first, **a preference, never a filter**, so a single node or a full fleet routes as before and Ollama still queues.
+**Rejected: queueing at the hub on a full slot** — `FleetSaturation` (25 D5) stays on `MaxConcurrency`, because a `503` where Ollama would have answered is a regression; **rejected: probing** the number with timed requests.
+Not seen: work the hub did not send (a solo client on the same Ollama), and an Ollama with its own environment needs `Node:ModelSlots`. Tests: `ModelSlotRoutingTests`, `ModelSlotsTests`, `ConcurrentJobsMeshTests`.

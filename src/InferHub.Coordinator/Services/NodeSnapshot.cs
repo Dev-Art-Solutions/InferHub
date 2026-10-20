@@ -35,4 +35,8 @@ public sealed record NodeSnapshot(
     bool? ResourceThrottled = null,
     /// Who holds the node's card (phase 86). Null = the node does not run on demand, or is older
     /// than v3.51.
-    OnDemandState? OnDemand = null);
+    OnDemandState? OnDemand = null,
+    /// Phase 108: what the node declared per model (null = no opinion), and the hub's own jobs on it
+    /// by model. Only models with a job in flight appear.
+    int? ModelSlots = null,
+    IReadOnlyDictionary<string, int>? ModelsInFlight = null);

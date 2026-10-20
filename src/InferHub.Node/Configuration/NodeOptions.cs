@@ -8,6 +8,12 @@ public sealed class NodeOptions
 
     public int? MaxConcurrency { get; set; }
 
+    /// <summary>
+    /// How many requests for one model the engine runs at once (phase 108). Null = what the backend
+    /// declares: an Ollama's <c>OLLAMA_NUM_PARALLEL</c>, else 1; nothing for any other backend.
+    /// </summary>
+    public int? ModelSlots { get; set; }
+
     public Dictionary<string, string> Labels { get; set; } = new();
 
     /// <summary>

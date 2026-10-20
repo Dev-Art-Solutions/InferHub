@@ -66,6 +66,21 @@ public interface INodeRegistry
 
     int GetLocalInFlight(string connectionId);
 
+    /// <summary>
+    /// Phase 108 D3. The node counter and, when the job names one, the counter for that model on that
+    /// node — the hub's own jobs only. The defaults keep a registry that never heard of models
+    /// counting nodes exactly as it did.
+    /// </summary>
+    int IncrementInFlight(string connectionId, string? model) => IncrementInFlight(connectionId);
+
+    int DecrementInFlight(string connectionId, string? model) => DecrementInFlight(connectionId);
+
+    /// <summary>The hub's jobs for <paramref name="model"/> on that node right now (phase 108).</summary>
+    int GetModelInFlight(string connectionId, string model) => 0;
+
+    /// <summary>What the node declared per model (phase 108); null is no opinion.</summary>
+    int? GetModelSlots(string connectionId) => null;
+
     IReadOnlyCollection<NodeSnapshot> EvictStale(DateTimeOffset cutoffUtc, DateTimeOffset now);
 }
 

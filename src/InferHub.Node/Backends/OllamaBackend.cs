@@ -136,6 +136,19 @@ public sealed class OllamaBackend(
 
     public bool SupportsModelManagement => true;
 
+    /// <summary>
+    /// Phase 108 D2. Ollama runs <c>OLLAMA_NUM_PARALLEL</c> requests per loaded model and queues the
+    /// rest; its own default is 1 (<c>envconfig.NumParallel</c>). Read from this process's
+    /// environment, which is Ollama's in every shape this repository ships — the images, the Windows
+    /// service, a supervised Ollama. A separately started Ollama with its own value needs
+    /// <c>Node:ModelSlots</c>.
+    /// </summary>
+    public int? ModelSlots => ParallelFrom(Environment.GetEnvironmentVariable("OLLAMA_NUM_PARALLEL"));
+
+    /// <summary>Ollama's own parse: an unsigned integer, and anything else (or 0) falls back to its default.</summary>
+    internal static int ParallelFrom(string? value) =>
+        int.TryParse(value?.Trim(), out var parallel) && parallel >= 1 ? parallel : 1;
+
     public async IAsyncEnumerable<ModelPullProgress> PullAsync(
         string model,
         [EnumeratorCancellation] CancellationToken cancellationToken)
