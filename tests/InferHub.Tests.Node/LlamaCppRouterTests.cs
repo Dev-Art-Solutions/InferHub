@@ -531,6 +531,34 @@ public class LlamaCppRouterTests
     }
 
     [Fact]
+    public async Task AnUnloadReturnsOnlyOnceTheRouterStopsListingTheModelAsLoaded()
+    {
+        // v3.73.1: b11417 answers POST /models/unload while the instance is still stopping.
+        var (backend, stub) = Backend(Router(e => e.Serve.ModelsDir = "/models"));
+        stub.Models["qwen"] = ("loaded", "models_dir", false);
+        stub.Props = _ => (200, """{"total_slots":4}""");
+        Assert.Equal(4, (await backend.ListModelsAsync(CancellationToken.None))!.Single().Slots);
+        stub.AfterPolls(3, () => stub.Models["qwen"] = ("unloaded", "models_dir", false));
+
+        await backend.UnloadAsync("qwen", CancellationToken.None);
+
+        // What the node re-reports right after the command: no stale count.
+        Assert.Null((await backend.ListModelsAsync(CancellationToken.None))!.Single().Slots);
+    }
+
+    [Fact]
+    public async Task AnInstanceSlowToStopEndsTheWaitNotTheUnload()
+    {
+        var (backend, stub) = Backend(Router(e => e.Serve.ModelsDir = "/models"));
+        stub.Models["qwen"] = ("loaded", "models_dir", false);
+
+        // The stub never changes the status: the bound ends the wait and the command still succeeds.
+        await backend.UnloadAsync("qwen", CancellationToken.None);
+
+        Assert.Contains("POST /models/unload {\"model\":\"qwen\"}", stub.Calls);
+    }
+
+    [Fact]
     public async Task AModelThatUnloadedBeforeTheQuestionIsListedWithoutSlots()
     {
         var (backend, stub) = Backend(Router(e => e.Serve.ModelsDir = "/models"));

@@ -392,6 +392,27 @@ public sealed class LlamaCppBackend : IInferenceBackend, IModelKinds, IBackendTo
         }
 
         await SendAsync(HttpMethod.Post, "models/unload", new JsonObject { ["model"] = entry.Id }, cancellationToken);
+
+        // v3.73.1, found on the published 3.73.0: the router answers the unload while the instance is still
+        // stopping, so the re-report that follows (109 D4) listed it loaded and the hub kept its slot count
+        // for a refresh interval. Wait for the listing to say so, as warm does — but an instance slow to stop
+        // is not a failed unload, so the bound ends the wait rather than the command.
+        var deadline = time.GetUtcNow() + TimeSpan.FromSeconds(Math.Max(1, engine.TimeoutSeconds));
+
+        while (time.GetUtcNow() < deadline)
+        {
+            var status = Find(await ListRouterAsync(cancellationToken) ?? [], entry.Id)?.Status;
+
+            if (!string.Equals(status, RouterModel.Loaded, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(status, RouterModel.Loading, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            await Task.Delay(Poll, time, cancellationToken);
+        }
+
+        logger.LogWarning("llama.cpp still lists '{Model}' as loaded {Seconds} s after unloading it", entry.Id, engine.TimeoutSeconds);
     }
 
     public bool Serves(string capability, string model)

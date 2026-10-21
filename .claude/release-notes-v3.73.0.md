@@ -55,6 +55,20 @@ and the same test had failed once before, in v3.71's CI. Production never delete
 teardown now retries the delete for up to two seconds on a sharing violation. Recorded as made likelier by this phase,
 not as unrelated.
 
+## The published binaries — and the one claim they corrected
+
+The published `inferhub-coordinator:3.73.0` and `inferhub-node:3.73.0` images (revision label `b19d93c`, the tag
+commit) were pulled from GHCR and their `/app` binaries run natively, the node with the same two engines as above. The
+node registered as `3.73.0` with `modelSlots: 1`; a warm showed `slotsByModel: {qwen: 4}` **2.6 s** later; `/api/tags`
+carried no `slots`; after 65 s the router still listed `qwen` as `unloaded`; no exception in either log.
+
+**The unload did not do what this file said.** Twenty seconds after `…/qwen/unload` the hub still read
+`{qwen: 4}`, and it cleared only at the next refresh. b11417 answers `POST /models/unload` while the instance is still
+stopping (`unload: stopping model instance` in its log), so the re-report that followed listed the model as `loaded`.
+The run from source had cleared within twenty seconds by timing alone. A stale count is a routing preference for up
+to a minute, never a refusal — but "a warm or an unload re-reports at once" was true of the warm only. **Fixed in
+v3.73.1.**
+
 ## Not established
 
 - **llama.cpp builds other than b11417.** `total_slots`, the router's `/props?model=` and `autoload=false` are read

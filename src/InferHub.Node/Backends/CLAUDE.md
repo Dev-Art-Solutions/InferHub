@@ -543,6 +543,9 @@ fact about the running engine and they are statements about configuration. Colib
 `MaxConcurrency`, 93 D3) and Strata publishes no count.
 
 **D4 — a warm or an unload re-reports the models**, like a pull or a delete since 96 — otherwise a freshly loaded
-model's count waits out `ModelRefreshInterval`. Tests: `LlamaCppRouterTests` (a stub `/props` per model; the call log
+model's count waits out `ModelRefreshInterval`. **v3.73.1:** b11417 answers `POST /models/unload` while the instance is
+still stopping, so the re-report listed it `loaded` and the hub kept its count for a refresh — found on the published
+3.73.0, cleared by timing alone from source. `UnloadAsync` now polls until it is not `loaded`/`loading` (bounded by
+`TimeoutSeconds`; slow to stop ends the wait, not the command). Tests: `LlamaCppRouterTests` (a stub `/props` per model; the call log
 proves an unloaded model is never asked), `ModelSlotRoutingTests` (the model's number over the node's; red with D2
 reverted).
