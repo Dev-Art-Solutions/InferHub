@@ -66,7 +66,8 @@ public static class StatusEndpoint
                     updates?.Of(node.NodeId),
                     limits?.Of(node.NodeId) is { Groups.Count: > 0 } reported ? reported : null,
                     node.ModelSlots,
-                    node.ModelsInFlight is { Count: > 0 } busy ? busy : null)).ToArray(),
+                    node.ModelsInFlight is { Count: > 0 } busy ? busy : null,
+                    node.SlotsByModel)).ToArray(),
                 models,
                 registry.CapabilitySummary(),
                 snapshot,
@@ -498,7 +499,10 @@ public static class StatusEndpoint
         // jobs on it by model. Null for a node before v3.72 or a backend that declares nothing; the
         // second is null while nothing is in flight.
         int? ModelSlots = null,
-        IReadOnlyDictionary<string, int>? ModelsInFlight = null);
+        IReadOnlyDictionary<string, int>? ModelsInFlight = null,
+        // Phase 109: the models whose engine answered its own slot count (a loaded llama.cpp model's
+        // total_slots). Null when no engine on the node can be asked.
+        IReadOnlyDictionary<string, int>? SlotsByModel = null);
 
     internal sealed record NodeProfileStatusBlock(
         string? Name,

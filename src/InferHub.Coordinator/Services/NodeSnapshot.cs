@@ -39,4 +39,6 @@ public sealed record NodeSnapshot(
     /// Phase 108: what the node declared per model (null = no opinion), and the hub's own jobs on it
     /// by model. Only models with a job in flight appear.
     int? ModelSlots = null,
-    IReadOnlyDictionary<string, int>? ModelsInFlight = null);
+    IReadOnlyDictionary<string, int>? ModelsInFlight = null,
+    /// Phase 109: the models whose engine answered its own slot count, and that count.
+    IReadOnlyDictionary<string, int>? SlotsByModel = null);

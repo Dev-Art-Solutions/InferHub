@@ -148,6 +148,60 @@ public class ModelSlotRoutingTests
         Assert.Null(registry.GetModelSlots("connection-b"));
     }
 
+    [Fact]
+    public void AModelsOwnSlotsBeatTheNodesDeclaration()
+    {
+        // Phase 109: node A's engine answered 4 for llama3 (a loaded llama.cpp model), its node-level
+        // default is 1. Three of the hub's llama3 jobs are on it, one on node B.
+        var registry = Seed(slotsA: 1, slotsB: 1);
+        Report(registry, "a", new ModelInfo("llama3", "digest-a", 100, Slots: 4), new ModelInfo("nomic-embed-text", "embed-a", 50));
+        for (var i = 0; i < 3; i++)
+        {
+            registry.IncrementInFlight("connection-a", "llama3");
+        }
+
+        registry.IncrementInFlight("connection-b", "llama3");
+        var router = NewRouter(registry);
+
+        Assert.Equal(4, registry.GetModelSlots("connection-a", "llama3"));
+        Assert.Equal(1, registry.GetModelSlots("connection-a", "nomic-embed-text"));
+        // B is full at its one slot, A still has one of four: A, although it is busier.
+        Assert.Equal("node-a", router.Route("llama3", capability: "chat")!.NodeId);
+    }
+
+    [Fact]
+    public void AModelsSlotsAreAPerNodeFactAndStayOutOfTheFleetList()
+    {
+        var registry = Seed(slotsA: null, slotsB: null);
+        Report(registry, "a", new ModelInfo("llama3", "digest-a", 100, Slots: 4));
+
+        Assert.All(registry.DistinctModels(), model => Assert.Null(model.Slots));
+
+        var snapshots = registry.Snapshot(DateTimeOffset.UtcNow).ToDictionary(node => node.NodeId);
+        Assert.Equal(new Dictionary<string, int> { ["llama3"] = 4 }, snapshots["node-a"].SlotsByModel);
+        Assert.Null(snapshots["node-b"].SlotsByModel);
+    }
+
+    [Fact]
+    public void AReportedSlotCountBelowOneIsNoAnswer()
+    {
+        var registry = Seed(slotsA: 2, slotsB: null);
+        Report(registry, "a", new ModelInfo("llama3", "digest-a", 100, Slots: 0));
+
+        Assert.Equal(2, registry.GetModelSlots("connection-a", "llama3"));
+        Assert.Null(registry.Snapshot(DateTimeOffset.UtcNow).Single(n => n.NodeId == "node-a").SlotsByModel);
+    }
+
+    [Fact]
+    public void TheSlotsFieldIsAbsentFromTheWireWhenNobodyAnswered()
+    {
+        Assert.Equal("""{"name":"q","digest":null,"size":null}""", System.Text.Json.JsonSerializer.Serialize(new ModelInfo("q", null, null)));
+        Assert.Equal("""{"name":"q","digest":null,"size":null,"slots":4}""", System.Text.Json.JsonSerializer.Serialize(new ModelInfo("q", null, null, 4)));
+    }
+
+    private static void Report(NodeRegistry registry, string id, params ModelInfo[] models)
+        => registry.ReportModels($"connection-{id}", new NodeModels($"node-{id}", models, DateTimeOffset.UtcNow), DateTimeOffset.UtcNow);
+
     [Theory]
     [InlineData("""{"model":"llama3","messages":[]}""", "llama3")]
     [InlineData("""{"options":{"model":"inner"},"stream":true,"model":"qwen2.5:0.5b"}""", "qwen2.5:0.5b")]

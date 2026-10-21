@@ -98,7 +98,7 @@ public sealed class NodeRegistry : INodeRegistry
 
         var normalizedModels = (models.Models ?? Array.Empty<ModelInfo>())
             .Where(model => !string.IsNullOrWhiteSpace(model.Name))
-            .Select(model => model with { Name = model.Name.Trim() })
+            .Select(model => model with { Name = model.Name.Trim(), Slots = model.Slots is >= 1 ? model.Slots : null })
             .ToArray();
 
         // Phase 69, found by running the published 3.36.0 image rather than by any test. A node
@@ -257,7 +257,8 @@ public sealed class NodeRegistry : INodeRegistry
             .ThenBy(item => item.Registration.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(item => item.Registration.NodeId, StringComparer.OrdinalIgnoreCase)
             .GroupBy(item => item.model.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.First().model)
+            // Phase 109: one node's slot count is not the fleet's, and /api/tags keeps its v3.72 shape.
+            .Select(group => group.First().model with { Slots = null })
             .ToArray();
     }
 
@@ -390,6 +391,29 @@ public sealed class NodeRegistry : INodeRegistry
     public int? GetModelSlots(string connectionId) =>
         nodes.TryGetValue(connectionId, out var entry) ? entry.Registration.ModelSlots : null;
 
+    public int? GetModelSlots(string connectionId, string model)
+    {
+        if (!nodes.TryGetValue(connectionId, out var entry))
+        {
+            return null;
+        }
+
+        var key = ModelKey(model);
+        var reported = entry.Models.FirstOrDefault(m => m.Slots is not null && ModelKey(m.Name) == key);
+        return reported?.Slots ?? entry.Registration.ModelSlots;
+    }
+
+    private static IReadOnlyDictionary<string, int>? SlotsByModel(NodeRegistryEntry entry)
+    {
+        var reported = entry.Models.Where(m => m.Slots is not null).ToArray();
+
+        return reported.Length == 0
+            ? null
+            : reported
+                .GroupBy(m => m.Name, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First().Slots!.Value, StringComparer.OrdinalIgnoreCase);
+    }
+
     private IReadOnlyDictionary<string, int> ModelsInFlight(string connectionId) =>
         modelInFlight
             .Where(pair => pair.Key.ConnectionId == connectionId && Volatile.Read(ref pair.Value.Value) > 0)
@@ -483,7 +507,8 @@ public sealed class NodeRegistry : INodeRegistry
             entry.ResourceThrottled,
             entry.OnDemand,
             entry.Registration.ModelSlots,
-            ModelsInFlight(connectionId));
+            ModelsInFlight(connectionId),
+            SlotsByModel(entry));
     }
 
     /// <summary>

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -37,6 +38,10 @@ public sealed class LlamaCppBackend : IInferenceBackend, IModelKinds, IBackendTo
     private readonly TimeProvider time;
     private readonly ILogger logger;
     private IReadOnlyList<RouterModel> lastListing = [];
+
+    // Phase 109 D1: a loaded model's slot count, asked once per load and forgotten when it unloads —
+    // a relaunched instance may have been given a different --parallel by its preset.
+    private readonly ConcurrentDictionary<string, int> slots = new(StringComparer.OrdinalIgnoreCase);
 
     /// <param name="router">A launched router, or <c>Router: true</c> at a base URL (D1, D3).</param>
     /// <param name="http">A client whose base address is the server's root, not <c>/v1</c>.</param>
@@ -116,7 +121,16 @@ public sealed class LlamaCppBackend : IInferenceBackend, IModelKinds, IBackendTo
     {
         if (!router)
         {
-            return await inner.ListModelsAsync(cancellationToken);
+            var models = await inner.ListModelsAsync(cancellationToken);
+
+            if (models is null)
+            {
+                return null;
+            }
+
+            // One model fixed at launch, so the server's own /props is that model's.
+            var total = await AskSlotsAsync("props", cancellationToken);
+            return models.Select(m => m with { Slots = total }).ToArray();
         }
 
         var listing = await ListRouterAsync(cancellationToken);
@@ -127,11 +141,88 @@ public sealed class LlamaCppBackend : IInferenceBackend, IModelKinds, IBackendTo
         }
 
         // D2: a model still downloading is not one a request can be sent to.
-        return listing
+        var visible = listing
             .Where(m => !string.Equals(m.Status, RouterModel.Downloading, StringComparison.OrdinalIgnoreCase))
             .Where(m => !Shadowed(m))
-            .Select(m => new ModelInfo(m.Id, Digest: null, SizeBytes: null))
             .ToArray();
+
+        await LearnSlotsAsync(visible, cancellationToken);
+
+        return visible
+            .Select(m => new ModelInfo(m.Id, Digest: null, SizeBytes: null, slots.TryGetValue(m.Id, out var n) ? n : null))
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Phase 109 D1. Asks each <b>loaded</b> model how many slots it runs, with <c>autoload=false</c>:
+    /// a router loads any model a request names (<c>models_autoload</c>), and a question about an
+    /// unloaded one would otherwise load it. A model that unloaded between the listing and the question
+    /// answers 400 and is simply not tagged.
+    /// </summary>
+    private async Task LearnSlotsAsync(IReadOnlyList<RouterModel> listing, CancellationToken cancellationToken)
+    {
+        var loaded = listing
+            .Where(m => string.Equals(m.Status, RouterModel.Loaded, StringComparison.OrdinalIgnoreCase))
+            .Select(m => m.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var gone in slots.Keys.Where(id => !loaded.Contains(id)))
+        {
+            slots.TryRemove(gone, out _);
+        }
+
+        foreach (var id in loaded.Where(id => !slots.ContainsKey(id)))
+        {
+            if (await AskSlotsAsync($"props?model={Uri.EscapeDataString(id)}&autoload=false", cancellationToken) is { } total)
+            {
+                slots[id] = total;
+            }
+        }
+    }
+
+    /// <summary><c>total_slots</c> from a <c>/props</c> answer, or null when it could not be asked.</summary>
+    private async Task<int?> AskSlotsAsync(string path, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var client = http();
+            using var response = await client.GetAsync(path, cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            return TotalSlots(await response.Content.ReadAsStringAsync(cancellationToken));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    internal static int? TotalSlots(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                   && document.RootElement.TryGetProperty("total_slots", out var total)
+                   && total.ValueKind == JsonValueKind.Number
+                   && total.TryGetInt32(out var n)
+                   && n >= 1
+                ? n
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

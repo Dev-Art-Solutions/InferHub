@@ -141,7 +141,7 @@ public sealed class Router(
         }
 
         var free = candidates
-            .Where(node => registry.GetModelSlots(node.ConnectionId) is not { } slots
+            .Where(node => registry.GetModelSlots(node.ConnectionId, model) is not { } slots
                 || registry.GetModelInFlight(node.ConnectionId, model) < slots)
             .ToArray();
 

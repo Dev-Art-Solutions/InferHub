@@ -517,3 +517,32 @@ save with no restart; hub `cpuPercent:50` over the node's 10 → 409 naming 10%;
 255 MiB, stopped; `gpus:[]` → restarted, VRAM 206 → 0 MiB. Tests: `EngineLimitTests` (Node),
 `EngineLimitProcessTests` (Mesh — a real Job Object refuses a 400 MB allocation under 150 MB and holds a busy loop
 under 1%; Linux affinity and the watchdog on CI), `EngineLimitMeshTests` (Mesh, hub ↔ node).
+
+### Phase 109 (an engine that can be asked says how many requests each model runs at once) — 108's routing is in `src/InferHub.Node/CLAUDE.md`
+
+Files: `Engines/LlamaCppBackend.cs` (`LearnSlotsAsync`, `AskSlotsAsync`, `TotalSlots`), `Engines/MultiBackend.cs`
+(`ModelSlots`), `ModelInfo.Slots` in Shared, the hub's `NodeRegistry.GetModelSlots(connection, model)`. 108 gave the hub
+one number per node, declared by Ollama only — and llama.cpp, which runs **four** at once by default (`-np -1`, auto;
+b11417 `GET /props` → `total_slots: 4`), declared nothing.
+
+**D1 — llama.cpp is asked, per loaded model, with `autoload=false`, once per load (load-bearing).** The router loads any
+model a request names (`models_autoload: true`), and `/props?model=X` is a request: asking about an unloaded model would
+load it. `&autoload=false` answers `400 model is not loaded` and loads nothing (measured). The answer is kept while the
+model stays `loaded` and forgotten when it leaves — a reload may carry another `--parallel` from its preset. A
+single-model engine asks `/props` on each listing. Anything but a positive number is no answer. **Rejected: `/slots`**
+— off unless `--slots`, and per model on the router anyway.
+
+**D2 — an asked number beats the node's declaration; the fleet list never shows it.** `ModelInfo.slots` is omitted
+when null, so a node that asks nothing sends v3.72's bytes. The hub reads `model.slots ?? node.modelSlots` in 108's
+`FreeSlotTier`; `DistinctModels` (behind `/api/tags` and `/api/status`'s list) strips it — one node's count is not the
+fleet's. `/api/status` `nodes[].slotsByModel` shows what was answered.
+
+**D3 — a node with several engines defaults to its Ollama's number.** `MultiBackend.ModelSlots` = the first engine
+that declares one; `Node:ModelSlots` still overrides it at registration; an asked number beats both, because it is a
+fact about the running engine and they are statements about configuration. Colibri adds nothing (`KvSlots` is already
+`MaxConcurrency`, 93 D3) and Strata publishes no count.
+
+**D4 — a warm or an unload re-reports the models**, like a pull or a delete since 96 — otherwise a freshly loaded
+model's count waits out `ModelRefreshInterval`. Tests: `LlamaCppRouterTests` (a stub `/props` per model; the call log
+proves an unloaded model is never asked), `ModelSlotRoutingTests` (the model's number over the node's; red with D2
+reverted).

@@ -348,12 +348,31 @@ public class StrataMeshTests
 
             foreach (var dir in new[] { scratch, install })
             {
+                await DeleteAsync(dir);
+            }
+        }
+
+        /// <summary>
+        /// A model command runs off SignalR's dispatch (98), and since 109 a switch re-reports the models,
+        /// which re-scans the catalogue's configs — so a scan can still hold a <c>strata-*.json</c> open
+        /// for a moment after the node has stopped. Found as a sharing violation in a full parallel run.
+        /// </summary>
+        private static async Task DeleteAsync(string dir)
+        {
+            for (var attempt = 0; ; attempt++)
+            {
                 try
                 {
                     Directory.Delete(dir, recursive: true);
+                    return;
                 }
                 catch (DirectoryNotFoundException)
                 {
+                    return;
+                }
+                catch (IOException) when (attempt < 40)
+                {
+                    await Task.Delay(50);
                 }
             }
         }

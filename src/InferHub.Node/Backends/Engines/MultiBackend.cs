@@ -114,6 +114,13 @@ public sealed class MultiBackend : IInferenceBackend, IClosedSetScorer, IModelKi
 
     public IReadOnlyList<string> EngineNames => engines.Select(e => e.Name).ToArray();
 
+    /// <summary>
+    /// Phase 109 D3: the node's default for a model its engine did not answer for — the first engine
+    /// that declares one, which is an Ollama's <c>OLLAMA_NUM_PARALLEL</c>. A llama.cpp engine answers per
+    /// loaded model instead (<see cref="ModelInfo.Slots"/>), and that number wins at the hub.
+    /// </summary>
+    public int? ModelSlots => engines.Select(e => e.Backend.ModelSlots).FirstOrDefault(slots => slots is not null);
+
     /// <summary>What the fleet list shows: which engine is the node's, and where it is.</summary>
     public string Name => "engines";
 

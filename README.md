@@ -193,6 +193,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 106 | [Provider limits](#provider-limits--the-five-hour-and-weekly-windows-rate-limits-and-spend-v370) — a ChatGPT plan's five-hour and weekly windows, rate limits, and the month's spend against a budget, for the coordinator and for each node (done) | `v3.70.0` |
 | 107 | [Jobs side by side, and a cancel that arrives](#jobs-side-by-side-and-a-cancel-that-arrives-v371) — a node runs the jobs the hub sends it at once instead of one after another, and a cancelled chat, picture or video now stops on the node (done) | `v3.71.0` |
 | 108 | [A free slot for the model](#a-free-slot-for-the-model-v372) — the hub sends a chat to a node whose engine can start it now, not to one where it would wait behind the same model (done) | `v3.72.0` |
+| 109 | [Slots the engine reports](#slots-the-engine-reports-v373) — a llama.cpp model says how many requests it runs at once, and the hub uses that number before the node's (done) | `v3.73.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -3367,6 +3368,22 @@ Since v3.72 a node tells the hub how many requests one model runs at once, and t
   non-Ollama backend, and a node with several engines), routes exactly as in v3.71. `Node:MaxConcurrency` is still the
   way to make the hub queue.
 - `GET /api/status` shows it: `nodes[].modelSlots`, and `nodes[].modelsInFlight` while the hub has jobs out.
+
+## Slots the engine reports (v3.73)
+
+**v3.72's number came from configuration, and only Ollama had one.** llama.cpp runs several requests per model at once
+by default — `llama-server` picks its slot count itself, and on this box it picked 4 — and it says so: `GET /props`
+answers `total_slots`. Since v3.73 a llama.cpp engine is asked, for each **loaded** model, and that number travels with
+the model to the hub, which uses it before the node's own.
+
+- **Only loaded models are asked, and the question loads nothing.** A llama.cpp router loads any model a request
+  names, so the node asks with `autoload=false`. An unloaded model has no number until it loads; a warm or an unload
+  now re-reports the node's models at once, so the hub hears the new number without waiting for the next refresh.
+- **A node with several engines** — an Ollama and a llama.cpp on one box — now declares its Ollama's number as the
+  default for the models nothing answered for. `Node:ModelSlots` still overrides that default; an engine's own answer
+  overrides both.
+- `GET /api/status` shows the answers as `nodes[].slotsByModel`. `/api/tags` and the fleet's model list are unchanged.
+
 
 ## Inference backends
 

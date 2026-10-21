@@ -491,6 +491,105 @@ public class LlamaCppRouterTests
     public void TheNativeRoutesLiveAtTheServersRoot(string baseUrl, string root)
         => Assert.Equal(root, MultiBackendComposition.RootOf(baseUrl)!.ToString());
 
+    // ---- phase 109 D1: a loaded model's slots, asked without loading anything ----------------
+
+    [Fact]
+    public async Task ALoadedModelIsTaggedWithItsOwnSlotsAndAnUnloadedOneIsNeverAsked()
+    {
+        var (backend, stub) = Backend(Router(e => e.Serve.ModelsDir = "/models"));
+        stub.Models["qwen"] = ("loaded", "models_dir", false);
+        stub.Models["nomic"] = ("unloaded", "models_dir", false);
+        stub.Props = query => query.Contains("model=qwen", StringComparison.Ordinal) ? (200, """{"total_slots":4}""") : (400, """{"error":{"message":"model is not loaded"}}""");
+
+        var models = (await backend.ListModelsAsync(CancellationToken.None))!.ToDictionary(m => m.Name);
+
+        Assert.Equal(4, models["qwen"].Slots);
+        Assert.Null(models["nomic"].Slots);
+        // The router loads any model a request names; the question must not be one.
+        var asked = Assert.Single(stub.Calls, c => c.Contains("/props", StringComparison.Ordinal));
+        Assert.Equal("GET /props?model=qwen&autoload=false", asked);
+    }
+
+    [Fact]
+    public async Task TheAnswerIsKeptWhileLoadedAndForgottenOnUnload()
+    {
+        var (backend, stub) = Backend(Router(e => e.Serve.ModelsDir = "/models"));
+        stub.Models["qwen"] = ("loaded", "models_dir", false);
+        stub.Props = _ => (200, """{"total_slots":2}""");
+
+        await backend.ListModelsAsync(CancellationToken.None);
+        await backend.ListModelsAsync(CancellationToken.None);
+        Assert.Single(stub.Calls, c => c.Contains("/props", StringComparison.Ordinal));
+
+        stub.Models["qwen"] = ("unloaded", "models_dir", false);
+        Assert.Null((await backend.ListModelsAsync(CancellationToken.None))!.Single().Slots);
+
+        // Loaded again, perhaps with another --parallel from its preset: asked again.
+        stub.Models["qwen"] = ("loaded", "models_dir", false);
+        stub.Props = _ => (200, """{"total_slots":6}""");
+        Assert.Equal(6, (await backend.ListModelsAsync(CancellationToken.None))!.Single().Slots);
+    }
+
+    [Fact]
+    public async Task AModelThatUnloadedBeforeTheQuestionIsListedWithoutSlots()
+    {
+        var (backend, stub) = Backend(Router(e => e.Serve.ModelsDir = "/models"));
+        stub.Models["qwen"] = ("loaded", "models_dir", false);
+        stub.Props = _ => (400, """{"error":{"message":"model is not loaded"}}""");
+
+        var model = (await backend.ListModelsAsync(CancellationToken.None))!.Single();
+
+        Assert.Equal("qwen", model.Name);
+        Assert.Null(model.Slots);
+    }
+
+    [Fact]
+    public async Task OneModelFixedAtLaunchIsTaggedFromTheServersOwnProps()
+    {
+        var (backend, stub) = Backend(new EngineOptions { Type = "llamacpp", Serve = { Model = "/m/q.gguf" } }, router: false);
+        stub.Props = query => query == "/props" ? (200, """{"total_slots":4,"role":"server"}""") : (404, "{}");
+
+        Assert.Equal(4, (await backend.ListModelsAsync(CancellationToken.None))!.Single().Slots);
+    }
+
+    [Fact]
+    public async Task ANodeWithSeveralEnginesKeepsEachAnswerAndDefaultsToItsOllamas()
+    {
+        var (llama, router) = Backend(Router(e => e.Serve.ModelsDir = "/models"));
+        router.Models["qwen"] = ("loaded", "models_dir", false);
+        router.Props = _ => (200, """{"total_slots":4}""");
+        var multi = new MultiBackend(
+            [Running(new Engine("gguf", "llamacpp", llama, true)), Running(new Engine("ollama", "ollama", new ManagingFake("llama3:latest", slots: 1), true))],
+            TimeSpan.FromSeconds(1),
+            TimeProvider.System,
+            NullLogger.Instance);
+
+        var models = (await multi.ListModelsAsync(CancellationToken.None))!.ToDictionary(m => m.Name);
+
+        // The engine that answered keeps its number; the Ollama's model takes the node's default.
+        Assert.Equal(4, models["qwen"].Slots);
+        Assert.Null(models["llama3:latest"].Slots);
+        Assert.Equal(1, multi.ModelSlots);
+    }
+
+    [Fact]
+    public void ANodeWhoseEnginesDeclareNothingDeclaresNothing()
+    {
+        var (llama, _) = Backend(Router(e => e.Serve.ModelsDir = "/models"));
+        var multi = new MultiBackend([new Engine("gguf", "llamacpp", llama, true)], TimeSpan.FromSeconds(1), TimeProvider.System, NullLogger.Instance);
+
+        Assert.Null(multi.ModelSlots);
+    }
+
+    [Theory]
+    [InlineData("""{"total_slots":4}""", 4)]
+    [InlineData("""{"role":"router","max_instances":4}""", null)]
+    [InlineData("""{"total_slots":0}""", null)]
+    [InlineData("""{"total_slots":"4"}""", null)]
+    [InlineData("not json", null)]
+    public void TotalSlotsIsReadOnlyWhenItIsAPositiveNumber(string body, int? expected)
+        => Assert.Equal(expected, LlamaCppBackend.TotalSlots(body));
+
     // ---- helpers -------------------------------------------------------------------------
 
     private static EngineOptions Router(Action<EngineOptions> configure)
@@ -563,6 +662,9 @@ public class LlamaCppRouterTests
 
         public Action<string>? OnLoad { get; set; }
 
+        /// <summary>Phase 109: what <c>GET /props[?…]</c> answers, given the path and query.</summary>
+        public Func<string, (int Status, string Body)>? Props { get; set; }
+
         public bool Down { get; set; }
 
         public IReadOnlyList<string> Calls => calls.ToArray();
@@ -610,6 +712,13 @@ public class LlamaCppRouterTests
             }
 
             var route = path.Split('?')[0];
+
+            if (route == "/props" && Props is not null)
+            {
+                var (status, props) = Props(path);
+                return Json(status, props);
+            }
+
             return Native.TryGetValue(route, out var answer) ? Json(answer.Status, answer.Body) : Json(404, """{"error":{"message":"File Not Found"}}""");
         }
 
@@ -650,9 +759,11 @@ public class LlamaCppRouterTests
     }
 
     /// <summary>An Ollama-like engine that manages models and records what it was asked.</summary>
-    private sealed class ManagingFake(string model) : IInferenceBackend
+    private sealed class ManagingFake(string model, int? slots = null) : IInferenceBackend
     {
         private readonly ConcurrentQueue<string> calls = new();
+
+        public int? ModelSlots => slots;
 
         public IReadOnlyList<string> Calls => calls.ToArray();
 

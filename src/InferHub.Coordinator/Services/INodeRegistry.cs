@@ -81,6 +81,11 @@ public interface INodeRegistry
     /// <summary>What the node declared per model (phase 108); null is no opinion.</summary>
     int? GetModelSlots(string connectionId) => null;
 
+    /// <summary>
+    /// Phase 109: what the node's engine answered for this model, else the node's own declaration.
+    /// </summary>
+    int? GetModelSlots(string connectionId, string model) => GetModelSlots(connectionId);
+
     IReadOnlyCollection<NodeSnapshot> EvictStale(DateTimeOffset cutoffUtc, DateTimeOffset now);
 }
 

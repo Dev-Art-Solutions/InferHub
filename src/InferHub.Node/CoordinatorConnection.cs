@@ -1276,7 +1276,9 @@ public sealed class CoordinatorConnection(
 
             // Found in phase 96's mesh test, true since 26: a pulled model was not routable until the
             // next refresh interval, and a deleted one stayed routable for as long. Say so now.
-            if (!command.IsToolCommand && command.Kind is ModelCommand.KindPull or ModelCommand.KindDelete)
+            // Phase 109: a warm or an unload too — a llama.cpp model's slot count is asked when it loads.
+            if (!command.IsToolCommand
+                && command.Kind is ModelCommand.KindPull or ModelCommand.KindDelete or ModelCommand.KindWarm or ModelCommand.KindUnload)
             {
                 await ReportModelsAsync(commandCts.Token);
             }
