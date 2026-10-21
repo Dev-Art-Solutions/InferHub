@@ -18,6 +18,14 @@ The published 3.73.0 coordinator with a node built from this commit, both engine
 rounds of warm then unload, and the hub's `slotsByModel` cleared **1.7, 1.8 and 1.8 s** after each unload. On the
 published 3.73.0 node it still read `{qwen: 4}` at 20 s.
 
+## The published binaries
+
+The published `inferhub-coordinator:3.73.1` and `inferhub-node:3.73.1` images (revision label `e8a3baf`, the tag
+commit) were pulled from GHCR and their `/app` binaries run natively, the node with an Ollama and a llama.cpp router.
+Three rounds of warm then unload: `slotsByModel: {qwen: 4}` **2.6, 2.7 and 2.6 s** after each warm, cleared **1.8, 1.9
+and 1.8 s** after each unload; `/api/tags` carried no `slots`; no exception in either log. This exercised the
+binaries, not the containers' OS layer.
+
 ## Tests
 
 `LlamaCppRouterTests.AnUnloadReturnsOnlyOnceTheRouterStopsListingTheModelAsLoaded` — the stub keeps the model `loaded`
