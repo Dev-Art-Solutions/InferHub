@@ -43,6 +43,22 @@ Both nodes drove the same Ollama, so the wall-clock times were the same either w
 runs one request at a time however the hub orders them. What the run shows is **where and when the hub sent the
 third chat**, which is the claim; the time saved needs two engines, and this box has one.
 
+## The published binaries
+
+The published `inferhub-coordinator:3.74.0` and `inferhub-node:3.74.0` images (revision label `9f5e8cd`, the tag
+commit) were pulled from GHCR and their `/app` binaries run natively, the same two nodes over the same Ollama, which
+this time was also holding another 35B model of another project's — so each chat took ~10 s instead of ~0.5 s, and the
+wait was easier to watch. Both nodes registered as `3.74.0` with `modelSlots: 1`.
+
+- **`SlotWaitSeconds=20`:** `slotWait.depth: 1` on every one of six status reads, one a second; the third chat left only
+  when the first finished (11.5 s) and went to that chat's node; the run ended `waited 1, admitted 1, sentAnyway 0`.
+  All three `200`.
+- **`SlotWaitSeconds=0`:** no `slotWait` key; the third chat was dispatched at once to `live-b`, which was already
+  running the second.
+
+No exception in any log but a node seeing its hub stopped between the two runs. This exercised the binaries, not the
+containers' OS layer.
+
 ## A build artefact the full suite tripped on
 
 The first full run had two `ChatGptBackendTests` red in `Tests.Node`. Not this phase: the coordinator and the node
