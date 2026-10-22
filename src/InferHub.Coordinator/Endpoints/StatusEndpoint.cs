@@ -135,7 +135,8 @@ public static class StatusEndpoint
             snapshot.Admitted,
             snapshot.TimedOut,
             snapshot.Rejected,
-            snapshot.MedianWaitMs);
+            snapshot.MedianWaitMs,
+            snapshot.SlotWait);
     }
 
     /// <summary>
@@ -369,7 +370,11 @@ public static class StatusEndpoint
         long Admitted,
         long TimedOut,
         long Rejected,
-        double? MedianWaitMs);
+        double? MedianWaitMs,
+        // Phase 110: absent unless Queue:SlotWaitSeconds is set, so a hub that never opted in shows v3.73's block.
+        [property: System.Text.Json.Serialization.JsonIgnore(
+            Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        SlotWaitSnapshot? SlotWait = null);
 
     internal sealed record FallbackStatusBlock(
         bool Enabled,

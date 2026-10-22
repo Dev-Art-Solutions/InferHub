@@ -11,6 +11,13 @@ public sealed class QueueOptions
 
     /// <summary>How many requests may wait at once. Past it, an immediate 503.</summary>
     public int MaxDepth { get; set; } = 64;
+
+    /// <summary>
+    /// Phase 110 D1. How long a request may wait at the hub while every node holding its model runs as
+    /// many of its jobs as it declared slots for. <c>0</c> (the default) sends it straight on, as v3.73
+    /// did. Past the bound it is sent anyway — never a 503 (D2).
+    /// </summary>
+    public int SlotWaitSeconds { get; set; }
 }
 
 public enum QueueOutcome
@@ -25,7 +32,17 @@ public enum QueueOutcome
     QueueFull
 }
 
-public sealed record QueueSnapshot(int Depth, long Queued, long Admitted, long TimedOut, long Rejected, double? MedianWaitMs);
+public sealed record QueueSnapshot(
+    int Depth,
+    long Queued,
+    long Admitted,
+    long TimedOut,
+    long Rejected,
+    double? MedianWaitMs,
+    SlotWaitSnapshot? SlotWait = null);
+
+/// <summary>Phase 110. Null when <c>Queue:SlotWaitSeconds</c> is 0, so a status consumer sees no new key.</summary>
+public sealed record SlotWaitSnapshot(int Depth, long Waited, long Admitted, long SentAnyway);
 
 /// <summary>
 /// Where saturation is *defined*, once. Every node advertising the model is at its <b>declared</b>
@@ -69,6 +86,21 @@ public static class FleetSaturation
 
         return true;
     }
+
+    /// <summary>
+    /// Phase 110 D1, and phase 108 D1's "free" — the one definition both read. A node is free for a
+    /// model unless it declared a slot count for it and runs that many of the hub's jobs for it; a node
+    /// that declared nothing is always free. True only when somebody holds the model and nobody is free.
+    /// </summary>
+    public static bool HasNoFreeSlot(INodeRegistry registry, string model, string? capability = null)
+    {
+        var capable = registry.FindNodesWithModel(model, capability);
+        return capable.Count > 0 && !capable.Any(node => HasFreeSlot(registry, node, model));
+    }
+
+    public static bool HasFreeSlot(INodeRegistry registry, RoutableNode node, string model)
+        => registry.GetModelSlots(node.ConnectionId, model) is not { } slots
+           || registry.GetModelInFlight(node.ConnectionId, model) < slots;
 }
 
 public interface IRequestQueue
@@ -80,7 +112,25 @@ public interface IRequestQueue
 
     int MaxWaitSeconds { get; }
 
+    /// <summary>
+    /// Phase 110. Waits, within <c>Queue:SlotWaitSeconds</c>, until a node has a free slot for the
+    /// model. Never refuses: whatever happens, the caller dispatches next. The ticket must be disposed
+    /// once the dispatch has been <em>started</em> — the next waiter for the model is let go then (D3).
+    /// </summary>
+    Task<IDisposable> WaitForFreeSlotAsync(string model, string? capability, CancellationToken cancellationToken)
+        => Task.FromResult(SlotTicket.None);
+
     QueueSnapshot Snapshot();
+}
+
+/// <summary>What <see cref="IRequestQueue.WaitForFreeSlotAsync"/> hands back: the model's turnstile, or nothing.</summary>
+public sealed class SlotTicket(SemaphoreSlim? turnstile) : IDisposable
+{
+    public static readonly IDisposable None = new SlotTicket(null);
+
+    private SemaphoreSlim? turnstile = turnstile;
+
+    public void Dispose() => Interlocked.Exchange(ref turnstile, null)?.Release();
 }
 
 /// <summary>
@@ -100,6 +150,16 @@ public sealed class RequestQueue(
     ILogger<RequestQueue> logger) : IRequestQueue
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(200);
+
+    // Only the head of a model's line polls (D3), so a shorter interval costs one registry read per
+    // model, not one per waiter — and it is latency on a request that will be answered.
+    private static readonly TimeSpan SlotPollInterval = TimeSpan.FromMilliseconds(50);
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> turnstiles = new(StringComparer.Ordinal);
+    private int slotDepth;
+    private long slotWaited;
+    private long slotAdmitted;
+    private long slotSentAnyway;
 
     private int depth;
     private long queued;
@@ -166,6 +226,63 @@ public sealed class RequestQueue(
         }
     }
 
+    public async Task<IDisposable> WaitForFreeSlotAsync(string model, string? capability, CancellationToken cancellationToken)
+    {
+        var settings = options.Value;
+
+        if (settings.SlotWaitSeconds <= 0 || !FleetSaturation.HasNoFreeSlot(registry, model, capability))
+        {
+            return SlotTicket.None;
+        }
+
+        // D2: over the depth bound the request goes on as it would have before, not to a 503.
+        if (Interlocked.Increment(ref slotDepth) > Math.Max(1, settings.MaxDepth))
+        {
+            Interlocked.Decrement(ref slotDepth);
+            Interlocked.Increment(ref slotSentAnyway);
+            return SlotTicket.None;
+        }
+
+        Interlocked.Increment(ref slotWaited);
+        var turnstile = turnstiles.GetOrAdd(NodeRegistry.ModelKey(model) ?? model, _ => new SemaphoreSlim(1, 1));
+        using var bound = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        bound.CancelAfter(TimeSpan.FromSeconds(settings.SlotWaitSeconds));
+        var holding = false;
+
+        try
+        {
+            await turnstile.WaitAsync(bound.Token);
+            holding = true;
+
+            while (FleetSaturation.HasNoFreeSlot(registry, model, capability))
+            {
+                await Task.Delay(SlotPollInterval, bound.Token);
+            }
+
+            Interlocked.Increment(ref slotAdmitted);
+            holding = false;
+            return new SlotTicket(turnstile);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            Interlocked.Increment(ref slotSentAnyway);
+            logger.LogInformation(
+                "No node freed a slot for model {Model} within {Seconds}s; sending the request on to queue in an engine",
+                model,
+                settings.SlotWaitSeconds);
+            return SlotTicket.None;
+        }
+        finally
+        {
+            if (holding)
+            {
+                turnstile.Release();
+            }
+
+            Interlocked.Decrement(ref slotDepth);
+        }
+    }
+
     public QueueSnapshot Snapshot()
     {
         double? median = null;
@@ -185,7 +302,14 @@ public sealed class RequestQueue(
             Interlocked.Read(ref admitted),
             Interlocked.Read(ref timedOut),
             Interlocked.Read(ref rejected),
-            median);
+            median,
+            options.Value.SlotWaitSeconds > 0
+                ? new SlotWaitSnapshot(
+                    Math.Max(0, Volatile.Read(ref slotDepth)),
+                    Interlocked.Read(ref slotWaited),
+                    Interlocked.Read(ref slotAdmitted),
+                    Interlocked.Read(ref slotSentAnyway))
+                : null);
     }
 
     private void RecordWait(DateTimeOffset started)

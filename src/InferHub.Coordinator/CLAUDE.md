@@ -15,6 +15,7 @@ vector stores split out in phase 62** — see below.
 - The vector providers, replication, ownership and migration: `src/InferHub.Coordinator/Vector/CLAUDE.md`
 - `/metrics`, the `Metrics` registry and the OTLP push exporter: `src/InferHub.Coordinator/Observability/CLAUDE.md`
 - The other side of every job: `src/InferHub.Node/CLAUDE.md`
+- Routing tiers, the slot wait and dispatch deadlines (86, 89, 110): `src/InferHub.Coordinator/Services/CLAUDE.md`
 - The images this ships in, and their permissions traps: `deploy/CLAUDE.md`
 - The `chatgpt` provider type, its console panel and the sign-in pairing (103): `src/InferHub.Shared/ChatGpt/CLAUDE.md`
 
@@ -1024,74 +1025,11 @@ evicted. `NodeSnapshot`/`StatusEndpoint`/`PrometheusFormatter`/`console.js` each
 field or block, all following 69 D5/D7's own null-is-no-opinion, absence-over-a-manufactured-zero
 rules verbatim — nothing new to argue here.
 
-### Phase 86 (the router prefers a node whose card needs no switch) — the node's half is in `src/InferHub.Node/CLAUDE.md`, phase 85's block
+### Phases 86, 89 and 110 moved out in phase 110
 
-`Heartbeat.OnDemand` (`OnDemandState`: holder, `warmFor` capability kinds, switching, waiting) is
-stored on `NodeRegistryEntry` and handed to the router **on `RoutableNode`** — `FindNodesWithModel`
-keeps its signature (70 D7's cost: no fifth boolean).
-
-**D3, load-bearing — three tiers ahead of the strategy, and a preference, never a filter.**
-`Router.WarmestTier` splits the candidates into *warm* (no state, or `warmFor` has the capability
-and not switching), *free* (a state with a null holder), *cold* (another tenant holds the card, or it
-is mid-switch), and the existing least-busy/throughput pick plus affinity run over the best
-non-empty tier. **No state on any candidate is one tier, which is the identity** — that is the
-byte-identity argument and `NoOnDemandStateMeansOneTierAndTodaysPick` is named after it. A request
-with no capability is not tiered ("warm for what"). A cold node that is the only holder is still
-returned and waits in its own arbiter exactly as in v3.50. Affinity only holds inside the chosen tier:
-a conversation's KV cache is worth less than a weight reload. *Rejected:* a weighted load + switch
-penalty score — it needs a switch-cost number nobody has measured (48 D1's "usually right" trap).
-
-**D2 — the hub never learns what a tenant is.** The node resolves `tool:diffusion` → `image`/`video`
-and sends the kinds; the holder string is only displayed. **The hub never commands the card**
-(no prefetch, no evict) — `Node:OnDemand` is the operator's, like 82's cap.
-
-**D5 — visibility.** `/api/status` `onDemand` verbatim (null for a node that does not run on demand);
-console pill `gpu <holder>` / `gpu free` / `gpu switching`, neutral not a warning;
-`inferhub_node_gpu_holder{node,holder}` = 1, absent for no-state nodes, `holder` bounded by the node's
-manifests plus the reserved `none`/`switching`. `Touch` raises `Changed` on holder/switching
-transitions only, not on the waiter count.
-
-Tests: `OnDemandRoutingTests` (Coordinator), `PrometheusMetricsTests.OnlyAnOnDemandNodeEmitsAGpuHolderSeries`,
-`OnDemandRoutingMeshTests` (Mesh — real SignalR; the pre-3.51 five-field heartbeat routes as before).
-
-### Phase 89 (`Dispatcher:Deadlines` — one dispatch deadline per capability)
-
-**D1, load-bearing — keyed by the capability the job was routed on, empty by default.**
-`DispatcherOptions.DeadlineFor` looks the capability up case-insensitively and falls back to
-`TimeoutSeconds` (still clamped to 1, never refused); nothing ships in `Deadlines`, so a deployment
-that sets nothing times every job exactly as v3.53 did (`TheShippedAppsettingsDeclaresNoDeadline`
-reads the real file). *Rejected:* shipping `video: 3600` as a default — right number, but it changes
-the behaviour of every hub that upgrades without reading the notes; the appsettings comment gives the
-figures instead. *Rejected:* reading the node manifest's `requestTimeoutSeconds` — the hub would be
-trusting a node for how long the hub waits, and a mixed fleet would give one capability two deadlines.
-
-**D2 — inference jobs use the router's own reading, `CapabilityKinds.ForJobKind`.** `generate` is
-`chat`; the hub's internal kinds (`vector-query`, corpus jobs) have no capability and always take
-`TimeoutSeconds`, so a `vector-query` key is not a hidden knob.
-
-**D3 — the expiry names its clock.** `DispatchDeadline.Expired()` says the capability, the seconds
-and the key (`Dispatcher:Deadlines:video` or `Dispatcher:TimeoutSeconds`); one warning log line with
-the same three. It reaches the caller wherever the old text did (a failed image/video job's
-`error.message`, a native stream's error chunk). The blocking chat 504 keeps its fixed text.
-
-**D4 — any capability name is a valid key; a value below 1 fails startup.** Custom tools declare
-their own capabilities (40 D1), so the hub does not decide which names exist.
-
-**D5 — `/api/tools/*` and `/v1/audio/*` answer a timeout with a 504.** Before 89 no handler on those
-routes caught the `TimeoutException`, so the caller got a bodyless 500. `DispatchDeadlineFilter` does
-it once per route family, in that family's error shape (`deadline_exceeded` on OpenAI's), and only
-before the response has started.
-
-**D6 — a blocking job the hub gave up on is a failed request on `Metrics`.** Timed out, cancelled or
-failed to send: the `finally` now calls `RecordRequestFail`. Before 89 only the registry was told, and
-the in-flight gauge climbed by one for every such job; the stream paths always counted it.
-
-**The node's own clocks are separate** (`Ollama:RequestTimeout`, `Upstream:TimeoutSeconds`, a
-manifest's `requestTimeoutSeconds`). A hub deadline longer than the node's gains nothing.
-
-Tests: `DispatchDeadlineTests` (Coordinator — lookup, binding, validator, a real `Dispatcher` whose
-clock runs out), `ToolMeshTests`/`AudioEndpointTests`/`VideoJobTests` (Mesh — the 504s and a video
-job failing on its own deadline; echo worker `--audio-delay-ms`).
+**Phase 86's hub half (the warm tier), 89 (dispatch deadlines) and 110 (the slot wait) are in
+`src/InferHub.Coordinator/Services/CLAUDE.md`** — where a request goes, how long it waits, how long
+it runs — whole and unchanged. This file was at 1099 of 1100 (69 D8's arithmetic, again).
 
 > **Phases 95 and 97 (engines, and colibri's catalogue, driven from here)** — `NodeBackendRegistry`/`NodeBackendToggle`, `NodeColibriRegistry`/`NodeColibriToggle`,
 > `/api/admin/nodes/{id}/backends/{name}/start|stop` and `/colibri/…` are the hub's half; the decisions are in `src/InferHub.Node/Backends/CLAUDE.md`.

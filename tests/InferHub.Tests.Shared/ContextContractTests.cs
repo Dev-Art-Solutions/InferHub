@@ -62,6 +62,8 @@ public class ContextContractTests
         // Phase 62. The coordinator's file hit 1100 and the retrieval decisions were the largest
         // coherent subtree in it that the provider track had nothing to do with (62 D6).
         ("src/InferHub.Coordinator/Vector/CLAUDE.md", ScopedBudget),
+        // Phase 110. The coordinator's file hit 1099 and routing (86, 89) was the subtree the slot wait joins.
+        ("src/InferHub.Coordinator/Services/CLAUDE.md", ScopedBudget),
         ("src/InferHub.Node/CLAUDE.md", ScopedBudget),
         // Phase 67. The node's file hit 1099 and the tool runtime with its media phases was the
         // largest coherent subtree the provider track had nothing to do with (67 D6).

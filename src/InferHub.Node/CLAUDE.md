@@ -979,7 +979,7 @@ process is gone after the request, the capability is still declared, and the nex
 > fires on holder/switching transitions, always off the arbiter's lock (queued to the pool), and
 > `CoordinatorConnection` sends one coalesced out-of-band heartbeat (50 ms) so the hub is not an
 > interval behind. Solo `/api/status` reports the same `onDemand` object. The router half, and why it
-> is a preference and never a filter, is `src/InferHub.Coordinator/CLAUDE.md`'s phase-86 block.
+> is a preference and never a filter, is `src/InferHub.Coordinator/Services/CLAUDE.md`'s phase-86 block.
 
 > **Phase 87 — the image that turns this on.** `inferhub-node:all` (`Dockerfile.all`) is `:tools` +
 > `:diffusion` in one node with `ENV Node__OnDemand__Enabled=true`. It is the only place the default

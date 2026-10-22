@@ -140,9 +140,9 @@ public sealed class Router(
             return candidates;
         }
 
+        // Phase 110 D1: the same predicate the slot wait reads, so the two cannot disagree on "free".
         var free = candidates
-            .Where(node => registry.GetModelSlots(node.ConnectionId, model) is not { } slots
-                || registry.GetModelInFlight(node.ConnectionId, model) < slots)
+            .Where(node => FleetSaturation.HasFreeSlot(registry, node, model))
             .ToArray();
 
         return free.Length > 0 ? free : candidates;

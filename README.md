@@ -194,6 +194,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 107 | [Jobs side by side, and a cancel that arrives](#jobs-side-by-side-and-a-cancel-that-arrives-v371) — a node runs the jobs the hub sends it at once instead of one after another, and a cancelled chat, picture or video now stops on the node (done) | `v3.71.0` |
 | 108 | [A free slot for the model](#a-free-slot-for-the-model-v372) — the hub sends a chat to a node whose engine can start it now, not to one where it would wait behind the same model (done) | `v3.72.0` |
 | 109 | [Slots the engine reports](#slots-the-engine-reports-v373) — a llama.cpp model says how many requests it runs at once, and the hub uses that number before the node's (done) | `v3.73.0` |
+| 110 | [Waiting for a free slot](#waiting-for-a-free-slot-v374) — with `Queue:SlotWaitSeconds` set, a chat that finds every holder full waits at the hub and goes to the node that frees a slot first, never a 503 (done) | `v3.74.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -3384,6 +3385,31 @@ the model to the hub, which uses it before the node's own.
   overrides both.
 - `GET /api/status` shows the answers as `nodes[].slotsByModel`. `/api/tags` and the fleet's model list are unchanged.
 
+## Waiting for a free slot (v3.74)
+
+**v3.72 and v3.73 tell the hub which node can start a chat now. When none can, the chat used to go anyway** — to the
+least busy node, where it waited inside that node's engine. Two nodes with one slot each and a third chat: the third
+was committed to node A's queue on arrival, and if node B finished first, B sat idle while it waited for A.
+
+Since v3.74 the hub can hold it instead and send it to whichever node frees a slot first:
+
+```json
+"Queue": { "SlotWaitSeconds": 20 }
+```
+
+- **Off by default.** `0` sends every request on at once, exactly as v3.73 did.
+- **It never refuses.** If no slot frees within `SlotWaitSeconds`, or more than `Queue:MaxDepth` requests are already
+  waiting, the request goes on to queue in an engine as it always did. A slot wait is never a `503`.
+- **One freed slot lets one request go.** Waiters for a model leave one at a time, in arrival order, and the next one is
+  let go only once the previous one is counted against its node, so three waiters cannot all land on the one slot that
+  freed.
+- **"Full" is what the router already used:** a node declared a slot count for the model (the engine's own number since
+  v3.73, else `Node:ModelSlots` / `OLLAMA_NUM_PARALLEL`) and runs that many of the hub's jobs for it. A node that
+  declared nothing is always free, so nobody waits on its account. A node at its `MaxConcurrency` is still the
+  [bounded queue](#clients-quotas--usage-v27)'s business, and a full slot never bursts to a cloud provider.
+- `GET /api/status` shows `queue.slotWait` (`depth`, `waited`, `admitted`, `sentAnyway`) once the key is set, and
+  `/metrics` the `inferhub_queue_slot_*` series.
+
 
 ## Inference backends
 
@@ -4008,6 +4034,7 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Cluster:RenewIntervalSeconds` | `5` | Renew cadence. Must be ≤ a third of the TTL; startup fails otherwise. |
 | `Queue:MaxWaitSeconds` | `30` | How long a request may wait for a saturated fleet before `503`. |
 | `Queue:MaxDepth` | `64` | How many requests may wait at once. Past it, an immediate `503`. |
+| `Queue:SlotWaitSeconds` | `0` | **v3.74+** — how long a request may wait at the hub while every node holding its model is running all it has [slots](#waiting-for-a-free-slot-v374) for. `0` = off. Past it the request is sent on anyway, never a `503`. |
 | `Images:MaxBatch` | `4` | v3.14. The absolute ceiling on `n`, whatever the size. A batch runs on **one** node. Bound by both hosts from the same section, so a request refused on a hub is refused identically on a solo node. |
 | `Images:MaxResponseBytes` | `26214400` | v3.14. An upper-bound estimate (`w × h × 4 × n`) checked *before a step runs*, with the refusal naming the largest `n` that fits. **Clamped by `Tools:MaxAttachmentBytes`** at use, because that cap sizes the mesh's SignalR message limit and exceeding a SignalR limit tears a node's connection down rather than failing a message. Raising one without the other gets you no change, deliberately. **v3.25: it bounds a video too** — there is no `Videos:` section, because two keys for one wire ceiling are two numbers you could raise independently. A clip's size cannot be estimated from its geometry (that is an encoder's output), so what the edge checks instead is that the recipe offers the `(size, seconds)` pair you asked for. |
 | `Images:SyncMaxWaitSeconds` | `120` | v3.15. How long `/v1/images/generations` waits for its own job before a `503` naming the async route. **The job keeps running** and the message carries its id — discarding a minute of GPU because an HTTP client got bored is your call, not the hub's. See [A job that takes two minutes](#a-job-that-takes-two-minutes-v315). |

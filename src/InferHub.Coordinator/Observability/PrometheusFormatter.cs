@@ -661,6 +661,15 @@ public static class PrometheusFormatter
         {
             Gauge(builder, "inferhub_queue_wait_median_ms", "Median wait of the last 128 queued requests.", median);
         }
+
+        // Phase 110: a hub that never turned the slot wait on has no slot wait to report — absent, not 0.
+        if (queue.SlotWait is { } slots)
+        {
+            Gauge(builder, "inferhub_queue_slot_depth", "Requests currently waiting at the hub for a free model slot.", slots.Depth);
+            Counter(builder, "inferhub_queue_slot_waited_total", "Requests that waited at the hub for a free model slot.", slots.Waited);
+            Counter(builder, "inferhub_queue_slot_admitted_total", "Slot waits that ended with a node free for the model.", slots.Admitted);
+            Counter(builder, "inferhub_queue_slot_sent_anyway_total", "Slot waits that ran out (or found the queue full) and were sent on to queue in an engine.", slots.SentAnyway);
+        }
     }
 
     private static void PerClient(StringBuilder builder, IReadOnlyList<ClientScrapeSample> clients)

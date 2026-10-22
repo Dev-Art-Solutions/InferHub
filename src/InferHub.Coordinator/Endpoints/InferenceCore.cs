@@ -271,6 +271,17 @@ internal static class InferenceCore
                 node = router.Route(model, conversationKey, capability: capability) ?? node;
             }
 
+            // Phase 110: every holder runs all the jobs it has slots for. With Queue:SlotWaitSeconds
+            // set, wait here for the first one to free rather than queueing inside one engine now; the
+            // wait never refuses (D2). The ticket holds the model's line until the dispatch below has
+            // counted this job (D3).
+            using var slotTicket = await context.Queue.WaitForFreeSlotAsync(model, capability, cancellationToken);
+
+            if (!ReferenceEquals(slotTicket, SlotTicket.None))
+            {
+                node = router.Route(model, conversationKey, capability: capability) ?? node;
+            }
+
             if (conversationKey is not null)
             {
                 logger.LogInformation(
@@ -285,7 +296,7 @@ internal static class InferenceCore
 
             try
             {
-                var outcome = await DispatchWithFailoverAsync(
+                var dispatching = DispatchWithFailoverAsync(
                     kind,
                     model,
                     capability,
@@ -298,6 +309,11 @@ internal static class InferenceCore
                     metrics,
                     logger,
                     cancellationToken);
+
+                // The Dispatcher counts the job against its node before its first await, so by the time
+                // the task is in hand the next waiter sees this slot taken (110 D3).
+                slotTicket.Dispose();
+                var outcome = await dispatching;
 
                 if (outcome.Stream is { } chunks)
                 {
