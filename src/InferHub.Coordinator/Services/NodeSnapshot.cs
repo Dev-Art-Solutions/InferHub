@@ -41,4 +41,6 @@ public sealed record NodeSnapshot(
     int? ModelSlots = null,
     IReadOnlyDictionary<string, int>? ModelsInFlight = null,
     /// Phase 109: the models whose engine answered its own slot count, and that count.
-    IReadOnlyDictionary<string, int>? SlotsByModel = null);
+    IReadOnlyDictionary<string, int>? SlotsByModel = null,
+    /// Phase 113: whether the node takes new jobs, as its owner set it. Null = an older node.
+    NodeSharingState? Sharing = null);

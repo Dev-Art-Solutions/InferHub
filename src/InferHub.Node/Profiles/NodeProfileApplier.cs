@@ -185,6 +185,12 @@ public sealed class NodeProfileApplier(
             return null;
         }
 
+        // Phase 114: a private corpus is not the coordinator's to start, replace or stop.
+        if (retrieval.IsPrivate)
+        {
+            return new NodeProfileRefusal("retrieval", RetrievalHost.PrivateRefusal);
+        }
+
         if (!intent.Enabled)
         {
             await retrieval.StopCorpusAsync(cancellationToken);

@@ -34,8 +34,10 @@ public static class NodeHostBuilderExtensions
         // and appsettings.json's own published/service deployment — resolve against the assembly's
         // own directory. Left relative, the two would watch different files and a save would never
         // appear to take effect.
-        builder.Configuration.AddJsonFile(
-            Path.Combine(AppContext.BaseDirectory, "node.local.json"), optional: true, reloadOnChange: true);
+        // Phase 112: Node:LocalSettingsFile may move it (the desktop app's own node keeps it in app data).
+        var localSettings = NodeLocalSettings.Resolve(builder.Configuration);
+        builder.Configuration.AddJsonFile(localSettings, optional: true, reloadOnChange: true);
+        builder.Services.AddSingleton(new LocalSettingsFile(localSettings));
 
         builder.Services
             .AddOptions<CoordinatorOptions>()
@@ -217,6 +219,7 @@ public static class NodeHostBuilderExtensions
         builder.Services.AddSingleton<Backends.ChatGpt.ChatGptBackend>();
         builder.Services.TryAddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<Resources.GpuArbiter>();
+        AddNodeControl(builder);
         builder.Services.AddSingleton<InferenceExecutor>();
         builder.Services.AddSingleton<ModelCommandExecutor>();
         // Phase 43. Always registered, and inert without a profile: its effective state starts as
@@ -386,6 +389,28 @@ public static class NodeHostBuilderExtensions
     /// feature off must be the v3.4 worker exactly: no Kestrel, no listening socket, no middleware.
     /// The host <em>shape</em> is chosen by <see cref="NodeHostFactory"/>; this is the services half.
     /// </summary>
+    /// <summary>
+    /// Phase 112/113: what the node is doing, its log, its sharing state and its restart — always registered, because
+    /// the mesh connection reports sharing whether or not a local API serves the control routes (they map only there).
+    /// </summary>
+    private static void AddNodeControl(IHostApplicationBuilder builder)
+    {
+        builder.Services
+            .AddOptions<Control.ControlOptions>()
+            .Bind(builder.Configuration.GetSection(Control.ControlOptions.SectionName));
+
+        builder.Services.AddSingleton(services => new Control.NodeActivity(services.GetService<TimeProvider>()));
+        var lines = builder.Configuration.GetValue<int?>($"{Control.ControlOptions.SectionName}:LogLines") ?? 2000;
+        var ring = new Control.NodeLogRing(lines);
+        builder.Services.AddSingleton(ring);
+        builder.Logging.AddProvider(new Control.NodeLogRingProvider(ring));
+
+        builder.Services.AddSingleton<Control.NodeSharing>();
+        builder.Services.AddHostedService(services => services.GetRequiredService<Control.NodeSharing>());
+        builder.Services.TryAddSingleton<Control.INodeRestarter, Control.NodeRestarter>();
+        builder.Services.AddSingleton<Control.ControlToken>();
+    }
+
     private static void AddLocalApi(IHostApplicationBuilder builder)
     {
         var localApi = builder.Configuration

@@ -109,6 +109,18 @@ public sealed class NodeOptionsValidator : IValidateOptions<NodeOptions>
                 $"{NodeOptions.SectionName}:{nameof(NodeOptions.ModelSlots)} must be >= 1 when set (got {slots}).");
         }
 
+        // Phase 113: a mode nothing understands would be a node that shares while its owner thinks it does not.
+        if (!SharingOptions.Modes.Contains(options.Sharing.Mode?.Trim().ToLowerInvariant()))
+        {
+            failures.Add(
+                $"{NodeOptions.SectionName}:Sharing:Mode must be one of {string.Join(", ", SharingOptions.Modes)} (got '{options.Sharing.Mode}').");
+        }
+
+        if (options.Sharing.IdleSeconds < 0)
+        {
+            failures.Add($"{NodeOptions.SectionName}:Sharing:IdleSeconds must be >= 0 (got {options.Sharing.IdleSeconds}).");
+        }
+
         // A typo here is silent by construction — capability kinds are open strings on the wire
         // (phase-40 D1), so "chatt" disables nothing and the box quietly keeps taking the traffic
         // the operator meant to move off it. Names are checked; the wire is still not.
@@ -629,7 +641,20 @@ public sealed class LocalRetrievalOptionsValidator(IConfiguration? configuration
             .GetSection(CoordinatorOptions.SectionName)
             .GetValue<bool?>(nameof(CoordinatorOptions.Enabled)) ?? true;
 
-        if (meshed)
+        // Phase 114, D1/D2: a private corpus is a third store, its own directory, reachable only locally — allowed
+        // meshed, because nothing the hub writes reaches it. Without the opt-in, 38 D1 stands exactly as written.
+        if (meshed && options.Private)
+        {
+            var replicas = configuration?.GetSection(VectorReplicaOptions.SectionName)
+                .GetValue<string>(nameof(VectorReplicaOptions.ReplicaDirectory)) ?? new VectorReplicaOptions().ReplicaDirectory;
+
+            if (!string.IsNullOrWhiteSpace(options.DataDirectory) && Overlaps(options.DataDirectory, replicas))
+            {
+                failures.Add(
+                    $"{LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.DataDirectory)} ('{options.DataDirectory}') is, or is inside, {VectorReplicaOptions.SectionName}:{nameof(VectorReplicaOptions.ReplicaDirectory)} ('{replicas}'). A private corpus needs a directory of its own: the coordinator's replicas are written there.");
+            }
+        }
+        else if (meshed)
         {
             failures.Add(
                 $"{LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.Enabled)} is true while {CoordinatorOptions.SectionName}:{nameof(CoordinatorOptions.Enabled)} is also true. A meshed node already holds vector replicas derived from its coordinator, and a second, authoritative store in the same process would be a second source of truth for the same collection names. Set {CoordinatorOptions.SectionName}:{nameof(CoordinatorOptions.Enabled)}=false to run this node standalone with its own corpus, or set {LocalRetrievalOptions.SectionName}:{nameof(LocalRetrievalOptions.Enabled)}=false and ingest into the coordinator instead.");
@@ -676,6 +701,16 @@ public sealed class LocalRetrievalOptionsValidator(IConfiguration? configuration
         return failures.Count == 0
             ? ValidateOptionsResult.Success
             : ValidateOptionsResult.Fail(failures);
+    }
+
+    /// <summary>Whether one directory is the other or inside it, both resolved against the binaries' directory.</summary>
+    private static bool Overlaps(string candidate, string other)
+    {
+        static string Full(string path) =>
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(path.Trim(), AppContext.BaseDirectory)) + Path.DirectorySeparatorChar;
+
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return Full(candidate).StartsWith(Full(other), comparison);
     }
 
     /// <summary>

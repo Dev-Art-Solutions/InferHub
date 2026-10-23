@@ -65,6 +65,13 @@ public static class LocalApiEndpoints
         app.UseMiddleware<LocalApiAuthMiddleware>();
 
         app.MapLocalStatusEndpoints();
+
+        // Phase 112: the control API, behind its own token (112 D1). Control:Enabled=false leaves it unmapped.
+        if (app.Services.GetRequiredService<IOptions<Control.ControlOptions>>().Value.Enabled)
+        {
+            app.MapLocalControlEndpoints();
+        }
+
         app.MapLocalInferenceEndpoints();
         app.MapLocalOpenAiEndpoints();
 

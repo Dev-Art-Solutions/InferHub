@@ -67,7 +67,8 @@ public static class StatusEndpoint
                     limits?.Of(node.NodeId) is { Groups.Count: > 0 } reported ? reported : null,
                     node.ModelSlots,
                     node.ModelsInFlight is { Count: > 0 } busy ? busy : null,
-                    node.SlotsByModel)).ToArray(),
+                    node.SlotsByModel,
+                    node.Sharing)).ToArray(),
                 models,
                 registry.CapabilitySummary(),
                 snapshot,
@@ -507,7 +508,9 @@ public static class StatusEndpoint
         IReadOnlyDictionary<string, int>? ModelsInFlight = null,
         // Phase 109: the models whose engine answered its own slot count (a loaded llama.cpp model's
         // total_slots). Null when no engine on the node can be asked.
-        IReadOnlyDictionary<string, int>? SlotsByModel = null);
+        IReadOnlyDictionary<string, int>? SlotsByModel = null,
+        // Phase 113: the node's own sharing state. Null from a node before 3.76, and a fleet of those keeps the payload.
+        NodeSharingState? Sharing = null);
 
     internal sealed record NodeProfileStatusBlock(
         string? Name,

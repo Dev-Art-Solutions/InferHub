@@ -13,12 +13,16 @@ public sealed class InferenceExecutor(
     IInferenceBackend backend,
     ReplicaStore replicas,
     RetrievalHost retrieval,
-    ILogger<InferenceExecutor> logger)
+    ILogger<InferenceExecutor> logger,
+    Control.NodeActivity? activity = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public async Task<InferenceResult> RunAsync(InferenceJob job, CancellationToken cancellationToken)
     {
+        // Phase 112, D4: every job a node runs, the hub's and the local API's, counted here — kind and model only.
+        using var counted = activity?.Begin(job.Kind, Control.NodeActivity.ModelOf(job.RequestJson));
+
         try
         {
             var responseJson = job.Kind switch
@@ -42,17 +46,20 @@ public sealed class InferenceExecutor(
         }
         catch (OperationCanceledException)
         {
+            counted?.Fail("canceled");
             logger.LogWarning("Inference job {JobId} was canceled", job.JobId);
             return InferenceResult.Failed(job.JobId, "inference job was canceled");
         }
         catch (Exception ex) when (RefusalStatus(ex) is { } status)
         {
+            counted?.Fail("refused");
             // Phase 100: the request's fault, said in the backend's sentence — no stack trace for it.
             logger.LogInformation("Inference job {JobId} refused ({Status}): {Reason}", job.JobId, status, ex.Message);
             return InferenceResult.Refused(job.JobId, ex.Message, status);
         }
         catch (Exception ex)
         {
+            counted?.Fail("failed");
             logger.LogWarning(ex, "Inference job {JobId} failed", job.JobId);
             return InferenceResult.Failed(job.JobId, ex.Message);
         }
@@ -63,6 +70,7 @@ public sealed class InferenceExecutor(
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var sentFinalChunk = false;
+        using var counted = activity?.Begin(job.Kind, Control.NodeActivity.ModelOf(job.RequestJson));
         var chunks = backend
             .StreamAsync(job.Kind, job.RequestJson, cancellationToken)
             .GetAsyncEnumerator(cancellationToken);
@@ -86,12 +94,18 @@ public sealed class InferenceExecutor(
                 }
                 catch (OperationCanceledException)
                 {
+                    counted?.Fail("canceled");
                     logger.LogInformation("Streaming inference job {JobId} was canceled", job.JobId);
                     throw;
                 }
                 catch (Exception ex)
                 {
                     error = ex;
+                }
+
+                if (error is not null)
+                {
+                    counted?.Fail(RefusalStatus(error) is null ? "failed" : "refused");
                 }
 
                 if (error is not null && RefusalStatus(error) is { } status)

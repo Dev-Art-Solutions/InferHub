@@ -89,6 +89,27 @@ public sealed class NodeRegistry : INodeRegistry
         return true;
     }
 
+    /// <summary>
+    /// Phase 113: records a node's own sharing state. A paused node keeps its models and stays visible, and is
+    /// unserviceable for new placement exactly as an over-cap one is (82) — the owner's word, held here.
+    /// </summary>
+    public bool RecordSharing(string connectionId, NodeSharingState state)
+    {
+        if (!nodes.TryGetValue(connectionId, out var existing))
+        {
+            return false;
+        }
+
+        nodes[connectionId] = existing with { Sharing = state };
+
+        if (existing.Sharing?.Paused != state.Paused || existing.Sharing?.Mode != state.Mode)
+        {
+            RaiseChanged();
+        }
+
+        return true;
+    }
+
     public bool ReportModels(string connectionId, NodeModels models, DateTimeOffset now)
     {
         if (!nodes.TryGetValue(connectionId, out var existing))
@@ -318,7 +339,9 @@ public sealed class NodeRegistry : INodeRegistry
                 // its own resource cap still HAS the model, exactly like an unhealthy-backend node
                 // (69 D2's own distinction), so it is unserviceable for NEW placement the same way.
                 && (includeUnserviceable
-                    || (pair.Value.Backend is null or BackendHealth.Healthy && pair.Value.ResourceThrottled is not true))
+                    || (pair.Value.Backend is null or BackendHealth.Healthy && pair.Value.ResourceThrottled is not true
+                        // Phase 113: a node its owner paused still has the model, and takes nothing new.
+                        && pair.Value.Sharing is not { Paused: true }))
                 && (!requireStreamedAttachments || pair.Value.StreamedAttachments is true)
                 // Phase 70 D7. A pre-v3.37 node still serves buffered speech to the whole fleet;
                 // it is only a streaming request that cannot see it.
@@ -508,7 +531,8 @@ public sealed class NodeRegistry : INodeRegistry
             entry.OnDemand,
             entry.Registration.ModelSlots,
             ModelsInFlight(connectionId),
-            SlotsByModel(entry));
+            SlotsByModel(entry),
+            entry.Sharing);
     }
 
     /// <summary>
@@ -606,5 +630,7 @@ public sealed class NodeRegistry : INodeRegistry
         /// opinion shape as Backend, for the same reason — an older node, or one with no cap set.
         bool? ResourceThrottled = null,
         /// Who holds the node's card (phase 86). Null = the node does not run on demand.
-        OnDemandState? OnDemand = null);
+        OnDemandState? OnDemand = null,
+        /// Phase 113: whether the node takes new jobs, as its owner set it. Null = no opinion (an older node).
+        NodeSharingState? Sharing = null);
 }

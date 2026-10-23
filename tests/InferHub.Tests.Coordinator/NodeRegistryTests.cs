@@ -580,6 +580,37 @@ public class NodeRegistryTests
         Assert.Empty(registry.FindNodesWithModel("llama3"));
     }
 
+    // ---- phase 113 ------------------------------------------------------------------------------
+
+    /// <summary>113 D1. A node its owner paused keeps its models and its place in the fleet, and takes no new job.</summary>
+    [Fact]
+    public void ANodeItsOwnerPausedTakesNoNewJobAndStaysInTheFleet()
+    {
+        var registry = WithModel(out var now);
+
+        Assert.True(registry.RecordSharing("connection-1", new NodeSharingState("node-1", "paused", true, "paused by its owner", now, 0, 0)));
+
+        Assert.Empty(registry.FindNodesWithModel("llama3"));
+        Assert.Single(registry.FindNodesWithModel("llama3", includeUnserviceable: true));
+        var node = Assert.Single(registry.Snapshot(now));
+        Assert.True(node.Sharing!.Paused);
+        Assert.Equal(1, node.ModelCount);
+
+        registry.RecordSharing("connection-1", new NodeSharingState("node-1", "idle", false, null, now, 0, 0));
+        Assert.Single(registry.FindNodesWithModel("llama3"));
+    }
+
+    /// <summary>113 D1, the mixed-fleet rule: a node that never said anything is never read as paused.</summary>
+    [Fact]
+    public void ANodeThatSaysNothingAboutSharingRoutesAsBefore()
+    {
+        var registry = WithModel(out var now);
+
+        Assert.Single(registry.FindNodesWithModel("llama3"));
+        Assert.Null(Assert.Single(registry.Snapshot(now)).Sharing);
+        Assert.False(registry.RecordSharing("no-such-connection", new NodeSharingState("x", "paused", true, null, now, 0, 0)));
+    }
+
     // ---- phase 82 -------------------------------------------------------------------------------
 
     /// <summary>

@@ -40,6 +40,12 @@ builder.Services.Configure<HostOptions>(o =>
 // Registered before AddInferHubNode, whose default (NoUpdateApplier) is only a TryAdd.
 builder.Services.AddSingleton<IUpdateApplier>(new InstallerUpdateApplier());
 
+// Phase 112, D3: run as a service, a restart is the service manager's recovery; at a console it is the default's.
+if (Microsoft.Extensions.Hosting.WindowsServices.WindowsServiceHelpers.IsWindowsService())
+{
+    builder.Services.AddSingleton<InferHub.Node.Control.INodeRestarter, ServiceRestarter>();
+}
+
 builder.AddInferHubNode();
 
 NodeHostFactory.Build(builder).Run();

@@ -45,7 +45,8 @@ public sealed class ToolExecutor(
     ILogger<ToolExecutor> logger,
     IClosedSetScorer? scorer = null,
     IBackendToolJobs? backendJobs = null,
-    CloudMediaRuntime? cloud = null)
+    CloudMediaRuntime? cloud = null,
+    Control.NodeActivity? activity = null)
 {
     private readonly ToolOptions options = toolOptions.Value;
 
@@ -85,6 +86,24 @@ public sealed class ToolExecutor(
     /// <c>Tools:MaxAttachmentBytes</c> since.
     /// </param>
     public async Task<ToolResult> RunAsync(
+        ToolJob job,
+        IProgress<ToolChunk>? progress,
+        IStreamedAttachmentSource? upload,
+        CancellationToken cancellationToken)
+    {
+        // Phase 112, D4: counted where every tool job passes, the hub's and the local API's alike.
+        using var counted = activity?.Begin(job.Capability, job.Model);
+        var result = await RunCoreAsync(job, progress, upload, cancellationToken);
+
+        if (!result.Success)
+        {
+            counted?.Fail(cancellationToken.IsCancellationRequested ? "canceled" : result.ErrorCode is null ? "failed" : "refused");
+        }
+
+        return result;
+    }
+
+    private async Task<ToolResult> RunCoreAsync(
         ToolJob job,
         IProgress<ToolChunk>? progress,
         IStreamedAttachmentSource? upload,
@@ -312,6 +331,19 @@ public sealed class ToolExecutor(
     /// concatenable format and a contract on the client side; that is a phase, not a footnote.
     /// </remarks>
     public async IAsyncEnumerable<ToolChunk> StreamAsync(
+        ToolJob job,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        using var counted = activity?.Begin(job.Capability, job.Model);
+
+        // A stream's frames carry the worker's own payloads, not an outcome field: counted as ran, not as succeeded.
+        await foreach (var chunk in StreamCoreAsync(job, cancellationToken))
+        {
+            yield return chunk;
+        }
+    }
+
+    private async IAsyncEnumerable<ToolChunk> StreamCoreAsync(
         ToolJob job,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {

@@ -16,6 +16,9 @@ public interface INodeRegistry
 
     bool Cordon(string nodeId);
 
+    /// <summary>Phase 113: the node's own sharing state (the mailbox). False when the connection is not registered.</summary>
+    bool RecordSharing(string connectionId, NodeSharingState state) => false;
+
     bool Uncordon(string nodeId);
 
     /// <summary>

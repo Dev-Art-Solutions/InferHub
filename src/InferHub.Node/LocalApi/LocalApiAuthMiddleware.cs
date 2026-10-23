@@ -115,8 +115,10 @@ public sealed class LocalApiAuthMiddleware(
         return matched;
     }
 
+    // Phase 112: the control API has its own token (112 D1) and its own filter; these keys never open it.
     private static bool IsGuardedPath(PathString path)
-        => path.StartsWithSegments(OllamaPathPrefix) || path.StartsWithSegments(OpenAiPathPrefix);
+        => !path.StartsWithSegments(LocalControlEndpoints.Prefix)
+           && (path.StartsWithSegments(OllamaPathPrefix) || path.StartsWithSegments(OpenAiPathPrefix));
 
     private static string? ExtractBearerToken(string? authorizationHeader)
     {

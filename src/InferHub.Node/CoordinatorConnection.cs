@@ -38,7 +38,8 @@ public sealed class CoordinatorConnection(
     Backends.Strata.IStrataControl? strata = null,
     Update.UpdateManager? updates = null,
     Resources.Limits.IEngineLimiter? limiter = null,
-    InferHub.Shared.Quota.QuotaTracker? quota = null) : IAsyncDisposable
+    InferHub.Shared.Quota.QuotaTracker? quota = null,
+    Control.NodeSharing? sharing = null) : IAsyncDisposable
 {
     /// <summary>
     /// Phase 97's catalogue report, one per engine that has a catalogue (99): each has its own hub
@@ -67,6 +68,14 @@ public sealed class CoordinatorConnection(
 
     /// <summary>Mesh jobs running on this node now — what an automatic update waits to reach zero (101 D4).</summary>
     public int InFlight => Volatile.Read(ref inFlight);
+
+    /// <summary>Phase 112: <c>disabled</c>, or SignalR's own word for the connection (<c>connected</c>, <c>reconnecting</c>…).</summary>
+    public string ConnectionState => !coordinator.Enabled
+        ? "disabled"
+        : connection?.State.ToString().ToLowerInvariant() ?? "disconnected";
+
+    /// <summary>Phase 112: the coordinator address this node is using (or will try next).</summary>
+    public string? CoordinatorUrl => coordinator.Enabled && endpoints.Count > 0 ? endpoints[Volatile.Read(ref endpointIndex) % endpoints.Count] : null;
     private bool subscribedToSupervisor;
     private bool subscribedToTools;
     private bool subscribedToArbiter;
@@ -74,6 +83,14 @@ public sealed class CoordinatorConnection(
     private bool subscribedToCatalogs;
     private bool subscribedToUpdates;
     private bool subscribedToLimits;
+    private bool subscribedToSharing;
+    private int hubHoldsSharing = -1;
+
+    /// <summary>
+    /// Phase 113: whether the hub this node is connected to took its last sharing report — null before one was sent.
+    /// False is a hub older than 3.76, which cannot hold a pause: the node keeps sharing and says so (113 D1).
+    /// </summary>
+    public bool? HubHoldsSharing => Volatile.Read(ref hubHoldsSharing) switch { 1 => true, 0 => false, _ => null };
     private bool subscribedToQuota;
     private int quotaReportQueued;
 
@@ -91,6 +108,7 @@ public sealed class CoordinatorConnection(
         SubscribeToCatalogs();
         SubscribeToUpdates();
         SubscribeToLimits();
+        SubscribeToSharing();
         SubscribeToQuota();
         retrieval.CorpusChanged += OnCorpusChanged;
         return ConnectUntilSuccessfulAsync(cancellationToken);
@@ -105,6 +123,11 @@ public sealed class CoordinatorConnection(
         UnsubscribeFromCatalogs();
         UnsubscribeFromUpdates();
         UnsubscribeFromLimits();
+        if (subscribedToSharing && sharing is not null)
+        {
+            sharing.Changed -= OnSharingChanged;
+            subscribedToSharing = false;
+        }
         UnsubscribeFromQuota();
         retrieval.CorpusChanged -= OnCorpusChanged;
         UnsubscribeFromTailedStore();
@@ -149,6 +172,11 @@ public sealed class CoordinatorConnection(
         UnsubscribeFromCatalogs();
         UnsubscribeFromUpdates();
         UnsubscribeFromLimits();
+        if (subscribedToSharing && sharing is not null)
+        {
+            sharing.Changed -= OnSharingChanged;
+            subscribedToSharing = false;
+        }
         retrieval.CorpusChanged -= OnCorpusChanged;
         UnsubscribeFromTailedStore();
         await lifetime.CancelAsync();
@@ -299,6 +327,67 @@ public sealed class CoordinatorConnection(
     /// Phase 101. A check found a release, a download started, a setup was launched: the console hears it
     /// now, because "applying" is exactly the state an admin who just pressed Update is watching for.
     /// </summary>
+    private void SubscribeToSharing()
+    {
+        if (sharing is null || subscribedToSharing)
+        {
+            return;
+        }
+
+        subscribedToSharing = true;
+        sharing.Changed += OnSharingChanged;
+    }
+
+    private void OnSharingChanged(NodeSharingState state)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ReportSharingStateAsync(lifetime.Token);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "Could not report the sharing state after it changed");
+            }
+        });
+    }
+
+    /// <summary>
+    /// Phase 113: tells the hub whether this node takes new jobs — on registration and on every change. A hub older
+    /// than 3.76 has no such method; the node then keeps sharing (it cannot make that hub hold a pause) and its status
+    /// says so, once in the log and always in /api/control/status.
+    /// </summary>
+    private async Task ReportSharingStateAsync(CancellationToken cancellationToken)
+    {
+        var activeConnection = connection;
+
+        if (sharing is null || activeConnection is not { State: HubConnectionState.Connected })
+        {
+            return;
+        }
+
+        try
+        {
+            await activeConnection.InvokeAsync("ReportSharingState", sharing.State(nodeId), cancellationToken);
+            Volatile.Write(ref hubHoldsSharing, 1);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (Interlocked.Exchange(ref hubHoldsSharing, 0) != 0 && sharing.Paused)
+            {
+                logger.LogWarning("This coordinator cannot hold a sharing pause (it has no ReportSharingState: older than 3.76); this node keeps taking its jobs. {Message}", ex.Message);
+            }
+        }
+    }
+
     private void SubscribeToLimits()
     {
         if (limiter is null || subscribedToLimits)
@@ -753,7 +842,11 @@ public sealed class CoordinatorConnection(
         {
             try
             {
-                await run(jobCts);
+                // Phase 112, D4: the executors count this job as the hub's.
+                using (Control.NodeActivity.FromMesh())
+                {
+                    await run(jobCts);
+                }
             }
             finally
             {
@@ -955,6 +1048,8 @@ public sealed class CoordinatorConnection(
         await ReportUpdateStateAsync(cancellationToken);
         // Phase 102, for the same reason: limits hold whether or not the engine is up.
         await ReportLimitsStateAsync(cancellationToken);
+        // Phase 113: before any job can be routed here, whether this node takes them.
+        await ReportSharingStateAsync(cancellationToken);
         // Phase 106: a provider at its limit is exactly when the engine may look down.
         await ReportQuotaStateAsync(cancellationToken);
 
@@ -1904,7 +1999,8 @@ public sealed class CoordinatorConnection(
     {
         var activeConnection = connection;
 
-        if (activeConnection is not { State: HubConnectionState.Connected })
+        // Phase 114, D1: the hub never learns a private corpus exists — not its collections, not its counts.
+        if (activeConnection is not { State: HubConnectionState.Connected } || retrieval.IsPrivate)
         {
             return;
         }

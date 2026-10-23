@@ -37,6 +37,12 @@ public sealed class NodeOptions
     public ResourceLimitOptions ResourceLimits { get; set; } = new();
 
     /// <summary>
+    /// Phase 113: how this node shares itself with its network — <c>always</c> (default, v3.75), <c>idle</c> (its owner's
+    /// local work first) or <c>paused</c>. Read live; the control API and the desktop app set it.
+    /// </summary>
+    public SharingOptions Sharing { get; set; } = new();
+
+    /// <summary>
     /// One GPU service at a time, loaded for the request and released after it (phase 85). Off by
     /// default, which is v3.49's behaviour exactly.
     /// </summary>
@@ -271,4 +277,22 @@ public sealed class ModelFilterOptions
     public List<string> Include { get; set; } = new();
 
     public List<string> Exclude { get; set; } = new();
+}
+
+/// <summary><c>Node:Sharing</c> (phase 113).</summary>
+public sealed class SharingOptions
+{
+    public const string Always = "always";
+
+    public const string Idle = "idle";
+
+    public const string Paused = "paused";
+
+    public static readonly string[] Modes = [Always, Idle, Paused];
+
+    /// <summary><c>always</c>, <c>idle</c> or <c>paused</c>; anything else fails startup.</summary>
+    public string Mode { get; set; } = Always;
+
+    /// <summary>In <c>idle</c> mode, how long after the last local job the node takes network jobs again.</summary>
+    public int IdleSeconds { get; set; } = 120;
 }

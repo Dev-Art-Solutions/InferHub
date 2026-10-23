@@ -38,6 +38,12 @@ public sealed class LocalRetrievalOptions
 
     public bool Enabled { get; set; }
 
+    /// <summary>
+    /// Phase 114: a corpus that is this node's alone, allowed while the node is in a network. Its store is its own
+    /// directory, reachable only through the local API; the hub never learns it exists (114 D1).
+    /// </summary>
+    public bool Private { get; set; }
+
     /// <summary><c>local</c> (default), <c>qdrant</c> or, since phase 71, <c>postgres</c>.</summary>
     public string Provider { get; set; } = VectorStoreProviderExtensions.Local;
 

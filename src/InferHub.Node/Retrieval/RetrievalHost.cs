@@ -65,7 +65,16 @@ public sealed class RetrievalHost(
     public string DataDirectory => Path.GetFullPath(options.Value.DataDirectory);
 
     /// <summary>Phase 77: whether this node forwards its own <c>local</c>-provider writes up to the hub for relay to a standby, if one is ever assigned. Off by default — a node operator opts in explicitly, same "opt-in twice" shape as tools (41 D1).</summary>
-    public bool ReplicationEnabled => options.Value.ReplicateOwnedCollections;
+    public bool ReplicationEnabled => options.Value.ReplicateOwnedCollections && !options.Value.Private;
+
+    /// <summary>
+    /// Phase 114: this node's corpus is its owner's alone (<c>LocalApi:Retrieval:Private</c>). One host, one store, so a
+    /// node holds a private corpus or a coordinator's, never both: a coordinator's is then refused, by name (114 D1).
+    /// </summary>
+    public bool IsPrivate => options.Value.Enabled && options.Value.Private;
+
+    public const string PrivateRefusal =
+        "this node keeps a private corpus (LocalApi:Retrieval:Private=true) and takes no corpus from a coordinator; its owner's documents are reachable only through its own API";
 
     /// <summary>
     /// Takes a lease on the running corpus, or returns null when there is none. A lease is what
@@ -119,6 +128,11 @@ public sealed class RetrievalHost(
     /// </summary>
     public async Task<CorpusStartResult> StartCorpusAsync(CorpusRequest request, CancellationToken cancellationToken)
     {
+        if (IsPrivate && request.Source != CorpusRequest.LocalConfiguration)
+        {
+            return Failed(PrivateRefusal);
+        }
+
         await gate.WaitAsync(cancellationToken);
 
         try

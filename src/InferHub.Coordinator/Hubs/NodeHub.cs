@@ -161,6 +161,16 @@ public sealed class NodeHub(
     /// What a node's engines are doing (phase 95). Recorded, never asked for — the mailbox again. Only
     /// a node running <c>Backend:Engines</c> sends one.
     /// </summary>
+    /// <summary>
+    /// Phase 113: whether a node takes new jobs, as its owner set it — the mailbox again, and the hub holds it: the
+    /// router skips a paused node as it skips an over-cap one. A node that said nothing is never read as paused.
+    /// </summary>
+    public Task ReportSharingState(NodeSharingState state)
+    {
+        registry.RecordSharing(Context.ConnectionId, state);
+        return Task.CompletedTask;
+    }
+
     public Task ReportBackendState(NodeBackendState state)
     {
         if (services.GetService(typeof(NodeBackendRegistry)) is NodeBackendRegistry backends)

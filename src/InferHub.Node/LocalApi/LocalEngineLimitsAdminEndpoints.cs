@@ -21,7 +21,6 @@ namespace InferHub.Node.LocalApi;
 /// </remarks>
 internal static class LocalEngineLimitsAdminEndpoints
 {
-    private const string OverrideFileName = "node.local.json";
 
     public static IEndpointRouteBuilder MapLocalEngineLimitsAdminEndpoints(this IEndpointRouteBuilder app)
     {
@@ -97,7 +96,7 @@ internal static class LocalEngineLimitsAdminEndpoints
             };
         }
 
-        var path = Path.Combine(AppContext.BaseDirectory, OverrideFileName);
+        var path = httpContext.RequestServices.GetRequiredService<LocalSettingsFile>().Path;
         var root = File.Exists(path)
             ? (JsonNode.Parse(await File.ReadAllTextAsync(path, cancellationToken)) as JsonObject ?? new JsonObject())
             : new JsonObject();
