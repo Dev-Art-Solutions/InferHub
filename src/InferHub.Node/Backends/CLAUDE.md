@@ -597,8 +597,18 @@ for 1.12 engines; a 2.0 engine's route-404 (no model in the message) becomes "co
 it to /v1/systemone". *Rejected:* translating Brio to System One — `schema` answered fields in order, each seeing
 the earlier ones; System One answers each alone.
 
+**D7 — found live, both on Strata 0.2.** (a) `user_args` are applied over `args` at every start, the person's value
+winning: the teller writes a told flag into both, or a user's `--vram-reserve-mib 964` beats the told 13264 and the
+watchdog stops Strata at 14943 of 12000 MiB. (b) Strata's server gives its token an owner-only default DACL
+(`private_files.adopt_user_defaults`), and a process with one **cannot start a child inside a Job Object that has an
+affinity limit** — `CreateProcess` answers ERROR_ACCESS_DENIED, reproduced in fifteen lines of Python with no node. So
+`IEngineLimitTeller.CoresOnTheJob` is false for Strata: its core limit is each process's affinity (`SetProcessAffinityMask`,
+inherited by children, re-applied each poll like Linux's), reported `os (process affinity, re-applied each poll)`. Every
+other runtime keeps the job's. Also: the Job Object no longer switches off a CPU rate it never set (error 87 on every
+limit without a CPU share — 102's, noisy and harmless).
+
 **Upstream pins.** `:colibri` image → v2.0.0 (Vulkan engines, no loader in the image → CPU, as 1.12.1). The
-Strata family table follows 0.2.2's `setup.py`: Swift IQ3_S; Unsloth UD-Q5/Q6_K_XL, Q8_0; Gyro-S/M; NVFP4,
+Strata family table follows 0.2.2's `setup.py` (unchanged in 0.2.3, the release the live run used): Swift IQ3_S; Unsloth UD-Q5/Q6_K_XL, Q8_0; Gyro-S/M; NVFP4,
 NVFP4-NVIDIA, NVFP4-QAD (one repo each, one `--family nvfp4`); Qwen3.6-35B-A3B (own-path, `--family qwen36`).
 Tests: `EngineLimitTellerTests`, `EngineLimitTests` (told, restart), `BrioScorerTests`, `BrioMeshTests` (System One).
 Measurements: `.claude/release-notes-v3.75.0.md`.

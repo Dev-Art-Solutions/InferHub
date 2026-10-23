@@ -3417,6 +3417,83 @@ Since v3.74 the hub can hold it instead and send it to whichever node frees a sl
   `/metrics` the `inferhub_queue_slot_*` series.
 
 
+## colibri and Strata told their limits; colibri 2.0 and Strata 0.2.2 (v3.75)
+
+**v3.67 holds every runtime to its limits from outside** — a Job Object or a cgroup, affinity, a VRAM watchdog. Two
+runtimes size themselves from what they see, and neither sees any of that. Measured on this project's box, colibri 2.0
+with no limit planned **147.5 GB** of expert cache ("88% of what the OS still offers") on a runtime limited to 8 GB; Strata
+filled the card down to its reserve and used **14.9–21.9 GB of a 12 GB limit**, so the watchdog stopped it, its supervisor
+started it, and it was stopped again.
+
+Since v3.75 the node **tells** them their limits when it starts them, in each engine's own words, and keeps holding
+them exactly as before:
+
+| Limit | colibri is told | Strata is told |
+|---|---|---|
+| `MemoryMiB` | `--ram` (90%, whole GB; the launcher maps it per family — GLM-5.3 Flash's expert cache gets `GLM53_EXPERT_GB`) | a model with a RAM budget: `--resident-budget-gib` lowered to the limit − 8 |
+| `Cores` / `CpuPercent` | `OMP_NUM_THREADS` | `"pool_cores": "1,…,N−1"` |
+| `VramMiB` | `COLI_VK_DEVICE_CAP_MB` (every Vulkan budget reads it), `CUDA_EXPERT_GB` | a `--vram-reserve-mib` raised by (card − limit), the card's size read from NVML |
+| `Gpus` | `COLI_VK_DEV`; none → `COLI_CUDA=0`, `COLI_VULKAN=0` | none → not started, with the sentence (its engine needs a card) |
+
+- **Strata starts on a copy of its config** (`.inferhub-limits-<file>` beside the original), because its engine reads
+  options from the config's `args` and `user_args`, not from the server's command line. The original is never written;
+  with nothing to tell, the original starts.
+- **A limit that changes what a runtime was told restarts it**, as a GPU-list change always has. The runtime limits
+  report (`/api/status`, the console's *Runtime limits* panel, the node's `/api/admin/engine-limits`) shows `told` — the
+  lines each runtime was given — beside how each limit is held.
+- **On Windows, a core limit on Strata is each process's affinity**, re-applied every poll, not the Job Object's: Strata
+  0.2 gives its token an owner-only default DACL, and such a process cannot start a child inside a job with an affinity
+  limit. Every other runtime keeps the job's affinity.
+
+With the limits on this box (8 GB / 8 cores for colibri, 12000 MiB / 8 cores for Strata): colibri planned **7.0 GB**
+(`RAM_GB`) and used 7.3 GB; narrowed from the hub to 4 GB it restarted told `--ram 3` and used 3.5 GB; Strata answered
+with **11.7 GB** of GPU memory and no stop.
+
+**GLM-5.3-Flash (321B) through a hub, on one box.** Converted once with colibri's `convert_glm53.py` (194.7 GB, int4
+experts) onto a hard disk, served by a node with `colibri: {memoryMiB: 98304, cores: 32}` — told `--ram 86`, which the
+launcher turns into GLM-5.3's expert cache: the engine stayed at **57.6 GB of its 96 GiB**, no stop. The first answer
+("Paris") took 6 min 16 s while 195 GB came off the disk; a warm one ("Red, blue, yellow") 25 s streamed, with the
+model's own low-effort reasoning inside that. A model this size on a disk needs a longer rope than the 300 s defaults:
+raise the node's `Upstream:TimeoutSeconds` and the hub's `Dispatcher:Deadlines:chat` (a stream is not cut, a
+non-streamed answer is).
+
+### colibri 2.0 and `/v1/systemone`
+
+The `:colibri` image carries **colibri 2.0.0** (from 1.12.1). Its engines are Vulkan builds; the image has no Vulkan
+loader, so they run on the CPU there exactly as before — a GPU colibri is a host install. Every text engine now takes up to
+16 `Colibri:KvSlots`.
+
+**colibri 2.0 removed `/v1/brio`.** Its one decision API is System One — typed questions about one state, a probability
+per allowed answer — and v3.75 serves it on the fleet and on a solo colibri node:
+
+```http
+POST /v1/systemone
+{"model": "olmoe",
+ "state": "I have been trying to connect my Stripe account for 3 days and it keeps failing. I am losing sales.",
+ "questions": {
+   "urgency":    {"type": "noul",   "instructions": "Does this message express urgency?"},
+   "department": {"type": "choice", "criteria": {"billing": "payments", "technical": "bugs, integration errors", "sales": "pricing"}}}}
+```
+
+```jsonc
+// OLMoE on colibri 2.0, through a hub and a node
+{"answers": {"urgency": {"type": "noul", "noul": 0.946618},
+             "department": {"type": "choice", "choice": "technical",
+                            "probabilities": {"billing": 0.000082, "technical": 0.999901, "sales": 0.000017}, "confidence": 0.999852}},
+ "usage": {"input_tokens": 84, "output_tokens": 5, "cost": 0}}
+```
+
+It routes by `model`, which is therefore required here (colibri itself takes any name). A colibri node declares a new
+capability, `decide`, so a hub never sends a System One question to an older node. Billed as tokens read, kind `decide`.
+`/v1/brio` still works against a colibri 1.12 engine; against 2.0 it answers a 404 that says to use `/v1/systemone`.
+
+### Strata 0.2
+
+Strata moved to 0.2 (the app, the Terminal, engine packages from a signed feed); the node drives it the same way
+(`serve/server.py --config`, `setup.py --setup --yes --no-start`). The sizes the hub can install grew from 9 to 21: Swift
+IQ3_S, Unsloth UD-Q5_K_XL / UD-Q6_K_XL / Q8_0, Gyro-S and Gyro-M, three NVFP4 packs, and **Qwen3.6-35B-A3B** (UD-Q4_K_XL,
+UD-Q6_K_XL, Q8_0) — Strata's first model that is not Qwen3.8-Flash-Next.
+
 ## Inference backends
 
 A node runs one inference backend behind the `IInferenceBackend` seam — or, since v3.60, [several](#several-engines-on-one-node--ollama-llamacpp-and-colibri-v360). The coordinator does
