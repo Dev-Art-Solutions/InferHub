@@ -93,6 +93,20 @@ Strata's own update to engine 0.1.47/0.1.48 failed three times on 0.2.2 ("did no
 Windows test-start bug 0.2.3 fixed (#3683); with 0.2.3 it installed on the first run. On this disk Strata itself asks for
 `--ple-io mmap` (random 4 KiB reads at ~1 MB/s); that was set in the Coder's `user_args` by hand, outside InferHub.
 
+## The published binaries
+
+`inferhub-node:3.75.0` and `inferhub-coordinator:3.75.0` (revision label `cec7547`, the tag commit) were pulled from
+GHCR and their `/app` run natively, Docker Desktop not running; `:3.75.0-colibri` carries `opt/colibri/version.py` =
+**2.0.0**. Same box, same engines, limits `colibri: {memoryMiB: 8192, cores: 8}`, `strata: {vramMiB: 12000, cores: 8}`:
+
+- the node registered as `3.75.0` with `chat, decide, score`;
+- colibri OLMoE told `--ram 7`, `OMP_NUM_THREADS=8`: `7.0 GB budget (RAM_GB)`, 7351 MiB used, "Rome";
+- `/v1/systemone` through the hub: `noul` 0.963, 27 + 2 tokens;
+- Strata Coder told `pool_cores 1-7`, `--vram-reserve-mib 13528`: `sum(xs)` at **11713 MiB** of 12000, cores held as
+  process affinity, no `PermissionError`, no stop. 286 s, cold: the file cache had just held GLM-5.3's 195 GB.
+
+This exercised the binaries, not the containers' OS layer.
+
 ## What changes with no config changed
 
 Nothing a node without limits can see: with no limit on colibri or Strata, no teller says anything, and both start
