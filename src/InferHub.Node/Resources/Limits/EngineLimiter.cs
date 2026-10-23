@@ -102,6 +102,10 @@ public sealed class EngineLimiter : IEngineLimiter, IHostedService, IDisposable
     public static void RegisterTeller(string group, IEngineLimitTeller teller) =>
         Tellers[EngineLimitGroups.Normalize(group) ?? group] = teller;
 
+    /// <summary>Whether a core limit on <paramref name="group"/> may be its job's affinity (111, <see cref="IEngineLimitTeller.CoresOnTheJob"/>).</summary>
+    internal static bool CoresOnTheJob(string group) =>
+        !Tellers.TryGetValue(EngineLimitGroups.Normalize(group) ?? group, out var teller) || teller.CoresOnTheJob;
+
     /// <summary>The limits in force for <paramref name="group"/> now, for a launch site that must decide something before it starts (none when no limiter runs).</summary>
     public static EngineLimits LimitsFor(string group) => installed?.Effective(group) ?? EngineLimits.None;
 
@@ -416,6 +420,7 @@ public sealed class EngineLimiter : IEngineLimiter, IHostedService, IDisposable
                     : inspector.WithDescendants(entry.Roots.Select(root => root.Pid).ToArray());
 
                 (entry.Container as LinuxProcessContainer)?.Sweep(pids);
+                (entry.Container as WindowsJobContainer)?.Sweep(pids);
 
                 Measure(entry, pids, now);
 

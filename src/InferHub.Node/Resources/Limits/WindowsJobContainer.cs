@@ -28,15 +28,26 @@ internal sealed class WindowsJobContainer : IProcessContainer
     private readonly string group;
     private readonly ILogger logger;
     private nint job;
+    private bool rateSet;
+    private readonly bool coresOnTheJob;
+    private ulong? processMask;
 
-    private WindowsJobContainer(string group, nint job, ILogger logger)
+    private WindowsJobContainer(string group, nint job, ILogger logger, bool coresOnTheJob)
     {
         this.group = group;
         this.job = job;
         this.logger = logger;
+        this.coresOnTheJob = coresOnTheJob;
     }
 
-    public static WindowsJobContainer? TryCreate(string group, ILogger logger)
+    /// <param name="coresOnTheJob">
+    /// False holds a core limit as each process's own affinity, re-applied every poll (<see cref="Sweep"/>), instead of
+    /// the job's (111): Strata 0.2 gives its token an owner-only default DACL, and a process with one cannot start a
+    /// child inside a job that has an affinity limit — <c>CreateProcess</c> answers ERROR_ACCESS_DENIED, every time
+    /// (reproduced in fifteen lines of Python with no node involved). Process affinity is inherited by a child the
+    /// same way, and does not trip it.
+    /// </param>
+    public static WindowsJobContainer? TryCreate(string group, ILogger logger, bool coresOnTheJob = true)
     {
         try
         {
@@ -44,7 +55,7 @@ internal sealed class WindowsJobContainer : IProcessContainer
 
             if (handle != 0)
             {
-                return new WindowsJobContainer(group, handle, logger);
+                return new WindowsJobContainer(group, handle, logger, coresOnTheJob);
             }
 
             logger.LogWarning("Could not create a Job Object for the {Group} limits (error {Error}); its limits fall to the watchdog.", group, Marshal.GetLastWin32Error());
@@ -86,7 +97,7 @@ internal sealed class WindowsJobContainer : IProcessContainer
             extended.JobMemoryLimit = (UIntPtr)((ulong)memory * 1024 * 1024);
         }
 
-        if (limits.Cores is { } cores)
+        if (limits.Cores is { } cores && coresOnTheJob)
         {
             extended.BasicLimitInformation.LimitFlags |= JobObjectLimitAffinity;
             extended.BasicLimitInformation.Affinity = (UIntPtr)AffinityMask(cores);
@@ -99,9 +110,27 @@ internal sealed class WindowsJobContainer : IProcessContainer
                 held[LimitResources.Memory] = "os (Job Object memory limit)";
             }
 
-            if (limits.Cores is not null)
+            if (limits.Cores is not null && coresOnTheJob)
             {
                 held[LimitResources.Cores] = "os (Job Object affinity)";
+            }
+        }
+
+        if (!coresOnTheJob)
+        {
+            var widen = limits.Cores is null && processMask is not null;
+            processMask = limits.Cores is { } perProcess ? AffinityMask(perProcess) : null;
+
+            if (widen && GetProcessAffinityMask(GetCurrentProcess(), out _, out var system))
+            {
+                // A limit lifted gives the cores back once; nothing narrows them again afterwards.
+                SetAffinity(ProcessIds() ?? [], (ulong)system);
+            }
+
+            if (processMask is { } mask)
+            {
+                SetAffinity(ProcessIds() ?? [], mask);
+                held[LimitResources.Cores] = "os (process affinity, re-applied each poll)";
             }
         }
 
@@ -114,12 +143,50 @@ internal sealed class WindowsJobContainer : IProcessContainer
             rate.CpuRate = (uint)(Math.Clamp(cpu, 1, 100) * 100);
         }
 
-        if (SetRate(rate) && limits.CpuPercent is not null)
+        // Turning off a rate that was never on is refused with error 87 (seen on every limit without a CPU share, 111):
+        // only a rate that is, or was, set is written.
+        if ((limits.CpuPercent is not null || rateSet) && SetRate(rate))
         {
-            held[LimitResources.Cpu] = "os (Job Object CPU hard cap)";
+            rateSet = limits.CpuPercent is not null;
+
+            if (limits.CpuPercent is not null)
+            {
+                held[LimitResources.Cpu] = "os (Job Object CPU hard cap)";
+            }
         }
 
         return held;
+    }
+
+    /// <summary>Re-applies a per-process core limit to every process of the runtime, the children it started since included.</summary>
+    public void Sweep(IReadOnlyList<int> pids)
+    {
+        if (processMask is { } mask)
+        {
+            SetAffinity(pids, mask);
+        }
+    }
+
+    private static void SetAffinity(IReadOnlyList<int> pids, ulong mask)
+    {
+        foreach (var pid in pids)
+        {
+            var handle = OpenProcess(ProcessSetInformation | ProcessQueryLimitedInformation, false, pid);
+
+            if (handle == 0)
+            {
+                continue;
+            }
+
+            try
+            {
+                SetProcessAffinityMask(handle, (UIntPtr)mask);
+            }
+            finally
+            {
+                CloseHandle(handle);
+            }
+        }
     }
 
     public IReadOnlyList<int>? ProcessIds()
@@ -285,6 +352,21 @@ internal sealed class WindowsJobContainer : IProcessContainer
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern nint CreateJobObjectW(nint lpJobAttributes, string? lpName);
+
+    private const uint ProcessSetInformation = 0x0200;
+    private const uint ProcessQueryLimitedInformation = 0x1000;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern nint OpenProcess(uint access, bool inherit, int pid);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetProcessAffinityMask(nint process, UIntPtr mask);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetProcessAffinityMask(nint process, out UIntPtr processMask, out UIntPtr systemMask);
+
+    [DllImport("kernel32.dll")]
+    private static extern nint GetCurrentProcess();
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool SetInformationJobObject(nint hJob, int infoClass, nint info, uint length);

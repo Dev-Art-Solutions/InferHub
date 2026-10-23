@@ -49,6 +49,13 @@ public sealed class StrataLimitTeller(IGpuCards cards, Func<int>? logicalProcess
 
     private readonly Func<int> logical = logicalProcessors ?? (() => Environment.ProcessorCount);
 
+    /// <summary>
+    /// Strata 0.2's server gives its token an owner-only default DACL (<c>strata_control/private_files.adopt_user_defaults</c>)
+    /// and then cannot start its image encoder or its engine inside a job with an affinity limit: ERROR_ACCESS_DENIED from
+    /// <c>CreateProcess</c>. Found live, on this phase's first Strata run with a core limit.
+    /// </summary>
+    public bool CoresOnTheJob => false;
+
     public EngineLimits Told(EngineLimits effective) =>
         effective with { Gpus = effective.VramMiB is null ? null : effective.Gpus };
 
@@ -69,6 +76,21 @@ public sealed class StrataLimitTeller(IGpuCards cards, Func<int>? logicalProcess
         }
 
         var args = config["args"] as JsonArray ?? [];
+        // Strata 0.2's "user_args" are applied over "args" at every start, the person's value winning for the same flag
+        // (strata_control/user_args.py): a told value that is only in "args" loses to one there — found live, a
+        // reserve of 13264 lost to the 964 a user had set, and the watchdog stopped Strata at 14943 of 12000 MiB.
+        var user = config["user_args"] as JsonArray;
+        string? InForce(string flag) => (user is null ? null : Value(user, flag)) ?? Value(args, flag);
+        void Tell(string flag, string value)
+        {
+            Set(args, flag, value);
+
+            if (user is not null && Value(user, flag) is not null)
+            {
+                Set(user, flag, value);
+            }
+        }
+
         var lines = new List<string>();
         var changed = false;
 
@@ -92,15 +114,15 @@ public sealed class StrataLimitTeller(IGpuCards cards, Func<int>? logicalProcess
             }
             else
             {
-                var current = Value(args, "--vram-reserve-mib") is { } text && int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var r) ? r : (int?)null;
+                var current = InForce("--vram-reserve-mib") is { } text && int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var r) ? r : (int?)null;
                 var basis = current ?? DefaultReserveMiB;
                 var perCard = vram / physical.Length;
                 var reserve = basis + (int)Math.Max(0, totals.Max(t => t!.Value) - perCard);
-                Set(args, "--vram-reserve-mib", reserve.ToString(CultureInfo.InvariantCulture));
+                Tell("--vram-reserve-mib", reserve.ToString(CultureInfo.InvariantCulture));
                 lines.Add($"--vram-reserve-mib {reserve} (card {totals.Max()} MiB, {perCard} MiB allowed)");
                 changed = true;
 
-                if (Value(args, "--expert-cache") is { } cache && cache != "auto")
+                if (InForce("--expert-cache") is { } cache && cache != "auto")
                 {
                     lines.Add($"--expert-cache {cache} is the config's own number and was left");
                 }
@@ -108,14 +130,14 @@ public sealed class StrataLimitTeller(IGpuCards cards, Func<int>? logicalProcess
         }
 
         if (told.MemoryMiB is { } memory
-            && Value(args, "--resident-budget-gib") is { } budgetText
+            && InForce("--resident-budget-gib") is { } budgetText
             && double.TryParse(budgetText, NumberStyles.Float, CultureInfo.InvariantCulture, out var budget))
         {
             var allowed = Math.Max(1, memory / 1024 - ResidentHeadroomGiB);
 
             if (budget > allowed)
             {
-                Set(args, "--resident-budget-gib", allowed.ToString(CultureInfo.InvariantCulture));
+                Tell("--resident-budget-gib", allowed.ToString(CultureInfo.InvariantCulture));
                 lines.Add($"--resident-budget-gib {allowed} (was {budgetText})");
                 changed = true;
             }

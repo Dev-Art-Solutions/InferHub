@@ -32,6 +32,12 @@ public interface IEngineLimitTeller
 
     /// <summary>Changes the launch so the runtime knows <paramref name="told"/>; returns what it was told, one line each.</summary>
     IReadOnlyList<string> Tell(EngineLimits told, ProcessStartInfo info);
+
+    /// <summary>
+    /// Whether a core limit may be held as the Windows Job Object's affinity (102). False for a runtime that cannot start
+    /// a child inside such a job: its core limit is then each process's own affinity, re-applied every poll.
+    /// </summary>
+    bool CoresOnTheJob => true;
 }
 
 /// <summary>The arithmetic every teller shares: a thread count out of a core count and a CPU share.</summary>

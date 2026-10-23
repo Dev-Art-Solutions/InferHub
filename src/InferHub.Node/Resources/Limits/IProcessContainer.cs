@@ -54,7 +54,7 @@ public sealed class PlatformProcessContainerFactory(ILogger logger) : IProcessCo
     {
         if (OperatingSystem.IsWindows())
         {
-            return (IProcessContainer?)WindowsJobContainer.TryCreate(group, logger) ?? new NoProcessContainer();
+            return (IProcessContainer?)WindowsJobContainer.TryCreate(group, logger, EngineLimiter.CoresOnTheJob(group)) ?? new NoProcessContainer();
         }
 
         if (OperatingSystem.IsLinux())

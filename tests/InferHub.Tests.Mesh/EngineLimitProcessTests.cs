@@ -56,6 +56,24 @@ public class EngineLimitProcessTests
             $"the capped loop used {process.TotalProcessorTime.TotalSeconds:F2} CPU-seconds");
     }
 
+    [WindowsFact]
+    public async Task OnWindowsACoreLimitOffTheJobIsTheProcessAffinityAndAChildInheritsIt()
+    {
+        // Phase 111: Strata's core limit is held as process affinity, not the job's (see StrataLimitTeller.CoresOnTheJob).
+        using var container = WindowsJobContainer.TryCreate("strata", NullLogger.Instance, coresOnTheJob: false)!;
+        // The process prints its own affinity after the limit is applied, then starts a child that prints its own.
+        var info = Shell("Start-Sleep -Seconds 2; [Diagnostics.Process]::GetCurrentProcess().ProcessorAffinity; & powershell -NoProfile -Command '[Diagnostics.Process]::GetCurrentProcess().ProcessorAffinity'");
+        using var process = Process.Start(info)!;
+        container.Add(process);
+
+        var held = container.Apply(new EngineLimits(Cores: 2));
+        var output = await process.StandardOutput.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(60));
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(60));
+
+        Assert.Equal("os (process affinity, re-applied each poll)", held[LimitResources.Cores]);
+        Assert.Equal(["3", "3"], output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+    }
+
     [LinuxFact]
     public async Task OnLinuxAffinityPinsEveryThreadToTheFirstCores()
     {

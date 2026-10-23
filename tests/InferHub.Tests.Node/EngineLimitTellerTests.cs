@@ -133,6 +133,19 @@ public sealed class EngineLimitTellerTests : IDisposable
     }
 
     [Fact]
+    public void AReserveThePersonSetInUserArgsIsTheOneRaisedBecauseItWinsOverArgs()
+    {
+        // Found live: Strata 0.2 applies "user_args" over "args", so a told reserve only in "args" lost to the 964 there.
+        var info = Server(Config(new[] { "--expert-cache", "auto", "--vram-reserve-mib", "700" }, """{"user_args": ["--ple-io", "mmap", "--vram-reserve-mib", "964"]}"""));
+
+        new StrataLimitTeller(new Cards(24564)).Tell(new EngineLimits(VramMiB: 12000), info);
+
+        var copy = JsonNode.Parse(File.ReadAllText(info.ArgumentList[4]))!;
+        Assert.Equal(["--ple-io", "mmap", "--vram-reserve-mib", "13528"], copy["user_args"]!.AsArray().Select(a => a!.GetValue<string>()));
+        Assert.Equal("13528", copy["args"]!.AsArray()[3]!.GetValue<string>());
+    }
+
+    [Fact]
     public void StrataWithNoReserveOfItsOwnStartsFromTheEnginesLargerDefault()
     {
         var info = Server(Config(new[] { "--expert-cache", "auto" }, """{"gpu": [1]}""")) ;
