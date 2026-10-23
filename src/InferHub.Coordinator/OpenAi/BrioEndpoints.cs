@@ -33,8 +33,12 @@ public static class BrioEndpoints
     public static IEndpointRouteBuilder MapBrioEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/v1/brio", HandleAsync).AddEndpointFilter(DispatchDeadlineFilter.OpenAi);
+        app.MapPost("/v1/systemone", HandleSystemOneAsync).AddEndpointFilter(DispatchDeadlineFilter.OpenAi);
         return app;
     }
+
+    /// <summary>What the two routes share once the body is read: who asks, about which model, in which form.</summary>
+    private sealed record Ask(string Model, string Form, int Count, string Raw, string Capability);
 
     private static async Task<IResult> HandleAsync(
         HttpContext httpContext,
@@ -45,7 +49,6 @@ public static class BrioEndpoints
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
-        var logger = loggerFactory.CreateLogger("InferHub.Coordinator.OpenAi.Brio");
         metrics.RecordOpenAiRequest();
 
         using var reader = new StreamReader(httpContext.Request.Body);
@@ -55,6 +58,50 @@ public static class BrioEndpoints
         {
             return Error(400, invalid, OpenAiErrorTypes.InvalidRequest);
         }
+
+        return await AnswerAsync(
+            new Ask(request.Model, request.Form, request.Count, request.Raw, CapabilityKinds.Score),
+            httpContext, router, registry, tools, loggerFactory, cancellationToken);
+    }
+
+    /// <summary>
+    /// <c>POST /v1/systemone</c> (phase 111): colibri 2.0's one decision API, the same path as Brio's —
+    /// a <c>ToolJob</c>, capability <c>decide</c>, the body passed through, billed as tokens read.
+    /// </summary>
+    private static async Task<IResult> HandleSystemOneAsync(
+        HttpContext httpContext,
+        Services.IRouter router,
+        INodeRegistry registry,
+        IToolDispatcher tools,
+        Metrics metrics,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        metrics.RecordOpenAiRequest();
+
+        using var reader = new StreamReader(httpContext.Request.Body);
+        var raw = await reader.ReadToEndAsync(cancellationToken);
+
+        if (SystemOneRequest.TryParse(raw, out var invalid) is not { } request)
+        {
+            return Error(400, invalid, OpenAiErrorTypes.InvalidRequest);
+        }
+
+        return await AnswerAsync(
+            new Ask(request.Model, "systemone", request.Count, request.Raw, CapabilityKinds.Decide),
+            httpContext, router, registry, tools, loggerFactory, cancellationToken);
+    }
+
+    private static async Task<IResult> AnswerAsync(
+        Ask request,
+        HttpContext httpContext,
+        Services.IRouter router,
+        INodeRegistry registry,
+        IToolDispatcher tools,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        var logger = loggerFactory.CreateLogger("InferHub.Coordinator.OpenAi.Brio");
 
         // Admission before routing (25 D4): a scoped-out model is the same 404 as a missing one, and
         // the 503 below can never be used to probe for a model this client cannot reach.
@@ -74,14 +121,14 @@ public static class BrioEndpoints
 
         using var lease = admission.Lease;
 
-        var node = router.Route(request.Model, capability: CapabilityKinds.Score);
+        var node = router.Route(request.Model, capability: request.Capability);
 
         if (node is null)
         {
-            return NoNode(httpContext, registry, request.Model);
+            return NoNode(httpContext, registry, request.Model, request.Capability);
         }
 
-        var job = new ToolJob(Guid.NewGuid(), CapabilityKinds.Score, request.Model, request.Raw);
+        var job = new ToolJob(Guid.NewGuid(), request.Capability, request.Model, request.Raw);
         ToolResult result;
 
         try
@@ -122,13 +169,13 @@ public static class BrioEndpoints
         }
 
         // D3: everything the engine read, as prompt tokens; a failed job is never billed (42 D7).
-        context.Usage.RecordTokens(context.Client, CapabilityKinds.Score, request.Model, outcome.Tokens, 0);
+        context.Usage.RecordTokens(context.Client, request.Capability, request.Model, outcome.Tokens, 0);
 
         return Results.Text(outcome.Json!, "application/json");
     }
 
     /// <summary>40 D4/D5, as the audio routes render it: fleet state is a 503, an unknown model the 404.</summary>
-    private static IResult NoNode(HttpContext httpContext, INodeRegistry registry, string model)
+    private static IResult NoNode(HttpContext httpContext, INodeRegistry registry, string model, string capability)
     {
         if (ToolEndpoints.KnownToTheFleet(registry, model))
         {
@@ -136,8 +183,10 @@ public static class BrioEndpoints
 
             return Error(
                 503,
-                $"no node currently provides '{CapabilityKinds.Score}' for model '{model}'; " +
-                "Brio needs a node with Backend:Type=colibri",
+                $"no node currently provides '{capability}' for model '{model}'; " +
+                (capability == CapabilityKinds.Decide
+                    ? "System One needs a colibri node from InferHub 3.75 or newer"
+                    : "Brio needs a node with Backend:Type=colibri"),
                 OpenAiErrorTypes.ApiError,
                 code: "capability_unavailable");
         }

@@ -16,7 +16,7 @@ and the one trap this repository has fallen into five separate times.
 | `inferhub-node:diffusion` | ~12 GB | amd64 | + PyTorch, `diffusers`, `bitsandbytes`, seven recipes |
 | `inferhub-node:tts-bg` | ~9 GB | amd64 | + PyTorch, `nemo_toolkit`, for `bg-tts-v5` (84). Stacks on nothing |
 | `inferhub-node:all` | ~11 GB | amd64 | `:tools` + `:diffusion` in one node, `Node:OnDemand` on (87) |
-| `inferhub-node:colibri` | see the release notes (v3.63 adds CPU torch) | amd64 | the plain node + python3, libgomp1 and colibri v1.12.1's CPU engine, launched by the node (93), and its converter venv (98) |
+| `inferhub-node:colibri` | see the release notes (v3.63 adds CPU torch) | amd64 | the plain node + python3, libgomp1 and colibri v2.0.0's engine (on the CPU: no Vulkan loader in the image, 111), launched by the node (93), and its converter venv (98) |
 
 **`:diffusion` deliberately does not stack** — it is built from the *plain* node, with no Ollama, no
 Whisper and no Piper in it (46 D9). Stacking reaches ~15 GB and every pull pays for it, and a card

@@ -23,10 +23,11 @@
 # Every COLI_* variable passes through to the engine (COLI_THREADS, COLI_MAX_QUEUE, ...) EXCEPT
 # COLI_DEBUG, which tees prompts to stderr and the node logs that stream (rule 7, 93 D5).
 #
-# amd64 only: colibri publishes its Linux engine for x86_64 alone. CPU only: the release archive is
-# the CPU build; a CUDA tier is a different artifact (see the phase-93 non-goals).
+# amd64 only: colibri publishes its Linux engine for x86_64 alone. CPU in this image: since 2.0 the
+# archive's engines are Vulkan builds that open the Vulkan loader at run time, and this image carries
+# none, so they run on the CPU exactly as 1.12's did (phase 111). A GPU is a host install's.
 
-ARG COLIBRI_VERSION=1.12.1
+ARG COLIBRI_VERSION=2.0.0
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG TARGETARCH
@@ -51,7 +52,7 @@ RUN dotnet publish src/InferHub.Node/InferHub.Node.csproj \
 # ---------------------------------------------------------------------------------------------
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS colibri
 ARG COLIBRI_VERSION
-ARG COLIBRI_SHA256=9d5afd587d7c429b2cf0ce0c520d42f4c2883bdc9c560ed9fb5afa0b2c2e0d12
+ARG COLIBRI_SHA256=aef2c1e7d5cbad3d27cc90d8432775acdc315ec51f6d7a67a2f13a936f9978ce
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \

@@ -259,6 +259,10 @@ public static class NodeHostBuilderExtensions
         {
             var limiter = ActivatorUtilities.CreateInstance<Resources.Limits.EngineLimiter>(sp);
             Resources.Limits.EngineLimiter.Install(limiter);
+
+            // Phase 111: the runtimes that size themselves from what they see are told their limits too.
+            Resources.Limits.EngineLimiter.RegisterTeller(InferHub.Shared.Contracts.EngineLimitGroups.Colibri, new Backends.Colibri.ColibriLimitTeller());
+            Resources.Limits.EngineLimiter.RegisterTeller(InferHub.Shared.Contracts.EngineLimitGroups.Strata, new Backends.Strata.StrataLimitTeller(new Resources.Limits.NvmlGpuCards()));
             return limiter;
         });
         builder.Services.AddSingleton<Resources.Limits.IEngineLimiter>(sp => sp.GetRequiredService<Resources.Limits.EngineLimiter>());

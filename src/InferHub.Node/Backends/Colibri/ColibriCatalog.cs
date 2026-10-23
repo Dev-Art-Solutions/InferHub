@@ -23,7 +23,7 @@ public interface IColibriControl : ICatalogControl;
 /// </remarks>
 public sealed class ColibriCatalog : ModelCatalog, IClosedSetScorer, IColibriControl
 {
-    private static readonly string[] ChatAndScore = [CapabilityKinds.Chat, CapabilityKinds.Score];
+    private static readonly string[] ChatAndScore = [CapabilityKinds.Chat, CapabilityKinds.Score, CapabilityKinds.Decide];
 
     private readonly ColibriOptions options;
     private readonly ConcurrentDictionary<string, byte> warned = new(StringComparer.OrdinalIgnoreCase);

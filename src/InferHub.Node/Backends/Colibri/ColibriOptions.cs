@@ -23,8 +23,8 @@ public sealed class ColibriOptions
     /// and the node declares this as its <c>MaxConcurrency</c> unless <c>Node:MaxConcurrency</c>
     /// is set (93 D3). <b>It must match the engine's</b>: a launched engine is started with it; an
     /// external one is the operator's to keep in step, and a slot past the engine's count is a 400.
-    /// <b>Only the GLM-5.2/5.3 engines take more than one</b> (colibri v1.12.1's family registry);
-    /// every other family refuses to start with a larger value, and the node logs that sentence.
+    /// <b>Since colibri 2.0 every text engine takes up to 16</b> (#1955); with 1.12 only the GLM-5.2/5.3
+    /// engines did, and every other family refuses to start with a larger value — the node logs that sentence.
     /// </summary>
     public int KvSlots { get; set; } = 1;
 

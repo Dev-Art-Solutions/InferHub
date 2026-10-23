@@ -195,6 +195,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 108 | [A free slot for the model](#a-free-slot-for-the-model-v372) — the hub sends a chat to a node whose engine can start it now, not to one where it would wait behind the same model (done) | `v3.72.0` |
 | 109 | [Slots the engine reports](#slots-the-engine-reports-v373) — a llama.cpp model says how many requests it runs at once, and the hub uses that number before the node's (done) | `v3.73.0` |
 | 110 | [Waiting for a free slot](#waiting-for-a-free-slot-v374) — with `Queue:SlotWaitSeconds` set, a chat that finds every holder full waits at the hub and goes to the node that frees a slot first, never a 503 (done) | `v3.74.0` |
+| 111 | [colibri and Strata told their limits](#colibri-and-strata-told-their-limits-colibri-20-and-strata-022-v375) — the engines plan inside the node's limits instead of meeting them; colibri 2.0's `/v1/systemone`; Strata 0.2.2's new sizes (done) | `v3.75.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -2725,8 +2726,8 @@ What is different from pointing `Backend:Type=openai` at it — each one measure
 - **Every request body carries a `Content-Length`.** The gateway is Python's `http.server` and answers
   a chunked body with a 400 — which is every request a generic OpenAI client sends.
 - **`Colibri:KvSlots` > 1 pins each conversation to a slot** by a hash of its opening, so the engine can
-  reuse its KV prefix. Only the GLM-5.2/5.3 engines accept more than one slot (colibri v1.12.1); we
-  could not run one, so this is shipped and **not measured**. The default is one slot.
+  reuse its KV prefix. Since colibri 2.0 every text engine accepts up to 16 slots (with v1.12.1 only
+  the GLM-5.2/5.3 engines did). The default is one slot.
 - **`COLI_DEBUG` is not passed to the engine**: it tees prompts to stderr, and the node logs that
   stream. Every other `COLI_*` variable passes through.
 
@@ -2741,6 +2742,10 @@ v3.58 it answered 200 and an empty `finish_reason: "stop"`, which reads as an em
 after the first token arrives as an `error` event, which the OpenAI SDKs raise on.
 
 ## Brio — a closed question answered with a distribution (v3.59)
+
+> **colibri 2.0 removed `/v1/brio`.** Its one decision API is now System One — see
+> [`/v1/systemone`](#colibri-and-strata-told-their-limits-colibri-20-and-strata-022-v375) (v3.75). `/v1/brio` below
+> still works against a colibri 1.12 engine; against 2.0 it answers a 404 that says where to go.
 
 colibri has a second way to ask a model something: **Brio**. Instead of generating, the engine reads
 the log-probability of each answer you allow and normalises over those answers alone. You get every
@@ -2951,7 +2956,8 @@ model on both, pull its GGUF repo *and* its checkpoint.
 
 [Strata](https://github.com/Niko1221/Strata) runs **Qwen3.8-Flash-Next** — 125 billion parameters,
 24,576 experts — on one 12 GB+ NVIDIA or AMD card plus 32–64 GB of RAM: the busiest experts on the
-card, all of them in RAM, a lookup table on the SSD. It comes in nine sizes over four versions, and
+card, all of them in RAM, a lookup table on the SSD. It comes in many sizes over several versions (21
+installable from the hub since v3.75, Strata 0.2.2's Gyro, NVFP4 and Qwen3.6-35B-A3B among them), and
 since v3.64 a node serves a Strata install the way it serves a colibri catalogue: **every installed
 size is a model**, the one a request names is started, and the coordinator picks which stays loaded.
 

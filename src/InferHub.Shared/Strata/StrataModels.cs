@@ -3,10 +3,11 @@ using InferHub.Shared.HuggingFace;
 namespace InferHub.Shared.Strata;
 
 /// <summary>
-/// The models Strata's installer can set up (phase 99): one model, Qwen3.8-Flash-Next, in four
-/// families of Hugging Face repos and their sizes — read from Strata's <c>setup.py</c> (<c>FAMILIES</c>,
-/// <c>MODELS</c>) at the commit the phase was built against. Pure, so the hub and the node map a link
-/// to a family and a size the same way.
+/// The models Strata's installer can set up (phase 99): Qwen3.8-Flash-Next in its families of Hugging
+/// Face repos and their sizes, and since Strata 0.2 its smaller cousin Qwen3.6-35B-A3B — read from
+/// Strata's <c>setup.py</c> (<c>FAMILIES</c>, <c>OWN_PATH_FAMILIES</c>, <c>MODELS</c>) at the release the
+/// node was last built against (0.2.2, phase 111). Pure, so the hub and the node map a link to a family
+/// and a size the same way.
 /// </summary>
 /// <remarks>
 /// <b>This is a map, not the authority.</b> The node passes <c>--family</c> and <c>--model</c> to
@@ -34,7 +35,8 @@ public static class StrataModels
         new("swift", "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "Swift 1.5", "swift-",
         [
             new("IQ2_XS", "UkisAI's fine-tune that thinks shorter (~68 GB, 48 GB RAM)"),
-            new("IQ3_XXS", "UkisAI's fine-tune, 3-bit (~76 GB, 60 GB RAM)")
+            new("IQ3_XXS", "UkisAI's fine-tune, 3-bit (~76 GB, 60 GB RAM)"),
+            new("IQ3_S", "UkisAI's fine-tune, 3.5-bit (~84 GB, 62 GB RAM)")
         ]),
         new("coder", "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF", "Qwen3.8-Flash-Next Coder", "coder-",
         [
@@ -43,7 +45,35 @@ public static class StrataModels
         new("unsloth", "unsloth/Qwen3.8-Flash-Next-GGUF", "Qwen3.8-Flash-Next (Unsloth)", "unsloth-",
         [
             new("UD-IQ4_XS", "~4-bit, between IQ3_S and UD-Q4_K_XL (~94 GB, 48 GB RAM; part read from the SSD below ~80 GB)"),
-            new("UD-Q4_K_XL", "4-bit, experimental: most experts read from the SSD on a 64 GB PC (~111 GB)")
+            new("UD-Q4_K_XL", "4-bit, K-quant experts (~111 GB, 48 GB RAM; most experts from the SSD on a 64 GB PC)"),
+            new("UD-Q5_K_XL", "5-bit, close to Q8_0 (~158 GB; every expert in RAM from ~108 GB)"),
+            new("UD-Q6_K_XL", "6-bit (~169 GB; every expert in RAM from ~118 GB)"),
+            new("Q8_0", "8-bit, the reference quality (~188 GB; for a 192 GB PC)")
+        ]),
+        new("gyro", "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF", "Qwen3.8-Flash-Next (Gyro)", "gyro-",
+        [
+            new("Gyro-S", "the smallest, for little memory (~58 GB download, 27.6 GB of VRAM + RAM together)"),
+            new("Gyro-M", "about IQ3_XXS quality with ~20% less GPU memory (~92 GB, 35 GB together)")
+        ]),
+        // One repository per NVFP4 size (setup.py's NVFP4_REPOS): three families of one size, one --family.
+        new("nvfp4", "Maximilian228/Qwen3.8-Flash-Next-NVFP4-GPTQ-Strata", "Qwen3.8-Flash-Next (NVFP4)", "nvfp4-",
+        [
+            new("NVFP4", "4-bit NVFP4 experts by GPTQ, NVIDIA cards (~128 GB, ~80 GB RAM)")
+        ]),
+        new("nvfp4", "Maximilian228/Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata", "Qwen3.8-Flash-Next (NVFP4, NVIDIA's)", "nvfp4-",
+        [
+            new("NVFP4-NVIDIA", "NVIDIA's own NVFP4 checkpoint, converted (~128 GB, ~80 GB RAM)")
+        ]),
+        new("nvfp4", "nvidia/Qwen3.8-Flash-Next-FP4-Local", "Qwen3.8-Flash-Next (NVFP4, QAD)", "nvfp4-",
+        [
+            new("NVFP4-QAD", "NVIDIA's FP4 trained for FP4, prepared by Strata's setup (~102 GB, ~80 GB RAM)")
+        ]),
+        // Strata 0.2's own-path family: a 35B MoE with 3B active that Strata's engine reads as it is.
+        new("qwen36", "unsloth/Qwen3.6-35B-A3B-MTP-GGUF", "Qwen3.6-35B-A3B", "qwen36-",
+        [
+            new("UD-Q4_K_XL", "4-bit (Unsloth Dynamic), the smallest (~23 GB, 32 GB RAM)"),
+            new("UD-Q6_K_XL", "6-bit, closer to the full model (~33 GB, 44 GB RAM)"),
+            new("Q8_0", "8-bit, the closest to the full model (~38 GB, 52 GB RAM)")
         ])
     ];
 
@@ -132,6 +162,7 @@ public static class StrataModels
             .OrderByDescending(name => name.Length)
             .FirstOrDefault(name => tokens.Any(t => string.Equals(t, name, StringComparison.OrdinalIgnoreCase))
                                     || file.StartsWith(name + "/", StringComparison.OrdinalIgnoreCase)
-                                    || file.Contains("-" + name + "-", StringComparison.OrdinalIgnoreCase));
+                                    || file.Contains("-" + name + "-", StringComparison.OrdinalIgnoreCase)
+                                    || file.Contains("-" + name + ".", StringComparison.OrdinalIgnoreCase));
     }
 }

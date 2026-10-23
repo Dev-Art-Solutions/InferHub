@@ -25,8 +25,11 @@ internal static class LocalBrioEndpoints
     public static IEndpointRouteBuilder MapLocalBrioEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/v1/brio", HandleAsync);
+        app.MapPost("/v1/systemone", HandleSystemOneAsync);
         return app;
     }
+
+    private sealed record Ask(string Model, string Form, int Count, string Raw, string Capability);
 
     private static async Task<IResult> HandleAsync(
         HttpContext httpContext,
@@ -47,13 +50,50 @@ internal static class LocalBrioEndpoints
             return Error(400, invalid, OpenAiErrorTypes.InvalidRequest);
         }
 
-        if (!executor.Provides(CapabilityKinds.Score, request.Model))
+        return await AnswerAsync(
+            new Ask(request.Model, request.Form, request.Count, request.Raw, CapabilityKinds.Score),
+            httpContext, executor, loggerFactory, cancellationToken);
+    }
+
+    /// <summary><c>POST /v1/systemone</c> (phase 111), the hub's route with routing deleted, like Brio's.</summary>
+    private static async Task<IResult> HandleSystemOneAsync(
+        HttpContext httpContext,
+        ToolExecutor executor,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        if (LocalApiEndpoints.CapabilityDisabled(httpContext, CapabilityKinds.Decide, out var refusal))
+        {
+            return Error(503, refusal, OpenAiErrorTypes.ApiError, code: "capability_disabled");
+        }
+
+        using var reader = new StreamReader(httpContext.Request.Body);
+        var raw = await reader.ReadToEndAsync(cancellationToken);
+
+        if (SystemOneRequest.TryParse(raw, out var invalid) is not { } request)
+        {
+            return Error(400, invalid, OpenAiErrorTypes.InvalidRequest);
+        }
+
+        return await AnswerAsync(
+            new Ask(request.Model, "systemone", request.Count, request.Raw, CapabilityKinds.Decide),
+            httpContext, executor, loggerFactory, cancellationToken);
+    }
+
+    private static async Task<IResult> AnswerAsync(
+        Ask request,
+        HttpContext httpContext,
+        ToolExecutor executor,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        if (!executor.Provides(request.Capability, request.Model))
         {
             httpContext.Response.Headers.RetryAfter = ToolExecutor.CapabilityRetryAfterSeconds.ToString();
 
             return Error(
                 503,
-                $"this node does not provide '{CapabilityKinds.Score}' for model '{request.Model}'",
+                $"this node does not provide '{request.Capability}' for model '{request.Model}'",
                 OpenAiErrorTypes.ApiError,
                 code: "capability_unavailable");
         }
@@ -66,7 +106,7 @@ internal static class LocalBrioEndpoints
             httpContext.RequestServices.GetService<LocalConcurrencyGate>(),
             async () =>
             {
-                var job = new ToolJob(Guid.NewGuid(), CapabilityKinds.Score, request.Model, request.Raw);
+                var job = new ToolJob(Guid.NewGuid(), request.Capability, request.Model, request.Raw);
                 var outcome = BrioRenderer.Render(await executor.RunAsync(job, cancellationToken));
 
                 // The form and the count, never the state or an option (rule 7).

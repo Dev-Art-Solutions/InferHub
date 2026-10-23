@@ -376,7 +376,7 @@ The hub's half: `NodeStrataRegistry`, `NodeStrataToggle` (both on `NodeCatalogRe
 `/api/admin/nodes/{id}/strata/models/{m}/load|unload`, `/strata/on-demand/enable|disable`, `/strata/install`,
 the console's Strata models panel, `strata` on `/api/status` nodes. Contract: `NodeCatalogState` (+ `installable`), `NodeProfile.Strata`.
 [Strata](https://github.com/Niko1221/Strata) (MIT) runs Qwen3.8-Flash-Next (125B MoE) on one GPU plus RAM; one
-model in nine sizes over four families, each prepared for the box by its `setup.py` into a `strata-<size>.json`
+model in nine sizes over four families at 0.1.41 (21 over seven, Qwen3.6 among them, since 0.2.2 — 111), each prepared for the box by its `setup.py` into a `strata-<size>.json`
 that `serve/server.py --config` serves (OpenAI dialect).
 
 **D1 — 97's catalogue is `ModelCatalog`, and Strata is its second user** (load-bearing). Admission, LRU,
@@ -549,3 +549,56 @@ still stopping, so the re-report listed it `loaded` and the hub kept its count f
 `TimeoutSeconds`; slow to stop ends the wait, not the command). Tests: `LlamaCppRouterTests` (a stub `/props` per model; the call log
 proves an unloaded model is never asked), `ModelSlotRoutingTests` (the model's number over the node's; red with D2
 reverted).
+
+### Phase 111 (colibri and Strata are told their limits; colibri 2.0's System One; Strata 0.2.2's sizes) — amends 102, 94
+
+Files: `Resources/Limits/EngineLimitTelling.cs` (`IEngineLimitTeller`), `Resources/Limits/GpuCards.cs`,
+`EngineLimiter` (Tell in `Prepare`, a `Telling` per root, `told` in the report), `Colibri/ColibriLimitTeller.cs`,
+`Strata/StrataLimitTeller.cs`, `Colibri/BrioClient.cs` (`PathFor`), the hub's and solo's `/v1/systemone`,
+`src/InferHub.Shared/Brio/SystemOneRequest.cs`, `src/InferHub.Shared/Strata/StrataModels.cs`. User-requested
+(Bulgarian): update both engines to their latest, give both a resource limit as the node has it, test with
+GLM-5.3-Flash on `E:`.
+
+**D1 — telling never replaces holding (load-bearing).** 102's Job Object, cgroup, affinity and watchdog are
+unchanged; a teller only changes the launch, and the report's `told` says what it said beside `enforcement`.
+The reason it exists: colibri sizes itself from the free RAM it sees (88%) and Strata fills the card down to its
+reserve — neither sees a Job Object, so without it the limit is met as a failed allocation or as 102 D5's
+stop-and-restart loop, every start.
+
+**D2 — one teller per runtime, with its engine (rule 1), reached through the limiter.** Registered statically in
+`AddResourceGovernance`, called from `EngineLimiter.Prepare`, so every launch site that calls `PrepareLaunch`
+is told with no change of its own. A teller that throws is a warning; the runtime starts, held from outside.
+
+**D3 — told stale numbers → started again**, as 102 D3 does for a GPU list: each root keeps
+`Describe(Told(effective))` from its launch; a poll that computes another stops it (not a breach) and its
+supervisor relaunches it told the new one. A root told nothing (no teller, or adopted before 111) is left alone.
+
+**D4 — colibri is told in variables `coli` reads, never `--gpu`/`--vram`** — those make `coli` exit on a build
+without CUDA (every Linux archive and the plain Windows one). Memory → `--ram` 90% in whole GB (the launcher maps
+it per family; GLM-5.3 Flash → `GLM53_EXPERT_GB` = G − 8). Cores/CPU → `OMP_NUM_THREADS` (else physical cores).
+No GPU → `COLI_CUDA=0`, `COLI_VULKAN=0`. A list → `COLI_VK_DEV` (Vulkan ignores `CUDA_VISIBLE_DEVICES`; an
+operator's `COLI_VK_DEV2` becomes the list's second card or goes). VRAM → `COLI_VK_DEVICE_CAP_MB` (every Vulkan
+budget reads it) and `CUDA_EXPERT_GB` (limit − 2 GB).
+
+**D5 — Strata is told through `.inferhub-limits-<config>`**, a copy beside the original: its engine reads options
+from the config's `args`, not from `server.py`'s line. VRAM → `--vram-reserve-mib` raised by (card − limit per
+card), base the config's own reserve else 1536 (the engine's display-card default; an explicit flag also stops
+the server's own +700 for a GPU picture reader); card size from NVML (`nvml.dll` works on Windows for totals —
+102 D4's "N/A" is per process), unread → watchdog only, said. Cores → `"pool_cores": "1,…,N−1"` (0 is the host
+thread's). Memory → only `--resident-budget-gib`, lowered to limit − 8. Nothing to tell → the original config.
+No GPU allowed → not started, with the sentence (the CUDA engine stops 3 s after a card-less start). The page's
+Settings view edits the copy on such a run — the node binds Strata to loopback, so that is the node's operator.
+
+**D6 — `/v1/systemone`, kind `decide`.** colibri 2.0 removed `/v1/brio`; System One (Jev's shape) is its one
+decision API. Same path as 94 (a `ToolJob`, body passed through, billed `input_tokens + output_tokens`); its own
+kind so a hub never sends one to a 3.74 node, which would post it to `/v1/brio`. `model` is required at the edge
+(the hub routes by it; colibri's "any name" would be a Jev client's `jev-latest`, a 404 here). `/v1/brio` stays
+for 1.12 engines; a 2.0 engine's route-404 (no model in the message) becomes "colibri 2.0 removed /v1/brio; send
+it to /v1/systemone". *Rejected:* translating Brio to System One — `schema` answered fields in order, each seeing
+the earlier ones; System One answers each alone.
+
+**Upstream pins.** `:colibri` image → v2.0.0 (Vulkan engines, no loader in the image → CPU, as 1.12.1). The
+Strata family table follows 0.2.2's `setup.py`: Swift IQ3_S; Unsloth UD-Q5/Q6_K_XL, Q8_0; Gyro-S/M; NVFP4,
+NVFP4-NVIDIA, NVFP4-QAD (one repo each, one `--family nvfp4`); Qwen3.6-35B-A3B (own-path, `--family qwen36`).
+Tests: `EngineLimitTellerTests`, `EngineLimitTests` (told, restart), `BrioScorerTests`, `BrioMeshTests` (System One).
+Measurements: `.claude/release-notes-v3.75.0.md`.

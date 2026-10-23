@@ -129,6 +129,12 @@ public static class BrioRenderer
                 return total;
             }
 
+            // System One (111) answers in Jev's shape: input_tokens read, output_tokens the option tokens read.
+            if (Count(usage, "input_tokens") is { } input)
+            {
+                return input + (Count(usage, "output_tokens") ?? 0);
+            }
+
             return (Count(usage, "prompt_tokens") ?? 0) + (Count(usage, "read_tokens") ?? 0);
         }
         catch (JsonException)

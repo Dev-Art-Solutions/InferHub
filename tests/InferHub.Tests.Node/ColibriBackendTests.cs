@@ -40,7 +40,7 @@ public class ColibriBackendTests
         // /v1/brio, which no other engine here has (94 D1).
         var backend = Backend(new Stub(ChatReply), slots: 1, new UpstreamBackendOptions());
 
-        Assert.Equal(["chat", "score"], backend.Kinds);
+        Assert.Equal(["chat", "score", "decide"], backend.Kinds);
         Assert.Equal("colibri", backend.Name);
         Assert.Equal("http://127.0.0.1:8000/v1", backend.Endpoint);
         Assert.False(backend.SupportsModelManagement);

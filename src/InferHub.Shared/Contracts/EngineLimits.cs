@@ -91,4 +91,10 @@ public sealed record EngineLimitsGroupState(
     /// <summary>Times the watchdog stopped this runtime for going over a limit, since the node started.</summary>
     [property: JsonPropertyName("breaches")] int Breaches,
     /// <summary>The last breach, as a sentence naming the limit and the numbers.</summary>
-    [property: JsonPropertyName("lastBreach")] string? LastBreach);
+    [property: JsonPropertyName("lastBreach")] string? LastBreach,
+    /// <summary>
+    /// Phase 111: what the runtime was told of its limits when it last started, in its own words
+    /// (<c>--ram 57</c>, <c>OMP_NUM_THREADS=8</c>) — null when it was told nothing. Absent from a node
+    /// before this phase.
+    /// </summary>
+    [property: JsonPropertyName("told"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? Told = null);

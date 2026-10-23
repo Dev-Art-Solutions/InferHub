@@ -376,6 +376,39 @@ public class EngineLimitTests
         Assert.Equal(1, row.Processes);
     }
 
+    [Fact]
+    public void ARuntimeWithATellerIsToldItsLimitsAtLaunchAndTheReportSaysWhat()
+    {
+        // Phase 111: the limit is held from outside (102) AND said to the runtime in its own words.
+        EngineLimiter.RegisterTeller("colibri", new InferHub.Node.Backends.Colibri.ColibriLimitTeller());
+        using var rig = new Rig(new Dictionary<string, EngineLimitOptions> { ["colibri"] = new() { MemoryMiB = 10240, Cores = 4 } });
+        var info = new ProcessStartInfo("python") { ArgumentList = { "coli", "serve" } };
+
+        rig.Limiter.Prepare("colibri", info);
+
+        Assert.Equal(["coli", "serve", "--ram", "9"], info.ArgumentList);
+        Assert.Equal("4", info.Environment["OMP_NUM_THREADS"]);
+    }
+
+    [Fact]
+    public void ARuntimeToldOtherLimitsThanTheOnesInForceIsStartedAgain()
+    {
+        EngineLimiter.RegisterTeller("colibri", new InferHub.Node.Backends.Colibri.ColibriLimitTeller());
+        using var rig = new Rig(new Dictionary<string, EngineLimitOptions> { ["colibri"] = new() { MemoryMiB = 8192 } });
+        rig.Limiter.Track("colibri", 10, null, "*", new EngineLimiter.Telling("memory 8192 MiB", ["--ram 7"]));
+        rig.Limiter.Track("colibri", 11, null, "*", new EngineLimiter.Telling("memory 16384 MiB", ["--ram 14"]));
+        rig.Limiter.Track("colibri", 12, null, "*");
+
+        rig.Limiter.Poll();
+
+        // Told the old number: stopped for its supervisor to start under the new one. Told the right one,
+        // or never told (a process a node before 111 adopted): left alone. Not a breach either way.
+        Assert.Equal([11], rig.Killed);
+        var row = rig.Limiter.State("n").Groups.Single();
+        Assert.Equal(0, row.Breaches);
+        Assert.Equal(["--ram 7"], row.Told);
+    }
+
     private sealed class Rig : IDisposable
     {
         public Rig(Dictionary<string, EngineLimitOptions>? node = null, bool holdsMemory = false, bool canReadGpu = true)

@@ -191,7 +191,7 @@ public class StrataCatalogTests : IDisposable
         catalog.InstallsFromHub = true;
         var installable = catalog.State("n").Installable!;
 
-        Assert.Equal(9, installable.Count);
+        Assert.Equal(21, installable.Count);
         var coder = installable.Single(i => i.Name == "strata-coder-iq1_m");
         Assert.True(coder.Installed);
         Assert.Equal("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M", coder.Link);
@@ -525,9 +525,9 @@ public class StrataCatalogTests : IDisposable
         var catalog = FakeStrata.Catalog(FakeStrata.Options(root), new FakeColibriLauncher());
         var runner = new FakeSetupRunner(root);
 
-        var refused = await Assert.ThrowsAsync<ArgumentException>(() => Collect(FakeStrata.Installer(catalog, FakeStrata.Options(root), runner).InstallAsync(Link("ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF:IQ3_S"), CancellationToken.None)));
+        var refused = await Assert.ThrowsAsync<ArgumentException>(() => Collect(FakeStrata.Installer(catalog, FakeStrata.Options(root), runner).InstallAsync(Link("ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF:Q2_0"), CancellationToken.None)));
 
-        Assert.Contains("IQ2_XS, IQ3_XXS", refused.Message);
+        Assert.Contains("IQ2_XS, IQ3_XXS, IQ3_S", refused.Message);
         Assert.Empty(runner.Runs);
     }
 

@@ -645,8 +645,10 @@ public sealed class ToolExecutor(
     /// <summary>Matches the hub's capability refusal (phase-40 D5), so backoff is the same everywhere.</summary>
     internal const int CapabilityRetryAfterSeconds = 30;
 
+    /// <summary>Brio (94) and System One (111): both are the backend scorer's, never a tool runtime's.</summary>
     private static bool IsScore(string? capability) =>
-        string.Equals(capability, CapabilityKinds.Score, StringComparison.OrdinalIgnoreCase);
+        string.Equals(capability, CapabilityKinds.Score, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(capability, CapabilityKinds.Decide, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// A <c>progress</c> frame as it travels to the hub: a <see cref="ToolChunk"/> on the transport

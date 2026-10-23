@@ -190,6 +190,7 @@ internal static class LocalEngineLimitsAdminEndpoints
                 (g.cpuPercent !== null && g.cpuPercent !== undefined ? ' · CPU ' + g.cpuPercent + '%' : '') +
                 (g.memoryMiB !== null && g.memoryMiB !== undefined ? ' · ' + g.memoryMiB + ' MiB' : '') +
                 (g.vramMiB !== null && g.vramMiB !== undefined ? ' · VRAM ' + g.vramMiB + ' MiB' : '') +
+                (g.told && g.told.length ? '<div class="how">told: ' + g.told.join(' · ') + '</div>' : '') +
                 (g.breaches ? '<div class="breach">stopped ' + g.breaches + '×: ' + g.lastBreach + '</div>' : '');
               return '<tr><td><b>' + name + '</b></td>' + cells + '<td>' + uses + '</td></tr>';
             });

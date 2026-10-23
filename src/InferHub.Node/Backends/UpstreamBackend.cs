@@ -51,7 +51,7 @@ public sealed class UpstreamBackend(
 
     private static readonly string[] ChatOnly = [CapabilityKinds.Chat];
 
-    private static readonly string[] ChatAndScore = [CapabilityKinds.Chat, CapabilityKinds.Score];
+    private static readonly string[] ChatAndScore = [CapabilityKinds.Chat, CapabilityKinds.Score, CapabilityKinds.Decide];
 
     private readonly UpstreamBackendOptions options = options.Value;
 

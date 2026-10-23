@@ -27,14 +27,22 @@ internal static class BrioClient
 {
     public const string Path = "brio";
 
+    /// <summary>System One (phase 111): colibri 2.0's one decision API, the same channel behind another route.</summary>
+    public const string SystemOnePath = "systemone";
+
+    /// <summary>The route a job goes to: <c>decide</c> is System One, anything else Brio.</summary>
+    public static string PathFor(ToolJob job) =>
+        string.Equals(job.Capability, CapabilityKinds.Decide, StringComparison.OrdinalIgnoreCase) ? SystemOnePath : Path;
+
     public static async Task<ToolResult> ScoreAsync(HttpClient http, ToolJob job, CancellationToken cancellationToken)
     {
         HttpResponseMessage response;
+        var path = PathFor(job);
 
         try
         {
             using var content = new StringContent(job.Payload, Encoding.UTF8, "application/json");
-            response = await http.PostAsync(Path, content, cancellationToken);
+            response = await http.PostAsync(path, content, cancellationToken);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -66,6 +74,16 @@ internal static class BrioClient
 
             if (response.StatusCode == HttpStatusCode.NotFound)
             {
+                // 111 D6: colibri 2.0 removed /v1/brio, and answers it as a route it does not know. Said
+                // as that, with where to go, rather than as a missing model.
+                if (path == Path && RouteUnknown(body))
+                {
+                    return ToolResult.Refused(
+                        job.JobId,
+                        "this node's colibri has no /v1/brio (colibri 2.0 removed it); send the question to /v1/systemone",
+                        BrioErrorCodes.ModelNotFound);
+                }
+
                 return ToolResult.Refused(job.JobId, message, BrioErrorCodes.ModelNotFound);
             }
 
@@ -76,6 +94,16 @@ internal static class BrioClient
 
             return ToolResult.Failed(job.JobId, message);
         }
+    }
+
+    /// <summary>
+    /// A 404 for the route rather than the model: colibri's gateway names a missing model in its
+    /// message, and an unknown path answers with no model in it (or with no JSON at all).
+    /// </summary>
+    internal static bool RouteUnknown(string body)
+    {
+        var message = ErrorMessage(body);
+        return message is null || !message.Contains("model", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>The gateway's envelope is OpenAI's: <c>{"error":{"message":...}}</c>.</summary>

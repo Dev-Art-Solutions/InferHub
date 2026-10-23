@@ -63,6 +63,8 @@ public sealed class EngineLimiter : IEngineLimiter, IHostedService, IDisposable
     private readonly Action<Process?, int> kill;
     private readonly ConcurrentDictionary<string, Group> groups = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConditionalWeakTable<ProcessStartInfo, string> launchGpus = new();
+    private readonly ConditionalWeakTable<ProcessStartInfo, Telling> launchTold = new();
+    private static readonly ConcurrentDictionary<string, IEngineLimitTeller> Tellers = new(StringComparer.OrdinalIgnoreCase);
     private volatile IReadOnlyDictionary<string, EngineLimits> hub = new Dictionary<string, EngineLimits>();
     private CancellationTokenSource? lifetime;
     private readonly object pollGate = new();
@@ -92,6 +94,17 @@ public sealed class EngineLimiter : IEngineLimiter, IHostedService, IDisposable
     /// <summary>Called by a launch site right after <c>Process.Start</c>: the process goes under its runtime's limits. Never throws.</summary>
     public static void Adopt(string group, Process process) => installed?.Attach(group, process);
 
+    /// <summary>
+    /// Phase 111: <paramref name="teller"/> tells <paramref name="group"/>'s launches their limits in the
+    /// runtime's own words. The composition root registers one per runtime that has one; a group with
+    /// none is held from outside only, exactly as in 102.
+    /// </summary>
+    public static void RegisterTeller(string group, IEngineLimitTeller teller) =>
+        Tellers[EngineLimitGroups.Normalize(group) ?? group] = teller;
+
+    /// <summary>The limits in force for <paramref name="group"/> now, for a launch site that must decide something before it starts (none when no limiter runs).</summary>
+    public static EngineLimits LimitsFor(string group) => installed?.Effective(group) ?? EngineLimits.None;
+
     public IReadOnlyDictionary<string, EngineLimits> NodeCeilings =>
         nodeOptions.CurrentValue.ResourceLimits.Engines
             .Where(pair => EngineLimitGroups.Normalize(pair.Key) is not null && pair.Value is not null)
@@ -113,6 +126,8 @@ public sealed class EngineLimiter : IEngineLimiter, IHostedService, IDisposable
 
     public void Prepare(string group, ProcessStartInfo info)
     {
+        Tell(group, info);
+
         try
         {
             var gpus = Effective(group).Gpus;
@@ -137,21 +152,46 @@ public sealed class EngineLimiter : IEngineLimiter, IHostedService, IDisposable
         }
     }
 
+    /// <summary>111 D2: the runtime's teller changes the launch; what it said is kept with the start info, for <see cref="Attach"/>.</summary>
+    private void Tell(string group, ProcessStartInfo info)
+    {
+        var name = EngineLimitGroups.Normalize(group) ?? group;
+
+        if (!Tellers.TryGetValue(name, out var teller))
+        {
+            return;
+        }
+
+        try
+        {
+            var told = teller.Told(Effective(name));
+            var lines = told.IsEmpty ? [] : teller.Tell(told, info);
+            launchTold.AddOrUpdate(info, new Telling(Describe(told), lines));
+        }
+        catch (Exception ex)
+        {
+            // Holding does not depend on telling (111 D1): the runtime starts, held from outside as in 102.
+            logger.LogWarning(ex, "Could not tell {Group} its limits on its launch; it is held to them from outside only.", name);
+        }
+    }
+
     public void Attach(string group, Process process)
     {
         try
         {
             string? gpus = null;
+            Telling? told = null;
 
             try
             {
                 gpus = launchGpus.TryGetValue(process.StartInfo, out var value) ? value : null;
+                told = launchTold.TryGetValue(process.StartInfo, out var telling) ? telling : null;
             }
             catch (InvalidOperationException)
             {
             }
 
-            Track(group, process.Id, process, gpus ?? Unrestricted);
+            Track(group, process.Id, process, gpus ?? Unrestricted, told);
         }
         catch (Exception ex)
         {
@@ -160,7 +200,7 @@ public sealed class EngineLimiter : IEngineLimiter, IHostedService, IDisposable
     }
 
     /// <summary>The seam the tests drive: a process by pid, with the GPU list it was started with.</summary>
-    internal void Track(string group, int pid, Process? process, string launchedWith)
+    internal void Track(string group, int pid, Process? process, string launchedWith, Telling? told = null)
     {
         var name = EngineLimitGroups.Normalize(group) ?? group;
         var entry = groups.GetOrAdd(name, key => new Group(key));
@@ -168,7 +208,7 @@ public sealed class EngineLimiter : IEngineLimiter, IHostedService, IDisposable
         lock (entry)
         {
             entry.Roots.RemoveAll(root => root.Pid == pid);
-            entry.Roots.Add(new Root(pid, process, launchedWith));
+            entry.Roots.Add(new Root(pid, process, launchedWith, told));
 
             if (entry.Container is null && !Effective(name).IsEmpty)
             {
@@ -222,7 +262,8 @@ public sealed class EngineLimiter : IEngineLimiter, IHostedService, IDisposable
                     entry?.MemoryBytes is { } memory ? memory / (1024 * 1024) : null,
                     entry?.VramBytes is { } vram ? vram / (1024 * 1024) : null,
                     entry?.Breaches ?? 0,
-                    entry?.LastBreach));
+                    entry?.LastBreach,
+                    Told(entry)));
             }
         }
 
@@ -366,7 +407,8 @@ public sealed class EngineLimiter : IEngineLimiter, IHostedService, IDisposable
                     entry.CpuPercent = null;
                     entry.MemoryBytes = null;
                     entry.VramBytes = null;
-                    continue;
+                    ToldChanged(entry, effective, toKill);
+                    goto Stop;
                 }
 
                 var pids = entry.Container?.ProcessIds() is { Count: > 0 } listed
@@ -423,8 +465,14 @@ public sealed class EngineLimiter : IEngineLimiter, IHostedService, IDisposable
                     {
                         toKill.Add((root, $"{entry.Name} was started seeing GPUs '{root.LaunchedWith}' and may now see '{wanted}'"));
                     }
+
+                    if (toKill.Count == 0)
+                    {
+                        ToldChanged(entry, effective, toKill);
+                    }
                 }
 
+                Stop:
                 foreach (var (root, _) in toKill)
                 {
                     root.Stopped = true;
@@ -448,6 +496,39 @@ public sealed class EngineLimiter : IEngineLimiter, IHostedService, IDisposable
 
         RaiseIfChanged();
     }
+
+    /// <summary>
+    /// 111 D3: a runtime told other limits than the ones in force planned for the wrong numbers — it is
+    /// stopped and started again, as 102 D3 does for a GPU list. Only one that was told something: a
+    /// process adopted without a teller (or by a node before this phase) is held as before and left alone.
+    /// </summary>
+    private static void ToldChanged(Group entry, EngineLimits effective, List<(Root Root, string Why)> toKill)
+    {
+        if (!Tellers.TryGetValue(entry.Name, out var teller))
+        {
+            return;
+        }
+
+        string wanted;
+
+        try
+        {
+            wanted = Describe(teller.Told(effective));
+        }
+        catch (Exception)
+        {
+            return;
+        }
+
+        foreach (var root in entry.Roots.Where(root => root.Alive && root.Told is { } told && told.Limits != wanted))
+        {
+            toKill.Add((root, $"{entry.Name} was told '{root.Told!.Limits}' when it started, and its limits now say '{wanted}'"));
+        }
+    }
+
+    /// <summary>What the newest live process of the runtime was told when it started; null when nothing was.</summary>
+    private static IReadOnlyList<string>? Told(Group? entry) =>
+        entry?.Roots.LastOrDefault(root => root.Alive && root.Told is not null)?.Told!.Lines is { Count: > 0 } lines ? lines : null;
 
     private void Measure(Group entry, IReadOnlyList<int> pids, DateTimeOffset now)
     {
@@ -656,13 +737,18 @@ public sealed class EngineLimiter : IEngineLimiter, IHostedService, IDisposable
         public string? LastBreach { get; set; }
     }
 
-    private sealed class Root(int pid, Process? process, string launchedWith)
+    /// <summary>What a launch was told (111): the limits, as <see cref="Describe"/> writes them, and the lines it was given.</summary>
+    internal sealed record Telling(string Limits, IReadOnlyList<string> Lines);
+
+    private sealed class Root(int pid, Process? process, string launchedWith, Telling? told)
     {
         public int Pid { get; } = pid;
 
         public Process? Process { get; } = process;
 
         public string LaunchedWith { get; } = launchedWith;
+
+        public Telling? Told { get; } = told;
 
         /// <summary>Stopped by the limiter: no longer counted, whatever the OS says for the next second.</summary>
         public bool Stopped { get; set; }

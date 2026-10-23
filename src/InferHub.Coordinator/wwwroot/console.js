@@ -1095,7 +1095,7 @@
           <td>${i === 0 ? escapeHtml(node.name) : ""}</td>
           <td><code>${escapeHtml(g.group)}</code></td>
           ${limitFields.map(([field, unit]) => limitCell(g, field, unit)).join("")}
-          <td>${escapeHtml(uses)}${g.breaches ? `<div class="why">stopped ${g.breaches}×: ${escapeHtml(g.lastBreach ?? "")}</div>` : ""}</td>
+          <td>${escapeHtml(uses)}${g.told && g.told.length ? `<div class="why">told: <code>${escapeHtml(g.told.join(" · "))}</code></div>` : ""}${g.breaches ? `<div class="why">stopped ${g.breaches}×: ${escapeHtml(g.lastBreach ?? "")}</div>` : ""}</td>
           <td>${buttons}</td>
         </tr>`;
       }).join("");

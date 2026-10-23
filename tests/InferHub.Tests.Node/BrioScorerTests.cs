@@ -53,6 +53,23 @@ public class BrioScorerTests
     }
 
     [Fact]
+    public async Task ADecideJobGoesToSystemOneAndABrioRouteColibriRemovedSaysWhereToGo()
+    {
+        // Phase 111: colibri 2.0 kept /v1/systemone and removed /v1/brio.
+        var upstream = new Stub(Answer);
+        var decide = Job(Request) with { Capability = CapabilityKinds.Decide };
+
+        Assert.True((await Colibri(upstream).ScoreAsync(decide, CancellationToken.None)).Success);
+        Assert.Equal("/v1/systemone", upstream.Path);
+
+        var gone = await Colibri(new Stub("""{"error":{"message":"Not found.","type":"invalid_request_error"}}""") { Status = HttpStatusCode.NotFound })
+            .ScoreAsync(Job(Request), CancellationToken.None);
+
+        Assert.Equal(BrioErrorCodes.ModelNotFound, gone.ErrorCode);
+        Assert.Contains("/v1/systemone", gone.Error);
+    }
+
+    [Fact]
     public async Task TheEnginesFullQueueIsARetryNotARetriedRequest()
     {
         var upstream = new Stub("""{"error":{"message":"Server busy.","type":"rate_limit_error"}}""")

@@ -52,11 +52,11 @@ public class StrataModelsTests
     [Fact]
     public void ASizeAFamilyDoesNotHaveIsRefusedWithItsSizes()
     {
-        // Swift 1.5 has no IQ3_S and no Q2_0 (setup.py's MODELS families).
-        HfReference.TryParse("ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF:IQ3_S", null, out var reference, out _);
+        // Swift 1.5 has no Q2_0 (setup.py's MODELS families; it gained IQ3_S in Strata 0.2).
+        HfReference.TryParse("ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF:Q2_0", null, out var reference, out _);
 
         Assert.False(StrataModels.TryMatch(reference!, out _, out _, out var error));
-        Assert.Contains("IQ2_XS, IQ3_XXS", error);
+        Assert.Contains("IQ2_XS, IQ3_XXS, IQ3_S", error);
     }
 
     [Fact]
@@ -89,7 +89,7 @@ public class StrataModelsTests
             Assert.Same(size, s);
         }
 
-        Assert.Equal(9, StrataModels.All().Count());
+        Assert.Equal(21, StrataModels.All().Count());
     }
 
     [Fact]

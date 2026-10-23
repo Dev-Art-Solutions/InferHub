@@ -77,10 +77,10 @@ public class StrataMeshTests
         await using var mesh = await StrataMesh.StartAsync("strata-iq2_xs");
         await mesh.WaitForStateAsync(s => s.Models.Count == 1);
 
-        var refused = await mesh.RunAsync(ModelCommand.KindPull, "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF:IQ3_S");
+        var refused = await mesh.RunAsync(ModelCommand.KindPull, "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF:Q2_0");
 
         Assert.Equal("error", refused.Status);
-        Assert.Contains("IQ2_XS, IQ3_XXS", refused.Error);
+        Assert.Contains("IQ2_XS, IQ3_XXS, IQ3_S", refused.Error);
         Assert.Empty(mesh.Runner.Runs);
 
         var colibri = await mesh.Toggle.SetLoadedAsync(mesh.Node()!, "llama3", loaded: true, "test", CancellationToken.None);

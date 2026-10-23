@@ -70,6 +70,38 @@ public class BrioMeshTests
         Assert.Equal(0, row.CompletionTokens);
     }
 
+    private const string Decision = """
+        {"model":"olmoe","state":"The integration keeps failing and I am losing sales.",
+         "questions":{"urgent":{"type":"noul","instructions":"Is it urgent?"},
+                      "team":{"type":"choice","criteria":{"billing":null,"technical":null}}}}
+        """;
+
+    [Fact]
+    public async Task ADecisionRoundTripsThroughTheMeshToSystemOneAndIsBilledForWhatTheEngineRead()
+    {
+        // Phase 111: colibri 2.0's one decision API, the same path as Brio's under its own kind.
+        await using var colibri = await FakeColibri.StartAsync();
+        await using var mesh = await BrioMesh.StartAsync(colibri);
+
+        var response = await mesh.Client.PostAsync("/v1/systemone", Json(Decision));
+
+        Assert.True(response.StatusCode == HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("technical", document.RootElement.GetProperty("answers").GetProperty("team").GetProperty("choice").GetString());
+        Assert.Equal(JsonNode.Parse(Decision)!.ToJsonString(), colibri.LastBody!.ToJsonString());
+
+        var row = await mesh.Ledger.SingleAsync();
+        Assert.Equal("decide", row.Kind);
+        Assert.Equal(101, row.PromptTokens);
+        Assert.Equal(0, row.CompletionTokens);
+
+        // A Jev client's model is no model the fleet serves; a body with no questions never leaves the hub.
+        var jev = await mesh.Client.PostAsync("/v1/systemone", Json("""{"model":"jev-latest","state":"s","questions":{"q":{"type":"noul"}}}"""));
+        Assert.Equal(HttpStatusCode.NotFound, jev.StatusCode);
+        var empty = await mesh.Client.PostAsync("/v1/systemone", Json("""{"model":"olmoe","state":"s","questions":{}}"""));
+        Assert.Equal(HttpStatusCode.BadRequest, empty.StatusCode);
+    }
+
     [Fact]
     public async Task TheStateIsContentAndAppearsInNoLogOnEitherHost()
     {
@@ -227,6 +259,7 @@ public class BrioMeshTests
             // Written out rather than returned: a (HttpContext) => Task<IResult> binds as a plain
             // RequestDelegate, and the result would be dropped for an empty 200.
             fake.app.MapPost("/v1/brio", async context => await (await fake.BrioAsync(context)).ExecuteAsync(context));
+            fake.app.MapPost("/v1/systemone", async context => await (await fake.SystemOneAsync(context)).ExecuteAsync(context));
 
             await fake.app.StartAsync();
             fake.Url = fake.app.Urls.First();
@@ -269,6 +302,26 @@ public class BrioMeshTests
                             {"option":"yes","logprob":-2.3,"tokens":1,"mean_logprob":-2.3,"p":0.12}],
                  "id":"brio-0","created":0,"model":"olmoe",
                  "usage":{"prompt_tokens":53,"completion_tokens":0,"read_tokens":4,"total_tokens":{{{TotalTokens}}}}}
+                """,
+                "application/json");
+        }
+
+        /// <summary>colibri 2.0's System One (phase 111): Jev's reply, Jev's usage.</summary>
+        private async Task<IResult> SystemOneAsync(HttpContext context)
+        {
+            if (context.Request.ContentLength is not > 0)
+            {
+                return Fail(400, "Request body must be between 1 and 4194304 bytes.", "invalid_request_error", null);
+            }
+
+            LastBody = (JsonObject)(await JsonNode.ParseAsync(context.Request.Body))!;
+
+            return Results.Text(
+                """
+                {"id":"req_0","model":"olmoe","provider":"colibri",
+                 "answers":{"urgent":{"type":"noul","noul":0.85},
+                            "team":{"type":"choice","choice":"technical","probabilities":{"billing":0.06,"technical":0.94},"confidence":0.91}},
+                 "usage":{"input_tokens":86,"output_tokens":15,"cost":0}}
                 """,
                 "application/json");
         }

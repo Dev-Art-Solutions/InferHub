@@ -400,7 +400,11 @@ public sealed class StrataProcessLauncher(StrataOptions options, TimeProvider ti
             () => StrataServe.StartInfo(options, config, port),
             () => !File.Exists(server)
                 ? $"'{server}' is not there; Strata:Root must be a Strata checkout"
-                : File.Exists(config) ? null : $"'{config}' is not a file this node can see",
+                : !File.Exists(config) ? $"'{config}' is not a file this node can see"
+                // 111 D5: Strata's CUDA, HIP and SYCL engines stop three seconds after a start with no card.
+                : Resources.Limits.EngineLimiter.LimitsFor(InferHub.Shared.Contracts.EngineLimitGroups.Strata).Gpus is { Count: 0 }
+                    ? "its limits allow no GPU, and Strata's engine cannot run without one; allow a card in the strata limits"
+                    : null,
             time,
             logger,
             InferHub.Shared.Contracts.EngineLimitGroups.Strata);

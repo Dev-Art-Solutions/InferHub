@@ -101,6 +101,15 @@ public static class CapabilityKinds
     public const string Score = "score";
 
     /// <summary>
+    /// colibri's System One (phase 111): <c>POST /v1/systemone</c>, typed questions about one state, a
+    /// probability per allowed option — the one decision API colibri 2.0 kept when it removed
+    /// <c>/v1/brio</c>. A separate kind from <see cref="Score"/> so a hub never sends it to a node from
+    /// before this phase, which would post it to <c>/v1/brio</c>; it travels as a <see cref="ToolJob"/>
+    /// for the same reason.
+    /// </summary>
+    public const string Decide = "decide";
+
+    /// <summary>
     /// llama.cpp's own routes — <c>/completion</c> with a grammar, <c>/infill</c>, <c>/tokenize</c> and
     /// the rest of <c>LlamaCppNative.Operations</c> (phase 96, D4). Declared by a <c>llamacpp</c>
     /// router engine for every model it lists; it travels as a <see cref="ToolJob"/> for
@@ -113,7 +122,7 @@ public static class CapabilityKinds
     /// remarks on <see cref="NodeCapability"/>.
     /// </summary>
     public static bool IsWellKnown(string? kind) =>
-        kind is Chat or Embed or Transcribe or Speak or Image or ImageEdit or Video or Rerank or Score or LlamaCpp;
+        kind is Chat or Embed or Transcribe or Speak or Image or ImageEdit or Video or Rerank or Score or Decide or LlamaCpp;
 
     /// <summary>
     /// Either image kind — the question everything that reasons about a <em>recipe</em> asks.

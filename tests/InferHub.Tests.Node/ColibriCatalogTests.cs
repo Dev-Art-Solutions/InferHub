@@ -53,8 +53,8 @@ public class ColibriCatalogTests : IDisposable
 
         Assert.Equal(["glm-5", "olmoe", "qwen-moe"], models!.Select(m => m.Name));
         Assert.Empty(launcher.Events);
-        Assert.Equal(["chat", "score"], catalog.Kinds);
-        Assert.Equal(["chat", "score"], catalog.KindsFor("olmoe"));
+        Assert.Equal(["chat", "score", "decide"], catalog.Kinds);
+        Assert.Equal(["chat", "score", "decide"], catalog.KindsFor("olmoe"));
         Assert.Null(catalog.KindsFor("llama3"));
         Assert.All(catalog.State("n").Models, m => Assert.Equal(NodeCatalogModel.Unloaded, m.State));
     }
