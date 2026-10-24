@@ -63,3 +63,12 @@ screen capture: one taken during development caught another window's private con
 
 **What was not established.** The macOS and Linux packages are built in CI only — never run on a real desktop
 before 0.1.0. The tray menu on Linux depends on the desktop environment's StatusNotifier support.
+
+### Phase 116 (desktop/v0.2.0 — sharing hours and a daily allowance)
+
+The Overview tab edits `Node:Sharing:Hours` (one line per window), `TimeZone` and `DailyNetworkMinutes` through
+`PUT /api/control/sharing`, and shows the day's usage from `status.sharing.allowance`.
+[SharingTerms](InferHub.Desktop.Core/SharingTerms.cs) only splits lines and words the summary — **the node parses
+and validates the hours**, and its 400 is what the status bar shows. The editor fills once per connection, so the
+3 s poll never overwrites what the owner is typing. Needs a 3.77 node: a 3.76 node answers the save with its own 400
+("mode must be one of …"), and its status has no terms, so the summary reads "any hour".

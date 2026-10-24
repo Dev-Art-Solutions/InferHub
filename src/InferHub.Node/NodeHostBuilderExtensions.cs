@@ -405,7 +405,15 @@ public static class NodeHostBuilderExtensions
         builder.Services.AddSingleton(ring);
         builder.Logging.AddProvider(new Control.NodeLogRingProvider(ring));
 
-        builder.Services.AddSingleton<Control.NodeSharing>();
+        // 116 D4: the day's network allowance is kept beside the control token, so a restart does not reset it.
+        builder.Services.AddSingleton(services => new Control.NodeSharing(
+            services.GetRequiredService<IOptionsMonitor<NodeOptions>>(),
+            services.GetRequiredService<Control.NodeActivity>(),
+            services.GetRequiredService<ILogger<Control.NodeSharing>>(),
+            services.GetService<TimeProvider>(),
+            Path.Combine(
+                services.GetRequiredService<IOptions<NodeOptions>>().Value.DataDirectory is { Length: > 0 } data ? data : services.GetRequiredService<IHostEnvironment>().ContentRootPath,
+                Control.NodeSharing.UsageFileName)));
         builder.Services.AddHostedService(services => services.GetRequiredService<Control.NodeSharing>());
         builder.Services.TryAddSingleton<Control.INodeRestarter, Control.NodeRestarter>();
         builder.Services.AddSingleton<Control.ControlToken>();

@@ -27,6 +27,11 @@ public sealed class MainWindow : Window
     private readonly ComboBox sharing = new() { ItemsSource = new[] { "always", "idle", "paused" }, MinWidth = 160 };
     private readonly TextBlock sharingReason = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
     private bool settingSharing;
+    private readonly TextBox sharingHours = new() { AcceptsReturn = true, MinHeight = 64, MinWidth = 320, TextWrapping = TextWrapping.NoWrap, PlaceholderText = "one line each, e.g. mon-fri 18:00-08:00 · weekends all day (empty: any hour)" };
+    private readonly TextBox sharingZone = new() { MinWidth = 200, PlaceholderText = "this machine's zone" };
+    private readonly TextBox sharingMinutes = new() { MinWidth = 80, PlaceholderText = "0 = none" };
+    private readonly TextBlock sharingTerms = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
+    private bool termsShown;
 
     // Activity
     private readonly TextBlock running = new() { TextWrapping = TextWrapping.Wrap, FontFamily = new FontFamily("Cascadia Mono,Consolas,Menlo,monospace") };
@@ -151,6 +156,18 @@ public sealed class MainWindow : Window
                 Opacity = 0.7
             },
             sharingReason,
+            Heading("Sharing hours and a daily allowance"),
+            sharingTerms,
+            Labelled("Hours", sharingHours),
+            Labelled("Time zone", sharingZone),
+            Labelled("Minutes a day", sharingMinutes),
+            new TextBlock
+            {
+                Text = "Outside these hours, or once the network has had its minutes for the day, the node takes no new network jobs. A job already running always finishes. Your own work never counts.",
+                TextWrapping = TextWrapping.Wrap,
+                Opacity = 0.7
+            },
+            Row(Button("Save hours and allowance", SaveSharingTermsAsync)),
             Heading("This node"),
             overview,
             Row(refresh, restart));
@@ -230,6 +247,8 @@ public sealed class MainWindow : Window
 
     private void OnConnectionChanged()
     {
+        termsShown = false;
+
         if (app.Client is { } client)
         {
             subHeader.Text = $"{client.Endpoint.BaseUrl} · {client.Endpoint.Source}";
@@ -267,6 +286,16 @@ public sealed class MainWindow : Window
         var held = shared?["held"] is JsonValue h && h.TryGetValue<bool>(out var holds) ? holds : (bool?)null;
         sharingReason.Text = (shared?["paused"]?.GetValue<bool>() == true ? "Not taking network jobs now: " + Text(shared?["reason"]) : "Taking network jobs.")
                              + (held == false ? "  This network's coordinator is older than 3.76 and cannot hold a pause — update it." : "");
+        sharingTerms.Text = SharingTerms.Describe(shared);
+
+        // Filled once per connection, so a poll never overwrites what the owner is typing.
+        if (!termsShown)
+        {
+            termsShown = true;
+            sharingHours.Text = SharingTerms.HoursText(shared);
+            sharingZone.Text = shared?["timeZone"]?.GetValue<string>() ?? "";
+            sharingMinutes.Text = shared?["allowance"]?["minutes"]?.ToString() ?? "0";
+        }
 
         var b = new StringBuilder();
         b.AppendLine($"Network       {Text(network?["state"])}{(network?["coordinator"] is { } hub ? "  " + Text(hub) : "")}");
@@ -503,6 +532,19 @@ public sealed class MainWindow : Window
             TextBox t => t.Text,
             _ => null
         });
+
+    private async Task SaveSharingTermsAsync()
+    {
+        var text = sharingMinutes.Text?.Trim();
+
+        if (!int.TryParse(string.IsNullOrEmpty(text) ? "0" : text, out var minutes) || minutes < 0)
+        {
+            app.Say("Minutes a day is a whole number: 0 for no allowance.");
+            return;
+        }
+
+        await app.SetSharingTermsAsync(SharingTerms.Lines(sharingHours.Text), sharingZone.Text?.Trim(), minutes);
+    }
 
     private async Task SaveSettingsAsync()
     {

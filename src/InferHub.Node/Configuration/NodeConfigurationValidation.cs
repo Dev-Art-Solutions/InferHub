@@ -121,6 +121,19 @@ public sealed class NodeOptionsValidator : IValidateOptions<NodeOptions>
             failures.Add($"{NodeOptions.SectionName}:Sharing:IdleSeconds must be >= 0 (got {options.Sharing.IdleSeconds}).");
         }
 
+        // Phase 116: hours that do not parse would be a node sharing at hours its owner did not write.
+        Control.SharingHours.Parse(options.Sharing.Hours, options.Sharing.TimeZone, out var hoursError);
+
+        if (hoursError is not null)
+        {
+            failures.Add($"{NodeOptions.SectionName}:Sharing:Hours/TimeZone: {hoursError}");
+        }
+
+        if (options.Sharing.DailyNetworkMinutes is < 0 or > 1440 * 64)
+        {
+            failures.Add($"{NodeOptions.SectionName}:Sharing:DailyNetworkMinutes must be 0 (no allowance) or a number of minutes (got {options.Sharing.DailyNetworkMinutes}).");
+        }
+
         // A typo here is silent by construction — capability kinds are open strings on the wire
         // (phase-40 D1), so "chatt" disables nothing and the box quietly keeps taking the traffic
         // the operator meant to move off it. Names are checked; the wire is still not.

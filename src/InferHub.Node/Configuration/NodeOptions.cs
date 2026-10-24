@@ -295,4 +295,20 @@ public sealed class SharingOptions
 
     /// <summary>In <c>idle</c> mode, how long after the last local job the node takes network jobs again.</summary>
     public int IdleSeconds { get; set; } = 120;
+
+    /// <summary>
+    /// Phase 116: when this node shares — lines like <c>"mon-fri 18:00-08:00"</c> or <c>"weekends all day"</c>
+    /// (<see cref="Control.SharingHours"/>). Empty (default): any time, as v3.76. Applies in <c>always</c> and
+    /// <c>idle</c>; <c>paused</c> is paused whatever the hour.
+    /// </summary>
+    public List<string> Hours { get; set; } = new();
+
+    /// <summary>The zone <see cref="Hours"/> and the day of <see cref="DailyNetworkMinutes"/> are in; unset: the machine's.</summary>
+    public string? TimeZone { get; set; }
+
+    /// <summary>
+    /// Phase 116: how many minutes of network jobs this node runs a day, counted per job (two at once count twice)
+    /// and reset at midnight in <see cref="TimeZone"/>. 0 (default): no allowance.
+    /// </summary>
+    public int DailyNetworkMinutes { get; set; }
 }

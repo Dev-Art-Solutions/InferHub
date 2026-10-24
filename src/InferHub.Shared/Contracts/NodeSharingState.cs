@@ -17,4 +17,6 @@ public sealed record NodeSharingState(
     [property: JsonPropertyName("reason")] string? Reason,
     [property: JsonPropertyName("sinceUtc")] DateTimeOffset SinceUtc,
     [property: JsonPropertyName("localJobs")] int LocalJobs,
-    [property: JsonPropertyName("networkJobs")] int NetworkJobs);
+    [property: JsonPropertyName("networkJobs")] int NetworkJobs,
+    /// <summary>Phase 116: when a pause with an end — idle time, sharing hours, the day's allowance — is due to lift. Null: not known.</summary>
+    [property: JsonPropertyName("resumesAtUtc")] DateTimeOffset? ResumesAtUtc = null);

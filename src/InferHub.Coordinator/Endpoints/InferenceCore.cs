@@ -71,6 +71,53 @@ internal static class InferenceCore
     /// </remarks>
     internal static string ReadableNodeError(string? error) => NodeErrorText.Readable(error);
 
+    /// <summary>
+    /// Phase 116: why every holder of a model is unserviceable, in the words of the cause. All of them unhealthy
+    /// keeps 69's sentence exactly; all of them paused by their owners names each owner's reason, and the
+    /// Retry-After is when the first of them says it resumes (an hour at most — a client should look again).
+    /// </summary>
+    internal static (string Message, int RetryAfterSeconds) WhyNoHolderServes(
+        string model, IReadOnlyCollection<Services.RoutableNode> holders, Services.INodeRegistry registry)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var ids = holders.Select(h => h.ConnectionId).ToHashSet(StringComparer.Ordinal);
+        var snapshots = registry.Snapshot(now).Where(s => ids.Contains(s.ConnectionId)).ToList();
+
+        static bool Unhealthy(Services.NodeSnapshot s) => s.BackendHealth is not (null or BackendHealth.Healthy);
+
+        if (snapshots.Count == 0 || snapshots.All(Unhealthy))
+        {
+            return ($"every node holding model '{model}' reports an unhealthy inference backend", CapabilityRetryAfterSeconds);
+        }
+
+        if (snapshots.All(s => s.Sharing is { Paused: true }))
+        {
+            var reasons = string.Join("; ", snapshots.Select(s => $"{s.Name}: {s.Sharing!.Reason ?? "paused"}"));
+            var resumes = snapshots.Select(s => s.Sharing!.ResumesAtUtc).Where(r => r is not null).Select(r => r!.Value).DefaultIfEmpty().Min();
+            var retry = resumes == default ? CapabilityRetryAfterSeconds : (int)Math.Clamp(Math.Ceiling((resumes - now).TotalSeconds), 1, 3600);
+            return ($"every node holding model '{model}' is not sharing now ({reasons})", retry);
+        }
+
+        var causes = new List<string>();
+
+        if (snapshots.Any(Unhealthy))
+        {
+            causes.Add("an unhealthy inference backend");
+        }
+
+        if (snapshots.Any(s => s.ResourceThrottled is true))
+        {
+            causes.Add("over its own resource cap");
+        }
+
+        if (snapshots.Any(s => s.Sharing is { Paused: true }))
+        {
+            causes.Add("not sharing now");
+        }
+
+        return ($"every node holding model '{model}' cannot take it now ({string.Join(", ", causes)})", CapabilityRetryAfterSeconds);
+    }
+
     /// <summary>The per-request services phase 25 added, bundled so the endpoint signatures stay sane.</summary>
     internal readonly record struct ClientContext(
         ResolvedClient Client,
@@ -213,18 +260,19 @@ internal static class InferenceCore
                 // name at all, can the ones that do actually answer, and is it the capability that
                 // is missing. A 404 for a fleet whose only holder has a dead inference server is
                 // the expensive lie — it sends an operator to pull a model already on the box.
-                var holders = registry.FindNodesWithModel(model, includeUnserviceable: true).Count;
+                var holderNodes = registry.FindNodesWithModel(model, includeUnserviceable: true);
+                var holders = holderNodes.Count;
 
                 if (holders > 0 && registry.FindNodesWithModel(model).Count == 0)
                 {
-                    logger.LogWarning(
-                        "Model {Model} is held only by nodes whose inference backend is unhealthy",
-                        model);
+                    // Phase 116: "unserviceable" is three different answers — an unhealthy backend
+                    // (69), a box over its own cap (82), and a node its owner paused (113/116: idle,
+                    // paused, outside its sharing hours, its day's allowance used). Naming only the
+                    // first sent an owner's "not tonight" to the operator as a dead inference server.
+                    var (message, retryAfter) = WhyNoHolderServes(model, holderNodes, registry);
+                    logger.LogWarning("Model {Model} is held only by nodes that cannot take it now: {Why}", model, message);
 
-                    return DispatchOutcome.Failure(
-                        StatusCodes.Status503ServiceUnavailable,
-                        $"every node holding model '{model}' reports an unhealthy inference backend",
-                        CapabilityRetryAfterSeconds);
+                    return DispatchOutcome.Failure(StatusCodes.Status503ServiceUnavailable, message, retryAfter);
                 }
 
                 if (capability is not null && holders > 0)

@@ -73,6 +73,15 @@ public sealed class NodeControlClient : IDisposable
     public Task<JsonObject> SetSharingAsync(string mode, CancellationToken cancellationToken = default) =>
         SendAsync(HttpMethod.Put, "/api/control/sharing", new JsonObject { ["mode"] = mode }, cancellationToken);
 
+    /// <summary>Phase 116: the sharing hours (empty clears them), their time zone (empty: the node's machine) and the daily allowance (0: none).</summary>
+    public Task<JsonObject> SetSharingTermsAsync(IReadOnlyList<string> hours, string? timeZone, int dailyNetworkMinutes, CancellationToken cancellationToken = default) =>
+        SendAsync(HttpMethod.Put, "/api/control/sharing", new JsonObject
+        {
+            ["hours"] = new JsonArray([.. hours.Select(h => (JsonNode)JsonValue.Create(h)!)]),
+            ["timeZone"] = timeZone ?? "",
+            ["dailyNetworkMinutes"] = dailyNetworkMinutes
+        }, cancellationToken);
+
     public Task<JsonObject> RestartAsync(bool force = false, CancellationToken cancellationToken = default) =>
         SendAsync(HttpMethod.Post, $"/api/control/restart{(force ? "?force=true" : "")}", null, cancellationToken);
 

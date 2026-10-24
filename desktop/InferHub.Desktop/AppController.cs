@@ -147,6 +147,16 @@ public sealed class AppController : IDisposable
             await RefreshAsync();
         });
 
+    public async Task SetSharingTermsAsync(IReadOnlyList<string> hours, string? timeZone, int dailyNetworkMinutes) =>
+        await Run(async client =>
+        {
+            await client.SetSharingTermsAsync(hours, timeZone, dailyNetworkMinutes, lifetime.Token);
+            Say(hours.Count == 0 && dailyNetworkMinutes == 0
+                ? "Sharing at any hour, with no daily allowance."
+                : "Sharing hours and allowance saved; the node applies them at once.");
+            await RefreshAsync();
+        });
+
     public async Task RestartAsync() =>
         await Run(async client =>
         {

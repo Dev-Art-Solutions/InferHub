@@ -82,6 +82,39 @@ public class BackendHealthRefusalTests
         Assert.Equal("no node currently provides 'embed' for model 'llama3'", outcome.ErrorMessage);
     }
 
+    /// <summary>
+    /// Phase 116, found on the live run: a node its owner paused — outside its sharing hours — was refused as
+    /// "an unhealthy inference backend". The owner's reason is the answer, and the hint is when it resumes.
+    /// </summary>
+    [Fact]
+    public async Task AModelHeldOnlyByNodesTheirOwnersPausedNamesTheirReasonsAndWhenTheyResume()
+    {
+        var registry = FleetHolding("llama3", BackendHealth.Healthy);
+        var resumes = DateTimeOffset.UtcNow.AddMinutes(10);
+        registry.RecordSharing("connection-1", new NodeSharingState(
+            "node-1", "always", true, "outside its sharing hours; shares again Mon 09:00", DateTimeOffset.UtcNow, 0, 0, resumes));
+
+        var outcome = await Route(registry);
+
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, outcome.ErrorStatus);
+        Assert.Equal("every node holding model 'llama3' is not sharing now (node-1: outside its sharing hours; shares again Mon 09:00)", outcome.ErrorMessage);
+        Assert.InRange(outcome.RetryAfterSeconds!.Value, 590, 601);
+    }
+
+    [Fact]
+    public async Task APausedHolderBesideASickOneSaysBoth()
+    {
+        var registry = FleetHolding("llama3", BackendHealth.Wedged);
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("connection-2", Registration("node-2"), now);
+        registry.ReportModels("connection-2", new NodeModels("node-2", [new ModelInfo("llama3", "digest", 1)], now), now);
+        registry.RecordSharing("connection-2", new NodeSharingState("node-2", "paused", true, "paused by its owner", now, 0, 0));
+
+        var outcome = await Route(registry);
+
+        Assert.Equal("every node holding model 'llama3' cannot take it now (an unhealthy inference backend, not sharing now)", outcome.ErrorMessage);
+    }
+
     private static NodeRegistry FleetHolding(string model, BackendHealth? health)
     {
         var registry = new NodeRegistry();

@@ -14,7 +14,7 @@ namespace InferHub.Tests;
 /// <summary>
 /// Phase 112 (the control API) and 113 (sharing modes): the pure parts as tables, the routes over a real solo host.
 /// </summary>
-public sealed class NodeControlTests
+public sealed partial class NodeControlTests
 {
     [Fact]
     public void LocalSettingsAreSetAndRemovedByConfigurationKeyKeepingTheFilesOwnSpelling()
@@ -356,10 +356,10 @@ public sealed class NodeControlTests
         }
     }
 
-    private sealed class ManualTime : TimeProvider
+    private sealed class ManualTime(DateTimeOffset? start = null) : TimeProvider
     {
         private readonly List<(DateTimeOffset Due, TimerCallback Callback, object? State)> timers = [];
-        private DateTimeOffset now = DateTimeOffset.UtcNow;
+        private DateTimeOffset now = start ?? DateTimeOffset.UtcNow;
 
         public override DateTimeOffset GetUtcNow() => now;
 

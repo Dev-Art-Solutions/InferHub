@@ -145,6 +145,12 @@ internal static class LocalControlEndpoints
                 sharingState.Reason,
                 sharingState.SinceUtc,
                 idleSeconds = nodeOptions.Sharing.IdleSeconds,
+                // Phase 116: the owner's terms, and how much of today's allowance the network has had.
+                sharingState.ResumesAtUtc,
+                hours = nodeOptions.Sharing.Hours,
+                timeZone = nodeOptions.Sharing.TimeZone,
+                zone = sharing.Hours.Zone.Id,
+                allowance = sharing.Allowance(),
                 // 113 D1: a pause an old hub cannot hold is said, never shown as held.
                 held = connection.ConnectionState == "disabled" ? (bool?)null : connection.HubHoldsSharing
             },
@@ -313,8 +319,13 @@ internal static class LocalControlEndpoints
         return Persist(context, file, null);
     }
 
-    private sealed record SharingChange(string? Mode, int? IdleSeconds);
+    private sealed record SharingChange(string? Mode, int? IdleSeconds, string[]? Hours, string? TimeZone, int? DailyNetworkMinutes);
 
+    /// <summary>
+    /// 113's mode, and since 116 the owner's terms: any of <c>mode</c>, <c>idleSeconds</c>, <c>hours</c> (an array of
+    /// lines, <c>[]</c> clears them), <c>timeZone</c> (<c>""</c> clears it) and <c>dailyNetworkMinutes</c>. What is
+    /// left out keeps its value.
+    /// </summary>
     private static async Task<IResult> SetSharingAsync(HttpContext context, CancellationToken cancellationToken)
     {
         SharingChange? change;
@@ -328,22 +339,62 @@ internal static class LocalControlEndpoints
             change = null;
         }
 
-        var mode = change?.Mode?.Trim().ToLowerInvariant();
+        if (change is null || change is { Mode: null, IdleSeconds: null, Hours: null, TimeZone: null, DailyNetworkMinutes: null })
+        {
+            return Error(400, "send at least one of mode, idleSeconds, hours, timeZone, dailyNetworkMinutes");
+        }
 
-        if (mode is null || !SharingOptions.Modes.Contains(mode))
+        var mode = change.Mode?.Trim().ToLowerInvariant();
+
+        if (change.Mode is not null && (mode is null || !SharingOptions.Modes.Contains(mode)))
         {
             return Error(400, $"mode must be one of {string.Join(", ", SharingOptions.Modes)}");
         }
 
         var file = NodeLocalSettings.Read(context.RequestServices.GetRequiredService<LocalSettingsFile>().Path);
-        NodeLocalSettings.Set(file, "Node:Sharing:Mode", JsonValue.Create(mode));
+        var touched = new List<SettingKey>();
 
-        if (change!.IdleSeconds is { } idle)
+        void Write(string key, JsonNode? value)
         {
-            NodeLocalSettings.Set(file, "Node:Sharing:IdleSeconds", JsonValue.Create(Math.Max(0, idle)));
+            if (value is null)
+            {
+                NodeLocalSettings.Remove(file, key);
+            }
+            else
+            {
+                NodeLocalSettings.Set(file, key, value);
+            }
+
+            touched.Add(NodeSettingsSchema.Find(key)!);
         }
 
-        return Persist(context, file, [NodeSettingsSchema.Find("Node:Sharing:Mode")!]);
+        if (mode is not null)
+        {
+            Write("Node:Sharing:Mode", JsonValue.Create(mode));
+        }
+
+        if (change.IdleSeconds is { } idle)
+        {
+            Write("Node:Sharing:IdleSeconds", JsonValue.Create(Math.Max(0, idle)));
+        }
+
+        if (change.Hours is { } hours)
+        {
+            var lines = hours.Where(h => !string.IsNullOrWhiteSpace(h)).Select(h => h.Trim()).ToArray();
+            Write("Node:Sharing:Hours", lines.Length == 0 ? null : new JsonArray([.. lines.Select(l => (JsonNode?)JsonValue.Create(l))]));
+        }
+
+        if (change.TimeZone is { } zone)
+        {
+            Write("Node:Sharing:TimeZone", string.IsNullOrWhiteSpace(zone) ? null : JsonValue.Create(zone.Trim()));
+        }
+
+        if (change.DailyNetworkMinutes is { } minutes)
+        {
+            Write("Node:Sharing:DailyNetworkMinutes", minutes == 0 ? null : JsonValue.Create(minutes));
+        }
+
+        return Persist(context, file, touched);
     }
 
     /// <summary>112 D2: validated against the node's own validators before a byte reaches the file.</summary>

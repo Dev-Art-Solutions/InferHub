@@ -93,6 +93,32 @@ hub keeps sending work, and this node takes it — said in the status, above.
 **D3 — in-flight work finishes; only new work waits.** Pausing never cancels a running mesh job; the status counts
 local and network jobs apart (`status.jobs.local`, `.network`).
 
+
+### Phase 116 (the owner's terms: sharing hours and a daily allowance)
+
+`Node:Sharing:Hours` (lines, [SharingHours](SharingHours.cs)), `Node:Sharing:TimeZone`,
+`Node:Sharing:DailyNetworkMinutes` — all live, all applied by `NodeSharing.Recompute` after `paused` and `idle`'s
+local checks, in that order: the reason names the first that holds, `ResumesAtUtc` when it lifts.
+
+**D1, load-bearing — the terms are more reasons for 113's pause, nothing else.** No new wire method, no new hub
+state: a closed window or a spent allowance is `Paused=true` with a reason and `NodeSharingState.ResumesAtUtc`
+(an appended, nullable field — a 3.76 hub ignores it and still holds the pause). Every routing path, the status
+and the console pill read the one flag.
+
+**D2 — a window belongs to the day it starts on; touching windows merge.** `fri 22:00-06:00` is Friday night; an
+end at or before the start crosses midnight, `24:00` is midnight at the end. `IsOpen` builds the occurrences from
+yesterday to eight days ahead in the owner's zone, merges overlapping and touching spans, and answers open/closed
+plus the next change (null: no change within the week — `daily all day`). A start in a spring-forward gap opens
+at the first minute the clock shows. Lines that do not parse fail startup and are a 400 from the control API.
+
+**D3 — the allowance stops new work, never running work.** Network seconds today = finished mesh jobs (today's part
+of each) + the running ones so far; per job, so two at once spend twice as fast; local work never counts. A timer
+looks again when the running jobs would spend what is left, at midnight, and at the next window edge.
+
+**D4 — a restart is not a second day.** Each finished mesh job writes `{day, seconds}` to
+`<DataDirectory>/sharing-usage.json` (only while an allowance is set); a node starting on the same day reads it.
+A job cut short by a stop or a crash is not counted — the error is in the network's favour by minutes, never in a
+fresh allowance.
 ### Phase 114 (a private corpus on a meshed node) — amends 38 D1
 
 **D1, load-bearing — private is a store of its own, reachable only through the local API.** 38 D1's sentence with

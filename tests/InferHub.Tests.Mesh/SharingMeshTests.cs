@@ -75,6 +75,24 @@ public sealed class SharingMeshTests
         Assert.Empty(mesh.Registry.FindNodesWithModel("llama3"));
     }
 
+    [Fact]
+    public async Task OutsideItsHoursTheHubHearsWhyAndWhenItSharesAgain()
+    {
+        await using var mesh = await SharingMesh.StartAsync(SharingOptions.Always);
+        await mesh.WaitForSharingAsync(s => s is { Paused: false });
+
+        // Phase 116: one hour, two days from now — closed whenever this test runs.
+        var day = DateTimeOffset.UtcNow.AddDays(2).DayOfWeek.ToString()[..3].ToLowerInvariant();
+        mesh.Options.Set(new NodeOptions { Name = SharingMesh.NodeId, Sharing = new SharingOptions { Hours = [$"{day} 10:00-11:00"], TimeZone = "UTC" } });
+
+        var paused = await mesh.WaitForSharingAsync(s => s is { Paused: true });
+        Assert.StartsWith("outside its sharing hours; shares again", paused.Reason);
+        Assert.NotNull(paused.ResumesAtUtc);
+        Assert.Equal(10, paused.ResumesAtUtc!.Value.Hour);
+        Assert.Empty(mesh.Registry.FindNodesWithModel("llama3"));
+        Assert.Single(mesh.Registry.FindNodesWithModel("llama3", includeUnserviceable: true));
+    }
+
     private sealed class SharingMesh : IAsyncDisposable
     {
         public const string NodeId = "sharing-node";

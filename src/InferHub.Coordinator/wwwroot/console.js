@@ -79,6 +79,13 @@
       pills.push(`<span class="pill pill-warn">cordoned</span>`);
     }
 
+    // Phases 113/116. The owner's pause, not the admin's cordon: idle, paused, outside its sharing hours or
+    // its day's allowance used. Neutral, because it is the node working as its owner set it.
+    if (node.sharing?.paused === true) {
+      const until = node.sharing.resumesAtUtc ? ` · until ${new Date(node.sharing.resumesAtUtc).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}` : "";
+      pills.push(`<span class="pill" title="${escapeHtml(node.sharing.reason ?? "")}">not sharing${escapeHtml(until)}</span>`);
+    }
+
     // Phase 69. Beside `online`, not instead of it: the connection genuinely is up, and saying so
     // while the backend is down is the whole of what this row has to communicate.
     if (node.backendHealth && node.backendHealth !== "healthy") {

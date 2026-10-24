@@ -799,7 +799,7 @@ The app drives `/api/control` on the node's local API (`LocalApi:Enabled=true`),
 | `GET activity`, `GET events` (SSE) | jobs running and the last 200 finished; engine, connection and sharing changes as they happen |
 | `GET logs`, `GET logs/stream` (SSE) | the node's own log, the last `Control:LogLines` lines |
 | `GET`/`PUT settings` | the keys you may change, their values (secrets masked), and `{"set":{…},"remove":[…]}` written to `node.local.json` — after the node's own validators accept the result |
-| `PUT sharing` | `always`, `idle` or `paused` |
+| `PUT sharing` | `mode` (`always`, `idle`, `paused`), and since 3.77 `hours`, `timeZone`, `dailyNetworkMinutes` — any of them; what is left out keeps its value |
 | `POST restart` | drain, then exit with code 75 for whatever starts the node again; `409` with the reason on a bare console |
 | `POST models/{name}/pull\|warm\|unload`, `DELETE models/{name}` | what the hub's model commands do, from here |
 | `POST engines/{name}/start\|stop`, `POST catalog/{colibri\|strata}/{model}/load\|unload` | the same for engines and catalogues |
@@ -815,6 +815,39 @@ this machine runs a job of its own through the local API and resumes `Node:Shari
 (120) after the last one. A paused node stays connected and its models stay visible, and the hub
 routes around it. A network job already running finishes. A coordinator older than 3.76 cannot hold
 a pause. The node then keeps taking that coordinator's jobs, and its status says so.
+
+### Sharing hours and a daily allowance (v3.77+)
+
+Two more of the owner's terms, both live, both in `always` and `idle` mode (`paused` is paused at
+any hour):
+
+```json
+"Node": { "Sharing": {
+  "Hours": ["mon-fri 18:00-08:00", "weekends all day"],
+  "TimeZone": "Europe/Sofia",
+  "DailyNetworkMinutes": 120 } }
+```
+
+- **`Hours`**: when the node shares. Each line is days (`mon`, `mon-fri`, `sat,sun`, `daily`,
+  `weekdays`, `weekends`), then `HH:mm-HH:mm` or `all day`. A window belongs to the day it starts
+  on, so `fri 22:00-06:00` runs into Saturday morning. Windows that touch merge into one. No lines
+  means any hour, which is how 3.76 behaved. A line that does not parse stops the node from starting
+  and is refused by the control API, with the reason.
+- **`TimeZone`**: the zone the hours and the day are in, as an IANA or Windows id. Unset, it is the
+  machine's own zone.
+- **`DailyNetworkMinutes`**: how many minutes of network jobs the node runs in a day. Each job
+  counts separately, so two at once use the minutes twice as fast, and your own local work never
+  counts. The minutes renew at midnight. The day's usage is saved in
+  `<Node:DataDirectory>/sharing-usage.json`, so restarting the node does not give the network a
+  fresh day. `0` (the default) means no limit.
+
+When the hours close or the minutes run out, the node's sharing goes paused with a reason and the
+time it resumes (`"outside its sharing hours; shares again Sat 22:00"`). The hub stops routing to
+it and shows the reason as a pill in the console. A network job already running finishes. Set the
+terms with `PUT /api/control/sharing {"hours":[…],"timeZone":"…","dailyNetworkMinutes":120}`,
+or on the desktop app's Overview tab. `GET /api/control/status` shows them under `sharing`, with
+`allowance.usedSeconds`, `leftSeconds` and `resetsAtUtc`. No hub change is needed: a 3.76 hub
+already holds the pause, because it is the same report.
 
 ### A private corpus on a networked node
 
