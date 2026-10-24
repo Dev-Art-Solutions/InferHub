@@ -1,0 +1,9 @@
+<Project>
+  <!-- Phase 115, D3: the desktop app has its own version and its own tags (desktop/vX.Y.Z); everything else
+       (TFM, nullable, language version) is the repository's. -->
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <PropertyGroup>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+</Project>

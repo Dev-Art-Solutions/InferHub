@@ -1,0 +1,134 @@
+name: desktop-release
+
+# Phase 115, D3: InferHub Desktop has its own release, in this repository, on its own tags — desktop/vX.Y.Z.
+# Each package carries the app and a node for the same platform (node/ beside the app, 115 D2), both
+# self-contained: a person with nothing installed — no .NET either — unpacks it and runs it.
+# The node's own v* tags and workflows are untouched (a desktop/ tag does not match 'v*').
+on:
+  push:
+    tags: ['desktop/v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'An existing desktop/vX.Y.Z tag to build'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, rid: win-x64,     name: windows-x64, kind: zip }
+          - { os: ubuntu-latest,  rid: linux-x64,   name: linux-x64,   kind: tar }
+          - { os: macos-latest,   rid: osx-arm64,   name: macos-arm64, kind: app }
+          - { os: macos-latest,   rid: osx-x64,     name: macos-x64,   kind: app }
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Version from the tag
+        shell: bash
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "VERSION=${tag#desktop/v}" >> "$GITHUB_ENV"
+
+      - name: Publish the app and its node
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/InferHub-Desktop"
+          dotnet publish desktop/InferHub.Desktop/InferHub.Desktop.csproj -c Release -r ${{ matrix.rid }} --self-contained \
+            -p:Version=$VERSION -o "$out"
+          # The node is the repository's own at this commit, with its own version.
+          dotnet publish src/InferHub.Node/InferHub.Node.csproj -c Release -r ${{ matrix.rid }} --self-contained -o "$out/node"
+          echo "OUT=$out" >> "$GITHUB_ENV"
+
+      - name: Package (zip)
+        if: matrix.kind == 'zip'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "$env:OUT\*" -DestinationPath "InferHub-Desktop-$env:VERSION-${{ matrix.name }}.zip"
+
+      - name: Package (tar.gz)
+        if: matrix.kind == 'tar'
+        shell: bash
+        run: |
+          chmod +x "$OUT/InferHub.Desktop" "$OUT/node/InferHub.Node"
+          tar -C "$RUNNER_TEMP" -czf "InferHub-Desktop-$VERSION-${{ matrix.name }}.tar.gz" InferHub-Desktop
+
+      - name: Package (macOS .app)
+        if: matrix.kind == 'app'
+        shell: bash
+        run: |
+          app="$RUNNER_TEMP/InferHub.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp -R "$OUT/." "$app/Contents/MacOS/"
+          chmod +x "$app/Contents/MacOS/InferHub.Desktop" "$app/Contents/MacOS/node/InferHub.Node"
+          iconset="$RUNNER_TEMP/inferhub.iconset"; mkdir -p "$iconset"
+          for s in 16 32 128 256; do sips -z $s $s desktop/InferHub.Desktop/Assets/inferhub-256.png --out "$iconset/icon_${s}x${s}.png" >/dev/null; done
+          iconutil -c icns "$iconset" -o "$app/Contents/Resources/inferhub.icns"
+          cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>InferHub</string>
+            <key>CFBundleDisplayName</key><string>InferHub</string>
+            <key>CFBundleIdentifier</key><string>solutions.devart.inferhub.desktop</string>
+            <key>CFBundleVersion</key><string>$VERSION</string>
+            <key>CFBundleShortVersionString</key><string>$VERSION</string>
+            <key>CFBundleExecutable</key><string>InferHub.Desktop</string>
+            <key>CFBundleIconFile</key><string>inferhub.icns</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>LSMinimumSystemVersion</key><string>12.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          PLIST
+          sed -i '' 's/^          //' "$app/Contents/Info.plist"
+          ditto -c -k --keepParent "$app" "InferHub-Desktop-$VERSION-${{ matrix.name }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: InferHub-Desktop-*
+
+  release:
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+
+      - name: The release, with its packages and their checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          version="${tag#desktop/v}"
+          (cd packages && sha256sum * > SHA256SUMS.txt)
+          notes="desktop/release-notes/v$version.md"
+          [ -f "$notes" ] || { echo "InferHub Desktop $version" > "$RUNNER_TEMP/notes.md"; notes="$RUNNER_TEMP/notes.md"; }
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" packages/* --clobber
+          else
+            # Not marked latest: "latest" on this repository is the node's release, which the node's own
+            # self-update reads (101 D3).
+            gh release create "$tag" packages/* --title "InferHub Desktop $version" --notes-file "$notes" --latest=false
+          fi

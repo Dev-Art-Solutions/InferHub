@@ -1,7 +1,6 @@
 # CLAUDE.md
 
-Guidance for Claude Code when working in this repository. Keep it focused on what is
-non-obvious — README.md has the user-facing pitch and config reference.
+Guidance for Claude Code here. Only what is non-obvious — README.md has the pitch and config reference.
 
 ## What this is
 
@@ -19,20 +18,17 @@ src/
                           and since phase 38 the whole *pure* retrieval core: Vector/ (IVectorStore,
                           LocalVectorStore, InvertedIndex, HybridSearch, RetrievalPipeline) and
                           Ingestion/ (TextExtractor, Chunker, DocumentIndex, IngestionPipeline).
-                          Phase 44 added Vector/Qdrant/ (QdrantVectorStore, QdrantClient, QdrantIdMap,
-                          SparseVector) — free only because phase-33 D2 hand-rolled the connector
-                          instead of taking the gRPC client.
+                          Phase 44 added Vector/Qdrant/ — free only because phase-33 D2 hand-rolled the
+                          connector (QdrantVectorStore, QdrantClient, QdrantIdMap) instead of the gRPC client.
                           Still a plain class library with ZERO package references — see rule 2.
-  InferHub.Shared.Postgres/  Phase 71. PostgresVectorStore/PostgresSchema/the bootstrap DDL, shared
-                          between the coordinator and a node running
-                          LocalApi:Retrieval:Provider=postgres. A SEPARATE project from
-                          InferHub.Shared (which stays package-free) because pgvector needs
-                          Npgsql/Pgvector at the class itself.
-  InferHub.Coordinator/   ASP.NET Core web app (Sdk.Web). HTTP + SignalR hub + routing. Keeps the
-                          external vector providers, replication/healing, endpoints, Metrics and
-                          PdfTextExtractor.
+  InferHub.Shared.Postgres/  Phase 71. PostgresVectorStore/PostgresSchema/the bootstrap DDL, shared by the coordinator
+                          and a node on LocalApi:Retrieval:Provider=postgres. SEPARATE from InferHub.Shared (which
+                          stays package-free) because pgvector needs Npgsql/Pgvector at the class itself.
+  InferHub.Coordinator/   ASP.NET Core web app (Sdk.Web). HTTP + SignalR hub + routing. Keeps the external
+                          vector providers, replication/healing, endpoints, Metrics and PdfTextExtractor.
   InferHub.Node/          Worker service (Sdk.Worker). SignalR client + backend driver. LocalApi/
-                          is solo mode (phase 37); Retrieval/ is solo RAG (phase 38). Two
+                          is solo mode (phase 37); Retrieval/ is solo RAG (phase 38); Control/ is the
+                          control API, sharing modes and the private corpus (112–114). Two
                           Dockerfiles: the plain one (multi-arch, ~340 MB) and Dockerfile.ollama
                           (phase 39 — amd64, ~4 GB, Ollama inside the container).
   InferHub.Node.WindowsService/  Windows-service host. References InferHub.Node, adds AddWindowsService + install scripts;
@@ -43,11 +39,13 @@ tests/
   InferHub.Tests.Coordinator/  endpoints, routing, vector, cluster, metrics, console
   InferHub.Tests.Node/         backends, supervisor, tool runtime, solo, profiles
   InferHub.Tests.Mesh/         real Kestrel + real SignalR + real child processes
+  InferHub.Tests.Desktop/      the desktop app's client core (no window)
                                See tests/CLAUDE.md. Split in phase 52 (D3).
 deploy/
   docker/                 Compose stack (coordinator + node), Postgres overlay, runbook.
   postgres/               Postgres+pgvector for the gated integration tests.
   windows/                Node-as-a-Windows-service install scripts; installer/ is the Inno Setup setup (phase 101).
+desktop/                  InferHub Desktop (phase 115): Avalonia app + package-free Core, its own desktop/v* release.
 .github/workflows/        CI: build+test and docker image build on PRs; GHCR publish on v* tags.
 plan/                     Phase build-briefs. Not shipped; lives in repo for context.
 tools/
@@ -103,6 +101,8 @@ longer pays for the Qdrant connector's UUID mapping and the cluster lease's spli
 | `src/InferHub.Coordinator/Services/` | `src/InferHub.Coordinator/Services/CLAUDE.md` | where a request goes and how long it waits there: the warm tier, the slot wait, dispatch deadlines · phases 86, 89, 110 (split out in phase 110) |
 | `src/InferHub.Node/` | `src/InferHub.Node/CLAUDE.md` | backends and the upstream dialects a node can drive, the Ollama supervisor, solo mode, profiles, the Windows setup and self-update, jobs side by side, one model's slots · phases 36–39, 43, 53, 67, 101, 107, 108 |
 | `src/InferHub.Node/Backends/` | `src/InferHub.Node/Backends/CLAUDE.md` | colibri and its Brio, `Backend:Engines` — ollama, llama.cpp and colibri on one node, started and stopped by the hub — and the llama.cpp router: models pulled, loaded and unloaded from the hub, `/v1/llamacpp/*`, `/v1/rerank`; colibri's catalogue — many models, loaded on demand, picked from the hub; Hugging Face links downloaded by the node (GGUF for llama.cpp, converted for colibri); Strata — an install's sizes as a catalogue, installed from a link by its own setup; hard limits per runtime and the limits each engine is told; the slots each loaded model runs · phases 93, 94, 95, 96, 97, 98, 99, 102, 109, 111 (split out in phase 95) |
+| `src/InferHub.Node/Control/`, `src/InferHub.Node/LocalApi/LocalControlEndpoints.cs` | `src/InferHub.Node/Control/CLAUDE.md` | a node as its own unit: the control API (`/api/control`), sharing modes (always · idle · paused), the private corpus · phases 112, 113, 114 |
+| `desktop/` | `desktop/CLAUDE.md` | InferHub Desktop — attach to a node or run its own, its own release · phase 115 |
 | `src/InferHub.Node/Tools/` | `src/InferHub.Node/Tools/CLAUDE.md` | the tool runtime, STT/TTS, the image and video catalogues, the VRAM budget and the licence gate · phases 41, 42, 48, 55–58, 70 (split out in phase 67) |
 | `python/` | `python/CLAUDE.md` | the worker protocol, recipes, the diffusion worker · phases 49, 50, 55, 57, 58, 70 |
 | `tests/` | `tests/CLAUDE.md` | the four test projects and the testing discipline |

@@ -69,6 +69,8 @@ public static class LocalApiEndpoints
         // Phase 112: the control API, behind its own token (112 D1). Control:Enabled=false leaves it unmapped.
         if (app.Services.GetRequiredService<IOptions<Control.ControlOptions>>().Value.Enabled)
         {
+            // At boot, not on the first call: an app on this machine reads the token before it can make one (115 D2).
+            app.Services.GetRequiredService<Control.ControlToken>();
             app.MapLocalControlEndpoints();
         }
 

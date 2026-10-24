@@ -768,6 +768,61 @@ exactly as it does today.
 is legitimate — useful for curling a node directly while debugging. Both **off** is a startup
 failure naming both keys: a node that neither joins a mesh nor serves anyone is a typo.
 
+## A node of your own, in a network or not (v3.76+)
+
+A group of friends pools their machines into one network, and each machine is still somebody's
+computer. v3.76 makes a node a unit of its own: it can be driven, watched and restarted on the box
+without a hub, it can step out of the network while its owner uses it, and it can keep documents
+the network never sees.
+
+### InferHub Desktop
+
+A control panel for one node, for Windows, Linux and macOS, released on its own `desktop/v*` tags
+in this repository. On start it **attaches** to the node already on this machine (the Windows
+service, systemd, a console). If it finds none, it offers to **run its own**: every package carries
+a self-contained node, started by the app with its data in your user profile. Tabs: Overview (state,
+engines, limits, the sharing switch), Activity (jobs now and recent — kind, model, local or
+network, never a prompt), Models (pull, warm, unload, delete), Settings, Logs (live), Chat, and
+Connection (a node elsewhere, or join a network). Closing the window keeps it in the tray; the tray
+menu switches sharing. The Windows service's control token is readable by administrators only;
+the app asks you to paste it rather than widening the file.
+
+The packages are **not signed**. Windows SmartScreen and macOS Gatekeeper warn on the first run.
+
+### The control API
+
+The app drives `/api/control` on the node's local API (`LocalApi:Enabled=true`), and so can `curl`:
+
+| Route | What |
+|---|---|
+| `GET status` | the node, its version, the network connection, sharing, engines, models, jobs now, whether a restart is possible |
+| `GET activity`, `GET events` (SSE) | jobs running and the last 200 finished; engine, connection and sharing changes as they happen |
+| `GET logs`, `GET logs/stream` (SSE) | the node's own log, the last `Control:LogLines` lines |
+| `GET`/`PUT settings` | the keys you may change, their values (secrets masked), and `{"set":{…},"remove":[…]}` written to `node.local.json` — after the node's own validators accept the result |
+| `PUT sharing` | `always`, `idle` or `paused` |
+| `POST restart` | drain, then exit with code 75 for whatever starts the node again; `409` with the reason on a bare console |
+| `POST models/{name}/pull\|warm\|unload`, `DELETE models/{name}` | what the hub's model commands do, from here |
+| `POST engines/{name}/start\|stop`, `POST catalog/{colibri\|strata}/{model}/load\|unload` | the same for engines and catalogues |
+
+**Every route needs `Authorization: Bearer <token>`, loopback included.** The token is
+`Control:Token`, or one generated at boot into `<Node:DataDirectory>/control.token`. A caller off
+this machine is refused unless `Control:AllowRemote=true`, and still needs the token.
+
+### Sharing: always · idle · paused
+
+`Node:Sharing:Mode` decides whether the node takes **new** network jobs. `idle` pauses the moment
+this machine runs a job of its own through the local API and resumes `Node:Sharing:IdleSeconds`
+(120) after the last one. A paused node stays connected and its models stay visible, and the hub
+routes around it. A network job already running finishes. A coordinator older than 3.76 cannot hold
+a pause. The node then keeps taking that coordinator's jobs, and its status says so.
+
+### A private corpus on a networked node
+
+`LocalApi:Retrieval:Private=true` lets a node in a network keep its own documents, with retrieval
+through its local API. The hub never learns the corpus exists: no report, no replica, no ownership
+row. Its `DataDirectory` must not overlap `Vector:ReplicaDirectory`. Without `Private`, local
+retrieval on a networked node still refuses to start, as it always has.
+
 ## A node and its Ollama in one container (v3.7+)
 
 Solo mode removed the coordinator. This removes the other half: the Ollama you had to install on

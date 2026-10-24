@@ -62,6 +62,11 @@ public class NodeRestarter(
     {
         Environment.ExitCode = ExitCode;
         lifetime.StopApplication();
+
+        // The code is the restart: a stop that throws on its way out (a service's timeout) must not turn it into a
+        // crash the supervisor reads as "leave it stopped" — found live, the first restart from the desktop app.
+        lifetime.ApplicationStopped.Register(() => Environment.Exit(ExitCode));
+        _ = Task.Delay(TimeSpan.FromSeconds(45)).ContinueWith(_ => Environment.Exit(ExitCode), TaskScheduler.Default);
     }
 
     internal static RestartSupport Detect(Func<string, string?>? environment = null)

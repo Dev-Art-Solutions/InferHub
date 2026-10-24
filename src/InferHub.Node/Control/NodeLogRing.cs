@@ -77,9 +77,13 @@ public sealed class NodeLogRingProvider(NodeLogRing ring) : ILoggerProvider
 
         // The HTTP client's per-request lines are the noise a reader of this log does not want, as the console's
         // filters already say for the colibri and Strata engines' own probes.
+        // So are ASP.NET's per-request lines: the app polls the status every few seconds, and a log made of its own
+        // polling would bury what the node did.
         public bool IsEnabled(LogLevel logLevel) =>
             logLevel >= LogLevel.Information
-            && !(logLevel < LogLevel.Warning && category.StartsWith("System.Net.Http.HttpClient", StringComparison.Ordinal));
+            && !(logLevel < LogLevel.Warning
+                 && (category.StartsWith("System.Net.Http.HttpClient", StringComparison.Ordinal)
+                     || category.StartsWith("Microsoft.AspNetCore", StringComparison.Ordinal)));
 
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {

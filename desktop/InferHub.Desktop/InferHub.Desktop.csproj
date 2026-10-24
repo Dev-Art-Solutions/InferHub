@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Phase 115, D1: the only project in this repository that takes UI packages. Outside both images; its own
+       release (desktop/vX.Y.Z). The window is built in code, not XAML: one language for the whole app, and nothing
+       generated that a reader has to find. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>InferHub.Desktop</AssemblyName>
+    <RootNamespace>InferHub.Desktop</RootNamespace>
+    <ApplicationIcon>Assets\inferhub.ico</ApplicationIcon>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.4" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.4" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.4" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AvaloniaResource Include="Assets\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\InferHub.Desktop.Core\InferHub.Desktop.Core.csproj" />
+  </ItemGroup>
+
+</Project>

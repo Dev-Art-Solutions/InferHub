@@ -183,7 +183,7 @@ same category as the coordinator's `/v1`, serving the node's own clients. The hu
 node, no job or model command arrives over the local API, and the two surfaces share no prefix, no
 token set and no handler. **`ModelCommandExecutor` stayed hub-driven on purpose** — model management
 in solo mode is `ollama pull` in the terminal you are already sitting at, and exposing it would
-double the surface that has to stay in parity for nothing.
+double the surface that has to stay in parity for nothing. **Amended in 112 D6** (`src/InferHub.Node/Control/CLAUDE.md`).
 
 **D2 — Solo mode is the hub's formatting layer over the node's executor, with routing removed.**
 The coordinator does `HTTP → translate → [admit → route → queue → dispatch → SignalR] → node →
@@ -326,7 +326,7 @@ is safe, so it is not offered.
 > refuses to create a node-owned name centrally, and excludes it from replication and healing — so
 > the node holds one authority and zero derived copies **under names the hub has recorded as not its
 > own**. The sentence that survives both phases: *one authority per collection name, and the hub
-> knows who it is.* See phase-44 D1.
+> knows who it is.* See phase-44 D1. **114 D1** adds *per store*: a private corpus the hub never sees (`src/InferHub.Node/Control/CLAUDE.md`).
 
 **It refuses rather than silently disabling, and that asymmetry with phase-36 D1 is deliberate.**
 A disabled supervisor costs an operational nicety and one log line is enough. What is switched off

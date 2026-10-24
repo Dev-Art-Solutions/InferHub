@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Phase 115, D1: what the app knows of a node, with no UI type in it — the control API's client, finding a node,
+       running the app's own. Tested on its own (tests/InferHub.Tests.Desktop); no package. -->
+  <PropertyGroup>
+    <RootNamespace>InferHub.Desktop</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="InferHub.Tests.Desktop" />
+  </ItemGroup>
+
+</Project>

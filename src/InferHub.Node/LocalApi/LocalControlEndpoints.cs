@@ -166,8 +166,12 @@ internal static class LocalControlEndpoints
         }, Json);
     }
 
-    private static async Task EventsAsync(HttpContext context, NodeActivity activity, long? after, CancellationToken cancellationToken)
+    private static async Task EventsAsync(HttpContext context, NodeActivity activity, long? after, CancellationToken requestAborted)
     {
+        // A stream ends with the node, not only with the client: held open, it made a restart wait out the host's
+        // shutdown timeout (found live, 79 s) and end in an exception instead of the restart exit code.
+        using var stopping = Stopping(context, requestAborted);
+        var cancellationToken = stopping.Token;
         StartEventStream(context);
         var last = after ?? 0;
 
@@ -186,8 +190,10 @@ internal static class LocalControlEndpoints
         }
     }
 
-    private static async Task LogStreamAsync(HttpContext context, NodeLogRing ring, long? after, CancellationToken cancellationToken)
+    private static async Task LogStreamAsync(HttpContext context, NodeLogRing ring, long? after, CancellationToken requestAborted)
     {
+        using var stopping = Stopping(context, requestAborted);
+        var cancellationToken = stopping.Token;
         StartEventStream(context);
         var last = after ?? 0;
 
@@ -537,6 +543,11 @@ internal static class LocalControlEndpoints
         services.GetRequiredService<CoordinatorConnection>().ConnectionState is "connected"
             ? "this node is in a network: a coordinator's profile for it may change this again"
             : null;
+
+    private static CancellationTokenSource Stopping(HttpContext context, CancellationToken requestAborted) =>
+        CancellationTokenSource.CreateLinkedTokenSource(
+            requestAborted,
+            context.RequestServices.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping);
 
     private static void StartEventStream(HttpContext context)
     {
