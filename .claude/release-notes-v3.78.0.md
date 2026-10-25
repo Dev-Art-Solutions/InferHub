@@ -84,3 +84,13 @@ narrowed to `qwen2.5:0.5b`, `gemma:2b`, `nomic-embed-text`):
 **Not established:** a network job that was already running on a model when that model was kept (it should finish,
 as with 113 D3), and clicking the Shared box in the app. The request the box sends was sent with `curl`, and the
 toggle logic is unit-tested.
+
+## The published artifacts
+
+- **GHCR `inferhub-node:3.78.0` and `inferhub-coordinator:3.78.0`**, revision `ceb50a7`, extracted without Docker
+  and run natively against the same Ollama, with `gemma:2b` kept from the start in `node.local.json`. The hub
+  listed only `qwen2.5:0.5b`, a hub chat with `gemma:2b` was a `404`, and a local one answered. After
+  `{"models":{"exclude":[]}}` the hub listed both.
+- **`InferHub-Desktop-0.3.0-windows-x64.zip`**: its SHA256 matches `SHA256SUMS.txt`. Run with its own embedded 3.78
+  node and `gemma:2b` pre-kept, it showed that model unticked and the other 28 ticked
+  (`.claude/verification-v3.78.0-desktop.png`). `releases/latest` is still `v3.78.0`.
