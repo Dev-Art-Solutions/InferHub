@@ -82,6 +82,17 @@ public sealed class NodeControlClient : IDisposable
             ["dailyNetworkMinutes"] = dailyNetworkMinutes
         }, cancellationToken);
 
+    /// <summary>Phase 117: which models the network may use — both lists sent, an empty one cleared.</summary>
+    public Task<JsonObject> SetSharedModelsAsync(IReadOnlyList<string> include, IReadOnlyList<string> exclude, CancellationToken cancellationToken = default) =>
+        SendAsync(HttpMethod.Put, "/api/control/sharing", new JsonObject
+        {
+            ["models"] = new JsonObject
+            {
+                ["include"] = new JsonArray([.. include.Select(n => (JsonNode)JsonValue.Create(n)!)]),
+                ["exclude"] = new JsonArray([.. exclude.Select(n => (JsonNode)JsonValue.Create(n)!)])
+            }
+        }, cancellationToken);
+
     public Task<JsonObject> RestartAsync(bool force = false, CancellationToken cancellationToken = default) =>
         SendAsync(HttpMethod.Post, $"/api/control/restart{(force ? "?force=true" : "")}", null, cancellationToken);
 

@@ -134,6 +134,18 @@ public sealed class NodeOptionsValidator : IValidateOptions<NodeOptions>
             failures.Add($"{NodeOptions.SectionName}:Sharing:DailyNetworkMinutes must be 0 (no allowance) or a number of minutes (got {options.Sharing.DailyNetworkMinutes}).");
         }
 
+        // Phase 117: a name in both lists is an owner who said two things; Exclude would win, silently.
+        var both = options.Sharing.Models.Include
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name.Trim())
+            .Intersect(options.Sharing.Models.Exclude.Where(name => !string.IsNullOrWhiteSpace(name)).Select(name => name.Trim()), StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (both.Length > 0)
+        {
+            failures.Add($"{NodeOptions.SectionName}:Sharing:Models: {string.Join(", ", both)} is both in Include and in Exclude; name a model in one of them.");
+        }
+
         // A typo here is silent by construction — capability kinds are open strings on the wire
         // (phase-40 D1), so "chatt" disables nothing and the box quietly keeps taking the traffic
         // the operator meant to move off it. Names are checked; the wire is still not.

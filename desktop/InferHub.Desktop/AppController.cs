@@ -157,6 +157,16 @@ public sealed class AppController : IDisposable
             await RefreshAsync();
         });
 
+    public async Task SetSharedModelsAsync(string model, bool shared, IReadOnlyList<string> include, IReadOnlyList<string> exclude) =>
+        await Run(async client =>
+        {
+            await client.SetSharedModelsAsync(include, exclude, lifetime.Token);
+            Say(shared
+                ? $"{model} is shared with the network."
+                : $"{model} is kept for this machine: the network is no longer told it is here.");
+            await RefreshAsync();
+        });
+
     public async Task RestartAsync() =>
         await Run(async client =>
         {

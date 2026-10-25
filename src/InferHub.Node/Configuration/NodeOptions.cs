@@ -311,4 +311,12 @@ public sealed class SharingOptions
     /// and reset at midnight in <see cref="TimeZone"/>. 0 (default): no allowance.
     /// </summary>
     public int DailyNetworkMinutes { get; set; }
+
+    /// <summary>
+    /// Phase 117: which of this node's models the network may use — <c>Include</c> (only these) and <c>Exclude</c>
+    /// (all but these), matched by name like <c>Node:Models</c>. Empty (default): every model, as v3.77. A model left
+    /// out stays this machine's: the local API and the control API still serve and list it; the hub is never told
+    /// it exists.
+    /// </summary>
+    public ModelFilterOptions Models { get; set; } = new();
 }

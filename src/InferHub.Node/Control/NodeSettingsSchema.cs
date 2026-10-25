@@ -26,6 +26,7 @@ public static class NodeSettingsSchema
         new("Node:Sharing:Hours", "json", true, "sharing", "When this node shares: lines like \"mon-fri 18:00-08:00\" or \"weekends all day\" (an array). Empty: any time."),
         new("Node:Sharing:TimeZone", "string", true, "sharing", "The zone the hours and the day are in, e.g. Europe/Sofia. Empty: this machine's."),
         new("Node:Sharing:DailyNetworkMinutes", "int", true, "sharing", "Minutes of network jobs a day, reset at midnight. 0: no allowance."),
+        new("Node:Sharing:Models", "json", true, "sharing", "Which models the network may use: {\"Include\": [only these], \"Exclude\": [all but these]}. Empty: every model. A model left out is still this machine's."),
         new("Node:ResourceLimits:Engines", "json", true, "limits", "Hard limits per runtime: {ollama|llamacpp|colibri|strata|tools: {CpuPercent, Cores, MemoryMiB, VramMiB, Gpus}}."),
         new("Coordinator:Enabled", "bool", false, "network", "Join a network: connect to a coordinator."),
         new("Coordinator:Url", "string", false, "network", "The coordinator's address, e.g. https://hub.example.com/."),

@@ -799,7 +799,7 @@ The app drives `/api/control` on the node's local API (`LocalApi:Enabled=true`),
 | `GET activity`, `GET events` (SSE) | jobs running and the last 200 finished; engine, connection and sharing changes as they happen |
 | `GET logs`, `GET logs/stream` (SSE) | the node's own log, the last `Control:LogLines` lines |
 | `GET`/`PUT settings` | the keys you may change, their values (secrets masked), and `{"set":{…},"remove":[…]}` written to `node.local.json` — after the node's own validators accept the result |
-| `PUT sharing` | `mode` (`always`, `idle`, `paused`), and since 3.77 `hours`, `timeZone`, `dailyNetworkMinutes` — any of them; what is left out keeps its value |
+| `PUT sharing` | `mode` (`always`, `idle`, `paused`), since 3.77 `hours`, `timeZone`, `dailyNetworkMinutes`, and since 3.78 `models` (`{"include":[…],"exclude":[…]}`) — any of them; what is left out keeps its value |
 | `POST restart` | drain, then exit with code 75 for whatever starts the node again; `409` with the reason on a bare console |
 | `POST models/{name}/pull\|warm\|unload`, `DELETE models/{name}` | what the hub's model commands do, from here |
 | `POST engines/{name}/start\|stop`, `POST catalog/{colibri\|strata}/{model}/load\|unload` | the same for engines and catalogues |
@@ -848,6 +848,35 @@ terms with `PUT /api/control/sharing {"hours":[…],"timeZone":"…","dailyNetwo
 or on the desktop app's Overview tab. `GET /api/control/status` shows them under `sharing`, with
 `allowance.usedSeconds`, `leftSeconds` and `resetsAtUtc`. No hub change is needed: a 3.76 hub
 already holds the pause, because it is the same report.
+
+### Models kept for this machine (v3.78+)
+
+The owner decides which of the node's models the network may use. Use it when, for example, the big
+model is for your own work and the small one may serve anybody. The setting is live:
+
+```json
+"Node": { "Sharing": { "Models": { "Exclude": ["qwen3:32b"] } } }
+```
+
+- **`Exclude`**: every model except these. **`Include`**: only these. Names are matched the way
+  `Node:Models` matches them, ignoring case. Leave both empty (the default) and the network may use
+  every model, which is how 3.77 behaved. A name in both lists stops the node from starting and is
+  refused by the control API.
+- **A kept model is not paused, it is absent.** The node never reports it to the hub, so no
+  coordinator of any version routes to it, lists it in `/api/tags` or names it under a
+  capability. A request for it at the hub is a `404` naming the model, as for any model no node
+  has.
+- **It is still yours.** The local API lists and serves a kept model, and so do the control API
+  and the desktop app. `Node:Models` still decides what the node serves at all.
+- **A change reaches the hub at once.** The node re-reports its models the moment the list
+  changes, so there is no waiting for the next refresh. A network job already running on a model
+  you have just kept finishes.
+
+Set it with `PUT /api/control/sharing {"models":{"exclude":["qwen3:32b"]}}` (`[]` clears a
+list), or with the **Shared** box beside each model on the desktop app's Models tab.
+`GET /api/control/models` and `/status` say `"shared": true|false` for each model (left out
+for one `Node:Models` leaves out, which nobody is served), and
+`status.sharing.models` shows both lists.
 
 ### A private corpus on a networked node
 

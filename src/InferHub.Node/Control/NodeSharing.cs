@@ -9,7 +9,8 @@ namespace InferHub.Node.Control;
 /// Whether this node takes new network jobs now (phase 113) — from its owner's <c>Node:Sharing:Mode</c>, read live,
 /// and, in <c>idle</c> mode, from what <see cref="NodeActivity"/> says this machine itself is running. Phase 116 adds
 /// the owner's terms: the hours it shares (<c>Node:Sharing:Hours</c>) and how much network work it runs a day
-/// (<c>Node:Sharing:DailyNetworkMinutes</c>).
+/// (<c>Node:Sharing:DailyNetworkMinutes</c>). Phase 117: which models the network may use at all
+/// (<c>Node:Sharing:Models</c>) — <see cref="Shared"/>, and <see cref="SharedModelsChanged"/> when that changes.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -43,6 +44,7 @@ public sealed class NodeSharing : IHostedService, IDisposable
     private HoursCache? hoursCache;
     private DateOnly usageDay;
     private double usedSeconds;
+    private string modelsSignature;
 
     public NodeSharing(IOptionsMonitor<NodeOptions> options, NodeActivity activity, ILogger<NodeSharing> logger, TimeProvider? time = null, string? usageFile = null)
     {
@@ -52,14 +54,44 @@ public sealed class NodeSharing : IHostedService, IDisposable
         this.time = time ?? TimeProvider.System;
         this.usageFile = usageFile;
         state = new NodeSharingState(string.Empty, Mode, false, null, this.time.GetUtcNow(), 0, 0);
+        modelsSignature = Signature(options.CurrentValue.Sharing.Models);
         LoadUsage();
         activity.Changed += OnActivity;
-        optionsSubscription = options.OnChange(_ => Recompute());
+        optionsSubscription = options.OnChange(_ =>
+        {
+            Recompute();
+            CheckSharedModels();
+        });
         Recompute();
     }
 
     /// <summary>Raised when <see cref="Paused"/> or the mode changes — not on every job.</summary>
     public event Action<NodeSharingState>? Changed;
+
+    /// <summary>Phase 117: raised when <c>Node:Sharing:Models</c> changes — the mesh connection re-reports its models.</summary>
+    public event Action? SharedModelsChanged;
+
+    /// <summary>
+    /// Phase 117: the models the network may use, of <paramref name="models"/> — what the hub is told this node holds.
+    /// Everything when <c>Node:Sharing:Models</c> is empty.
+    /// </summary>
+    public IReadOnlyList<ModelInfo> Shared(IReadOnlyList<ModelInfo> models) =>
+        ModelFilter.Apply(models, options.CurrentValue.Sharing.Models);
+
+    /// <summary>Phase 117: whether the network may use <paramref name="model"/> by the owner's lists alone.</summary>
+    public bool IsShared(string? model) =>
+        Shared([new ModelInfo(model ?? string.Empty, string.Empty, 0)]).Count == 1;
+
+    /// <summary>
+    /// Phase 117: the per-model answer the control API shows — null (the field is left out) when <c>Node:Models</c>
+    /// leaves the model out, so the node serves it to nobody and "shared" is not a question (found live: every such
+    /// model read <c>true</c>).
+    /// </summary>
+    public bool? SharedState(string? model)
+    {
+        var probe = new ModelInfo(model ?? string.Empty, string.Empty, 0);
+        return ModelFilter.Apply([probe], options.CurrentValue.Models).Count == 0 ? null : IsShared(model);
+    }
 
     public string Mode => (options.CurrentValue.Sharing.Mode ?? SharingOptions.Always).Trim().ToLowerInvariant();
 
@@ -262,6 +294,33 @@ public sealed class NodeSharing : IHostedService, IDisposable
 
         activity.Publish("sharing.changed", State(string.Empty));
         Changed?.Invoke(State(string.Empty));
+    }
+
+    private void CheckSharedModels()
+    {
+        var signature = Signature(options.CurrentValue.Sharing.Models);
+
+        if (Interlocked.Exchange(ref modelsSignature, signature) == signature)
+        {
+            return;
+        }
+
+        logger.LogInformation("The models shared with the network changed ({Signature}); telling the hub.", signature.Length == 0 ? "all" : signature);
+        activity.Publish("sharing.models", new { include = options.CurrentValue.Sharing.Models.Include, exclude = options.CurrentValue.Sharing.Models.Exclude });
+        SharedModelsChanged?.Invoke();
+    }
+
+    private static string Signature(ModelFilterOptions filter)
+    {
+        static string Part(IEnumerable<string> names) => string.Join(",", names
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Select(n => n.Trim().ToLowerInvariant())
+            .Distinct()
+            .Order(StringComparer.Ordinal));
+
+        var include = Part(filter.Include);
+        var exclude = Part(filter.Exclude);
+        return include.Length == 0 && exclude.Length == 0 ? string.Empty : $"include={include};exclude={exclude}";
     }
 
     private void ScheduleWake(DateTimeOffset at)

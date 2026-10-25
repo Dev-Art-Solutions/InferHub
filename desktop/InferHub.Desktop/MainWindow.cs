@@ -31,6 +31,7 @@ public sealed class MainWindow : Window
     private readonly TextBox sharingZone = new() { MinWidth = 200, PlaceholderText = "this machine's zone" };
     private readonly TextBox sharingMinutes = new() { MinWidth = 80, PlaceholderText = "0 = none" };
     private readonly TextBlock sharingTerms = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
+    private readonly TextBlock sharingModels = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
     private bool termsShown;
 
     // Activity
@@ -156,6 +157,7 @@ public sealed class MainWindow : Window
                 Opacity = 0.7
             },
             sharingReason,
+            sharingModels,
             Heading("Sharing hours and a daily allowance"),
             sharingTerms,
             Labelled("Hours", sharingHours),
@@ -178,6 +180,12 @@ public sealed class MainWindow : Window
     private Control ModelsTab() =>
         Panel(
             Heading("Models"),
+            new TextBlock
+            {
+                Text = "Shared: the network may use the model. Clear the box to keep it for this machine — your own apps still use it, the network is not told it is here.",
+                TextWrapping = TextWrapping.Wrap,
+                Opacity = 0.7
+            },
             models,
             Heading("Get a model"),
             Row(pullName, Button("Pull", async () => await ModelAction(pullName.Text?.Trim(), "pull"))),
@@ -287,6 +295,7 @@ public sealed class MainWindow : Window
         sharingReason.Text = (shared?["paused"]?.GetValue<bool>() == true ? "Not taking network jobs now: " + Text(shared?["reason"]) : "Taking network jobs.")
                              + (held == false ? "  This network's coordinator is older than 3.76 and cannot hold a pause — update it." : "");
         sharingTerms.Text = SharingTerms.Describe(shared);
+        sharingModels.Text = SharedModels.Describe(status);
 
         // Filled once per connection, so a poll never overwrites what the owner is typing.
         if (!termsShown)
@@ -414,6 +423,14 @@ public sealed class MainWindow : Window
                 var name = Text(model?["name"]);
                 var row = Row(new TextBlock { Text = $"{name}  {Size(model?["size"])}", VerticalAlignment = VerticalAlignment.Center, MinWidth = 380 });
 
+                // Phase 117: a 3.77 node says nothing about sharing a model, and then there is no box to tick.
+                if (model?["shared"] is JsonValue sharedValue && sharedValue.TryGetValue<bool>(out var isShared))
+                {
+                    var box = new CheckBox { Content = "Shared", IsChecked = isShared, VerticalAlignment = VerticalAlignment.Center };
+                    box.IsCheckedChanged += async (_, _) => await ShareModelAsync(reply["sharing"], name, box);
+                    row.Children.Add(box);
+                }
+
                 if (manages)
                 {
                     row.Children.Add(Button("Warm", async () => await ModelAction(name, "warm")));
@@ -456,6 +473,22 @@ public sealed class MainWindow : Window
                 models.Children.Add(new TextBlock { Text = "The node lists no models." });
             }
         });
+
+    private async Task ShareModelAsync(JsonNode? lists, string name, CheckBox box)
+    {
+        var shared = box.IsChecked == true;
+        var (include, exclude, error) = SharedModels.Toggle(lists, name, shared);
+
+        if (error is not null)
+        {
+            app.Say(error);
+            await LoadModelsAsync();
+            return;
+        }
+
+        await app.SetSharedModelsAsync(name, shared, include, exclude);
+        await LoadModelsAsync();
+    }
 
     private async Task ModelAction(string? name, string action)
     {

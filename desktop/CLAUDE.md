@@ -72,3 +72,11 @@ The Overview tab edits `Node:Sharing:Hours` (one line per window), `TimeZone` an
 and validates the hours**, and its 400 is what the status bar shows. The editor fills once per connection, so the
 3 s poll never overwrites what the owner is typing. Needs a 3.77 node: a 3.76 node answers the save with its own 400
 ("mode must be one of …"), and its status has no terms, so the summary reads "any hour".
+
+### Phase 117 (desktop/v0.3.0 — models kept for this machine)
+
+The Models tab has a **Shared** box per model (shown only when the node says `shared` — 3.78+), and the Overview
+names what is kept. [SharedModels](InferHub.Desktop.Core/SharedModels.cs) turns one box into the node's lists: an
+owner's `Include` list is changed in place (unticking its last name is refused — an empty `Include` means every
+model), otherwise the model goes on or off `Exclude`, so a model pulled later is shared as before. Both lists are
+sent each time; the node validates.

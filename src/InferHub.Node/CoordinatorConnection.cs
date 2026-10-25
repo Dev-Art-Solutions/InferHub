@@ -126,6 +126,7 @@ public sealed class CoordinatorConnection(
         if (subscribedToSharing && sharing is not null)
         {
             sharing.Changed -= OnSharingChanged;
+            sharing.SharedModelsChanged -= OnBackendRecovered;
             subscribedToSharing = false;
         }
         UnsubscribeFromQuota();
@@ -175,6 +176,7 @@ public sealed class CoordinatorConnection(
         if (subscribedToSharing && sharing is not null)
         {
             sharing.Changed -= OnSharingChanged;
+            sharing.SharedModelsChanged -= OnBackendRecovered;
             subscribedToSharing = false;
         }
         retrieval.CorpusChanged -= OnCorpusChanged;
@@ -336,6 +338,9 @@ public sealed class CoordinatorConnection(
 
         subscribedToSharing = true;
         sharing.Changed += OnSharingChanged;
+        // Phase 117: a model the owner keeps (or gives back) leaves (or joins) the hub's inventory now, not on the
+        // next refresh — the same re-report a recovered backend sends.
+        sharing.SharedModelsChanged += OnBackendRecovered;
     }
 
     private void OnSharingChanged(NodeSharingState state)
@@ -1819,7 +1824,12 @@ public sealed class CoordinatorConnection(
             return;
         }
 
-        var filtered = ModelFilter.Apply(models, node.Models);
+        var served = ModelFilter.Apply(models, node.Models);
+
+        // Phase 117: the owner's Node:Sharing:Models narrows what the network is told, and nothing else. A model kept
+        // for this machine is not reported — so no hub routes to it, whatever its version — and the local API still
+        // serves it. Capabilities below are built from this list, so a kept model is named under none of them.
+        var filtered = sharing?.Shared(served) ?? served;
 
         if (activeConnection.State is not HubConnectionState.Connected)
         {
@@ -1876,11 +1886,12 @@ public sealed class CoordinatorConnection(
         }
 
         logger.LogInformation(
-            "Reported {ModelCount} of {DiscoveredCount} models from {BackendName} backend as {Capabilities}",
+            "Reported {ModelCount} of {DiscoveredCount} models from {BackendName} backend as {Capabilities}{Kept}",
             filtered.Count,
             models.Count,
             backend.Name,
-            capabilities.Count == 0 ? "no capability" : string.Join(", ", capabilities.Select(c => c.Kind)));
+            capabilities.Count == 0 ? "no capability" : string.Join(", ", capabilities.Select(c => c.Kind)),
+            served.Count > filtered.Count ? $"; {served.Count - filtered.Count} kept for this machine (Node:Sharing:Models)" : "");
 
         // Phase 44, D6. The corpus report rides the model loop rather than getting a timer of its
         // own: it is the same "what is this node doing now" refresh, and a second schedule is a

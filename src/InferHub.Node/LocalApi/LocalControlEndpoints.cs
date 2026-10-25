@@ -151,6 +151,8 @@ internal static class LocalControlEndpoints
                 timeZone = nodeOptions.Sharing.TimeZone,
                 zone = sharing.Hours.Zone.Id,
                 allowance = sharing.Allowance(),
+                // Phase 117: which models the network may use; each model below says whether it is one of them.
+                models = new { include = nodeOptions.Sharing.Models.Include, exclude = nodeOptions.Sharing.Models.Exclude },
                 // 113 D1: a pause an old hub cannot hold is said, never shown as held.
                 held = connection.ConnectionState == "disabled" ? (bool?)null : connection.HubHoldsSharing
             },
@@ -165,7 +167,7 @@ internal static class LocalControlEndpoints
             engines = services.GetService<IEngineControl>()?.State(nodeId).Engines,
             colibri = services.GetService<Backends.Colibri.IColibriControl>()?.State(nodeId),
             strata = services.GetService<Backends.Strata.IStrataControl>()?.State(nodeId),
-            models = models.Select(m => new { name = m.Name, size = m.SizeBytes }),
+            models = models.Select(m => new { name = m.Name, size = m.SizeBytes, shared = sharing.SharedState(m.Name) }),
             limits = services.GetService<Resources.Limits.IEngineLimiter>()?.State(nodeId),
             update = services.GetService<Update.UpdateManager>()?.State(nodeId),
             restart = restarter.Support
@@ -319,12 +321,15 @@ internal static class LocalControlEndpoints
         return Persist(context, file, null);
     }
 
-    private sealed record SharingChange(string? Mode, int? IdleSeconds, string[]? Hours, string? TimeZone, int? DailyNetworkMinutes);
+    private sealed record SharingChange(string? Mode, int? IdleSeconds, string[]? Hours, string? TimeZone, int? DailyNetworkMinutes, SharedModelsChange? Models);
+
+    /// <summary>Phase 117: either list may be left out (kept) or sent empty (cleared).</summary>
+    private sealed record SharedModelsChange(string[]? Include, string[]? Exclude);
 
     /// <summary>
     /// 113's mode, and since 116 the owner's terms: any of <c>mode</c>, <c>idleSeconds</c>, <c>hours</c> (an array of
-    /// lines, <c>[]</c> clears them), <c>timeZone</c> (<c>""</c> clears it) and <c>dailyNetworkMinutes</c>. What is
-    /// left out keeps its value.
+    /// lines, <c>[]</c> clears them), <c>timeZone</c> (<c>""</c> clears it) and <c>dailyNetworkMinutes</c>; since 117
+    /// <c>models</c> (<c>{include, exclude}</c>, each an array, <c>[]</c> clears it). What is left out keeps its value.
     /// </summary>
     private static async Task<IResult> SetSharingAsync(HttpContext context, CancellationToken cancellationToken)
     {
@@ -339,9 +344,14 @@ internal static class LocalControlEndpoints
             change = null;
         }
 
-        if (change is null || change is { Mode: null, IdleSeconds: null, Hours: null, TimeZone: null, DailyNetworkMinutes: null })
+        if (change is null || change is { Mode: null, IdleSeconds: null, Hours: null, TimeZone: null, DailyNetworkMinutes: null, Models: null })
         {
-            return Error(400, "send at least one of mode, idleSeconds, hours, timeZone, dailyNetworkMinutes");
+            return Error(400, "send at least one of mode, idleSeconds, hours, timeZone, dailyNetworkMinutes, models");
+        }
+
+        if (change.Models is { Include: null, Exclude: null })
+        {
+            return Error(400, "models takes include, exclude or both (each an array of model names; [] clears it)");
         }
 
         var mode = change.Mode?.Trim().ToLowerInvariant();
@@ -394,7 +404,31 @@ internal static class LocalControlEndpoints
             Write("Node:Sharing:DailyNetworkMinutes", minutes == 0 ? null : JsonValue.Create(minutes));
         }
 
+        if (change.Models is { } shared)
+        {
+            // One key, Node:Sharing:Models, holding both lists — a list left out is the one the file already has.
+            var current = context.RequestServices.GetRequiredService<IOptionsMonitor<NodeOptions>>().CurrentValue.Sharing.Models;
+            var include = Names(shared.Include ?? [.. current.Include]);
+            var exclude = Names(shared.Exclude ?? [.. current.Exclude]);
+            var value = new JsonObject();
+
+            if (include.Length > 0)
+            {
+                value["Include"] = new JsonArray([.. include.Select(n => (JsonNode?)JsonValue.Create(n))]);
+            }
+
+            if (exclude.Length > 0)
+            {
+                value["Exclude"] = new JsonArray([.. exclude.Select(n => (JsonNode?)JsonValue.Create(n))]);
+            }
+
+            Write("Node:Sharing:Models", value.Count == 0 ? null : value);
+        }
+
         return Persist(context, file, touched);
+
+        static string[] Names(IEnumerable<string?> names) =>
+            names.Where(n => !string.IsNullOrWhiteSpace(n)).Select(n => n!.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
     /// <summary>112 D2: validated against the node's own validators before a byte reaches the file.</summary>
@@ -454,6 +488,7 @@ internal static class LocalControlEndpoints
         var services = context.RequestServices;
         var backend = services.GetRequiredService<IInferenceBackend>();
         var nodeId = services.GetRequiredService<INodeIdentity>().GetOrCreateNodeId();
+        var sharing = services.GetRequiredService<NodeSharing>();
         IReadOnlyList<ModelInfo> models;
 
         try
@@ -468,7 +503,13 @@ internal static class LocalControlEndpoints
         return Results.Json(new
         {
             managesModels = services.GetRequiredService<ModelCommandExecutor>().ManagesModels,
-            models = models.Select(m => new { name = m.Name, size = m.SizeBytes, digest = m.Digest, kinds = (backend as IModelKinds)?.KindsFor(m.Name) }),
+            // Phase 117: the lists behind each model's `shared`, so a client can change one model without a status call.
+            sharing = new
+            {
+                include = services.GetRequiredService<IOptionsMonitor<NodeOptions>>().CurrentValue.Sharing.Models.Include,
+                exclude = services.GetRequiredService<IOptionsMonitor<NodeOptions>>().CurrentValue.Sharing.Models.Exclude
+            },
+            models = models.Select(m => new { name = m.Name, size = m.SizeBytes, digest = m.Digest, kinds = (backend as IModelKinds)?.KindsFor(m.Name), shared = sharing.SharedState(m.Name) }),
             colibri = services.GetService<Backends.Colibri.IColibriControl>()?.State(nodeId),
             strata = services.GetService<Backends.Strata.IStrataControl>()?.State(nodeId)
         }, Json);

@@ -93,6 +93,27 @@ public sealed class SharingMeshTests
         Assert.Single(mesh.Registry.FindNodesWithModel("llama3", includeUnserviceable: true));
     }
 
+    [Fact]
+    public async Task AModelKeptForTheOwnerIsNeverToldToTheHubAndComesBackWhenShared()
+    {
+        await using var mesh = await SharingMesh.StartAsync(SharingOptions.Always, models: new ModelFilterOptions { Exclude = ["qwen3:32b"] });
+        await mesh.WaitForSharingAsync(s => s is { Paused: false });
+        await mesh.WaitForModelsAsync(holds => holds("llama3"));
+
+        // Phase 117: not paused, not unserviceable — absent. No hub version can route to what it was never told.
+        Assert.Single(mesh.Registry.FindNodesWithModel("llama3"));
+        Assert.Empty(mesh.Registry.FindNodesWithModel("qwen3:32b", includeUnserviceable: true));
+
+        mesh.Options.Set(new NodeOptions { Name = SharingMesh.NodeId });
+        await mesh.WaitForModelsAsync(holds => holds("qwen3:32b"));
+        Assert.Single(mesh.Registry.FindNodesWithModel("qwen3:32b"));
+
+        mesh.Options.Set(new NodeOptions { Name = SharingMesh.NodeId, Sharing = new SharingOptions { Models = new ModelFilterOptions { Include = ["qwen3:32b"] } } });
+        await mesh.WaitForModelsAsync(holds => !holds("llama3"));
+        Assert.Empty(mesh.Registry.FindNodesWithModel("llama3", includeUnserviceable: true));
+        Assert.Single(mesh.Registry.FindNodesWithModel("qwen3:32b"));
+    }
+
     private sealed class SharingMesh : IAsyncDisposable
     {
         public const string NodeId = "sharing-node";
@@ -111,12 +132,29 @@ public sealed class SharingMeshTests
 
         public CoordinatorConnection Connection { get; private set; } = null!;
 
-        public static async Task<SharingMesh> StartAsync(string mode, int idleSeconds = 60)
+        public static async Task<SharingMesh> StartAsync(string mode, int idleSeconds = 60, ModelFilterOptions? models = null)
         {
             var mesh = new SharingMesh { scratch = Path.Combine(Path.GetTempPath(), "inferhub-sharing-" + Guid.NewGuid().ToString("N")) };
             await mesh.StartCoordinatorAsync();
-            await mesh.StartNodeAsync(mode, idleSeconds);
+            await mesh.StartNodeAsync(mode, idleSeconds, models ?? new ModelFilterOptions());
             return mesh;
+        }
+
+        public async Task WaitForModelsAsync(Func<Func<string, bool>, bool> predicate)
+        {
+            bool Holds(string model) => Registry.FindNodesWithModel(model, includeUnserviceable: true).Count > 0;
+
+            for (var i = 0; i < 400; i++)
+            {
+                if (predicate(Holds))
+                {
+                    return;
+                }
+
+                await Task.Delay(25);
+            }
+
+            throw new TimeoutException("No model report matching the predicate arrived at the hub.");
         }
 
         public async Task<NodeSharingState> WaitForSharingAsync(Func<NodeSharingState, bool> predicate)
@@ -167,7 +205,7 @@ public sealed class SharingMeshTests
             await app.StartAsync();
         }
 
-        private async Task StartNodeAsync(string mode, int idleSeconds)
+        private async Task StartNodeAsync(string mode, int idleSeconds, ModelFilterOptions models)
         {
             var backend = new IdleBackend();
             var toolOptions = Microsoft.Extensions.Options.Options.Create(new ToolOptions());
@@ -176,7 +214,7 @@ public sealed class SharingMeshTests
                 Microsoft.Extensions.Options.Options.Create(new VectorReplicaOptions { ReplicaDirectory = Path.Combine(scratch, "replicas") }),
                 NullLogger<ReplicaStore>.Instance);
 
-            var options = new NodeOptions { Name = NodeId, Sharing = new SharingOptions { Mode = mode, IdleSeconds = idleSeconds } };
+            var options = new NodeOptions { Name = NodeId, Sharing = new SharingOptions { Mode = mode, IdleSeconds = idleSeconds, Models = models } };
             Options = new Monitor(options);
             var nodeOptions = Microsoft.Extensions.Options.Options.Create(options);
             Sharing = new NodeSharing(Options, Activity, NullLogger<NodeSharing>.Instance);
@@ -282,7 +320,7 @@ public sealed class SharingMeshTests
             public bool SupportsModelManagement => false;
 
             public Task<IReadOnlyList<ModelInfo>?> ListModelsAsync(CancellationToken cancellationToken)
-                => Task.FromResult<IReadOnlyList<ModelInfo>?>([new ModelInfo("llama3", "sha256:a", 1)]);
+                => Task.FromResult<IReadOnlyList<ModelInfo>?>([new ModelInfo("llama3", "sha256:a", 1), new ModelInfo("qwen3:32b", "sha256:b", 2)]);
 
             public Task<string> GenerateAsync(string requestJson, CancellationToken cancellationToken) => throw new NotSupportedException();
 

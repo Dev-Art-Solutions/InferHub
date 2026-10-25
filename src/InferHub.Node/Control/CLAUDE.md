@@ -119,6 +119,33 @@ looks again when the running jobs would spend what is left, at midnight, and at 
 `<DataDirectory>/sharing-usage.json` (only while an allowance is set); a node starting on the same day reads it.
 A job cut short by a stop or a crash is not counted — the error is in the network's favour by minutes, never in a
 fresh allowance.
+
+### Phase 117 (models kept for the owner's machine)
+
+`Node:Sharing:Models` — `{Include, Exclude}`, `ModelFilterOptions` like `Node:Models`, live. `NodeSharing.Shared`
+narrows a model list; `SharedModelsChanged` fires when the lists' contents change (normalised, so a re-save of the
+same names or another term changing fires nothing).
+
+**D1, load-bearing — a kept model is absent from the network, not paused.** The one place it acts is
+`CoordinatorConnection.ReportModelsAsync`: `Node:Models` first (what the node serves), then `Shared` (what the
+network is told). Not reported → no hub of any version routes to it, lists it or names it under a capability
+(`BackendCapabilities.Declare` reads the narrowed list). A *kind* stays declared while any shared model is
+served under it — an Ollama node keeping its only embedding model still declares `embed` over its chat models, as
+Ollama itself would answer (found live; the first draft claimed the kind was withdrawn). No wire
+field, no hub change — 114 D1's private corpus applied to a model. *Rejected:* a per-model flag on the report for
+the hub to skip — an old hub would route straight through it, and the console would show models nobody may use.
+
+**D2 — the change reaches the hub at once.** `SharedModelsChanged` → the same re-report a recovered backend sends
+(`OnBackendRecovered`). A job that raced the report runs, as 113 D2: the window is one round-trip.
+
+**D3 — the local side never sees the list.** The local API, `/api/control/models` and `/status` list every model;
+the control API adds `shared` per model (left out for one `Node:Models` leaves out — found live, it read `true`) and
+`sharing.models` (both lists). `PUT /api/control/sharing {models:{include,
+exclude}}` — a list left out keeps its value, `[]` clears it, `{}` is a 400; a name in both lists fails startup and
+the PUT. The two lists live under one key so the file never holds half a change.
+
+**Not covered:** a hub profile can still pin a kept catalogue model (it loads; the network still cannot route to it),
+and tool/image recipes are not models — `Tools:Allowed` and the profile decide those.
 ### Phase 114 (a private corpus on a meshed node) — amends 38 D1
 
 **D1, load-bearing — private is a store of its own, reachable only through the local API.** 38 D1's sentence with
