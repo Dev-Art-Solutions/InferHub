@@ -909,10 +909,28 @@ POST /api/control/fit/install  {"link": "…", "engine": "llamacpp", "variant": 
   way to run a model too big for the card. Options are ranked by where the model sits, then by
   quality up to about six bits a weight. Quants below three bits rank lower, and those below two
   rank lower still.
+- **Strata and colibri plan for themselves, and are asked.** For a Strata repo the node runs
+  Strata's own planner, the size table and recommendation its setup and app use, with this PC's
+  RAM and VRAM lowered to your limits. Strata's verdict for each size is the answer, and its
+  recommended size comes first. For a colibri model already on the node, the node asks
+  `coli plan --json`: how much goes on the card (the dense layers and the hot experts), how
+  much in RAM, how much stays on disk. For a model not yet converted, the estimate follows what
+  colibri does with a card.
+- **colibri on the GPU:** set `Colibri:Serve:Vulkan=true` (also in the desktop's Settings).
+  colibri then puts the dense layers and a hot-expert tier on the card. GLM-5.3-Flash (321B) on
+  an RTX 3090 Ti: 4.3 GiB of dense layers and a 17 GiB expert tier on the card, and a warm answer
+  in 8 s against 25 s on the CPU. A CUDA build of colibri uses the card by itself.
 - **The context goes with the install.** Strata gets `setup.py --context`. A llama.cpp model gets
   `ctx-size` in its preset, and choosing a new context for a model already here restarts the
-  router to apply it. An Ollama model gets `num_ctx` on every request that does not set its own,
-  kept in `<DataDirectory>/model-contexts.json`. colibri sizes its own cache.
+  router to apply it. A colibri model gets `coli serve --ctx` at every launch. An Ollama model
+  gets `num_ctx` on every request that does not set its own, kept in
+  `<DataDirectory>/model-contexts.json`.
+- **Checked on a GPU** (RTX 3090 Ti), estimate against what the engine took. The estimate is an
+  upper bound, typically 0.6–1 GB over: llama3.1 8B in Ollama at 64K, 14.1 GB estimated against
+  13.3 GB used. llama.cpp's own `llama-fit-params` agreed with the placement in every case: an
+  8B at 32K all on the card, a 35B-A3B mixture-of-experts at 64K all on the card at the edge, a
+  70B split with 47 of 80 layers on the card. Models with sliding-window layers (gpt-oss) are
+  counted at the full context, so they come out about 2 GB over.
 - An option that does not fit is refused unless you send `"force": true`.
 
 In the desktop app (0.4.0), this is **Check fit…** on the Models tab.

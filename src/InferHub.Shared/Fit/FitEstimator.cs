@@ -132,9 +132,9 @@ public static class FitEstimator
                 break;
 
             case FitEngines.Colibri:
-                placed = Colibri(model, variant, ram, context, why);
-                applied = false;
-                why.Add("colibri sizes its own cache from free RAM; the context is not something the node can set for it");
+                placed = Colibri(model, variant, engine, vram, ram, context, why);
+                applied = true;
+                why.Add("the context goes to coli serve as --ctx at every launch (kept in the download's marker)");
                 break;
 
             default:
@@ -261,29 +261,58 @@ public static class FitEstimator
         return new Placed(false, FitPlacements.None, vram, hint, 0, "—");
     }
 
-    /// <summary>colibri: the checkpoint converted, the dense part and the cache in RAM, experts read from disk past what RAM holds.</summary>
-    private static Placed Colibri(ModelFacts model, ModelVariant variant, long ram, int context, List<string> why)
+    /// <summary>
+    /// colibri: the checkpoint converted, the dense part and the cache in RAM, experts read from disk past what RAM holds —
+    /// and with a card it can reach (118 D6), colibri's own placement: Vulkan puts the dense chain and a hot-expert tier on
+    /// the device (measured: GLM-5.3-Flash, 4.3 GiB of dense layers and a 17.4 GiB tier on a 3090 Ti), CUDA a hot-expert
+    /// tier of the card less 2 GB.
+    /// </summary>
+    private static Placed Colibri(ModelFacts model, ModelVariant variant, EngineFacts engine, long vram, long ram, int context, List<string> why)
     {
         var converted = Converted(model, variant);
         var share = model.ExpertShare ?? 0.9;
         var dense = (long)(converted * (1 - share));
+        var experts = converted - dense;
         var kv = Kv(model.KvBytesPerToken, context);
         why.Add($"converted for colibri: about {Gib(converted)} (a byte per dense parameter, 0.6 per expert parameter — GLM-5.3-Flash 321B measured 195 GB; a small model it converts to int8 is nearer a byte each)");
 
-        if (converted + kv <= ram)
+        long denseOnCard = 0, tier = 0;
+
+        if (vram > 0 && engine.Accelerator == "vulkan")
         {
-            why.Add("the whole model fits in RAM; colibri runs it on the CPU");
-            return new Placed(true, FitPlacements.Ram, 0, converted + kv, kv, "slow");
+            denseOnCard = Math.Min(dense, Math.Max(0, vram - 1024));
+            tier = Math.Max(0, vram - denseOnCard - 1024);
+            why.Add($"Vulkan: the dense chain on the card ({Gib(denseOnCard)}) and a hot-expert tier of about {Gib(tier)} beside it; the host copy of the dense weights is given back");
+        }
+        else if (vram > 0 && engine.Accelerator == "cuda")
+        {
+            tier = Math.Max(0, vram - 2048);
+            why.Add($"CUDA: a hot-expert tier of about {Gib(tier)} on the card (the card less 2 GB, colibri's own reserve)");
+        }
+        else if (vram > 0)
+        {
+            why.Add("colibri runs on the CPU on this node: set Colibri:Serve:Vulkan=true (or install the CUDA build) for colibri's own GPU placement — GLM-5.3-Flash here answered warm in 8 s on the card against 25 s without it");
         }
 
-        if (dense + kv <= ram)
+        var hostDense = dense - denseOnCard;
+        var inRam = hostDense + Math.Max(0, experts - tier) + kv;
+        var onCard = denseOnCard + tier;
+        var gpu = onCard > 0;
+
+        if (inRam <= ram)
         {
-            why.Add($"the dense part ({Gib(dense)}) stays in RAM; the experts that do not fit are read from disk — the first answer takes minutes (GLM-5.3-Flash here: 6 min cold, 25 s warm), and an HDD is far slower than an SSD");
-            return new Placed(true, FitPlacements.StreamFromDisk, 0, ram, kv, "very slow");
+            why.Add(gpu ? "every expert not on the card is in RAM; the CPU runs them" : "the whole model fits in RAM; colibri runs it on the CPU");
+            return new Placed(true, FitPlacements.Ram, onCard, inRam, kv, gpu ? "medium" : "slow");
         }
 
-        why.Add($"even the dense part ({Gib(dense)}) does not fit in {Gib(ram)} of RAM");
-        return new Placed(false, FitPlacements.None, 0, dense + kv, kv, "—");
+        if (hostDense + kv <= ram)
+        {
+            why.Add($"the experts that fit neither the card nor RAM are read from disk — the first answer takes minutes (GLM-5.3-Flash here from an HDD: 6–9 min cold; warm 8 s on the card, 25 s on the CPU), and an HDD is far slower than an SSD");
+            return new Placed(true, FitPlacements.StreamFromDisk, onCard, ram, kv, gpu ? "slow" : "very slow");
+        }
+
+        why.Add($"even the dense part ({Gib(hostDense)}) does not fit in {Gib(ram)} of RAM");
+        return new Placed(false, FitPlacements.None, onCard, hostDense + kv, kv, "—");
     }
 
     private static void Explain(string kind, ModelFacts model, Placed placed, long weights, long? kvPerToken, int context, long vram, long ram, List<string> why)
@@ -349,6 +378,10 @@ public static class FitEstimator
 
     private static long Converted(ModelFacts model, ModelVariant variant) =>
         model.Parameters is > 0 ? Mib((long)(model.Parameters.Value * (1 - 0.4 * (model.ExpertShare ?? 0.9)))) : Mib(variant.Bytes) / 2;
+
+    /// <summary>The ranking for an option an engine's own planner made (118 D6), by the same rules as the estimate's own.</summary>
+    public static int ScoreOf(ModelFacts model, ModelVariant variant, string placement, string speed, bool fits, bool available)
+        => Score(model, variant, new Placed(fits, placement, 0, 0, 0, speed), available);
 
     private static int Score(ModelFacts model, ModelVariant variant, Placed placed, bool available)
     {

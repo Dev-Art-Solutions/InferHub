@@ -368,6 +368,21 @@ public sealed class FitEstimatorTests
     }
 
     [Fact]
+    public void ColibriOnVulkanPutsTheDenseChainAndAHotTierOnTheCard()
+    {
+        var moe = Model(600 * Gi, share: 0.95, experts: 288, source: ModelFacts.SourceCheckpoint, parameters: 321_000_000_000);
+        var machine = Machine(ramMiB: 262144);
+        machine = machine with { Engines = machine.Engines.Select(e => e.Kind == FitEngines.Colibri ? e with { Accelerator = "vulkan" } : e).ToArray() };
+
+        var option = Of(FitEstimator.Estimate(moe, machine, 32768), FitEngines.Colibri);
+
+        Assert.Equal(FitPlacements.Ram, option.Placement);
+        Assert.Equal("medium", option.Speed);
+        Assert.InRange(option.VramMiB, 20000, 23348);
+        Assert.Contains(option.Why, w => w.StartsWith("Vulkan: the dense chain on the card"));
+    }
+
+    [Fact]
     public void OllamaWithParallelSlotsKeepsAContextForEach()
     {
         var machine = Machine();
@@ -403,7 +418,8 @@ public sealed class FitEstimatorTests
         var colibri = Of(FitEstimator.Estimate(moe, Machine(ramMiB: 262144), 8192), FitEngines.Colibri);
 
         Assert.Equal(FitPlacements.Ram, colibri.Placement);
-        Assert.False(colibri.ContextApplied);
+        Assert.True(colibri.ContextApplied);
+        Assert.Contains(colibri.Why, w => w.Contains("Colibri:Serve:Vulkan=true"));
         Assert.Empty(FitEstimator.Estimate(dense, Machine(), 8192));
         Assert.Contains(FitEstimator.Refused(dense), r => r.Engine == FitEngines.Colibri && r.Reason.Contains("mixture-of-experts"));
         Assert.Equal(FitPlacements.StreamFromDisk, Of(FitEstimator.Estimate(moe, Machine(ramMiB: 98304), 8192), FitEngines.Colibri).Placement);

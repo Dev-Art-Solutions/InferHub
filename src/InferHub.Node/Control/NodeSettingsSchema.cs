@@ -39,6 +39,7 @@ public static class NodeSettingsSchema
         new("Ollama:Endpoint", "string", false, "engines", "The Ollama this node drives."),
         new("Backend:Type", "string", false, "engines", "One backend: ollama, llamacpp, colibri, strata, openai… Empty when Backend:Engines is used."),
         new("Backend:Engines", "json", false, "engines", "Several engines on one node: {name: {Type, Autostart, Serve…}}."),
+        new("Colibri:Serve:Vulkan", "bool", false, "engines", "colibri on the card through Vulkan: the dense layers and the hot experts on the GPU (phase 118). Empty: as the environment says."),
         new("Colibri:Serve:ModelsDir", "string", false, "engines", "A folder of converted colibri models."),
         new("Colibri:Serve:Python", "string", false, "engines", "The Python that runs colibri's launcher."),
         new("Colibri:Serve:Launcher", "string", false, "engines", "colibri's coli launcher."),

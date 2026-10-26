@@ -93,7 +93,7 @@ public sealed partial class HuggingFaceStore(
         IAsyncEnumerable<ModelPullProgress> steps = ggufs.Length > 0
             ? GgufAsync(hf, reference, commit, SelectGguf(reference, ggufs), context, cancellationToken)
             : IsCheckpoint(tree)
-                ? CheckpointAsync(reference, commit, cancellationToken)
+                ? CheckpointAsync(reference, commit, context, cancellationToken)
                 : throw new ArgumentException(
                     $"'{reference.RepoId}' has no .gguf and is not a safetensors checkpoint (no config.json beside *.safetensors); there is nothing here llama.cpp or colibri can serve.");
 
@@ -328,6 +328,7 @@ public sealed partial class HuggingFaceStore(
     private async IAsyncEnumerable<ModelPullProgress> CheckpointAsync(
         HfReference reference,
         string commit,
+        int? context,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (targets.ColibriDirectory is not { } root || converter is null)
@@ -347,6 +348,13 @@ public sealed partial class HuggingFaceStore(
         if (AlreadyHere(directory, reference, commit, null) is { } done)
         {
             yield return new ModelPullProgress(done, null, null);
+
+            // 118 D6: coli serve reads it as --ctx at its next launch.
+            if (context is > 0 && ContextOf(directory) != context && await SetContextAsync(directory, context.Value, cancellationToken))
+            {
+                yield return new ModelPullProgress($"'{name}' will run with a {context}-token context from its next load", null, null);
+            }
+
             yield break;
         }
 
@@ -414,7 +422,7 @@ public sealed partial class HuggingFaceStore(
                 throw new InvalidOperationException($"coli convert finished and wrote no config.json; colibri would not list '{name}'");
             }
 
-            await WriteMarkerAsync(staging, reference, commit, null, "colibri", cancellationToken);
+            await WriteMarkerAsync(staging, reference, commit, null, "colibri", cancellationToken, context);
             Directory.Move(staging, directory);
         }
         finally

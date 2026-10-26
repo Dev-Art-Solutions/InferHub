@@ -25,6 +25,8 @@ public sealed record GpuFacts(int Index, string Name, long TotalMiB, long? FreeM
 /// <param name="VramLimitMiB">The owner's limit for this runtime (102); null is none.</param>
 /// <param name="KvCopies">How many contexts the engine keeps per loaded model: Ollama gives each of its <c>OLLAMA_NUM_PARALLEL</c>
 /// slots the whole context; llama.cpp shares one (<c>kv_unified</c>).</param>
+/// <param name="Accelerator">For colibri: how its engines reach the card here — <c>vulkan</c> (<c>Colibri:Serve:Vulkan</c>) or
+/// <c>cuda</c> (a CUDA build) — or null, the CPU.</param>
 public sealed record EngineFacts(
     string Kind,
     string? Name,
@@ -34,7 +36,8 @@ public sealed record EngineFacts(
     long? DiskFreeMiB,
     long? VramLimitMiB,
     long? RamLimitMiB,
-    int KvCopies = 1);
+    int KvCopies = 1,
+    string? Accelerator = null);
 
 public static class FitEngines
 {

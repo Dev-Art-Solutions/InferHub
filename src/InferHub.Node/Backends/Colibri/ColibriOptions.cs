@@ -78,6 +78,14 @@ public sealed class ColibriServeOptions : Catalog.ICatalogServeOptions
     public string Launcher { get; set; } = "coli";
 
     /// <summary>
+    /// Phase 118: <c>COLI_VULKAN=1</c> for the engines this node launches — colibri's own Vulkan placement puts the dense
+    /// chain and a hot-expert tier on the card (GLM-5.3-Flash on a 3090 Ti: 4.3 GiB of dense layers, a 17.4 GiB expert
+    /// budget, a warm answer in 8 s against 25 s on the CPU). Null leaves the environment as it is (every node before 3.79);
+    /// false is <c>COLI_VULKAN=0</c>. A CUDA build places by itself on Windows and needs neither.
+    /// </summary>
+    public bool? Vulkan { get; set; }
+
+    /// <summary>
     /// Phase 97: a directory of converted models, one per sub-directory holding a <c>config.json</c>,
     /// each served under its directory's name and launched when a request names it (97 D1).
     /// </summary>

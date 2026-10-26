@@ -9,7 +9,7 @@ namespace InferHub.Node.Fit;
 /// pull the node already runs (D5). The model's facts are kept for a few minutes so a dialog that tries contexts
 /// does not ask Hugging Face again each time.
 /// </summary>
-public sealed class FitService(ModelFactsReader reader, Func<MachineFacts> machine, TimeProvider? time = null)
+public sealed class FitService(ModelFactsReader reader, Func<MachineFacts> machine, TimeProvider? time = null, IReadOnlyList<IEnginePlanner>? planners = null)
 {
     private static readonly TimeSpan Keep = TimeSpan.FromMinutes(10);
 
@@ -31,13 +31,35 @@ public sealed class FitService(ModelFactsReader reader, Func<MachineFacts> machi
         var (model, canonical) = await FactsAsync(link, cancellationToken);
         var asked = context is > 0 ? context.Value : FitEstimator.DefaultContext;
         var here = machine();
+        var options = FitEstimator.Estimate(model, here, asked).ToList();
+
+        // 118 D6: an engine that plans its own placement answers for itself.
+        foreach (var planner in planners ?? [])
+        {
+            if (!options.Any(o => o.Engine == planner.Engine) || here.Engines.FirstOrDefault(e => e.Kind == planner.Engine) is not { } engine)
+            {
+                continue;
+            }
+
+            var answer = await planner.PlanAsync(model, here, engine, asked, cancellationToken);
+
+            if (answer?.Options is { Count: > 0 } planned)
+            {
+                options.RemoveAll(o => o.Engine == planner.Engine);
+                options.AddRange(planned);
+            }
+            else if (answer?.Unavailable is { } why)
+            {
+                options = options.Select(o => o.Engine == planner.Engine ? o with { Why = [why, .. o.Why] } : o).ToList();
+            }
+        }
 
         return new Answer(
             canonical,
             asked,
             model,
             here,
-            FitEstimator.Estimate(model, here, asked),
+            options.OrderByDescending(o => o.Score).ThenBy(o => o.WeightsMiB).ToArray(),
             FitEstimator.Refused(model).Select(r => new Refusal(r.Engine, r.Reason)).ToArray());
     }
 

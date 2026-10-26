@@ -631,6 +631,22 @@ internal static partial class LocalControlEndpoints
         }
 
         var refusals = await catalog.ApplyAsync(new CatalogProfile(Loaded: loaded), cancellationToken);
+
+        // Found live (118): a model a request loaded was never pinned, so taking it out of the pins stopped nothing — GLM-5.3
+        // kept 23 GB of the card after "unload". Unpinned now, it is stopped as an engine unload would.
+        if (action.Equals("unload", StringComparison.OrdinalIgnoreCase) && catalog is IInferenceBackend backend
+            && catalog.State(nodeId).Models.Any(m => string.Equals(m.Name, model, StringComparison.OrdinalIgnoreCase) && m.State is "loaded" or "loading"))
+        {
+            try
+            {
+                await backend.UnloadAsync(model, cancellationToken);
+            }
+            catch (InvalidOperationException ex)
+            {
+                refusals = [.. refusals, ex.Message];
+            }
+        }
+
         return Results.Json(new { engine, model, action, refusals, note = HubNote(services) }, Json);
     }
 

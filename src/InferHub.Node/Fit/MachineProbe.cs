@@ -63,8 +63,8 @@ public sealed class MachineProbe(
         list.Add(!coli.Present
             ? Facts(FitEngines.Colibri, null, false, "this node has no colibri engine", null)
             : targets?.ColibriDirectory is { } dir
-                ? Facts(FitEngines.Colibri, coli.Name, true, null, dir)
-                : Facts(FitEngines.Colibri, coli.Name, false, hf ? "colibri has no catalogue (Colibri:Serve:ModelsDir) or HuggingFace:Convert is off" : hfOff, colibri.Serve.ModelsDir));
+                ? Facts(FitEngines.Colibri, coli.Name, true, null, dir, accelerator: ColibriAccelerator())
+                : Facts(FitEngines.Colibri, coli.Name, false, hf ? "colibri has no catalogue (Colibri:Serve:ModelsDir) or HuggingFace:Convert is off" : hfOff, colibri.Serve.ModelsDir, accelerator: ColibriAccelerator()));
 
         var stra = EngineOf(BackendOptions.Strata);
         var strataDir = string.IsNullOrWhiteSpace(strata.DataDir) ? strata.Root : strata.DataDir;
@@ -75,11 +75,30 @@ public sealed class MachineProbe(
         return list;
     }
 
-    private EngineFacts Facts(string kind, string? name, bool installs, string? absent, string? directory, int kvCopies = 1)
+    private EngineFacts Facts(string kind, string? name, bool installs, string? absent, string? directory, int kvCopies = 1, string? accelerator = null)
     {
         node.ResourceLimits.Engines.TryGetValue(kind, out var limit);
 
-        return new EngineFacts(kind, name, installs, absent, directory, FreeMiB(directory), limit?.VramMiB, limit?.MemoryMiB, kvCopies);
+        return new EngineFacts(kind, name, installs, absent, directory, FreeMiB(directory), limit?.VramMiB, limit?.MemoryMiB, kvCopies, accelerator);
+    }
+
+    /// <summary>118 D6: how colibri reaches the card here — Vulkan when the owner said so, CUDA when the build beside the launcher has it.</summary>
+    private string? ColibriAccelerator()
+    {
+        if (colibri.Serve.Vulkan is { } vulkan)
+        {
+            return vulkan ? "vulkan" : null;
+        }
+
+        try
+        {
+            var directory = Path.GetDirectoryName(Path.GetFullPath(colibri.Serve.Launcher));
+            return directory is not null && (File.Exists(Path.Combine(directory, "coli_cuda.dll")) || File.Exists(Path.Combine(directory, "libcoli_cuda.so"))) ? "cuda" : null;
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException)
+        {
+            return null;
+        }
     }
 
     private (bool Present, string? Name) EngineOf(string type)

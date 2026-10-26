@@ -921,7 +921,22 @@ public static class NodeHostBuilderExtensions
                 services.GetService<Backends.Strata.StrataInstaller>() is not null,
                 () => services.GetRequiredService<IInferenceBackend>().SupportsModelManagement);
 
-            return new Fit.FitService(reader, probe.Read, services.GetService<TimeProvider>());
+            // 118 D6: the engines that plan their own placement are asked — Strata with its install, colibri with its catalogue.
+            var planners = new List<Fit.IEnginePlanner>();
+            var strata = services.GetRequiredService<IOptions<Backends.Strata.StrataOptions>>().Value;
+            var colibri = services.GetRequiredService<IOptions<ColibriOptions>>().Value;
+
+            if (Backends.Strata.StrataComposition.HasCatalog(strata, backend))
+            {
+                planners.Add(new Fit.StrataPlanner(strata));
+            }
+
+            if (!string.IsNullOrWhiteSpace(colibri.Serve.ModelsDir) || colibri.Serve.Models.Count > 0)
+            {
+                planners.Add(new Fit.ColibriPlanner(colibri));
+            }
+
+            return new Fit.FitService(reader, probe.Read, services.GetService<TimeProvider>(), planners);
         });
     }
 

@@ -56,6 +56,14 @@ public sealed class FitChoicesTests
     }
 
     [Fact]
+    public void ColibriInRamWithAHotTierSaysWhatIsOnTheCard()
+    {
+        var option = (JsonObject)JsonNode.Parse("""{"engine":"colibri","variant":"checkpoint","fits":true,"placement":"ram","vramMiB":21074,"ramMiB":183296,"speed":"medium"}""")!;
+
+        Assert.Equal("colibri · checkpoint · card 21 GiB + RAM 179 GiB · medium", FitChoices.Headline(option));
+    }
+
+    [Fact]
     public void TheModelTheMachineAndTheRefusalsAreOneLineEach()
     {
         Assert.Equal("o/r · 30.5B parameters · 128 experts, 8 a token · trained for 40K", FitChoices.Model(Answer));

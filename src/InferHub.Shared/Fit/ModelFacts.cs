@@ -80,7 +80,7 @@ public sealed record ModelFacts(
             // MLA (DeepSeek, Kimi): the cache holds the compressed latent and the rope part, not the full heads.
             var rope = Int("rope.dimension_count") ?? 64;
             width = (int)(rank + rope);
-            notes.Add($"MLA: {rank} + {rope} values per token per layer");
+            notes.Add(rope > 0 ? $"MLA: {rank} + {rope} values per token per layer" : $"MLA: {rank} values per token per layer");
         }
 
         var experts = (int?)Int("expert_count");
@@ -221,7 +221,7 @@ public sealed record ModelFacts(
         {
             var rope = Int("qk_rope_head_dim") ?? 64;
             width = (int)(rank + rope);
-            notes.Add($"MLA: {rank} + {rope} values per token per layer");
+            notes.Add(rope > 0 ? $"MLA: {rank} + {rope} values per token per layer" : $"MLA: {rank} values per token per layer");
         }
 
         var experts = (int?)Int("n_routed_experts", "num_experts", "num_local_experts", "moe_num_experts");

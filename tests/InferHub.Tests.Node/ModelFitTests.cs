@@ -339,6 +339,117 @@ public sealed class ModelFitTests : IAsyncLifetime
         Assert.Equal(2, restarts.Count);
     }
 
+    // ---- D6: an engine that plans its own placement is asked ---------------------------------
+
+    /// <summary>A trimmed copy of what <c>coli plan --json</c> answered for GLM-5.3-Flash at 32K with COLI_VULKAN=1 on the 3090 Ti box.</summary>
+    private const string ColiPlan = """
+        {"tiers":{"disk":{"cold_expert_bytes":0},"ram":{"budget_bytes":185010331320,"dense_on_device_bytes":3752853504,"sequence_state_bytes":1107296256},
+         "vram":{"budget_bytes":21840423936,"hot_expert_bytes":21828206592,"devices":[{"free_bytes":23840423936}]}},"model":{"model_bytes":194727335256},
+         "projected_hit_rate":1,"expected_bottleneck":"CPU expert tail and GPU compute","warnings":["a warning"]}
+        """;
+
+    private static ModelFacts Checkpoint() => new(ModelFacts.SourceCheckpoint, "zai-org/GLM-5.3-Flash", "glm5", null, 321_000_000_000, 45, 45, 512, 1 << 20, 288, 8, 0.95,
+        [new ModelVariant("checkpoint", 600_000_000_000, Link: "zai-org/GLM-5.3-Flash")], []);
+
+    [Fact]
+    public void ColibrisPlanIsTheOptionCappedAtTheCardsBudget()
+    {
+        using var plan = JsonDocument.Parse(ColiPlan);
+        var engine = new EngineFacts(FitEngines.Colibri, "colibri", true, null, "/m", null, null, null, Accelerator: "vulkan");
+
+        var option = ColibriPlanner.Map(plan.RootElement, Checkpoint(), engine, 32768, "E:/glm");
+
+        Assert.Equal(FitPlacements.Ram, option.Placement);
+        Assert.Equal("medium", option.Speed);
+        Assert.Equal((23840423936 - (1L << 30)) / (1 << 20), option.VramMiB); // dense 3.5 + hot 20.3 GiB: more than the card, so the card less its reserve
+        Assert.Equal(1056, option.KvMiB);
+        Assert.Contains(option.Why, w => w.StartsWith("colibri's own plan"));
+        Assert.Contains(option.Why, w => w == "colibri warns: a warning");
+    }
+
+    [Fact]
+    public void ColibrisPlanOnACpuOnlyNodeSaysHowToUseTheCard()
+    {
+        using var plan = JsonDocument.Parse(ColiPlan);
+        var engine = new EngineFacts(FitEngines.Colibri, "colibri", true, null, "/m", null, null, null);
+
+        var option = ColibriPlanner.Map(plan.RootElement, Checkpoint(), engine, 32768, "E:/glm");
+
+        Assert.Equal(0, option.VramMiB);
+        Assert.Equal("slow", option.Speed);
+        Assert.Contains(option.Why, w => w.Contains("Colibri:Serve:Vulkan=true"));
+    }
+
+    [Fact]
+    public void ACheckpointAlreadyInTheCatalogueIsFoundByItsRepoName()
+    {
+        var dir = Path.Combine(root, "colibri", "glm-5.3-flash");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "config.json"), "{}");
+
+        var byDir = new ColibriPlanner(new Node.Backends.Colibri.ColibriOptions { Serve = { ModelsDir = Path.Combine(root, "colibri") } });
+        var byName = new ColibriPlanner(new Node.Backends.Colibri.ColibriOptions { Serve = { Models = { ["glm-5.3-flash"] = dir } } });
+
+        Assert.Equal(dir, byDir.ConvertedDirectory("zai-org/GLM-5.3-Flash"));
+        Assert.Equal(dir, byName.ConvertedDirectory("zai-org/GLM-5.3-Flash"));
+        Assert.Null(byDir.ConvertedDirectory("someone/Other"));
+    }
+
+    /// <summary>A trimmed copy of what Strata's own <c>model_table</c>/<c>recommend</c> answered on the same box.</summary>
+    private const string StrataTable = """
+        {"recommend":{"family":"qwen","model":"IQ3_S","context":131072,"why":"the 64 GB tier"},
+         "table":[{"family":"qwen","sizes":[
+           {"model":"Q2_0","download_gb":66.4,"ram_needed_gb":48,"experts_gb":34.0,"memory_gb":35.0,"on_this_pc":"fits"},
+           {"model":"IQ3_S","download_gb":83.6,"ram_needed_gb":62,"experts_gb":50.3,"memory_gb":51.3,"on_this_pc":"fits"},
+           {"model":"IQ3_XXS","download_gb":75.8,"ram_needed_gb":60,"experts_gb":42.9,"memory_gb":43.9,"on_this_pc":"fits in the low-RAM mode (slower: the GPU holds part of the experts)"},
+           {"model":"IQ2_XS","download_gb":68.0,"ram_needed_gb":48,"experts_gb":35.5,"memory_gb":36.5,"on_this_pc":"does not fit"}]}]}
+        """;
+
+    [Fact]
+    public void StratasOwnVerdictAndRecommendationAreTheOptions()
+    {
+        using var table = JsonDocument.Parse(StrataTable);
+        var family = Shared.Strata.StrataModels.Families.First(f => f.Name == "qwen");
+        var model = new ModelFacts(ModelFacts.SourceStrata, "q", "strata", null, 177_000_000_000, null, null, null, null, null, null, null,
+            family.Sizes.Select(s => new ModelVariant(s.Name, 70_000_000_000, Link: Shared.Strata.StrataModels.Link(family, s))).ToArray(), []);
+        var engine = new EngineFacts(FitEngines.Strata, "strata", true, null, "E:/strata", null, 20000, null);
+
+        var options = StrataPlanner.Map(table.RootElement, model, Machine(), engine, 262144);
+
+        var best = options.OrderByDescending(o => o.Score).First();
+        Assert.Equal("IQ3_S", best.Variant);
+        Assert.Contains(best.Why, w => w.StartsWith("Strata recommends this size here"));
+        Assert.Contains(best.Why, w => w.Contains("131,072-token context"));
+        Assert.Equal(20000, best.VramMiB); // the owner's limit, under the card less Strata's reserve
+        Assert.Equal("slow", options.Single(o => o.Variant == "IQ3_XXS").Speed);
+        Assert.False(options.Single(o => o.Variant == "IQ2_XS").Fits);
+    }
+
+    [Theory]
+    [InlineData("fits", true, "strata", "medium")]
+    [InlineData("tight", true, "strata", "slow")]
+    [InlineData("part of its experts in RAM, the rest read from the SSD", true, "stream-from-disk", "slow")]
+    [InlineData("slow here: part of its experts in RAM, the rest read from the SSD (setup asks first)", true, "stream-from-disk", "very slow")]
+    [InlineData("does not fit", false, "none", "—")]
+    public void StratasWordsAreAPlacement(string verdict, bool fits, string placement, string speed)
+        => Assert.Equal((fits, placement, speed), StrataPlanner.Verdict(verdict));
+
+    [Fact]
+    public void ColiServeIsGivenTheChosenContextAndVulkan()
+    {
+        var dir = Path.Combine(root, "glm");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, HuggingFaceStore.Marker), """{"Repo":"a/b","Revision":"main","Commit":"c","Engine":"colibri","Files":[],"At":"2026-10-26T00:00:00Z","Context":32768}""");
+
+        var info = Node.Backends.Colibri.ColibriServe.StartInfo(new Node.Backends.Colibri.ColibriOptions { Serve = { Vulkan = true } }, dir, "glm", 18000);
+        var plain = Node.Backends.Colibri.ColibriServe.StartInfo(new Node.Backends.Colibri.ColibriOptions(), Path.Combine(root, "none"), "x", 18000);
+
+        Assert.Equal("32768", info.ArgumentList[info.ArgumentList.IndexOf("--ctx") + 1]);
+        Assert.Equal("1", info.Environment["COLI_VULKAN"]);
+        Assert.DoesNotContain("--ctx", plain.ArgumentList);
+        Assert.Equal(Environment.GetEnvironmentVariable("COLI_VULKAN"), plain.Environment.TryGetValue("COLI_VULKAN", out var v) ? v : null);
+    }
+
     private static ModelLink Link(string text)
     {
         Assert.True(ModelLink.TryParse(text, out var link, out var error), error);

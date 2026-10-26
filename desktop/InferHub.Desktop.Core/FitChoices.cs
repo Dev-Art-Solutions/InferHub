@@ -98,9 +98,9 @@ public static class FitChoices
             "experts-in-ram" => $"card {Gib(option["vramMiB"])} + experts in RAM {Gib(option["ramMiB"])}",
             "split" => $"split: card {Gib(option["vramMiB"])} + RAM {Gib(option["ramMiB"])}",
             "cpu" => $"CPU, RAM {Gib(option["ramMiB"])}",
-            "ram" => $"in RAM {Gib(option["ramMiB"])}",
+            "ram" => OnCard(option) is { } device ? $"card {device} + RAM {Gib(option["ramMiB"])}" : $"in RAM {Gib(option["ramMiB"])}",
             "strata" => $"Strata, RAM {Gib(option["ramMiB"])}",
-            "stream-from-disk" => "experts read from disk",
+            "stream-from-disk" => OnCard(option) is { } hot ? $"card {hot} + RAM, the rest read from disk" : "experts read from disk",
             var other => other
         };
 
@@ -155,6 +155,10 @@ public static class FitChoices
         "strata" => "Strata",
         _ => engine
     };
+
+    /// <summary>colibri and Strata put part of a model on the card beside RAM; their headline says how much.</summary>
+    private static string? OnCard(JsonObject option) =>
+        option["vramMiB"] is JsonValue v && v.TryGetValue<long>(out var mib) && mib > 0 ? Gib(mib) : null;
 
     private static string Gib(JsonNode? mib) => mib is JsonValue v && v.TryGetValue<long>(out var m) ? Gib(m) : "?";
 

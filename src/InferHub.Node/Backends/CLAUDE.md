@@ -655,7 +655,7 @@ section at every router launch unless the configuration's own preset sets one; a
 here with another context rewrites the marker and restarts the router (live: `n_ctx` 4096 → 32768). Ollama:
 `<DataDirectory>/model-contexts.json` (an Ollama name has the `:` configuration keys split on, so not
 `node.local.json`), added by `OllamaBackend` as `options.num_ctx` to a request that sets none — the caller's wins
-(live: `/api/ps` 6144, then 2048 for a caller asking 2048). colibri sizes its own cache: `contextApplied: false`.
+(live: `/api/ps` 6144, then 2048 for a caller asking 2048). colibri: the marker's context becomes `coli serve --ctx` at every launch (D6).
 
 **D5 — the reading is the network's, the decision is the owner's.** `/fit` reaches Hugging Face only under
 `HuggingFace:Enabled` (403 otherwise), Ollama's registry from any node (a pull would reach it anyway). `/fit/install`
@@ -663,6 +663,41 @@ is the existing pull (112 D6) with the engine named: Ollama `hf.co/<repo>:<quant
 An option that is not available is a 409; one the estimate says does not fit is a 409 unless `force: true`. Facts are
 kept ten minutes per link, so a dialog trying contexts asks the Hub once.
 
-**Not established:** a GPU load measured against its estimate (the card here was held by another program throughout);
-AMD and Apple GPUs (NVML only — such a box is estimated as the CPU, and the reply says so); Ollama running every
-architecture llama.cpp does (Qwen3-Next was not tried in Ollama); KV quantization (`q8_0` halves the cache — not counted).
+**D6 — an engine that plans its own placement is asked, not second-guessed; colibri and Strata use the card their way.**
+`Fit/EnginePlanners.cs`. *Strata*: its own `tools/strata_mcp.py` — `model_table(hw)` and `recommend(hw)`, the rules its
+setup and app share (RAM + VRAM tiers less 5 GB, the low-RAM mode where the card holds part of the experts, the
+context it pre-selects for the card) — run in Strata's own Python with RAM and VRAM lowered to the owner's limits;
+its verdict per size is the option (`fits` → card + RAM, medium; low-RAM/`tight` → slow; "…from the SSD" → from
+disk), its recommended size ranks first, and a context above its pick says what it costs. VRAM shown = the card less
+Strata's 1536 MiB reserve (or the limit). *colibri*: for a checkpoint already in the catalogue (by its repo's name,
+`Serve:Models` or `Serve:ModelsDir`), `coli plan --json --model <dir> --ctx N` (+ `--ram`/`--vram` limits,
+`COLI_VULKAN` as the node launches it) — its tiers become the option (dense on the device + hot experts, capped at
+the plan's VRAM budget; the RAM budget; cold experts on disk; the bottleneck and hit rate in `why`). For one not yet
+converted the estimate follows what colibri does with a card: **Vulkan** — the dense chain on the device and a
+hot-expert tier beside it; **CUDA** (a `coli_cuda.dll` beside the launcher) — a hot tier of the card less 2 GB; neither —
+the CPU, and the option says how to change it. A planner that fails leaves the estimate's option with the reason first.
+`Colibri:Serve:Vulkan` (bool?, null = the environment as before; settings key) sets `COLI_VULKAN` for the engines the
+node launches; the store's colibri marker now carries the context too. *Rejected:* teaching our arithmetic each engine's
+placement rules — both engines already compute them, version by version, and a copy would drift the first release after.
+
+**Measured on the 3090 Ti box (EvoMesh stopped for it).** Ollama, estimate vs `/api/ps` (nvidia-smi delta): llama3.1 8B
+@8K 6310 vs 5412 (5677); @64K 14052 vs 13036 (13304); mistral 7B @32K 9106 vs 8224 (8504); gpt-oss 20B @32K 15530 vs
+12307 (13371 — half its layers are sliding-window, counted at full context). llama.cpp (winget b10424, Vulkan, `--fit
+on`): its own `llama-fit-params` agreed in all three — llama3.1 8B @32K all on the card (estimate 9381, card +8400);
+a 35B-A3B qwen35moe @64K all on the card at the edge (estimate 23283 of 23336, card +21603; hybrid 11 of 41 layers);
+a 70B Q4_0 @4K split, 47 of 80 layers on the card (estimate 60 % on the card; card +22270). colibri 2.0 CPU build with
+`COLI_VULKAN=1`, GLM-5.3-Flash @32K: dense chain 4.26 GiB (45 of 45 layers) + a 17.4 GiB expert tier, card 19 GB after
+two answers; cold 533 s from the HDD, warm "Paris" in **8 s against 25 s on the CPU** (111). Its plan said 3.5 GiB dense + up
+to 20.3 GiB hot — through the node the card reached 22.1 GB (free less its 1 GiB reserve), so an option from a plan counts
+the card that way. Strata 0.2.3, Coder IQ1_M @32K through the node: Strata's own verdict "fits"; estimate 23028 MiB on the
+card and 23270 in RAM, card +21834, Strata 26 GB working set; warm 48 tokens in 6 s.
+
+**Found live: a catalogue "unload" stopped nothing for a model a request had loaded** — it only takes the model out of the
+pins, and such a model was never pinned (GLM-5.3 kept 23 GB of the card after it). `/api/control/catalog/{engine}/{model}/unload`
+now also calls the catalogue's own unload when the model is still loaded (live: Strata's card back to 938 MiB, its processes
+gone). The hub's profile path is unchanged: a profile that leaves a request-loaded model out still lets it idle.
+
+**Not established:** AMD and Apple GPUs (NVML only — such a box is estimated as the CPU, and the reply says so); Ollama
+running every architecture llama.cpp does (Qwen3-Next was not tried in Ollama); KV quantization (`q8_0` halves the cache —
+not counted); sliding-window layers (counted at the full context: gpt-oss over by ~2 GB); colibri's CUDA tier (the CUDA
+build here has no GLM-5.3 engine); a context for a colibri model converted by hand (no marker to keep it in).

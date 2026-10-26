@@ -71,6 +71,18 @@ public sealed class ColibriServe(
             info.ArgumentList.Add(argument);
         }
 
+        // Phase 118 D6: the context the owner chose when this model was downloaded (its marker), as coli's own --ctx.
+        if (HuggingFace.HuggingFaceStore.ContextOf(model) is { } context)
+        {
+            info.ArgumentList.Add("--ctx");
+            info.ArgumentList.Add(context.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        if (serve.Vulkan is { } vulkan)
+        {
+            info.Environment["COLI_VULKAN"] = vulkan ? "1" : "0";
+        }
+
         info.Environment.Remove(ContentTeeVariable);
 
         return info;
