@@ -158,6 +158,37 @@ public sealed class HuggingFaceClient(HttpClient http, Uri endpoint, string? tok
         File.Move(partial, destination, overwrite: true);
     }
 
+    /// <summary>
+    /// Phase 118: the Hub's summary of a repository — its task, the parameter count of its safetensors or GGUF, the
+    /// GGUF's own architecture — at the reference's revision.
+    /// </summary>
+    public Task<JsonDocument> ModelInfoAsync(HfReference reference, CancellationToken cancellationToken)
+    {
+        var revision = reference.Revision == HfReference.DefaultRevision ? string.Empty : $"/revision/{Uri.EscapeDataString(reference.Revision)}";
+        return GetJsonAsync($"api/models/{reference.RepoId}{revision}?expand[]=pipeline_tag&expand[]=safetensors&expand[]=gguf", reference, cancellationToken);
+    }
+
+    /// <summary>Phase 118: the first <paramref name="bytes"/> of a file (an HTTP Range read), as a stream the caller disposes with the response.</summary>
+    public async Task<HttpResponseMessage> RangeAsync(HfReference reference, string commit, string file, long bytes, CancellationToken cancellationToken)
+    {
+        var path = string.Join('/', file.Split('/').Select(Uri.EscapeDataString));
+        using var request = Request(HttpMethod.Get, $"{reference.RepoId}/resolve/{commit}/{path}");
+        request.Headers.Range = new RangeHeaderValue(0, bytes - 1);
+        var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+        try
+        {
+            await EnsureAsync(response, reference);
+        }
+        catch
+        {
+            response.Dispose();
+            throw;
+        }
+
+        return response;
+    }
+
     private async Task<JsonDocument> GetJsonAsync(string path, HfReference reference, CancellationToken cancellationToken)
     {
         using var request = Request(HttpMethod.Get, path);

@@ -44,7 +44,13 @@ public sealed record ModelCommand(
     /// <c>no</c>). Null is the node's own <c>Strata:Install:Vision</c>, which is what every install
     /// before v3.65 meant; a node before v3.65 ignores the field.
     /// </summary>
-    [property: JsonPropertyName("vision")] string? Vision = null)
+    [property: JsonPropertyName("vision")] string? Vision = null,
+    /// <summary>
+    /// Phase 118: the context the owner chose for a pull — Strata's <c>setup.py --context</c>, a llama.cpp model's
+    /// <c>ctx-size</c>, an Ollama model's <c>num_ctx</c>. Null is each engine's own default, which is what every pull
+    /// before v3.79 meant; a node before v3.79 ignores the field.
+    /// </summary>
+    [property: JsonPropertyName("context")] int? Context = null)
 {
     public const string KindPull = "pull";
     public const string KindDelete = "delete";

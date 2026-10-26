@@ -17,7 +17,8 @@ public sealed class ModelCommandExecutor(
     ILogger<ModelCommandExecutor> logger,
     ToolExecutor? tools = null,
     Backends.HuggingFace.HuggingFaceStore? huggingFace = null,
-    Backends.Strata.StrataInstaller? strata = null)
+    Backends.Strata.StrataInstaller? strata = null,
+    Fit.ModelContexts? contexts = null)
 {
     /// <summary>Phase 98: this node downloads from Hugging Face, so it manages models even when no engine does.</summary>
     public bool ManagesModels => backend.SupportsModelManagement || huggingFace is not null;
@@ -178,7 +179,7 @@ public sealed class ModelCommandExecutor(
 
             logger.LogInformation("Installing '{Model}' with Strata's setup (command {CommandId})", command.ModelName, command.CommandId);
 
-            await foreach (var frame in RelayAsync(command, nodeId, InstallStrataAsync(strata, reference!, command.Vision, cancellationToken), cancellationToken))
+            await foreach (var frame in RelayAsync(command, nodeId, InstallStrataAsync(strata, reference!, command.Vision, command.Context, cancellationToken), cancellationToken))
             {
                 yield return frame;
             }
@@ -220,7 +221,7 @@ public sealed class ModelCommandExecutor(
 
         logger.LogInformation("Pulling '{Model}' from Hugging Face (command {CommandId})", command.ModelName, command.CommandId);
 
-        await foreach (var frame in RelayAsync(command, nodeId, huggingFace.PullAsync(command.ModelName, cancellationToken), cancellationToken))
+        await foreach (var frame in RelayAsync(command, nodeId, huggingFace.PullAsync(command.ModelName, command.Context, cancellationToken), cancellationToken))
         {
             yield return frame;
         }
@@ -231,9 +232,10 @@ public sealed class ModelCommandExecutor(
         Backends.Strata.StrataInstaller strata,
         InferHub.Shared.HuggingFace.HfReference reference,
         string? vision,
+        int? context,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        await foreach (var frame in strata.InstallAsync(reference, vision, cancellationToken))
+        await foreach (var frame in strata.InstallAsync(reference, vision, context, cancellationToken))
         {
             yield return frame;
         }
@@ -313,6 +315,12 @@ public sealed class ModelCommandExecutor(
 
         await foreach (var frame in RelayAsync(command, nodeId, frames, cancellationToken))
         {
+            // 118 D4: the owner's context for this model, kept once the pull has succeeded (read by the Ollama backend).
+            if (frame is { Done: true, Error: null } && command.Context is > 0 && contexts is not null)
+            {
+                contexts.Set(command.ModelName, command.Context);
+            }
+
             yield return frame;
         }
     }

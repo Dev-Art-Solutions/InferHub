@@ -113,6 +113,21 @@ public sealed class NodeControlClient : IDisposable
     public Task<JsonObject> CatalogAsync(string engine, string model, bool load, CancellationToken cancellationToken = default) =>
         SendAsync(HttpMethod.Post, $"/api/control/catalog/{engine}/{Uri.EscapeDataString(model)}/{(load ? "load" : "unload")}", null, cancellationToken);
 
+    /// <summary>Phase 118: which of the node's engines can run a model at a context, with the arithmetic (a 3.79 node).</summary>
+    public Task<JsonObject> FitAsync(string link, int? context, CancellationToken cancellationToken = default) =>
+        SendAsync(HttpMethod.Post, "/api/control/fit", new JsonObject { ["link"] = link, ["context"] = context }, cancellationToken);
+
+    /// <summary>Phase 118: installs the option chosen — the node's own pull, its progress on the event stream.</summary>
+    public Task<JsonObject> FitInstallAsync(string link, string engine, string? variant, int? context, bool force = false, CancellationToken cancellationToken = default) =>
+        SendAsync(HttpMethod.Post, "/api/control/fit/install", new JsonObject
+        {
+            ["link"] = link,
+            ["engine"] = engine,
+            ["variant"] = variant,
+            ["context"] = context,
+            ["force"] = force
+        }, cancellationToken);
+
     /// <summary>The node's events as they happen — jobs, sharing, settings, model progress — until cancelled.</summary>
     public IAsyncEnumerable<ServerEvent> EventsAsync(long after = 0, CancellationToken cancellationToken = default) =>
         StreamAsync($"/api/control/events?after={after}", cancellationToken);

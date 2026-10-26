@@ -68,7 +68,10 @@ public sealed partial class HuggingFaceStore(
 
     public HuggingFaceTargets Targets => targets;
 
-    public async IAsyncEnumerable<ModelPullProgress> PullAsync(string link, [EnumeratorCancellation] CancellationToken cancellationToken)
+    public IAsyncEnumerable<ModelPullProgress> PullAsync(string link, CancellationToken cancellationToken) => PullAsync(link, null, cancellationToken);
+
+    /// <param name="context">Phase 118 D4: a GGUF's <c>ctx-size</c>, kept in its marker for the router's preset; null leaves llama.cpp's default.</param>
+    public async IAsyncEnumerable<ModelPullProgress> PullAsync(string link, int? context, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (!HfReference.TryParse(link, null, out var reference, out var error))
         {
@@ -88,7 +91,7 @@ public sealed partial class HuggingFaceStore(
         }
 
         IAsyncEnumerable<ModelPullProgress> steps = ggufs.Length > 0
-            ? GgufAsync(hf, reference, commit, SelectGguf(reference, ggufs), cancellationToken)
+            ? GgufAsync(hf, reference, commit, SelectGguf(reference, ggufs), context, cancellationToken)
             : IsCheckpoint(tree)
                 ? CheckpointAsync(reference, commit, cancellationToken)
                 : throw new ArgumentException(
@@ -214,6 +217,7 @@ public sealed partial class HuggingFaceStore(
         HfReference reference,
         string commit,
         IReadOnlyList<HfFile> files,
+        int? context,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (targets.GgufDirectory is not { } root)
@@ -229,6 +233,19 @@ public sealed partial class HuggingFaceStore(
         if (AlreadyHere(directory, reference, commit, files) is { } done)
         {
             yield return new ModelPullProgress(done, null, null);
+
+            // 118 D4: a model already here with another context chosen for it — the marker changes, the router reads it at launch.
+            if (context is > 0 && ContextOf(directory) != context && await SetContextAsync(directory, context.Value, cancellationToken))
+            {
+                if (restartEngine is not null && targets.GgufEngine is not null)
+                {
+                    yield return new ModelPullProgress($"context set to {context}; restarting llama.cpp engine '{targets.GgufEngine}' to apply it", null, null);
+                    await restartEngine(targets.GgufEngine, null, cancellationToken);
+                }
+
+                yield return new ModelPullProgress($"'{name}' now runs with a {context}-token context", null, null);
+            }
+
             yield break;
         }
 
@@ -284,7 +301,7 @@ public sealed partial class HuggingFaceStore(
                 File.Move(path + ".part", path, overwrite: true);
             }
 
-            await WriteMarkerAsync(directory, reference, commit, files, "gguf", cancellationToken);
+            await WriteMarkerAsync(directory, reference, commit, files, "gguf", cancellationToken, context);
         }
         finally
         {
@@ -411,7 +428,7 @@ public sealed partial class HuggingFaceStore(
 
     // ------------------------------------------------------------------ the marker
 
-    private sealed record Source(string Repo, string Revision, string Commit, string Engine, string[] Files, DateTimeOffset At);
+    private sealed record Source(string Repo, string Revision, string Commit, string Engine, string[] Files, DateTimeOffset At, int? Context = null);
 
     private static string? AlreadyHere(string directory, HfReference reference, string commit, IReadOnlyList<HfFile>? files)
     {
@@ -442,7 +459,43 @@ public sealed partial class HuggingFaceStore(
         return null;
     }
 
-    private static async Task WriteMarkerAsync(string directory, HfReference reference, string commit, IReadOnlyList<HfFile>? files, string engine, CancellationToken cancellationToken)
+    /// <summary>The context the owner chose for a downloaded model (118 D4), from its marker; null when none was.</summary>
+    public static int? ContextOf(string directory)
+    {
+        try
+        {
+            var path = Path.Combine(directory, Marker);
+            return File.Exists(path) ? JsonSerializer.Deserialize<Source>(File.ReadAllText(path))?.Context : null;
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private static async Task<bool> SetContextAsync(string directory, int context, CancellationToken cancellationToken)
+    {
+        var path = Path.Combine(directory, Marker);
+
+        try
+        {
+            var source = JsonSerializer.Deserialize<Source>(await File.ReadAllTextAsync(path, cancellationToken));
+
+            if (source is null)
+            {
+                return false;
+            }
+
+            await File.WriteAllTextAsync(path, JsonSerializer.Serialize(source with { Context = context }), cancellationToken);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static async Task WriteMarkerAsync(string directory, HfReference reference, string commit, IReadOnlyList<HfFile>? files, string engine, CancellationToken cancellationToken, int? context = null)
     {
         var source = new Source(
             reference.RepoId,
@@ -450,7 +503,8 @@ public sealed partial class HuggingFaceStore(
             commit,
             engine,
             files?.Select(f => Path.GetFileName(f.Path)).ToArray() ?? [],
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            context);
 
         await File.WriteAllTextAsync(Path.Combine(directory, Marker), JsonSerializer.Serialize(source), cancellationToken);
     }

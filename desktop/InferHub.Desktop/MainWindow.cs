@@ -188,7 +188,13 @@ public sealed class MainWindow : Window
             },
             models,
             Heading("Get a model"),
-            Row(pullName, Button("Pull", async () => await ModelAction(pullName.Text?.Trim(), "pull"))),
+            Row(pullName, Button("Pull", async () => await ModelAction(pullName.Text?.Trim(), "pull")), Button("Check fit…", () => FitDialogAsync(pullName.Text?.Trim()))),
+            new TextBlock
+            {
+                Text = "Check fit: choose the context you need, and the node says which of its engines can run the model, where it would sit and why — then installs it there with that context.",
+                TextWrapping = TextWrapping.Wrap,
+                Opacity = 0.7
+            },
             modelProgress);
 
     private Control SettingsTab() =>
@@ -749,11 +755,204 @@ public sealed class MainWindow : Window
             }
         }
 
+        // Phase 118: "link|context" — the Check fit dialog for that model, after the tabs.
+        if (Environment.GetEnvironmentVariable("INFERHUB_DESKTOP_SCREENSHOT_FIT") is { Length: > 0 } fit)
+        {
+            var parts = fit.Split('|');
+            tabs.SelectedIndex = 2;
+            await FitDialogAsync(parts[0], parts.Length > 1 ? parts[1] : null, Path.Combine(directory, "desktop-8-check-fit.png"));
+        }
+
         tabs.SelectedIndex = 0;
     }
 
+    /// <summary>
+    /// Phase 118: the "Check fit" dialog. The context is asked first — there is no minimum, the owner says what they
+    /// need — and the node's answer for it picks the engine; the arithmetic is shown, never only a verdict.
+    /// </summary>
+    private async Task FitDialogAsync(string? initial, string? initialContext = null, string? screenshot = null)
+    {
+        var link = new TextBox { Text = initial ?? "", MinWidth = 460, PlaceholderText = "a Hugging Face link, owner/repo, or an Ollama name like qwen2.5:7b" };
+        var context = new TextBox { Text = FitChoices.FormatContext(8192), Width = 110, PlaceholderText = "e.g. 32k" };
+        var picks = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        var results = new StackPanel { Spacing = 6 };
+        var state = new TextBlock { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
+        JsonObject? answer = null;
+
+        var dialog = new Window
+        {
+            Title = "Will it fit on this node?",
+            Width = 860,
+            Height = 640,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
+
+        void ShowPicks(int? trained)
+        {
+            picks.Children.Clear();
+
+            foreach (var pick in FitChoices.Picks(trained))
+            {
+                var tokens = pick;
+                var button = new Button { Content = FitChoices.FormatContext(tokens), Padding = new Thickness(6, 2) };
+                button.Click += async (_, _) => { context.Text = FitChoices.FormatContext(tokens); await EstimateAsync(); };
+                picks.Children.Add(button);
+            }
+        }
+
+        async Task EstimateAsync()
+        {
+            var text = link.Text?.Trim();
+            var tokens = FitChoices.ParseContext(context.Text);
+
+            if (string.IsNullOrEmpty(text) || tokens is null)
+            {
+                state.Text = string.IsNullOrEmpty(text) ? "Give a model first." : "The context is a number of tokens: 8192, 32k, 128K, 1M.";
+                return;
+            }
+
+            state.Text = "Asking the node (it reads the model's header from Hugging Face or Ollama, not the model)…";
+            results.Children.Clear();
+
+            await app.Run(async client =>
+            {
+                answer = await client.FitAsync(text, tokens);
+                state.Text = "";
+                Show(answer, tokens.Value);
+            });
+
+            if (answer is null && state.Text.StartsWith("Asking", StringComparison.Ordinal))
+            {
+                state.Text = "The node did not answer; see the status bar.";
+            }
+        }
+
+        void Show(JsonObject reply, int tokens)
+        {
+            results.Children.Clear();
+            ShowPicks(reply["model"]?["trainedContext"] is JsonValue t && t.TryGetValue<int>(out var trained) ? trained : null);
+            results.Children.Add(new TextBlock { Text = FitChoices.Model(reply), FontWeight = FontWeight.SemiBold, TextWrapping = TextWrapping.Wrap });
+            results.Children.Add(new TextBlock { Text = "This machine: " + FitChoices.Machine(reply), TextWrapping = TextWrapping.Wrap, Opacity = 0.8 });
+
+            foreach (var note in reply["model"]?["notes"] as JsonArray ?? [])
+            {
+                results.Children.Add(new TextBlock { Text = Text(note), TextWrapping = TextWrapping.Wrap, Opacity = 0.7 });
+            }
+
+            var rows = FitChoices.Rows(reply);
+
+            if (rows.Count == 0)
+            {
+                results.Children.Add(new TextBlock { Text = "No engine on any node can run this model as it is.", TextWrapping = TextWrapping.Wrap });
+            }
+
+            var first = true;
+
+            foreach (var row in rows)
+            {
+                var headline = new TextBlock { Text = (first && row.Fits && row.Available ? "Best here: " : "") + row.Headline, TextWrapping = TextWrapping.Wrap, FontWeight = first ? FontWeight.SemiBold : FontWeight.Normal };
+                var why = new TextBlock { Text = string.Join("\n", row.Why.Select(w => "· " + w)), TextWrapping = TextWrapping.Wrap, Opacity = 0.75, FontSize = 12 };
+                var variant = row.Variant;
+                var install = new Button { Content = row.Fits ? "Install" : "Install anyway", IsEnabled = row.Available };
+                var line = Row(install);
+
+                if (row.OtherVariants.Count > 0)
+                {
+                    var sizes = new ComboBox { ItemsSource = new[] { row.Variant }.Concat(row.OtherVariants).ToArray(), SelectedIndex = 0, MinWidth = 160 };
+                    sizes.SelectionChanged += (_, _) =>
+                    {
+                        variant = sizes.SelectedItem as string ?? row.Variant;
+
+                        if (FitChoices.Option(reply, row.Engine, variant) is { } option)
+                        {
+                            headline.Text = FitChoices.Headline(option);
+                            why.Text = string.Join("\n", (option["why"] as JsonArray ?? []).Select(w => "· " + Text(w)));
+                        }
+                    };
+                    line.Children.Insert(0, sizes);
+                }
+
+                install.Click += async (_, _) =>
+                {
+                    var fits = FitChoices.Option(reply, row.Engine, variant)?["fits"]?.GetValue<bool>() == true;
+
+                    if (!fits && !await ConfirmAsync($"The node's estimate says {FitChoices.Title(row.Engine)} / {variant} does not fit at {FitChoices.FormatContext(tokens)} tokens. Download it anyway?", "Download"))
+                    {
+                        return;
+                    }
+
+                    await app.Run(async client =>
+                    {
+                        var started = await client.FitInstallAsync(Text(reply["link"]), row.Engine, variant, tokens, force: !fits);
+                        modelProgress.Text = $"installing {Text(started["model"])} for {FitChoices.Title(row.Engine)} with a {FitChoices.FormatContext(tokens)} context — progress below";
+                        dialog.Close();
+                    });
+                };
+
+                results.Children.Add(new Border
+                {
+                    BorderThickness = new Thickness(0, 1, 0, 0),
+                    BorderBrush = Brushes.Gray,
+                    Padding = new Thickness(0, 6, 0, 0),
+                    Child = new StackPanel { Spacing = 4, Children = { headline, why, line } }
+                });
+                first = false;
+            }
+
+            foreach (var refused in FitChoices.Refused(reply))
+            {
+                results.Children.Add(new TextBlock { Text = "Not offered — " + refused, TextWrapping = TextWrapping.Wrap, Opacity = 0.6, FontSize = 12 });
+            }
+        }
+
+        ShowPicks(null);
+        var estimate = Button("Estimate", EstimateAsync);
+        dialog.Content = new ScrollViewer
+        {
+            Content = new StackPanel
+            {
+                Margin = new Thickness(16),
+                Spacing = 10,
+                Children =
+                {
+                    Labelled("Model", link),
+                    Labelled("Context", Row(context, estimate)),
+                    picks,
+                    new TextBlock { Text = "No minimum: the context you choose is what decides the engine — more context is more memory beside the weights.", TextWrapping = TextWrapping.Wrap, Opacity = 0.7 },
+                    state,
+                    results
+                }
+            }
+        };
+
+        if (screenshot is not null)
+        {
+            // INFERHUB_DESKTOP_SCREENSHOT_FIT: the dialog rendered by the app itself, as the tabs are.
+            context.Text = initialContext ?? context.Text;
+            dialog.Show(this);
+            await EstimateAsync();
+            await Task.Delay(1500);
+
+            using (var bitmap = new Avalonia.Media.Imaging.RenderTargetBitmap(new PixelSize((int)dialog.Bounds.Width, (int)dialog.Bounds.Height), new Vector(96, 96)))
+            {
+                bitmap.Render(dialog);
+                bitmap.Save(screenshot);
+            }
+
+            dialog.Close();
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(initial))
+        {
+            _ = EstimateAsync();
+        }
+
+        await dialog.ShowDialog(this);
+    }
+
     /// <summary>A yes/no question in a small window of its own — Avalonia ships no message box.</summary>
-    private async Task<bool> ConfirmAsync(string question)
+    private async Task<bool> ConfirmAsync(string question, string yesText = "Delete")
     {
         var answer = false;
         var dialog = new Window
@@ -764,7 +963,7 @@ public sealed class MainWindow : Window
             CanResize = false,
             WindowStartupLocation = WindowStartupLocation.CenterOwner
         };
-        var yes = new Button { Content = "Delete" };
+        var yes = new Button { Content = yesText };
         var no = new Button { Content = "Cancel" };
         yes.Click += (_, _) => { answer = true; dialog.Close(); };
         no.Click += (_, _) => dialog.Close();

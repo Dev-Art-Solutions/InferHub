@@ -20,7 +20,8 @@ public sealed class OllamaBackend(
     IOllamaHttpClient client,
     IOptions<OllamaOptions> options,
     ILogger<OllamaBackend> logger,
-    IHttpClientFactory? http = null) : IInferenceBackend
+    IHttpClientFactory? http = null,
+    Fit.ModelContexts? contexts = null) : IInferenceBackend
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -70,14 +71,14 @@ public sealed class OllamaBackend(
 
     public async Task<string> GenerateAsync(string requestJson, CancellationToken cancellationToken)
     {
-        var request = Deserialize<OllamaGenerateRequest>(requestJson);
+        var request = Deserialize<OllamaGenerateRequest>(Context(requestJson));
         var response = await client.Generate(request, cancellationToken);
         return JsonSerializer.Serialize(response, JsonOptions);
     }
 
     public async Task<string> ChatAsync(string requestJson, CancellationToken cancellationToken)
     {
-        var request = Deserialize<OllamaChatRequest>(requestJson);
+        var request = Deserialize<OllamaChatRequest>(Context(requestJson));
         var response = await client.SendChat(request, cancellationToken);
         return JsonSerializer.Serialize(response, JsonOptions);
     }
@@ -106,7 +107,7 @@ public sealed class OllamaBackend(
         string requestJson,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var request = Deserialize<OllamaGenerateStreamRequest>(requestJson);
+        var request = Deserialize<OllamaGenerateStreamRequest>(Context(requestJson));
 
         var chunks = http is null
             ? client.Generate(request, cancellationToken)
@@ -122,7 +123,7 @@ public sealed class OllamaBackend(
         string requestJson,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var request = Deserialize<OllamaChatStreamRequest>(requestJson);
+        var request = Deserialize<OllamaChatStreamRequest>(Context(requestJson));
 
         var chunks = http is null
             ? client.SendChat(request, cancellationToken)
@@ -133,6 +134,9 @@ public sealed class OllamaBackend(
             yield return JsonSerializer.Serialize(chunk, JsonOptions);
         }
     }
+
+    /// <summary>Phase 118 D4: the context the owner chose when installing the model, for a request that names none.</summary>
+    private string Context(string requestJson) => contexts is null ? requestJson : contexts.Apply(requestJson);
 
     public bool SupportsModelManagement => true;
 

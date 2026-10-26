@@ -84,9 +84,14 @@ public sealed partial class StrataInstaller(
         => InstallAsync(reference, vision: null, cancellationToken);
 
     /// <param name="vision">setup's <c>--vision</c> for this install (100), or null for <c>Strata:Install:Vision</c>.</param>
+    public IAsyncEnumerable<ModelPullProgress> InstallAsync(HfReference reference, string? vision, CancellationToken cancellationToken)
+        => InstallAsync(reference, vision, null, cancellationToken);
+
+    /// <param name="context">Phase 118: the owner's context for this install, setup's <c>--context</c>; null is <c>Strata:Install:Context</c>.</param>
     public async IAsyncEnumerable<ModelPullProgress> InstallAsync(
         HfReference reference,
         string? vision,
+        int? context,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (!StrataModels.TryMatch(reference, out var family, out var size, out var error))
@@ -149,7 +154,7 @@ public sealed partial class StrataInstaller(
             string? lastStatus = null;
             var lastPercent = -1;
 
-            await foreach (var output in runner.RunAsync(StartInfo(options, huggingFace, family.Name, size.Name, effective, adding ? KeptChoices(options, ConfigOf(name)) : null), cancellationToken))
+            await foreach (var output in runner.RunAsync(StartInfo(options, huggingFace, family.Name, size.Name, effective, adding ? KeptChoices(options, ConfigOf(name)) : null, context), cancellationToken))
             {
                 if (output.ExitCode is { } code)
                 {
@@ -314,7 +319,7 @@ public sealed partial class StrataInstaller(
     /// <summary>The whole <c>setup.py</c> command line, pure, so the tests can read it.</summary>
     /// <param name="vision">setup's <c>--vision</c> for this install; null is <c>Strata:Install:Vision</c>.</param>
     /// <param name="kept">An installed config's own answers (<see cref="KeptChoices"/>) when setup runs again for it.</param>
-    public static ProcessStartInfo StartInfo(StrataOptions options, HuggingFaceOptions huggingFace, string family, string size, string? vision = null, IReadOnlyList<string>? kept = null)
+    public static ProcessStartInfo StartInfo(StrataOptions options, HuggingFaceOptions huggingFace, string family, string size, string? vision = null, IReadOnlyList<string>? kept = null, int? context = null)
     {
         var root = options.Root!.Trim();
 
@@ -342,9 +347,9 @@ public sealed partial class StrataInstaller(
             arguments.AddRange(["--data-dir", options.DataDir.Trim()]);
         }
 
-        if (options.Install.Context is { } context)
+        if ((context ?? options.Install.Context) is { } chosen)
         {
-            arguments.AddRange(["--context", context.ToString(CultureInfo.InvariantCulture)]);
+            arguments.AddRange(["--context", chosen.ToString(CultureInfo.InvariantCulture)]);
         }
 
         arguments.AddRange(kept ?? []);

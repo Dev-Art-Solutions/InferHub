@@ -160,3 +160,10 @@ both places is two collections no single request reads together, and replication
 **D2 — it must be asked for, and its directory must be its own.** Without `Private`, a meshed node with local
 retrieval still refuses to boot, exactly as before. The validator refuses a private `DataDirectory` equal to, inside
 or containing `Vector:ReplicaDirectory`, naming both keys (`Overlaps`).
+
+### Phase 118 (two more routes: `/fit`, `/fit/install`)
+
+`POST /api/control/fit {link, context}` and `POST /api/control/fit/install {link, engine, variant, context, force}`
+live in `LocalApi/LocalControlEndpoints.Fit.cs`, behind 112 D1's token like every route here; the install is 112 D6's
+model command with an engine and `ModelCommand.Context`. The decisions are in `src/InferHub.Node/Backends/CLAUDE.md`
+(Phase 118).

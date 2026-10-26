@@ -30,7 +30,7 @@ namespace InferHub.Node.LocalApi;
 /// two callers (112 D6).
 /// </para>
 /// </remarks>
-internal static class LocalControlEndpoints
+internal static partial class LocalControlEndpoints
 {
     public const string Prefix = "/api/control";
 
@@ -62,6 +62,8 @@ internal static class LocalControlEndpoints
             StartModelCommand(context, ModelCommand.KindDelete, name, engine, tool));
         group.MapPost("/engines/{name}/{action}", EngineAsync);
         group.MapPost("/catalog/{engine}/{model}/{action}", CatalogAsync);
+        group.MapPost("/fit", FitAsync);
+        group.MapPost("/fit/install", FitInstallAsync);
 
         return app;
     }
@@ -532,6 +534,9 @@ internal static class LocalControlEndpoints
 
     /// <summary>112 D6: the hub's model command, run here; its progress goes to the event stream.</summary>
     private static IResult StartModelCommand(HttpContext context, string kind, string name, string? engine, string? tool)
+        => StartModelCommand(context, new ModelCommand(Guid.NewGuid(), kind, Uri.UnescapeDataString(name), Tool: tool, Engine: engine));
+
+    private static IResult StartModelCommand(HttpContext context, ModelCommand command)
     {
         var services = context.RequestServices;
         var executor = services.GetRequiredService<ModelCommandExecutor>();
@@ -539,7 +544,6 @@ internal static class LocalControlEndpoints
         var nodeId = services.GetRequiredService<INodeIdentity>().GetOrCreateNodeId();
         var lifetime = services.GetRequiredService<IHostApplicationLifetime>();
         var logger = services.GetRequiredService<ILoggerFactory>().CreateLogger("InferHub.Node.Control");
-        var command = new ModelCommand(Guid.NewGuid(), kind, Uri.UnescapeDataString(name), Tool: tool, Engine: engine);
 
         _ = Task.Run(async () =>
         {

@@ -31,6 +31,9 @@ internal sealed class FakeHuggingFace : IAsyncDisposable
 
     public ConcurrentQueue<string> Downloads { get; } = new();
 
+    /// <summary>Phase 118: what <c>/api/models/{repo}</c> answers for a repo (pipeline_tag, safetensors, gguf).</summary>
+    public ConcurrentDictionary<string, object> Info { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     public ConcurrentQueue<string> Ranges { get; } = new();
 
     public string? LastAuthorization { get; private set; }
@@ -52,6 +55,12 @@ internal sealed class FakeHuggingFace : IAsyncDisposable
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Logging.ClearProviders();
         fake.app = builder.Build();
+
+        // Phase 118: the summary the estimate reads (the real one answers ?expand[]=… with just those fields).
+        fake.app.MapGet("/api/models/{owner}/{repo}", (string owner, string repo, HttpContext context) =>
+            fake.Find(owner, repo, context) is null
+                ? fake.Refuse(owner, repo)
+                : Results.Json(fake.Info.GetValueOrDefault($"{owner}/{repo}") ?? new { id = $"{owner}/{repo}" }));
 
         fake.app.MapGet("/api/models/{owner}/{repo}/revision/{rev}", (string owner, string repo, HttpContext context) =>
             fake.Find(owner, repo, context) is null ? fake.Refuse(owner, repo) : Results.Json(new { id = $"{owner}/{repo}", sha = Commit }));

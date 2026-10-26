@@ -878,6 +878,45 @@ list), or with the **Shared** box beside each model on the desktop app's Models 
 for one `Node:Models` leaves out, which nobody is served), and
 `status.sharing.models` shows both lists.
 
+### Will it fit? Choose a context, get the engine (v3.79+)
+
+Paste a model and say how much context you need. The node answers with which of its engines can
+run the model, where the model would sit (all on the card, the experts in RAM, split, the CPU,
+read from disk), and the arithmetic behind each answer. Then it installs the model on the engine
+you pick, with that context.
+
+```http
+POST /api/control/fit          {"link": "unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF", "context": 32768}
+POST /api/control/fit/install  {"link": "…", "engine": "llamacpp", "variant": "Q5_K_S", "context": 32768}
+```
+
+- **The link** can be a Hugging Face repo or file (`owner/repo`, `…:Q4_K_M`, a `huggingface.co`
+  URL) or a model in Ollama's library (`qwen2.5:7b`, `ollama.com/library/…`). The node reads the
+  model's GGUF header with a Range request, a few megabytes and never the weights. For a
+  checkpoint it reads `config.json`; for a Strata repo, Strata's own size table. Looking at a
+  Hugging Face model needs `HuggingFace:Enabled`, as downloading one does.
+- **The estimate** adds three things: the weights, the KV cache for your context (from the
+  model's layers, KV heads and head size, with hybrid and MLA models counted correctly), and a
+  working reserve. It compares the total with the NVIDIA cards, the RAM and the free disk where
+  that engine keeps its models, each lowered by your limit for the runtime
+  (`Node:ResourceLimits:Engines`). It is conservative: on a 0.5B model at 32K context, llama.cpp
+  used 880 MiB against an estimate of 1.7 GiB. Each option also says the largest context it holds
+  at all and the largest that fits wholly on the card.
+- **An engine is offered only if it can load the model.** Ollama and llama.cpp run a GGUF
+  (Ollama cannot pull a GGUF split into several files). colibri runs a mixture-of-experts
+  checkpoint, which it converts. Strata runs only its own repos. Only llama.cpp can keep a
+  mixture-of-experts' experts in RAM while the rest sits on the card, which is often the fastest
+  way to run a model too big for the card. Options are ranked by where the model sits, then by
+  quality up to about six bits a weight. Quants below three bits rank lower, and those below two
+  rank lower still.
+- **The context goes with the install.** Strata gets `setup.py --context`. A llama.cpp model gets
+  `ctx-size` in its preset, and choosing a new context for a model already here restarts the
+  router to apply it. An Ollama model gets `num_ctx` on every request that does not set its own,
+  kept in `<DataDirectory>/model-contexts.json`. colibri sizes its own cache.
+- An option that does not fit is refused unless you send `"force": true`.
+
+In the desktop app (0.4.0), this is **Check fit…** on the Models tab.
+
 ### A private corpus on a networked node
 
 `LocalApi:Retrieval:Private=true` lets a node in a network keep its own documents, with retrieval

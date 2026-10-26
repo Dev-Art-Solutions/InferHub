@@ -612,3 +612,57 @@ Strata family table follows 0.2.2's `setup.py` (unchanged in 0.2.3, the release 
 NVFP4-NVIDIA, NVFP4-QAD (one repo each, one `--family nvfp4`); Qwen3.6-35B-A3B (own-path, `--family qwen36`).
 Tests: `EngineLimitTellerTests`, `EngineLimitTests` (told, restart), `BrioScorerTests`, `BrioMeshTests` (System One).
 Measurements: `.claude/release-notes-v3.75.0.md`.
+
+### Phase 118 (will it fit: a link and a context in, this node's engines out — with the arithmetic — and the install with that context)
+
+Files: `src/InferHub.Shared/Fit/` (`GgufHeader`, `ModelFacts`, `MachineFacts`, `FitEstimator`, `ModelLink`),
+`src/InferHub.Node/Fit/` (`MachineProbe`, `ModelFactsReader`, `FitService`, `ModelContexts`),
+`LocalApi/LocalControlEndpoints.Fit.cs` (`POST /api/control/fit`, `/fit/install`). The app's dialog: `desktop/CLAUDE.md`.
+
+**D1, load-bearing — the estimate is arithmetic the reply shows, and it runs on the node.** Weights (the quant's file
+bytes) + KV (context × attention layers × KV width × 2 bytes, f16; × `OLLAMA_NUM_PARALLEL` for Ollama, which gives
+each slot the whole context — llama.cpp's router shares one, `kv_unified`) + a working reserve (512 MiB + context/100),
+against the cards (NVML, total less 5 % / 512 MiB each), RAM (less a tenth / 4 GiB) and the disk where that engine's
+models land — each lowered by the owner's 102 limit for the runtime. Every option carries `why` lines with the
+numbers, and `maxContext` / `cardContext` (largest context at all / wholly on the card, binary search in steps of
+256, capped at the trained context). **Conservative by design:** measured on a 0.5B at 32K, llama.cpp held 880 MiB
+against an estimate of 1692 (the KV part exact). *Rejected:* a table of "model X needs Y GB" — stale the week a model
+ships, and silent about the context, which is what moves a MoE between the card and RAM.
+
+**D2 — facts come from the model, read by hand.** A GGUF header by HTTP Range (16 MB, then 128 MB) — from Hugging
+Face or from Ollama's registry (`/v2/<owner>/<model>/manifests/<tag>`, the model layer's blob; the config blob's
+`model_type: "7.6B"` is the size). Hybrids: a per-layer `head_count_kv` with zeros, else `full_attention_interval`,
+else **the tensors** — found live, Qwen3-Next says nothing in its keys and its linear layers carry an `attn_qkv` too,
+so a block with `ssm_*` tensors is not attention (12 of 48, not 48). MLA: rank + rope. The experts' share: bytes of
+`*_exps` tensors over all, from the gaps between data offsets (no quant block-size table). A checkpoint: `config.json`
+(`text_config` for a multimodal one) + the Hub API's `safetensors.total`. A Strata repo: `StrataModels`' own table
+(its "48 GB RAM" figures). A repo with neither GGUF nor checkpoint, or a picture model, says what it is and offers nothing.
+
+**D3 — an engine is offered only if it can load the model; ranked by where the model sits.** Ollama and llama.cpp a
+GGUF (Ollama not a split one — found live, the bigger Qwen3-Next quants are all split, so Ollama is offered only the
+1-bit one), colibri a MoE checkpoint (converted ≈ 1 byte per dense and 0.6 per expert parameter — GLM-5.3-Flash 321B
+measured 195 GB; download + converted on disk), Strata only its repos (99 D4 — so `unsloth/Qwen3.6-35B-A3B-MTP-GGUF`,
+a plain GGUF, is offered to Strata alone, because that is where the pull goes). Placement score: card 50, experts in
+RAM 40 (llama.cpp, a MoE whose dense part + KV fit the card), Strata 35, split 20 (+3 when ≥ 60 % is on the card), RAM
+15, CPU 10, from disk 5; + bits a weight rounded, capped at 6; −1 for Q4_0/Q4_1/Q5_0/Q5_1; −15 under 3 bits, −35
+under 2 (found live: a 1.7-bit "all on the card, fast" outranked a 4-bit split); +100 when this node can install it.
+Ties: the smaller first. An engine the node lacks is still listed, not available, with the sentence why.
+
+**D4 — the chosen context goes with the install, to where each engine keeps it.** `ModelCommand.Context` (appended,
+nullable — a node before 3.79 ignores it). Strata: `setup.py --context` (wins over `Strata:Install:Context`).
+llama.cpp: the store's marker carries `Context`, and `LlamaCppServe.PresetIni` writes `ctx-size` into that model's
+section at every router launch unless the configuration's own preset sets one; a second pull of a model already
+here with another context rewrites the marker and restarts the router (live: `n_ctx` 4096 → 32768). Ollama:
+`<DataDirectory>/model-contexts.json` (an Ollama name has the `:` configuration keys split on, so not
+`node.local.json`), added by `OllamaBackend` as `options.num_ctx` to a request that sets none — the caller's wins
+(live: `/api/ps` 6144, then 2048 for a caller asking 2048). colibri sizes its own cache: `contextApplied: false`.
+
+**D5 — the reading is the network's, the decision is the owner's.** `/fit` reaches Hugging Face only under
+`HuggingFace:Enabled` (403 otherwise), Ollama's registry from any node (a pull would reach it anyway). `/fit/install`
+is the existing pull (112 D6) with the engine named: Ollama `hf.co/<repo>:<quant>`, the rest `engine: huggingface`.
+An option that is not available is a 409; one the estimate says does not fit is a 409 unless `force: true`. Facts are
+kept ten minutes per link, so a dialog trying contexts asks the Hub once.
+
+**Not established:** a GPU load measured against its estimate (the card here was held by another program throughout);
+AMD and Apple GPUs (NVML only — such a box is estimated as the CPU, and the reply says so); Ollama running every
+architecture llama.cpp does (Qwen3-Next was not tried in Ollama); KV quantization (`q8_0` halves the cache — not counted).

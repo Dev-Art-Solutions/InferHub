@@ -107,7 +107,33 @@ public static partial class LlamaCppServe
     }
 
     /// <summary>The INI <c>--models-preset</c> reads, one section per preset, names sorted.</summary>
-    public static string PresetIni(EngineOptions engine)
+    public static string PresetIni(EngineOptions engine) => PresetIni(engine, ChosenContexts(engine.Serve.ModelsDir));
+
+    /// <summary>
+    /// Phase 118 D4: the context the owner chose for each model the node downloaded into <c>Serve:ModelsDir</c>, from
+    /// its marker — a <c>ctx-size</c> in that model's section, unless the configuration already sets one.
+    /// </summary>
+    internal static IReadOnlyDictionary<string, int> ChosenContexts(string? modelsDir)
+    {
+        var chosen = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        if (string.IsNullOrWhiteSpace(modelsDir) || !Directory.Exists(modelsDir.Trim()))
+        {
+            return chosen;
+        }
+
+        foreach (var directory in Directory.EnumerateDirectories(modelsDir.Trim()))
+        {
+            if (HuggingFace.HuggingFaceStore.ContextOf(directory) is { } context)
+            {
+                chosen[Path.GetFileName(directory)] = context;
+            }
+        }
+
+        return chosen;
+    }
+
+    public static string PresetIni(EngineOptions engine, IReadOnlyDictionary<string, int> chosen)
     {
         var ini = new StringBuilder();
 
@@ -133,6 +159,18 @@ public static partial class LlamaCppServe
                 Line(ini, key.Trim().ToLowerInvariant(), value);
             }
 
+            if (chosen.TryGetValue(name.Trim(), out var context) && !preset.Settings.Keys.Any(k => string.Equals(k.Trim(), "ctx-size", StringComparison.OrdinalIgnoreCase)))
+            {
+                Line(ini, "ctx-size", context.ToString(CultureInfo.InvariantCulture));
+            }
+
+            ini.Append('\n');
+        }
+
+        foreach (var (name, context) in chosen.Where(c => !engine.Serve.Presets.ContainsKey(c.Key)).OrderBy(c => c.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            ini.Append('[').Append(name).Append("]\n");
+            Line(ini, "ctx-size", context.ToString(CultureInfo.InvariantCulture));
             ini.Append('\n');
         }
 
@@ -145,7 +183,9 @@ public static partial class LlamaCppServe
     /// </summary>
     public static string? WritePresets(string engineName, EngineOptions engine)
     {
-        if (engine.Serve.Presets.Count == 0)
+        var chosen = ChosenContexts(engine.Serve.ModelsDir);
+
+        if (engine.Serve.Presets.Count == 0 && chosen.Count == 0)
         {
             return null;
         }
@@ -153,7 +193,7 @@ public static partial class LlamaCppServe
         var directory = Path.Combine(Path.GetTempPath(), "inferhub-llamacpp");
         Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, $"{engineName}-{Environment.ProcessId}.ini");
-        File.WriteAllText(path, PresetIni(engine), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        File.WriteAllText(path, PresetIni(engine, chosen), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         return path;
     }
 

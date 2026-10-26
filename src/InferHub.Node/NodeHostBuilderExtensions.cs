@@ -235,6 +235,7 @@ public static class NodeHostBuilderExtensions
         // Before the engines' host, so the store's directories exist before a llama.cpp router checks its own.
         AddHuggingFace(builder);
         AddStrataInstaller(builder);
+        AddFit(builder);
         AddUpdates(builder);
         AddEngines(builder);
         AddOllamaSupervision(builder, ollamaOptions);
@@ -415,6 +416,11 @@ public static class NodeHostBuilderExtensions
                 services.GetRequiredService<IOptions<NodeOptions>>().Value.DataDirectory is { Length: > 0 } data ? data : services.GetRequiredService<IHostEnvironment>().ContentRootPath,
                 Control.NodeSharing.UsageFileName)));
         builder.Services.AddHostedService(services => services.GetRequiredService<Control.NodeSharing>());
+
+        // 118 D4: the context chosen for an Ollama model at install, beside the control token too.
+        builder.Services.AddSingleton(services => new Fit.ModelContexts(Path.Combine(
+            services.GetRequiredService<IOptions<NodeOptions>>().Value.DataDirectory is { Length: > 0 } data ? data : services.GetRequiredService<IHostEnvironment>().ContentRootPath,
+            Fit.ModelContexts.FileName)));
         builder.Services.TryAddSingleton<Control.INodeRestarter, Control.NodeRestarter>();
         builder.Services.AddSingleton<Control.ControlToken>();
     }
@@ -881,6 +887,41 @@ public static class NodeHostBuilderExtensions
                 catalog,
                 new Backends.Strata.StrataSetupRunner(logger),
                 logger);
+        });
+    }
+
+    /// <summary>
+    /// Phase 118. Will a model fit here, and on which engine — the control API's <c>/fit</c>. Composed on every node and
+    /// inert until asked; it reaches Hugging Face only through the store's own consent (D5).
+    /// </summary>
+    private static void AddFit(IHostApplicationBuilder builder)
+    {
+        // RemoveAllLoggers: a registry blob redirects to a signed CDN URL, as a Hugging Face resolve does (98).
+        builder.Services.AddHttpClient(Fit.ModelFactsReader.RegistryClientName, http => http.Timeout = TimeSpan.FromMinutes(2))
+            .RemoveAllLoggers();
+
+        builder.Services.AddSingleton(services =>
+        {
+            var hf = services.GetRequiredService<IOptions<Backends.HuggingFace.HuggingFaceOptions>>().Value;
+            var factory = services.GetRequiredService<IHttpClientFactory>();
+            Func<Backends.HuggingFace.HuggingFaceClient>? client = hf.Enabled
+                ? () => new Backends.HuggingFace.HuggingFaceClient(factory.CreateClient(Backends.HuggingFace.HuggingFaceStore.HttpClientName), new Uri(hf.Endpoint.TrimEnd('/') + "/"), hf.Token)
+                : null;
+
+            var reader = new Fit.ModelFactsReader(client, factory.CreateClient(Fit.ModelFactsReader.RegistryClientName), Fit.ModelFactsReader.DefaultRegistry);
+            var backend = services.GetRequiredService<IOptions<BackendOptions>>().Value;
+            var probe = new Fit.MachineProbe(
+                new Resources.Limits.NvmlGpuCards(),
+                backend,
+                services.GetRequiredService<IOptionsMonitor<NodeOptions>>().CurrentValue,
+                hf,
+                services.GetService<Backends.HuggingFace.HuggingFaceStore>()?.Targets,
+                services.GetRequiredService<IOptions<ColibriOptions>>().Value,
+                services.GetRequiredService<IOptions<Backends.Strata.StrataOptions>>().Value,
+                services.GetService<Backends.Strata.StrataInstaller>() is not null,
+                () => services.GetRequiredService<IInferenceBackend>().SupportsModelManagement);
+
+            return new Fit.FitService(reader, probe.Read, services.GetService<TimeProvider>());
         });
     }
 

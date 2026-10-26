@@ -80,3 +80,13 @@ names what is kept. [SharedModels](InferHub.Desktop.Core/SharedModels.cs) turns 
 owner's `Include` list is changed in place (unticking its last name is refused — an empty `Include` means every
 model), otherwise the model goes on or off `Exclude`, so a model pulled later is shared as before. Both lists are
 sent each time; the node validates.
+
+### Phase 118 (desktop/v0.4.0 — Check fit)
+
+**Check fit…** beside Pull on the Models tab: a dialog that asks the **context first** — typed (`32k`, `128K`, `40960`)
+or a quick pick up to the model's trained context; there is no minimum — and shows the node's `/fit` answer: the model
+and the machine in a line each, then one row per engine with its best size, a box for the other sizes that fit, the
+node's `why` lines, and **Install** (**Install anyway** behind a question when the estimate says it does not fit;
+disabled for an engine the node lacks). [FitChoices](InferHub.Desktop.Core/FitChoices.cs) only parses and words it —
+the node does the arithmetic (118 D1). `INFERHUB_DESKTOP_SCREENSHOT_FIT=<link>|<context>` renders the dialog after the
+tabs, from the app as they are. Needs a 3.79 node: an older one answers `/fit` with 404, shown in the status bar.
