@@ -106,3 +106,24 @@ leaves colibri's environment as before.
 ## Verification
 
 `dotnet test InferHub.sln`: **2 514 passed, 63 skipped** (Desktop 29, Shared 410, Coordinator 896, Node 655, Mesh 524). The new tests read a GGUF the writer builds in llama.cpp's layout, a fake Hugging Face and a fake Ollama registry over real HTTP, and canned answers copied from `coli plan` and Strata's planner on the box above; removing the hybrid-layer guard or the experts-in-RAM placement turns them red.
+
+## The published release, checked
+
+`inferhub-node:3.79.0` was pulled from GHCR (revision label `aa268ca`, the tag's commit). Its `app/` was extracted and
+run natively on the same Windows box, with the same four engines: Ollama, a Vulkan llama.cpp router, colibri 2.0
+with `Colibri:Serve:Vulkan=true`, and Strata at `E:/strata`. These were the published binaries, not a container, so
+the image's OS layer was not tested.
+
+| Call | Result |
+|---|---|
+| `/fit zai-org/GLM-5.3-Flash` @32K | colibri's own plan: 21 620 MiB on the card (the card less its reserve), 186 GiB in RAM, nothing on disk |
+| `/fit` Qwen3.8-Flash-Next @128K | Strata's own verdicts. IQ3_S comes first, as Strata recommends for this PC |
+| `/fit` Qwen3-Next-80B GGUF @32K | hybrid 12 of 48 layers; llama.cpp with experts in RAM, 4.3 GiB on the card |
+| `/fit llama3.1:latest` @64K | Ollama, all on the card, 14 052 MiB |
+| `/fit/install` Qwen2.5-0.5B GGUF, llama.cpp, context 12288 | downloaded; the router's `n_ctx` is 12288 |
+| Strata Coder IQ1_M, chat, then catalogue unload | card +19.7 GB, answered; card back to 1.6 GB after unload |
+
+InferHub Desktop 0.4.0 (`InferHub-Desktop-0.4.0-windows-x64.zip`) was downloaded from its release. Its checksum
+matches `SHA256SUMS.txt`. Its Core is 0.4.0 and its node 3.79.0, both built from `aa268ca`, and it carries the
+`/fit/install` client. The packaged app's window was not opened; the dialog was rendered from the source build of
+the same commit (`.claude/verification-v3.79.0-desktop.png`).
