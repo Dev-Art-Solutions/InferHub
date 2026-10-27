@@ -74,3 +74,22 @@ Live on the 3090 Ti box (256 GB), a source build with Ollama and a Vulkan llama.
 for 25 Hugging Face repos with their file lists). Trending text, top 30: Ollama's 8B–35B sizes and Hugging Face's
 4B–33B repos on the card; the 122B and 200B mixture-of-experts models card + RAM; a 263 GB IQ1_S too big. One entry
 (`qwen2.5:32b`) was opened in `/fit` at 32K. The desktop dialog was rendered from the app attached to that node.
+
+## The published release, checked
+
+`inferhub-node:3.80.0` was pulled from GHCR (revision label `75a1037`, the tag's commit). Its `app/` was extracted and
+run natively on the same Windows box with Ollama and a Vulkan llama.cpp. These were the published binaries, not a
+container, so the image's OS layer was not tested.
+
+| Call | Result |
+|---|---|
+| `status` | `3.80.0` |
+| `/fit/catalog?source=all&limit=10` | both sources answered; 17 on the card, 3 card + RAM, in that order |
+| `?source=ollama&kind=vision&fitsOnly=true` | gemma3:27b, gemma4:31b, qwen3.5:35b, … — all on the card |
+| `?source=huggingface&q=DeepSeek-V4.1-Flash-1017-Uncensored` | AtomicChat's repo is card + RAM at 233 GiB (IQ1_M), not its LoRA's 67 MiB |
+| no token / `sort=best` | 401 / 400 naming the three sorts |
+
+InferHub Desktop 0.5.0 (`InferHub-Desktop-0.5.0-windows-x64.zip`) was downloaded from its release. Its checksum
+matches `SHA256SUMS.txt`, its Core is 0.5.0 and its node 3.80.0, both built from `75a1037`. Its packaged node was run
+and answered the same catalogue. The packaged app's window was not opened; the dialog was rendered from the source
+build of the same commit (`.claude/verification-v3.80.0-desktop.png`).
