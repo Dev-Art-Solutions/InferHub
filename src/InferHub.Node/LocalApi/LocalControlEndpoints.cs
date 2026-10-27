@@ -64,6 +64,7 @@ internal static partial class LocalControlEndpoints
         group.MapPost("/catalog/{engine}/{model}/{action}", CatalogAsync);
         group.MapPost("/fit", FitAsync);
         group.MapPost("/fit/install", FitInstallAsync);
+        group.MapGet("/fit/catalog", CatalogListAsync);
 
         return app;
     }

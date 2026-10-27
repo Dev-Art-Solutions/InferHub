@@ -168,6 +168,23 @@ public sealed class HuggingFaceClient(HttpClient http, Uri endpoint, string? tok
         return GetJsonAsync($"api/models/{reference.RepoId}{revision}?expand[]=pipeline_tag&expand[]=safetensors&expand[]=gguf", reference, cancellationToken);
     }
 
+    /// <summary>Phase 119: the Hub's model listing for a query (<see cref="InferHub.Shared.Fit.HuggingFaceListing.Query"/>).</summary>
+    public async Task<JsonDocument> ListAsync(string query, CancellationToken cancellationToken)
+    {
+        using var request = Request(HttpMethod.Get, query);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(ApiTimeout);
+        using var response = await http.SendAsync(request, timeout.Token);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"Hugging Face answered {(int)response.StatusCode} for its model list: {Trim(await response.Content.ReadAsStringAsync(timeout.Token))}");
+        }
+
+        await using var body = await response.Content.ReadAsStreamAsync(timeout.Token);
+        return await JsonDocument.ParseAsync(body, cancellationToken: timeout.Token);
+    }
+
     /// <summary>Phase 118: the first <paramref name="bytes"/> of a file (an HTTP Range read), as a stream the caller disposes with the response.</summary>
     public async Task<HttpResponseMessage> RangeAsync(HfReference reference, string commit, string file, long bytes, CancellationToken cancellationToken)
     {

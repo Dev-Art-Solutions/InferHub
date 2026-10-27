@@ -128,6 +128,14 @@ public sealed class NodeControlClient : IDisposable
             ["force"] = force
         }, cancellationToken);
 
+    /// <summary>Phase 119: what is trending and popular on Hugging Face and in Ollama's library, fitting first (a 3.80 node).</summary>
+    public Task<JsonObject> CatalogAsync(string source, string sort, string kind, string? search, bool fitsOnly, CancellationToken cancellationToken = default)
+    {
+        var query = $"?source={Uri.EscapeDataString(source)}&sort={Uri.EscapeDataString(sort)}&kind={Uri.EscapeDataString(kind)}&fitsOnly={(fitsOnly ? "true" : "false")}"
+                    + (string.IsNullOrWhiteSpace(search) ? "" : "&q=" + Uri.EscapeDataString(search.Trim()));
+        return SendAsync(HttpMethod.Get, "/api/control/fit/catalog" + query, null, cancellationToken);
+    }
+
     /// <summary>The node's events as they happen — jobs, sharing, settings, model progress — until cancelled.</summary>
     public IAsyncEnumerable<ServerEvent> EventsAsync(long after = 0, CancellationToken cancellationToken = default) =>
         StreamAsync($"/api/control/events?after={after}", cancellationToken);

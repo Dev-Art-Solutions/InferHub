@@ -336,7 +336,7 @@ public static class FitEstimator
         }
     }
 
-    private static long Vram(MachineFacts machine, EngineFacts engine, List<string> why)
+    internal static long Vram(MachineFacts machine, EngineFacts engine, List<string> why)
     {
         // A card keeps some for the driver and the desktop; 5%, at least 512 MiB.
         var usable = machine.Gpus.Sum(g => Math.Max(0, g.TotalMiB - Math.Max(512, g.TotalMiB / 20)));
@@ -357,7 +357,7 @@ public static class FitEstimator
         return usable;
     }
 
-    private static long Ram(MachineFacts machine, EngineFacts engine, List<string> why)
+    internal static long Ram(MachineFacts machine, EngineFacts engine, List<string> why)
     {
         // The system and the node itself keep a tenth, at least 4 GiB.
         var usable = Math.Max(0, machine.RamMiB - Math.Max(4096, machine.RamMiB / 10));

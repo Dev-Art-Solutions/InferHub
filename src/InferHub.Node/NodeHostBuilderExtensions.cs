@@ -938,6 +938,22 @@ public static class NodeHostBuilderExtensions
 
             return new Fit.FitService(reader, probe.Read, services.GetService<TimeProvider>(), planners);
         });
+
+        // Phase 119: the catalogue — Hugging Face under the same consent, Ollama's library where an Ollama pulls (D4).
+        builder.Services.AddHttpClient(Fit.CatalogService.LibraryClientName, http => http.Timeout = TimeSpan.FromMinutes(1))
+            .RemoveAllLoggers();
+
+        builder.Services.AddSingleton(services =>
+        {
+            var hf = services.GetRequiredService<IOptions<Backends.HuggingFace.HuggingFaceOptions>>().Value;
+            var factory = services.GetRequiredService<IHttpClientFactory>();
+            Func<Backends.HuggingFace.HuggingFaceClient>? client = hf.Enabled
+                ? () => new Backends.HuggingFace.HuggingFaceClient(factory.CreateClient(Backends.HuggingFace.HuggingFaceStore.HttpClientName), new Uri(hf.Endpoint.TrimEnd('/') + "/"), hf.Token)
+                : null;
+            var probe = services.GetRequiredService<Fit.FitService>();
+
+            return new Fit.CatalogService(client, factory.CreateClient(Fit.CatalogService.LibraryClientName), Fit.CatalogService.DefaultLibrary, probe.Machine, services.GetService<TimeProvider>());
+        });
     }
 
     private static bool IsColibri(IConfiguration configuration)

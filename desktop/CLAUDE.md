@@ -90,3 +90,14 @@ node's `why` lines, and **Install** (**Install anyway** behind a question when t
 disabled for an engine the node lacks). [FitChoices](InferHub.Desktop.Core/FitChoices.cs) only parses and words it —
 the node does the arithmetic (118 D1). `INFERHUB_DESKTOP_SCREENSHOT_FIT=<link>|<context>` renders the dialog after the
 tabs, from the app as they are. Needs a 3.79 node: an older one answers `/fit` with 404, shown in the status bar.
+
+### Phase 119 (desktop/v0.5.0 — Browse models)
+
+**Browse models…** beside Check fit: source (all · huggingface · ollama), sort (trending · downloads · newest), kind
+(text · vision), a search and **fits only**, then the node's `/fit/catalog` list in the node's order — fitting first.
+Each row: the class and the weights, the source's numbers (pulls/downloads, likes, updated, capabilities, MoE, Strata),
+the node's `why`, a box of sizes (Ollama's sizes, a repo's quants — each with its own class) and **Check fit…**, which
+closes the list and opens 118's dialog on the chosen size. **Nothing installs from the list** (119 D5): the context is
+chosen in Check fit. A source that did not answer is a red line above the list; the other is still shown.
+[CatalogChoices](InferHub.Desktop.Core/CatalogChoices.cs) only words it. `INFERHUB_DESKTOP_SCREENSHOT_CATALOG=1` renders
+the dialog after the tabs. Needs a 3.80 node.

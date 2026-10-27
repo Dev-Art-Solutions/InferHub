@@ -26,6 +26,9 @@ public sealed class FitService(ModelFactsReader reader, Func<MachineFacts> machi
 
     public sealed record Refusal(string Engine, string Reason);
 
+    /// <summary>This machine as the estimate sees it — the catalogue (119) classes its list against the same facts.</summary>
+    public MachineFacts Machine() => machine();
+
     public async Task<Answer> EstimateAsync(string? link, int? context, CancellationToken cancellationToken)
     {
         var (model, canonical) = await FactsAsync(link, cancellationToken);

@@ -701,3 +701,55 @@ gone). The hub's profile path is unchanged: a profile that leaves a request-load
 running every architecture llama.cpp does (Qwen3-Next was not tried in Ollama); KV quantization (`q8_0` halves the cache —
 not counted); sliding-window layers (counted at the full context: gpt-oss over by ~2 GB); colibri's CUDA tier (the CUDA
 build here has no GLM-5.3 engine); a context for a colibri model converted by hand (no marker to keep it in).
+
+### Phase 119 (a catalogue: what is trending and popular on Hugging Face and in Ollama's library, ordered by what fits here)
+
+Files: `src/InferHub.Shared/Fit/` (`Catalog` — `CatalogEntry`, `CatalogRough`; `OllamaLibraryPage`, `HuggingFaceListing`),
+`src/InferHub.Node/Fit/CatalogService.cs`, `HuggingFaceClient.ListAsync`, `GET /api/control/fit/catalog` in
+`LocalApi/LocalControlEndpoints.Fit.cs`. The app's dialog: `desktop/CLAUDE.md`.
+
+**D1, load-bearing — the list is ordered by a rough class from the weights alone, says so, and leaves the arithmetic to
+118.** `CatalogRough` classes weights against the usable VRAM and RAM `FitEstimator` itself uses (its `Vram`/`Ram` made
+`internal`, not copied — one opinion): `card` (weights + 1 GiB on the cards), `card-and-ram` (split, or experts in RAM for
+a MoE), `ram` (no card), `too-big`, `unknown`. The engine whose limit counts is the tighter of the two GGUF engines that
+install here. Order: class, then the source's own rank, so the sources interleave. Every `why` ends "weights only — the
+context is chosen in Check fit". Live, `qwen2.5:32b` is `card` here (18 GiB) and Check fit at 32K says `split`, which is
+the design: the list never claims a context. *Rejected:* 118's estimate per entry — a GGUF header is a 16 MB Range read,
+thirty entries half a gigabyte to open a list. *Rejected:* hiding `too-big` — "popular and not for this box" is an
+answer; `fitsOnly=true` is the filter.
+
+**D2 — Ollama's library is read from its web page, by hand; a page that changed shape is an error, not an empty list.**
+No documented API (`ollama.com/api/tags` is Ollama's cloud models). `OllamaLibraryPage` reads `library?sort=popular|newest&q=`:
+one `<a href="/library/<name>" class="group…">` per model, description, indigo capability badges (and a cyan `cloud`),
+light-blue size badges (`7b`, `e2b`, `8x7b` → 56B and MoE), pulls (`43.7M`), the `title` date of "Updated". Cloud-only
+(a `cloud` badge, no size) is dropped; `embedding` is not a text model; `vision` keeps only vision. Each size is classed
+and the entry opens at the largest size of the best fitting class. Zero models from a page with a body (and no search) is
+"changed shape" in `sources[].error`. The fixture is the real page of 2026-10-27, trimmed (`tests/InferHub.Tests.Common/OllamaLibraryFixture.cs`).
+
+**D3 — Hugging Face: the listing API for the order, each repo's tree for the bytes.** `api/models?filter=gguf&pipeline_tag=
+text-generation|image-text-to-text&sort=trendingScore|downloads|createdAt&expand[]=gguf…`. **Found live: the listing's
+`gguf.total` can describe a side file** — AtomicChat's DeepSeek-V4.1-Flash (≈200 GB) listed 115M parameters, its LoRA's,
+and came out "67 MiB, on the card". So each repo's tree is read (one JSON call, six at a time, kept ten minutes) and its
+quants grouped by 118's `ModelFactsReader.GgufVariants` — the same grouping a pull uses — each classed by its real bytes;
+the entry opens at a 4-bit K-quant of the best class, else that class's largest. **Not quants (`IsNotAModel`), each found
+live listing a 200 GB model as "on the card":** a path part with `lora`, one with `imatrix`, a file starting `mtp` or
+containing `draft` (a speculative-decoding head). A quant carrying its MTP layers (`IQ4_XS-MTP-00001-of-00003`) stays. A
+tree that cannot be read falls back to the listing's parameter count, and the `why` says it can describe a side file.
+A Strata repo is `unknown` — only Strata's table sizes it (99 D4). *Rejected:* `safetensors` listings for colibri —
+mostly dense models no engine here loads; a pasted link still reaches 118.
+
+**D4 — each source with the consent 118 uses, failing alone, kept ten minutes.** Hugging Face only under
+`HuggingFace:Enabled`, Ollama's library only with an Ollama engine that pulls; otherwise `sources[]` says why and the
+other source still answers (no 403 for the list). A source that fails is `ok:false` with the sentence. Answers (the
+listing, the page, each tree) are cached per query for ten minutes. No configuration key: nothing is composed that
+reaches the network until `/fit/catalog` is asked.
+
+**D5 — nothing downloads from the list.** An entry is a link for 118's dialog, where the context is chosen and
+`/fit/install` runs — so "nothing downloads without the owner's click" has one install path to keep honest.
+
+**Measured live (3090 Ti, 256 GB):** both sources answered in ~1.6 s cold (listing + 25 trees); trending text, top 30:
+Ollama's 8B–35B sizes and HF's 4B–33B repos on the card, the 122B/200B MoEs `card-and-ram`, a 263 GB IQ1_S `too-big`.
+
+**Not established:** a trending list for Ollama (it has none — popular is used, and the note says so); whether the
+page parser survives Ollama's next redesign (it fails loudly, not silently); repos that name quants in ways
+`GgufVariants` does not (they show by file name, as in 118); a side file named like none of the four patterns.

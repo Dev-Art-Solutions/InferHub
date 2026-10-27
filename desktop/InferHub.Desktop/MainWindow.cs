@@ -188,10 +188,10 @@ public sealed class MainWindow : Window
             },
             models,
             Heading("Get a model"),
-            Row(pullName, Button("Pull", async () => await ModelAction(pullName.Text?.Trim(), "pull")), Button("Check fit…", () => FitDialogAsync(pullName.Text?.Trim()))),
+            Row(pullName, Button("Pull", async () => await ModelAction(pullName.Text?.Trim(), "pull")), Button("Check fit…", () => FitDialogAsync(pullName.Text?.Trim())), Button("Browse models…", () => CatalogDialogAsync())),
             new TextBlock
             {
-                Text = "Check fit: choose the context you need, and the node says which of its engines can run the model, where it would sit and why — then installs it there with that context.",
+                Text = "Check fit: choose the context you need, and the node says which of its engines can run the model, where it would sit and why — then installs it there with that context. Browse models: what is trending and popular on Hugging Face and in Ollama's library, what fits this machine first.",
                 TextWrapping = TextWrapping.Wrap,
                 Opacity = 0.7
             },
@@ -763,7 +763,146 @@ public sealed class MainWindow : Window
             await FitDialogAsync(parts[0], parts.Length > 1 ? parts[1] : null, Path.Combine(directory, "desktop-8-check-fit.png"));
         }
 
+        // Phase 119: "1" — the Browse models dialog as it opens, after the tabs.
+        if (Environment.GetEnvironmentVariable("INFERHUB_DESKTOP_SCREENSHOT_CATALOG") is { Length: > 0 })
+        {
+            tabs.SelectedIndex = 2;
+            await CatalogDialogAsync(Path.Combine(directory, "desktop-9-browse-models.png"));
+        }
+
         tabs.SelectedIndex = 0;
+    }
+
+    /// <summary>
+    /// Phase 119: the "Browse models" dialog — trending and popular models from Hugging Face and Ollama's library,
+    /// ordered by the node by what fits this machine. Nothing installs from here: each model opens Check fit, where the
+    /// context is chosen.
+    /// </summary>
+    private async Task CatalogDialogAsync(string? screenshot = null)
+    {
+        var source = new ComboBox { ItemsSource = CatalogChoices.Sources, SelectedIndex = 0, MinWidth = 120 };
+        var sort = new ComboBox { ItemsSource = CatalogChoices.Sorts, SelectedIndex = 0, MinWidth = 110 };
+        var kind = new ComboBox { ItemsSource = CatalogChoices.Kinds, SelectedIndex = 0, MinWidth = 90 };
+        var search = new TextBox { Width = 200, PlaceholderText = "search, e.g. qwen" };
+        var fitsOnly = new CheckBox { Content = "fits only" };
+        var results = new StackPanel { Spacing = 6 };
+        var state = new TextBlock { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
+
+        var dialog = new Window
+        {
+            Title = "Browse models — what fits this node first",
+            Width = 900,
+            Height = 680,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
+
+        async Task ListAsync()
+        {
+            state.Text = "Asking the node (it reads the lists from Hugging Face and ollama.com, and each repository's file sizes)…";
+            results.Children.Clear();
+            JsonObject? reply = null;
+
+            await app.Run(async client =>
+            {
+                reply = await client.CatalogAsync(
+                    source.SelectedItem as string ?? "all", sort.SelectedItem as string ?? "trending", kind.SelectedItem as string ?? "text",
+                    search.Text, fitsOnly.IsChecked == true);
+            });
+
+            if (reply is null)
+            {
+                state.Text = "The node did not answer; see the status bar. (Browse needs a 3.80 node.)";
+                return;
+            }
+
+            state.Text = Text(reply["note"]);
+
+            foreach (var problem in CatalogChoices.Problems(reply))
+            {
+                results.Children.Add(new TextBlock { Text = problem, TextWrapping = TextWrapping.Wrap, Foreground = Brushes.IndianRed });
+            }
+
+            var rows = CatalogChoices.Rows(reply);
+
+            if (rows.Count == 0)
+            {
+                results.Children.Add(new TextBlock { Text = "Nothing listed for this choice.", TextWrapping = TextWrapping.Wrap });
+            }
+
+            foreach (var row in rows)
+            {
+                var link = row.Link;
+                var check = new Button { Content = "Check fit…" };
+                check.Click += async (_, _) => { dialog.Close(); await FitDialogAsync(link); };
+                var line = Row(check);
+
+                if (row.Sizes.Count > 1)
+                {
+                    var sizes = new ComboBox
+                    {
+                        ItemsSource = row.Sizes.Select(s => s.Label).ToArray(),
+                        SelectedIndex = Math.Max(0, row.Sizes.ToList().FindIndex(s => s.Link == row.Link)),
+                        MinWidth = 260
+                    };
+                    sizes.SelectionChanged += (_, _) => link = sizes.SelectedIndex >= 0 ? row.Sizes[sizes.SelectedIndex].Link : row.Link;
+                    line.Children.Insert(0, sizes);
+                }
+
+                results.Children.Add(new Border
+                {
+                    BorderThickness = new Thickness(0, 1, 0, 0),
+                    BorderBrush = Brushes.Gray,
+                    Padding = new Thickness(0, 6, 0, 0),
+                    Child = new StackPanel
+                    {
+                        Spacing = 3,
+                        Children =
+                        {
+                            new TextBlock { Text = row.Headline, FontWeight = FontWeight.SemiBold, TextWrapping = TextWrapping.Wrap, Opacity = row.Class == "too-big" ? 0.6 : 1 },
+                            new TextBlock { Text = row.Details, TextWrapping = TextWrapping.Wrap, Opacity = 0.75, FontSize = 12 },
+                            new TextBlock { Text = row.Why, TextWrapping = TextWrapping.Wrap, Opacity = 0.6, FontSize = 12 },
+                            line
+                        }
+                    }
+                });
+            }
+        }
+
+        var list = Button("List", ListAsync);
+        dialog.Content = new ScrollViewer
+        {
+            Content = new StackPanel
+            {
+                Margin = new Thickness(16),
+                Spacing = 10,
+                Children =
+                {
+                    Row(source, sort, kind, search, fitsOnly, list),
+                    new TextBlock { Text = "Nothing downloads from this list: each model opens Check fit, where the context — and so the engine — is chosen.", TextWrapping = TextWrapping.Wrap, Opacity = 0.7 },
+                    state,
+                    results
+                }
+            }
+        };
+
+        if (screenshot is not null)
+        {
+            dialog.Show(this);
+            await ListAsync();
+            await Task.Delay(1500);
+
+            using (var bitmap = new Avalonia.Media.Imaging.RenderTargetBitmap(new PixelSize((int)dialog.Bounds.Width, (int)dialog.Bounds.Height), new Vector(96, 96)))
+            {
+                bitmap.Render(dialog);
+                bitmap.Save(screenshot);
+            }
+
+            dialog.Close();
+            return;
+        }
+
+        _ = ListAsync();
+        await dialog.ShowDialog(this);
     }
 
     /// <summary>

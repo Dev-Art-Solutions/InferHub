@@ -935,6 +935,36 @@ POST /api/control/fit/install  {"link": "…", "engine": "llamacpp", "variant": 
 
 In the desktop app (0.4.0), this is **Check fit…** on the Models tab.
 
+### Browse models that fit (v3.80+)
+
+What is trending and popular on Hugging Face and in Ollama's library, with what fits this machine
+first. Each model opens Check fit, where you choose the context and install it.
+
+```http
+GET /api/control/fit/catalog?source=all&sort=trending&kind=text&q=qwen&limit=30&fitsOnly=false
+```
+
+- **`source`** is `all`, `huggingface` or `ollama`. **`sort`** is `trending`, `downloads` or
+  `newest`; Ollama's library has no trending order, so its popular one is used. **`kind`** is
+  `text` or `vision` (a model that also reads pictures).
+- **The order is by where the weights alone would sit**: on the card, card + RAM (a split, or a
+  mixture-of-experts with its experts in RAM), RAM on a machine without a card, size unknown, and
+  too big. Within each class, the sources' own order. It is measured against the same usable
+  VRAM and RAM, with your limits, that Check fit uses. It does not count a context. That is chosen
+  in Check fit, where a model "on the card" may turn out to need RAM too at 128K.
+- **A Hugging Face repo is sized by its files.** The node reads each repo's file list (one small
+  API call, not the model) and sizes every quant by its real bytes. LoRAs, importance matrices and
+  draft models beside a model are not counted as quants of it. **An Ollama model** is sized by its
+  tags at 4-bit (`7b`, `32b`, `8x7b`). Each entry opens at the largest size that fits best, and
+  the others are listed with their own class.
+- **Consent per source**, as for Check fit: Hugging Face only with `HuggingFace:Enabled`, Ollama's
+  library only on a node with an Ollama engine. A source that fails or is off says why in
+  `sources`, and the other source is still listed. Lists are kept ten minutes.
+- **Nothing downloads from the list.** Ollama's library has no API; the node reads its web page
+  and says so, rather than showing an empty list, if the page changes.
+
+In the desktop app (0.5.0), this is **Browse models…** on the Models tab.
+
 ### A private corpus on a networked node
 
 `LocalApi:Retrieval:Private=true` lets a node in a network keep its own documents, with retrieval
