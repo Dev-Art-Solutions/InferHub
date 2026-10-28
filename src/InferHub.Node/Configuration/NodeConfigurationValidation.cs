@@ -121,6 +121,17 @@ public sealed class NodeOptionsValidator : IValidateOptions<NodeOptions>
             failures.Add($"{NodeOptions.SectionName}:Sharing:IdleSeconds must be >= 0 (got {options.Sharing.IdleSeconds}).");
         }
 
+        // Phase 120: a cap below one would refuse every install while looking like a setting that allows them.
+        if (options.Management.MaxModelGiB is { } maxModel && maxModel < 1)
+        {
+            failures.Add($"{NodeOptions.SectionName}:Management:MaxModelGiB must be >= 1 when set (got {maxModel}).");
+        }
+
+        if (options.Management.KeepFreeGiB < 0)
+        {
+            failures.Add($"{NodeOptions.SectionName}:Management:KeepFreeGiB must be >= 0 (got {options.Management.KeepFreeGiB}).");
+        }
+
         // Phase 116: hours that do not parse would be a node sharing at hours its owner did not write.
         Control.SharingHours.Parse(options.Sharing.Hours, options.Sharing.TimeZone, out var hoursError);
 

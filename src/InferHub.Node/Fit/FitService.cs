@@ -66,8 +66,18 @@ public sealed class FitService(ModelFactsReader reader, Func<MachineFacts> machi
             FitEstimator.Refused(model).Select(r => new Refusal(r.Engine, r.Reason)).ToArray());
     }
 
+    /// <summary>One option chosen for an install: the estimate it came from, the option, and the pull that installs it.</summary>
+    public sealed record Plan(Answer Answer, FitOption Option, ModelCommand Command);
+
     /// <summary>The pull that installs one option: the engine's own command, with the chosen context (D4).</summary>
     public async Task<ModelCommand> CommandAsync(string? link, string? engine, string? variant, int? context, bool force, CancellationToken cancellationToken)
+        => (await PlanAsync(link, engine, variant, context, force, cancellationToken)).Command;
+
+    /// <summary>
+    /// <see cref="CommandAsync"/> with what it was decided from — the hub's install (120) checks the owner's disk terms
+    /// against the same option.
+    /// </summary>
+    public async Task<Plan> PlanAsync(string? link, string? engine, string? variant, int? context, bool force, CancellationToken cancellationToken)
     {
         var answer = await EstimateAsync(link, context, cancellationToken);
         var option = answer.Options.FirstOrDefault(o =>
@@ -96,10 +106,10 @@ public sealed class FitService(ModelFactsReader reader, Func<MachineFacts> machi
                 ? chosen.Link!
                 : OllamaHfName(chosen.Link) ?? throw new FitRefusedException(400, $"Ollama pulls a Hugging Face GGUF by its quant name, and '{chosen.Name}' has none it can name; install it with llama.cpp");
 
-            return new ModelCommand(Guid.NewGuid(), ModelCommand.KindPull, name, Engine: option.EngineName, Context: ctx);
+            return new Plan(answer, option, new ModelCommand(Guid.NewGuid(), ModelCommand.KindPull, name, Engine: option.EngineName, Context: ctx));
         }
 
-        return new ModelCommand(Guid.NewGuid(), ModelCommand.KindPull, chosen.Link!, Engine: ModelCommand.EngineHuggingFace, Context: ctx);
+        return new Plan(answer, option, new ModelCommand(Guid.NewGuid(), ModelCommand.KindPull, chosen.Link!, Engine: ModelCommand.EngineHuggingFace, Context: ctx));
     }
 
     /// <summary><c>owner/repo:Q4_K_M</c> → <c>hf.co/owner/repo:Q4_K_M</c>, what <c>ollama pull</c> takes; null for a file link.</summary>

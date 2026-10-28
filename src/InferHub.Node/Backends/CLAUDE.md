@@ -753,3 +753,46 @@ Ollama's 8B–35B sizes and HF's 4B–33B repos on the card, the 122B/200B MoEs 
 **Not established:** a trending list for Ollama (it has none — popular is used, and the note says so); whether the
 page parser survives Ollama's next redesign (it fails loudly, not silently); repos that name quants in ways
 `GgufVariants` does not (they show by file name, as in 118); a side file named like none of the four patterns.
+
+### Phase 120 (the coordinator does what the app does — catalogue, estimate, install — on the owner's terms)
+
+Files: `src/InferHub.Shared/Fit/Management.cs` (`ManagementJob`, `ManagementRequest`, `ManagementTerms`, `ManagementInstall`),
+`src/InferHub.Node/Fit/HubManagement.cs` (+ `ManagementQuota`), `Node:Management` (`ManagementOptions` in `NodeOptions`),
+`CoordinatorConnection.RunToolJobAsync`; hub `Services/NodeManagementControl.cs`, `Endpoints/ManagementEndpoints.cs`, the
+console's *Models that fit* row; the setup's two pages (`deploy/windows/installer/InferHubNode.iss`).
+
+**D1, load-bearing — the hub asks, the node answers with its own services and decides by its own keys.** A tool job for
+that one node (capability `manage`, the operation as the job's model, a `ManagementRequest` as the payload), intercepted
+in `RunToolJobAsync` before the tool runtime — so no new hub method, the result path, deadline and cancel are 41's, and it
+runs off the dispatch loop (107). The answer is the node's `/api/control/fit…` JSON passed through untouched (118's "one
+opinion"). `Node:Management:AllowFromHub` (default false) is read **live** per request via `IOptionsMonitor<NodeOptions>`;
+off is `management_not_allowed` → 403 with the sentence, and nothing reaches the network. The registration carries
+`ManagementTerms` as they were at connect, for the console only — the node never trusts the hub's copy. *Rejected:* a
+SignalR client result (`InvokeAsync<T>`) — the client runs handlers one at a time (98), a 2 s catalogue would hold every
+later call. *Rejected:* the hub computing the estimate from reported facts — a second opinion, and it would drift.
+
+**D2 — the install is the node's decision and the hub's pull.** The node runs 118's `FitService.PlanAsync` (estimate →
+option → `ModelCommand`, the 409s for unavailable / does-not-fit-without-force unchanged) and returns `ManagementInstall`;
+the hub sends that command through `ModelCommandCoordinator.SendAsync` (now with `context`, part of the coalescing key), so
+progress is 26's on the console's feed and the audit is `model.install.fit`. *Rejected:* the node starting the pull itself
+— its progress would carry a command id the hub never issued, and the console would show nothing.
+
+**D3 — the owner's disk terms: a largest model, and a floor of free disk.** `ManagementQuota.Refusal(terms, option,
+machine)`, pure: `option.DiskMiB` (118's download + conversion) ≤ `MaxModelGiB` (null = none), and the engine's
+`DiskFreeMiB` − that ≥ `KeepFreeGiB` (20; 0 = none). A disk the node cannot measure is refused while a floor is set — the
+owner asked for something it cannot promise. Over: `management_over_quota` → 409 with the numbers. The estimate's reply
+carries `hub[]` (per option: `allowed`, `why`) so the console greys out what would be refused. *Rejected:* a running total of
+what the hub installed — names differ per engine, models are deleted by other paths, and a total that drifts is worse than
+two numbers the owner can check with Explorer.
+
+**D4 — the older hub commands are not gated.** Pull by name (26), a Hugging Face link (98), a Strata install (99) keep
+their own consent (`HuggingFace:Enabled`, the engine's), as before 3.81: gating them now would break every fleet that uses
+them. The README says so. A node that wants none of it from its hub still has `HuggingFace:Enabled=false`.
+
+**D5 — the setup asks; a solo node is never asked.** Two pages after *Updates*: yes/no (default no), then the two numbers
+(skipped on no). `/HubModels=yes|no /HubMaxModelGiB= /HubKeepFreeGiB=` for a silent install; an empty cap removes the key.
+The three keys are also in `NodeSettingsSchema` (live, group `sharing`), so the app's settings and `PUT /api/control/settings`
+change them without a reinstall.
+
+**Not established:** the console in a browser against a real far-away node; a hub-side refresh of the terms after a live
+change (the snapshot shows what the node connected with until it reconnects — the node's answers are always current).

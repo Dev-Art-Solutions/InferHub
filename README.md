@@ -965,6 +965,39 @@ GET /api/control/fit/catalog?source=all&sort=trending&kind=text&q=qwen&limit=30&
 
 In the desktop app (0.5.0), this is **Browse models…** on the Models tab.
 
+### Models from the coordinator (v3.81+)
+
+A node far away (a VM, a box in another room) can let its coordinator do what the app does on it:
+browse, check fit and install. The hub asks the node; the node answers with its own estimate and
+decides by its owner's terms.
+
+```http
+GET  /api/admin/nodes/{id}/fit/catalog?source=all&sort=trending&kind=text&limit=30
+POST /api/admin/nodes/{id}/fit          {"link": "unsloth/Qwen3-8B-GGUF", "context": 32768}
+POST /api/admin/nodes/{id}/fit/install  {"link": "…", "context": 32768, "engine": "llamacpp", "variant": "Q4_K_M"}
+```
+
+- **Off until the owner says yes.** `Node:Management:AllowFromHub` is `false` by default, and the
+  Windows setup asks. While it is off, all three are a 403 with the node's reason. It is read live:
+  the next request follows a change, with no restart.
+- **The node's answer, not the hub's.** The catalogue and the estimate are the node's
+  `/api/control/fit…` replies, passed through. The estimate adds `terms` (the owner's keys) and `hub`:
+  for each option, whether the coordinator may install it and, if not, why.
+- **The owner's disk terms.** An install from the hub must be no larger than
+  `Node:Management:MaxModelGiB` on disk (no cap by default). It must also leave
+  `Node:Management:KeepFreeGiB` free (20 by default) where that engine keeps its models. Over
+  either limit, the node refuses with a 409 that gives the numbers. If the node cannot measure that
+  disk, the install is refused while a floor is set.
+- **The install is the pull you already know.** The node agrees to one option, with the context
+  you chose. The hub then sends that pull as a model command, so its progress shows under *Command
+  progress* like any other (`202` with the `commandId`).
+- `/api/status` `nodes[].management` shows the terms the node connected with. In the console:
+  **Model management → Models that fit** (choose the node, then *Browse* or *Check fit*, then
+  *Install*).
+- **Not covered by these keys:** the older hub commands (pull by name, a Hugging Face link, a
+  Strata install), which behave as before. Hugging Face is still reached only under
+  `HuggingFace:Enabled`.
+
 ### A private corpus on a networked node
 
 `LocalApi:Retrieval:Private=true` lets a node in a network keep its own documents, with retrieval

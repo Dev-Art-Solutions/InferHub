@@ -39,7 +39,8 @@ public sealed class CoordinatorConnection(
     Update.UpdateManager? updates = null,
     Resources.Limits.IEngineLimiter? limiter = null,
     InferHub.Shared.Quota.QuotaTracker? quota = null,
-    Control.NodeSharing? sharing = null) : IAsyncDisposable
+    Control.NodeSharing? sharing = null,
+    Fit.HubManagement? management = null) : IAsyncDisposable
 {
     /// <summary>
     /// Phase 97's catalogue report, one per engine that has a catalogue (99): each has its own hub
@@ -1043,7 +1044,9 @@ public sealed class CoordinatorConnection(
             VramReserveMiB: node.Vram.ReserveMiB,
             // Phase 108 D2: the operator's number wins; otherwise what the engine declares, which is
             // nothing for every backend but Ollama.
-            ModelSlots: node.ModelSlots ?? backend.ModelSlots);
+            ModelSlots: node.ModelSlots ?? backend.ModelSlots,
+            // Phase 120: the owner's terms, for the console to show; each request is decided live on this side.
+            Management: management?.Terms());
 
         await connection.InvokeAsync("Register", registration, cancellationToken);
         await RequestProfileAsync(cancellationToken);
@@ -1445,7 +1448,11 @@ public sealed class CoordinatorConnection(
                 ? new Tools.HubAttachmentSource(activeConnection)
                 : null;
 
-            var result = await toolExecutor.RunAsync(job, progress, attachments, jobCts.Token);
+            // Phase 120: the hub's model management is answered here, not by a tool runtime — it is the owner's
+            // terms and the estimate, not work, so the owner's activity list does not show it as a network job.
+            var result = management is not null && string.Equals(job.Capability, InferHub.Shared.Fit.ManagementJob.Capability, StringComparison.Ordinal)
+                ? await management.RunAsync(job, jobCts.Token)
+                : await toolExecutor.RunAsync(job, progress, attachments, jobCts.Token);
 
             if (activeConnection.State is HubConnectionState.Connected)
             {

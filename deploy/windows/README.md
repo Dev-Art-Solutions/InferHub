@@ -15,6 +15,8 @@ as the **InferHubNode** service (delayed automatic start, restart on failure, Ev
 | Ollama | `Ollama:Endpoint` |
 | Service account | LocalSystem (can apply updates) or the virtual account `NT SERVICE\InferHubNode` (least privilege, cannot) |
 | Updates | automatically / when an admin says / report only / never — see below |
+| Models from the coordinator (v3.81+, mesh only) | `Node:Management:AllowFromHub` — **no** by default; yes lets the hub's console browse, check and install models here — see below |
+| Disk for the coordinator's models (when yes) | `Node:Management:MaxModelGiB` (empty = no cap) and `Node:Management:KeepFreeGiB` (20) |
 
 The answers go to **`C:\ProgramData\InferHub\Node\node.settings.json`**, readable by SYSTEM and
 Administrators only (it holds the secret), **not** into `Program Files` — so an update replaces every
@@ -32,7 +34,8 @@ InferHub-Node-Setup-3.66.0-win-x64.exe /VERYSILENT /SUPPRESSMSGBOXES `
 ```
 
 `/Mode=solo /LocalApiUrls=http://0.0.0.0:5081 /LocalApiKey=<key>` for a solo node; `/UpdateSource=<url>`
-points the updater at a mirror of GitHub's release list. **A silent run with none of these keeps the
+points the updater at a mirror of GitHub's release list; `/HubModels=yes /HubMaxModelGiB=60 /HubKeepFreeGiB=50`
+lets the coordinator manage models (v3.81+). **A silent run with none of these keeps the
 current settings** — that is exactly how the node updates itself.
 
 **Uninstall** from *Apps* (or `unins000.exe /VERYSILENT`). The settings and the node's identity stay in
@@ -68,6 +71,23 @@ down. The console then shows `updated 3.65.0 → 3.66.0`, or the failure with th
 Only a node **installed by the setup** and running as **LocalSystem** can apply an update. A node under
 the virtual account, a hand-copied `dotnet publish`, or a Docker container reports the release and says
 why it cannot apply it (`docker pull` is a container's updater).
+
+### Models from the coordinator (v3.81+)
+
+Answer **yes** and the hub's console can do for this node what the InferHub app does on it: list what is
+trending on Hugging Face and in Ollama's library, ordered by what fits *this* computer, run its estimate
+for a link and a context, and install the option you choose. Each answer is this node's own, and each
+request is decided here, live, by these keys — change them in `node.settings.json` (or the app's settings)
+and the next request follows, no restart:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `Node:Management:AllowFromHub` | `false` | the coordinator may browse, check and install |
+| `Node:Management:MaxModelGiB` | none | the largest model, on disk, it may install |
+| `Node:Management:KeepFreeGiB` | `20` | what an install must leave free where that engine keeps its models (0 = no floor; a disk the node cannot measure is then refused) |
+
+Hugging Face is still reached only with `HuggingFace:Enabled`. The older hub commands (pull by name, a
+Hugging Face link, a Strata install) are not covered by these keys.
 
 **Coming from `install-service.ps1`?** Run the setup over it: same service name, same directory. Move any
 edits you made to `appsettings.json` into `node.settings.json` (the setup replaces `appsettings.json`), and

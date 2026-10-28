@@ -1456,6 +1456,7 @@
       ? `<option value="">No nodes connected</option>`
       : nodes.map(n => `<option value="${escapeHtml(n.nodeId)}">${escapeHtml(n.name)} (${escapeHtml(n.nodeId.slice(0, 8))})</option>`).join("");
     if (nodes.some(n => n.nodeId === prev)) sel.value = prev;
+    renderFitTerms();
 
     const node = selectedModelNode();
     const canManage = Boolean(node && node.supportsModelManagement);
@@ -2685,6 +2686,153 @@
     }
   };
   document.getElementById("hf-pull")?.addEventListener("click", pullFromHuggingFace);
+  // Phase 120: the node's own catalogue (119) and estimate (118), asked of it through the hub. The node answers by
+  // its owner's terms (Node:Management, asked by its setup): off, it says why; the console shows what it said.
+  const fitClassLabel = { "card": "on the card", "card-and-ram": "card + RAM", "ram": "RAM", "too-big": "too big", "unknown": "size unknown" };
+  const fitMiB = (mib) => mib == null ? "—" : mib >= 1024 ? `${(mib / 1024).toFixed(1)} GiB` : `${mib} MiB`;
+  const fitResults = () => document.getElementById("fit-results");
+  // Its own line: the node list refresh rewrites mm-note every few seconds, and an install or a refusal must stay read.
+  const fitNote = (text, isError) => {
+    const note = document.getElementById("fit-note");
+    if (!note) return;
+    note.textContent = text;
+    note.style.color = isError ? "var(--danger, #ff6b6b)" : "";
+  };
+
+  // A declaration, so the node list (rendered before this point) can call it — 120 terms follow the selected node.
+  function renderFitTerms() {
+    const el = document.getElementById("fit-terms");
+    if (!el) return;
+    const node = selectedModelNode();
+    const terms = node?.management;
+    if (!node) { el.textContent = ""; return; }
+    if (!terms) { el.textContent = `${node.name} (${node.version ?? "?"}) is older than 3.81: it has no model management for its hub.`; return; }
+    el.textContent = terms.allowFromHub
+      ? `${node.name} lets this hub browse and install models` +
+        `${terms.maxModelGiB ? `, at most ${terms.maxModelGiB} GiB per model` : ""}` +
+        `${terms.keepFreeGiB > 0 ? `, keeping ${terms.keepFreeGiB} GiB free` : ""}.`
+      : `${node.name}'s owner has not let this hub manage its models (Node:Management:AllowFromHub is off — the node's setup asks).`;
+  }
+
+  const askFit = async (path, init) => {
+    const node = selectedModelNode();
+    if (!node) { fitNote("Select a node first.", true); return null; }
+    const res = await fetch(`/api/admin/nodes/${encodeURIComponent(node.nodeId)}/${path}`, { ...init, headers: { ...adminHeaders(), "Content-Type": "application/json" } });
+    if (res.status === 401) { promptForKey("Admin key required for this action."); return null; }
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+    return { node, body };
+  };
+
+  const browseFit = async () => {
+    const out = fitResults();
+    const params = new URLSearchParams({
+      source: document.getElementById("fit-source")?.value || "all",
+      sort: document.getElementById("fit-sort")?.value || "trending",
+      kind: document.getElementById("fit-kind")?.value || "text",
+      limit: "30"
+    });
+    const q = document.getElementById("fit-q")?.value.trim();
+    if (q) params.set("q", q);
+    if (document.getElementById("fit-only")?.checked) params.set("fitsOnly", "true");
+    if (out) out.innerHTML = `<div class="empty">Asking the node…</div>`;
+    try {
+      const answer = await askFit(`fit/catalog?${params}`, { method: "GET" });
+      if (!answer) { if (out) out.innerHTML = ""; return; }
+      const { body } = answer;
+      const sources = (body.sources ?? []).map(s => s.ok
+        ? `${escapeHtml(s.name)}: ${s.count}`
+        : `<span style="color:var(--err,#c33)">${escapeHtml(s.name)}: ${escapeHtml(s.error ?? "no answer")}</span>`).join(" · ");
+      const rows = (body.entries ?? []).map(e => {
+        const sizes = (e.sizes ?? []).length > 1
+          ? `<select data-fit-size>${e.sizes.map(s => `<option value="${escapeHtml(s.link)}"${s.link === e.link ? " selected" : ""}>${escapeHtml(s.name)} — ${escapeHtml(fitClassLabel[s.fit?.class] ?? s.fit?.class)}, ${fitMiB(s.fit?.weightsMiB)}</option>`).join("")}</select>`
+          : "";
+        return `<tr title="${escapeHtml(e.fit?.why)}">
+          <td>${escapeHtml(e.source)}</td>
+          <td><strong>${escapeHtml(e.name)}</strong>${e.description ? `<div style="opacity:.7;font-size:12px">${escapeHtml(e.description).slice(0, 140)}</div>` : ""}</td>
+          <td>${escapeHtml(fitClassLabel[e.fit?.class] ?? e.fit?.class)}</td>
+          <td>${fitMiB(e.fit?.weightsMiB)}</td>
+          <td>${e.downloads != null ? fmtInt(e.downloads) : ""}</td>
+          <td>${sizes}</td>
+          <td><button data-fit-link="${escapeHtml(e.link)}">Check fit…</button></td>
+        </tr>`;
+      }).join("");
+      if (out) out.innerHTML = `<div style="font-size:12px;opacity:.8;margin-bottom:4px">${sources}${body.note ? ` — ${escapeHtml(body.note)}` : ""}</div>` +
+        (rows ? `<table><thead><tr><th>Source</th><th>Model</th><th>Fit (weights only)</th><th>Weights</th><th>Downloads</th><th>Size</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+              : `<div class="empty">Nothing listed.</div>`);
+    } catch (err) {
+      if (out) out.innerHTML = "";
+      fitNote(`The node did not list models: ${err.message}`, true);
+    }
+  };
+
+  const checkFit = async (link) => {
+    const out = fitResults();
+    const context = parseInt(document.getElementById("fit-context")?.value, 10) || null;
+    if (!link) { fitNote("Paste a link, or choose a model from the list.", true); return; }
+    document.getElementById("fit-link").value = link;
+    if (out) out.innerHTML = `<div class="empty">The node is reading ${escapeHtml(link)}…</div>`;
+    try {
+      const answer = await askFit("fit", { method: "POST", body: JSON.stringify({ link, context }) });
+      if (!answer) { if (out) out.innerHTML = ""; return; }
+      const { body } = answer;
+      const hub = body.hub ?? [];
+      const verdict = (o) => hub.find(h => h.engine === o.engine && h.variant === o.variant);
+      const rows = (body.options ?? []).map(o => {
+        const may = verdict(o);
+        const install = !o.available
+          ? `<span style="opacity:.7">not here</span>`
+          : may && !may.allowed
+            ? `<span style="color:var(--err,#c33)" title="${escapeHtml(may.why)}">over the owner's disk terms</span>`
+            : `<button data-fit-install data-engine="${escapeHtml(o.engine)}" data-variant="${escapeHtml(o.variant)}" data-fits="${o.fits}">Install</button>`;
+        return `<tr>
+          <td>${escapeHtml(o.engine)}${o.engineName && o.engineName !== o.engine ? ` (${escapeHtml(o.engineName)})` : ""}</td>
+          <td>${escapeHtml(o.variant)}</td>
+          <td>${o.fits ? "fits" : "<strong>does not fit</strong>"} · ${escapeHtml(o.placement)} · ${escapeHtml(o.speed)}</td>
+          <td>${fitMiB(o.vramMiB)} card · ${fitMiB(o.ramMiB)} RAM · ${fitMiB(o.diskMiB)} disk</td>
+          <td>${o.maxContext ?? "—"}${o.cardContext ? ` (card ${o.cardContext})` : ""}</td>
+          <td style="font-size:12px">${(o.why ?? []).map(escapeHtml).join("<br>")}${may?.why ? `<br><em>${escapeHtml(may.why)}</em>` : ""}</td>
+          <td>${install}</td>
+        </tr>`;
+      }).join("");
+      const refused = (body.refused ?? []).map(r => `${escapeHtml(r.engine)}: ${escapeHtml(r.reason)}`).join(" · ");
+      if (out) out.innerHTML = `<div style="font-size:12px;opacity:.8;margin-bottom:4px">${escapeHtml(body.link)} at ${body.context} tokens — the node's own estimate${refused ? ` · cannot: ${refused}` : ""}</div>` +
+        (rows ? `<table><thead><tr><th>Engine</th><th>Variant</th><th>Placement</th><th>Needs</th><th>Max context</th><th>Why</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+              : `<div class="empty">No engine on this node can run it.</div>`);
+    } catch (err) {
+      if (out) out.innerHTML = "";
+      fitNote(`The node did not estimate ${link}: ${err.message}`, true);
+    }
+  };
+
+  const installFit = async (engine, variant, fits) => {
+    const link = document.getElementById("fit-link")?.value.trim();
+    const context = parseInt(document.getElementById("fit-context")?.value, 10) || null;
+    const force = !fits && confirm(`The node's estimate says ${variant} for ${engine} does not fit at ${context} tokens. Install it anyway?`);
+    if (!fits && !force) return;
+    try {
+      const answer = await askFit("fit/install", { method: "POST", body: JSON.stringify({ link, context, engine, variant, force }) });
+      if (!answer) return;
+      const { node, body } = answer;
+      fitNote(`${node.name} is installing ${body.model} for ${body.engine ?? engine}${body.context ? ` at ${body.context} tokens` : ""}${body.reused ? " (already running)" : ""}.`, false);
+    } catch (err) {
+      fitNote(`Install refused: ${err.message}`, true);
+    }
+  };
+
+  document.getElementById("mm-node")?.addEventListener("change", renderFitTerms);
+  document.getElementById("fit-browse")?.addEventListener("click", browseFit);
+  document.getElementById("fit-check")?.addEventListener("click", () => checkFit(document.getElementById("fit-link")?.value.trim()));
+  fitResults()?.addEventListener("click", (event) => {
+    const check = event.target.closest("button[data-fit-link]");
+    if (check) {
+      const size = check.closest("tr")?.querySelector("select[data-fit-size]");
+      checkFit(size?.value || check.dataset.fitLink);
+      return;
+    }
+    const install = event.target.closest("button[data-fit-install]");
+    if (install) installFit(install.dataset.engine, install.dataset.variant, install.dataset.fits === "true");
+  });
   document.getElementById("mm-pull")?.addEventListener("click", () => runModelCommand("pull"));
   document.getElementById("mm-warm")?.addEventListener("click", () => runModelCommand("warm"));
   document.getElementById("mm-unload")?.addEventListener("click", () => runModelCommand("unload"));

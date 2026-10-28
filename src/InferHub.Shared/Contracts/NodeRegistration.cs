@@ -54,7 +54,11 @@ public sealed record NodeRegistration(
     /// Ollama's <c>OLLAMA_NUM_PARALLEL</c>, 1 unless set. **Null is no opinion**, which is every node
     /// before v3.72 and every backend that declares nothing; the router then balances by node load
     /// alone, exactly as before.
-    int? ModelSlots = null);
+    int? ModelSlots = null,
+    /// Phase 120. The owner's terms for the hub's model management here (<c>Node:Management</c>), as they were when
+    /// the node connected — what the console shows. The node decides each request live by its own; null is a node
+    /// before v3.81, which has no such management.
+    InferHub.Shared.Fit.ManagementTerms? Management = null);
 
 /// <summary>
 /// One row of a node's on-disk vector replica inventory, reported at registration so the

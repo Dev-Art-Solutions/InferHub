@@ -68,7 +68,8 @@ public static class StatusEndpoint
                     node.ModelSlots,
                     node.ModelsInFlight is { Count: > 0 } busy ? busy : null,
                     node.SlotsByModel,
-                    node.Sharing)).ToArray(),
+                    node.Sharing,
+                    node.Management)).ToArray(),
                 models,
                 registry.CapabilitySummary(),
                 snapshot,
@@ -510,7 +511,9 @@ public static class StatusEndpoint
         // total_slots). Null when no engine on the node can be asked.
         IReadOnlyDictionary<string, int>? SlotsByModel = null,
         // Phase 113: the node's own sharing state. Null from a node before 3.76, and a fleet of those keeps the payload.
-        NodeSharingState? Sharing = null);
+        NodeSharingState? Sharing = null,
+        // Phase 120: whether the hub may manage models on this node, and the owner's disk terms. Null before 3.81.
+        InferHub.Shared.Fit.ManagementTerms? Management = null);
 
     internal sealed record NodeProfileStatusBlock(
         string? Name,

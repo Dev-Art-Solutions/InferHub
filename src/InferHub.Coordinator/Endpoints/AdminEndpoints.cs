@@ -622,6 +622,9 @@ public static class AdminEndpoints
             return Results.Ok(rows);
         });
 
+        // Phase 120: the catalogue, the estimate and an install for one node, on its owner's terms.
+        group.MapNodeManagement(ActorOf);
+
         return app;
     }
 
@@ -1443,7 +1446,9 @@ public static class AdminEndpoints
         AdminNodeAction? LastAction,
         // Null unless a profile applies to this node (phase 43), so a fleet that defines none sees
         // exactly the v3.10 payload.
-        AdminNodeProfile? Profile = null)
+        AdminNodeProfile? Profile = null,
+        // Phase 120: the owner's terms for this hub's model management, as the node connected with them. Null before 3.81.
+        InferHub.Shared.Fit.ManagementTerms? Management = null)
     {
         public static AdminNode From(NodeSnapshot node, AuditEntry? lastAction, AdminNodeProfile? profile = null)
         {
@@ -1466,7 +1471,8 @@ public static class AdminEndpoints
                 lastAction is null
                     ? null
                     : new AdminNodeAction(lastAction.Action, lastAction.AtUtc, lastAction.By),
-                profile);
+                profile,
+                node.Management);
         }
     }
 

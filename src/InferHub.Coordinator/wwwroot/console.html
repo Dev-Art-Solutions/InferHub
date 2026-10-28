@@ -622,6 +622,23 @@
         <input id="hf-quant" placeholder="quant, e.g. Q4_K_M (GGUF repos)" style="min-width:170px" />
         <button id="hf-pull" title="The node downloads it once; a GGUF goes to its llama.cpp router, a safetensors checkpoint is converted for colibri. Delete it later with engine 'huggingface'.">Download to node</button>
       </div>
+      <!-- Phase 120: the node's own catalogue and estimate, asked of it — only where its owner said yes at install. -->
+      <div class="actions" style="flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px">
+        <strong style="font-size:13px">Models that fit</strong>
+        <select id="fit-source" title="Where the list comes from"><option value="all">Hugging Face + Ollama</option><option value="huggingface">Hugging Face</option><option value="ollama">Ollama library</option></select>
+        <select id="fit-sort"><option value="trending">trending</option><option value="downloads">most downloaded</option><option value="newest">newest</option></select>
+        <select id="fit-kind"><option value="text">text</option><option value="vision">vision</option></select>
+        <input id="fit-q" placeholder="search (e.g. qwen)" style="min-width:140px" />
+        <label style="font-size:13px"><input id="fit-only" type="checkbox" /> fits only</label>
+        <button id="fit-browse" title="The node lists what is trending and popular, ordered by what fits its own cards and RAM — weights only">Browse</button>
+        <span style="opacity:.5">|</span>
+        <input id="fit-link" placeholder="link: owner/repo, hf.co/… or qwen2.5:14b" style="min-width:240px" />
+        <input id="fit-context" type="number" min="256" step="256" value="8192" style="width:90px" title="The context you want — it is what picks the engine" />
+        <button id="fit-check" title="The node's own estimate for this link and context: each engine, where the model sits, with the arithmetic">Check fit</button>
+      </div>
+      <div id="fit-terms" class="empty" style="padding:6px 0 0"></div>
+      <div id="fit-note" style="padding:4px 0 0;font-size:13px"></div>
+      <div id="fit-results" class="table-wrap" style="margin-top:6px"></div>
       <div id="mm-note" class="empty" style="padding:8px 0 0"></div>
     </div>
     <div class="table-wrap"><div id="model-matrix"></div></div>

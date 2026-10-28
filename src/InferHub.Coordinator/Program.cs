@@ -134,6 +134,8 @@ builder.Services.AddSingleton<NodeUpdateRegistry>();
 builder.Services.AddSingleton<NodeUpdateControl>();
 builder.Services.AddSingleton<NodeLimitsRegistry>();
 builder.Services.AddSingleton<NodeLimitsControl>();
+// Phase 120: the catalogue, the estimate and an install, asked of one node on its owner's terms.
+builder.Services.AddSingleton<NodeManagementControl>();
 
 // Phase 47. The async image-job surface. Registered unconditionally and inert on a fleet with no
 // image capability: the store holds nothing, the pump reads an empty queue, and the sweeper ticks

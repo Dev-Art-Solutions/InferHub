@@ -16,6 +16,7 @@
 ;     /NodeName=gpu-01 /Labels=gpu=3090,room=lab /MaxConcurrency=4 /VramBudgetMiB=24000
 ;     /OllamaEndpoint=http://localhost:11434/ /Account=system|virtual /Updates=auto|request|report|off
 ;     /UpdateSource=<a mirror of GitHub's release list>   (not in the wizard; written only when given)
+;     /HubModels=yes|no /HubMaxModelGiB=<empty = no cap> /HubKeepFreeGiB=20   (phase 120; a mesh node only)
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -84,6 +85,8 @@ var
   BackendPage: TInputQueryWizardPage;
   AccountPage: TInputOptionWizardPage;
   UpdatePage: TInputOptionWizardPage;
+  ManagePage: TInputOptionWizardPage;
+  QuotaPage: TInputQueryWizardPage;
   ServiceWasStopped: Boolean;
   InstallCompleted: Boolean;
 
@@ -116,7 +119,8 @@ begin
     or ParamGiven('LocalApiUrls') or ParamGiven('LocalApiKey') or ParamGiven('NodeName')
     or ParamGiven('Labels') or ParamGiven('MaxConcurrency') or ParamGiven('VramBudgetMiB')
     or ParamGiven('OllamaEndpoint') or ParamGiven('Account') or ParamGiven('Updates')
-    or ParamGiven('UpdateSource');
+    or ParamGiven('UpdateSource') or ParamGiven('HubModels') or ParamGiven('HubMaxModelGiB')
+    or ParamGiven('HubKeepFreeGiB');
 end;
 
 { Write the answers on an interactive run, on a silent run that was given any, and whenever there are no
@@ -145,6 +149,12 @@ begin
   else
     Result := 'off';
   end;
+end;
+
+{ Phase 120: whether the coordinator may browse, check and install models here. Never on a solo node: no hub. }
+function HubManages: Boolean;
+begin
+  Result := (not IsSolo) and (ManagePage.SelectedValueIndex = 1);
 end;
 
 function IsDigits(S: String): Boolean;
@@ -301,6 +311,25 @@ begin
   else if Updates = 'report' then UpdatePage.SelectedValueIndex := 2
   else if Updates = 'off' then UpdatePage.SelectedValueIndex := 3
   else UpdatePage.SelectedValueIndex := 0;
+
+  ManagePage := CreateInputOptionPage(UpdatePage.ID,
+    'Models from the coordinator', 'May the coordinator choose and install models on this computer?',
+    'Its console can then list what is trending on Hugging Face and in Ollama''s library, ordered by what fits ' +
+    'this computer, check a model against its cards and RAM, and download one here. Downloads can be tens of ' +
+    'gigabytes. You can change this later in ' + SettingsFile + ' (Node:Management).',
+    True, False);
+  ManagePage.Add('No — only this computer installs models (the InferHub app, or its control API)');
+  ManagePage.Add('Yes — the coordinator may browse, check and install models here, within the limits on the next page');
+  if Lowercase(Answer('HubModels', 'no')) = 'yes' then ManagePage.SelectedValueIndex := 1 else ManagePage.SelectedValueIndex := 0;
+
+  QuotaPage := CreateInputQueryPage(ManagePage.ID,
+    'Disk for the coordinator''s models', 'How much disk may its installs use?',
+    'A model the coordinator installs must be no larger than the first number (leave it empty for no cap) and must ' +
+    'leave at least the second free on the disk where that engine keeps its models. Both are whole GiB.');
+  QuotaPage.Add('Largest model (GiB):', False);
+  QuotaPage.Add('Keep free (GiB):', False);
+  QuotaPage.Values[0] := Answer('HubMaxModelGiB', '');
+  QuotaPage.Values[1] := Answer('HubKeepFreeGiB', '20');
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -308,6 +337,8 @@ begin
   Result := False;
   if PageID = CoordPage.ID then Result := IsSolo;
   if PageID = SoloPage.ID then Result := not IsSolo;
+  if PageID = ManagePage.ID then Result := IsSolo;
+  if PageID = QuotaPage.ID then Result := not HubManages;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -379,6 +410,20 @@ begin
       Result := False;
     end;
   end;
+
+  if CurPageID = QuotaPage.ID then
+  begin
+    if ((Trim(QuotaPage.Values[0]) <> '') and not IsDigits(Trim(QuotaPage.Values[0]))) or (Trim(QuotaPage.Values[0]) = '0') then
+    begin
+      SuppressibleMsgBox('The largest model is a whole number of GiB above 0, or empty for no cap.', mbError, MB_OK, IDOK);
+      Result := False;
+    end
+    else if not IsDigits(Trim(QuotaPage.Values[1])) then
+    begin
+      SuppressibleMsgBox('Keep free is a whole number of GiB (0 for none).', mbError, MB_OK, IDOK);
+      Result := False;
+    end;
+  end;
 end;
 
 procedure RegisterPreviousData(PreviousDataKey: Integer);
@@ -401,6 +446,9 @@ begin
   SetPreviousData(PreviousDataKey, 'OllamaEndpoint', Trim(BackendPage.Values[0]));
   SetPreviousData(PreviousDataKey, 'Account', Account);
   SetPreviousData(PreviousDataKey, 'Updates', UpdatesValue);
+  if HubManages then SetPreviousData(PreviousDataKey, 'HubModels', 'yes') else SetPreviousData(PreviousDataKey, 'HubModels', 'no');
+  SetPreviousData(PreviousDataKey, 'HubMaxModelGiB', Trim(QuotaPage.Values[0]));
+  SetPreviousData(PreviousDataKey, 'HubKeepFreeGiB', Trim(QuotaPage.Values[1]));
 end;
 
 function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo,
@@ -421,6 +469,14 @@ begin
   else
     S := S + 'Service account:' + NewLine + Space + 'LocalSystem' + NewLine;
   S := S + 'Updates:' + NewLine + Space + UpdatesValue + NewLine;
+  if HubManages then
+  begin
+    S := S + 'Models from the coordinator:' + NewLine + Space + 'yes';
+    if Trim(QuotaPage.Values[0]) <> '' then S := S + ', at most ' + Trim(QuotaPage.Values[0]) + ' GiB per model';
+    S := S + ', keeping ' + Trim(QuotaPage.Values[1]) + ' GiB free' + NewLine;
+  end
+  else if not IsSolo then
+    S := S + 'Models from the coordinator:' + NewLine + Space + 'no' + NewLine;
   if not NeedConfigure then
     S := S + NewLine + 'The current settings in ' + SettingsFile + ' are kept.';
   Result := S;
@@ -496,6 +552,11 @@ begin
   end;
   if ParamGiven('UpdateSource') then
     AddLine(Lines, 'Update:Source=' + ExpandConstant('{param:UpdateSource|}'));
+
+  { Phase 120: the owner's answer, and the limits it comes with. An empty largest model removes the cap. }
+  if HubManages then AddLine(Lines, 'Node:Management:AllowFromHub=true') else AddLine(Lines, 'Node:Management:AllowFromHub=false');
+  AddLine(Lines, 'Node:Management:MaxModelGiB=' + Trim(QuotaPage.Values[0]));
+  AddLine(Lines, 'Node:Management:KeepFreeGiB=' + Trim(QuotaPage.Values[1]));
 
   Input := ExpandConstant('{tmp}\node-answers.txt');
   SaveStringsToUTF8File(Input, Lines, False);

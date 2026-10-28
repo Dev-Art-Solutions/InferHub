@@ -129,3 +129,10 @@ pass through here.
 Tests: `SlotWaitTests` (Coordinator — three chats over two one-slot nodes through `InferenceCore`
 with the real `Router`; the turnstile; the bound sending anyway; off by default; depth; cancel; 109's
 number), `QueueTests`, `ModelSlotRoutingTests`.
+
+### Phase 120 (the hub asks one node for its catalogue, estimate and install)
+
+`NodeManagementControl` + `Endpoints/ManagementEndpoints.cs` (`/api/admin/nodes/{id}/fit/catalog|fit|fit/install`). A tool job
+to that node alone (capability `manage`); the node's JSON is passed through, its refusal codes (`ManagementJob.StatusOf`)
+become the status. Install = the node's agreed `ModelCommand` sent via `ModelCommandCoordinator.SendAsync(..., context)`.
+A node without `Management` on its registration (before 3.81) is a 409 without a dispatch. Decisions: `src/InferHub.Node/Backends/CLAUDE.md` Phase 120.

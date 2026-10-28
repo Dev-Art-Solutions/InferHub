@@ -954,6 +954,9 @@ public static class NodeHostBuilderExtensions
 
             return new Fit.CatalogService(client, factory.CreateClient(Fit.CatalogService.LibraryClientName), Fit.CatalogService.DefaultLibrary, probe.Machine, services.GetService<TimeProvider>());
         });
+
+        // Phase 120: the same three questions from the coordinator, under Node:Management — composed always, refusing until allowed.
+        builder.Services.AddSingleton<Fit.HubManagement>();
     }
 
     private static bool IsColibri(IConfiguration configuration)

@@ -43,6 +43,12 @@ public sealed class NodeOptions
     public SharingOptions Sharing { get; set; } = new();
 
     /// <summary>
+    /// Phase 120: whether this node's coordinator may browse, estimate and install models here, and how much disk it may
+    /// use doing so. Off by default; the Windows setup asks. Read live.
+    /// </summary>
+    public ManagementOptions Management { get; set; } = new();
+
+    /// <summary>
     /// One GPU service at a time, loaded for the request and released after it (phase 85). Off by
     /// default, which is v3.49's behaviour exactly.
     /// </summary>
@@ -319,4 +325,20 @@ public sealed class SharingOptions
     /// it exists.
     /// </summary>
     public ModelFilterOptions Models { get; set; } = new();
+}
+
+/// <summary><c>Node:Management</c> (phase 120): the hub's model management on this node — the owner's terms.</summary>
+public sealed class ManagementOptions
+{
+    /// <summary>
+    /// The coordinator may list the catalogue, run the estimate and install a model here (120 D1). Off: the hub is told
+    /// why, and the node's own app and control API are unchanged.
+    /// </summary>
+    public bool AllowFromHub { get; set; }
+
+    /// <summary>The largest model, in GiB on disk, an install from the hub may be. Null: no cap of its own.</summary>
+    public int? MaxModelGiB { get; set; }
+
+    /// <summary>An install from the hub must leave at least this much free, in GiB, on the disk where the model lands.</summary>
+    public int KeepFreeGiB { get; set; } = 20;
 }
