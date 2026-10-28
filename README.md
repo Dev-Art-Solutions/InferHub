@@ -196,6 +196,15 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 109 | [Slots the engine reports](#slots-the-engine-reports-v373) — a llama.cpp model says how many requests it runs at once, and the hub uses that number before the node's (done) | `v3.73.0` |
 | 110 | [Waiting for a free slot](#waiting-for-a-free-slot-v374) — with `Queue:SlotWaitSeconds` set, a chat that finds every holder full waits at the hub and goes to the node that frees a slot first, never a 503 (done) | `v3.74.0` |
 | 111 | [colibri and Strata told their limits](#colibri-and-strata-told-their-limits-colibri-20-and-strata-022-v375) — the engines plan inside the node's limits instead of meeting them; colibri 2.0's `/v1/systemone`; Strata 0.2.2's new sizes (done) | `v3.75.0` |
+| 112 | [The control API](#the-control-api) — a node's own `/api/control`, behind a token made at boot: status, events, settings, models, engines, a restart (done) | `v3.76.0` |
+| 113 | [Sharing: always · idle · paused](#sharing-always--idle--paused) — a node shares with its network all the time, only while its owner is not using it, or not at all; the hub routes around a pause (done) | `v3.76.0` |
+| 114 | [A private corpus on a networked node](#a-private-corpus-on-a-networked-node) — `LocalApi:Retrieval:Private` keeps a node's documents its own; the hub never learns they exist (done) | `v3.76.0` |
+| 115 | [InferHub Desktop](#inferhub-desktop) — an app for Windows, Linux and macOS that drives the node on the machine, or runs its own (done) | `desktop/v0.1.0` |
+| 116 | [Sharing hours and a daily allowance](#sharing-hours-and-a-daily-allowance-v377) — the hours a node shares and how many minutes of network work it does a day (done) | `v3.77.0` |
+| 117 | [Models kept for this machine](#models-kept-for-this-machine-v378) — a model the owner keeps is never reported to the hub; the local API still serves it (done) | `v3.78.0` |
+| 118 | [Will it fit?](#will-it-fit-choose-a-context-get-the-engine-v379) — a link and a context in, the engines that can run it with the arithmetic, and the install with that context (done) | `v3.79.0` |
+| 119 | [Browse models that fit](#browse-models-that-fit-v380) — what is trending and popular on Hugging Face and in Ollama's library, ordered by what fits this machine (done) | `v3.80.0` |
+| 120 | [Models from the coordinator](#models-from-the-coordinator-v381) — the hub browses, checks fit and installs on a node, only where its owner said yes at install, within a per-model cap and a free-disk floor (done) | `v3.81.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
