@@ -79,3 +79,20 @@ llama.cpp and real Hugging Face:
 | `fit` / `fit/install` for `llama3.1:70b` | Ollama's 39.6 GiB option `allowed:false`; the install was a 409, "at most 30 GiB per model" |
 | `AllowFromHub` set to false in `node.local.json`, then back | 403 with the node's reason, then 200, with no restart |
 | the console in headless Chrome | terms line, 43 rows for `qwen` + fits only, Check fit at 32K with two **Install** buttons; Install for `qwen2.5:0.5b` sent the pull, and Ollama's context was stored as 4096 |
+
+## The published release, checked
+
+`inferhub-node:3.81.0` and `inferhub-coordinator:3.81.0` were pulled from GHCR (both have revision label `e43cad4`, the
+tag's commit). Their `app/` folders were extracted and run natively on the same box, with the same settings as the
+source build. These were the published binaries, not containers, so the images' OS layer was not tested.
+
+| Through the published hub | Result |
+|---|---|
+| `/api/admin/nodes` | `management: {allowFromHub: true, maxModelGiB: 30, keepFreeGiB: 20}` |
+| `fit/catalog?source=all&limit=10` | both sources answered, 20 entries |
+| `fit` for `Qwen/Qwen2.5-0.5B-Instruct-GGUF` at 16K | 18 options, all allowed |
+| `fit/install` for `llama3.1:70b` | 409, "at most 30 GiB per model" |
+| `fit/install` llamacpp `q4_k_m` at 12288 (already installed at 16384) | 202; the marker was rewritten to 12288, the router served it at `n_ctx` 12288, and a chat through the hub said "Paris" |
+| `AllowFromHub` set to false in `node.local.json` | 403, with no restart |
+
+`InferHub-Node-Setup-3.81.0-win-x64.exe` and its `.sha256` are attached to the release by `windows-installer`.
