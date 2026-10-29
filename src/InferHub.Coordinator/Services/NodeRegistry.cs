@@ -533,7 +533,8 @@ public sealed class NodeRegistry : INodeRegistry
             ModelsInFlight(connectionId),
             SlotsByModel(entry),
             entry.Sharing,
-            entry.Registration.Management);
+            entry.Registration.Management,
+            entry.Registration.Sealed);
     }
 
     /// <summary>

@@ -1448,7 +1448,9 @@ public static class AdminEndpoints
         // exactly the v3.10 payload.
         AdminNodeProfile? Profile = null,
         // Phase 120: the owner's terms for this hub's model management, as the node connected with them. Null before 3.81.
-        InferHub.Shared.Fit.ManagementTerms? Management = null)
+        InferHub.Shared.Fit.ManagementTerms? Management = null,
+        // Phase 122: the node is sealed. Null when it is not, or before 3.82.
+        bool? Sealed = null)
     {
         public static AdminNode From(NodeSnapshot node, AuditEntry? lastAction, AdminNodeProfile? profile = null)
         {
@@ -1472,7 +1474,8 @@ public static class AdminEndpoints
                     ? null
                     : new AdminNodeAction(lastAction.Action, lastAction.AtUtc, lastAction.By),
                 profile,
-                node.Management);
+                node.Management,
+                node.Sealed);
         }
     }
 

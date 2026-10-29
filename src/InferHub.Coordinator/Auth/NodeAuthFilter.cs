@@ -12,10 +12,24 @@ public sealed class NodeAuthFilter(
     public const string EnrollmentSecretHeader = "X-Node-Enrollment-Secret";
 
     public bool IsAuthorized(HubCallerContext context)
+        => IsAuthorized(ResolvePresentedSecret(context), context.ConnectionId, context.GetHttpContext()?.Connection.RemoteIpAddress);
+
+    /// <summary>
+    /// Phase 122. The same secret over plain HTTP, for the sealed node's relay — header only: a secret in a query
+    /// string is a secret in every proxy's access log, and the relay's URLs are long-lived paths.
+    /// </summary>
+    public bool IsAuthorized(HttpContext httpContext)
+    {
+        var presented = httpContext.Request.Headers.TryGetValue(EnrollmentSecretHeader, out var values)
+            ? values.ToString().Trim()
+            : null;
+
+        return IsAuthorized(presented, httpContext.TraceIdentifier, httpContext.Connection.RemoteIpAddress);
+    }
+
+    private bool IsAuthorized(string? presented, string connectionId, System.Net.IPAddress? remoteIp)
     {
         var expected = options.CurrentValue.NodeEnrollmentSecret;
-        var connectionId = context.ConnectionId;
-        var remoteIp = context.GetHttpContext()?.Connection.RemoteIpAddress;
 
         if (string.IsNullOrEmpty(expected))
         {
@@ -25,8 +39,6 @@ public sealed class NodeAuthFilter(
                 remoteIp);
             return false;
         }
-
-        var presented = ResolvePresentedSecret(context);
 
         if (string.IsNullOrEmpty(presented))
         {

@@ -45,4 +45,6 @@ public sealed record NodeSnapshot(
     /// Phase 113: whether the node takes new jobs, as its owner set it. Null = an older node.
     NodeSharingState? Sharing = null,
     /// Phase 120: the owner's terms for the hub's model management, as reported at connect. Null = a node before 3.81.
-    InferHub.Shared.Fit.ManagementTerms? Management = null);
+    InferHub.Shared.Fit.ManagementTerms? Management = null,
+    /// Phase 122: the node runs Node:Sealed. Null = not sealed, or a node before 3.82.
+    bool? Sealed = null);

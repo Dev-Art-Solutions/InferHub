@@ -53,6 +53,14 @@ public sealed class NodeOptions
     /// default, which is v3.49's behaviour exactly.
     /// </summary>
     public OnDemandOptions OnDemand { get; set; } = new();
+
+    /// <summary>
+    /// Phase 122: a node that reaches nothing outside its own network but its coordinator. Set, it refuses to start
+    /// with anything that could — a cloud backend, its own API on a public address, a direct download — and what it
+    /// would have fetched (a Hugging Face file, an Ollama pull, the catalogue) it fetches through the coordinator's
+    /// <c>Relay</c>. Off by default; a restart applies it.
+    /// </summary>
+    public bool Sealed { get; set; }
 }
 
 /// <summary>

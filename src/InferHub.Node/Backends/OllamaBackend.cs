@@ -21,7 +21,8 @@ public sealed class OllamaBackend(
     IOptions<OllamaOptions> options,
     ILogger<OllamaBackend> logger,
     IHttpClientFactory? http = null,
-    Fit.ModelContexts? contexts = null) : IInferenceBackend
+    Fit.ModelContexts? contexts = null,
+    SealedOllama? sealedOllama = null) : IInferenceBackend
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -50,6 +51,11 @@ public sealed class OllamaBackend(
     {
         try
         {
+            if (sealedOllama is not null && http is not null)
+            {
+                return await ListSealedAsync(sealedOllama, cancellationToken);
+            }
+
             var response = await client.GetModels(cancellationToken);
 
             return response.Models
@@ -69,6 +75,44 @@ public sealed class OllamaBackend(
         }
     }
 
+    /// <summary>122 D5: the raw listing, because a cloud model's <c>remote_host</c> is not on OllamaClient's DTO.</summary>
+    private async Task<IReadOnlyList<ModelInfo>> ListSealedAsync(SealedOllama guard, CancellationToken cancellationToken)
+    {
+        using var httpClient = http!.CreateClient(nameof(OllamaHttpClient));
+        var root = new Uri(options.Value.Endpoint.TrimEnd('/') + "/");
+
+        try
+        {
+            using var status = await httpClient.GetAsync(new Uri(root, "api/status"), cancellationToken);
+
+            if (status.IsSuccessStatusCode)
+            {
+                using var document = JsonDocument.Parse(await status.Content.ReadAsStringAsync(cancellationToken));
+                guard.ObserveStatus(document.RootElement);
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException)
+        {
+            // An Ollama older than its cloud has no /api/status, and no cloud to switch off.
+        }
+
+        using var tags = await httpClient.GetAsync(new Uri(root, "api/tags"), cancellationToken);
+        tags.EnsureSuccessStatusCode();
+        using var listing = JsonDocument.Parse(await tags.Content.ReadAsStringAsync(cancellationToken));
+        return guard.KeepLocal(listing.RootElement);
+    }
+
+    private string Sealed(string requestJson)
+    {
+        if (sealedOllama is not null)
+        {
+            using var document = JsonDocument.Parse(requestJson);
+            sealedOllama.EnsureLocal(document.RootElement.TryGetProperty("model", out var model) ? model.GetString() : null);
+        }
+
+        return requestJson;
+    }
+
     public async Task<string> GenerateAsync(string requestJson, CancellationToken cancellationToken)
     {
         var request = Deserialize<OllamaGenerateRequest>(Context(requestJson));
@@ -85,7 +129,7 @@ public sealed class OllamaBackend(
 
     public async Task<string> EmbedAsync(string requestJson, CancellationToken cancellationToken)
     {
-        var request = Deserialize<OllamaEmbedRequest>(requestJson);
+        var request = Deserialize<OllamaEmbedRequest>(Sealed(requestJson));
         var response = await client.Embed(request, cancellationToken);
         return JsonSerializer.Serialize(response, JsonOptions);
     }
@@ -136,7 +180,7 @@ public sealed class OllamaBackend(
     }
 
     /// <summary>Phase 118 D4: the context the owner chose when installing the model, for a request that names none.</summary>
-    private string Context(string requestJson) => contexts is null ? requestJson : contexts.Apply(requestJson);
+    private string Context(string requestJson) => contexts is null ? Sealed(requestJson) : contexts.Apply(Sealed(requestJson));
 
     public bool SupportsModelManagement => true;
 
@@ -157,6 +201,16 @@ public sealed class OllamaBackend(
         string model,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        if (sealedOllama is not null)
+        {
+            await foreach (var frame in sealedOllama.PullAsync(model, new Uri(options.Value.Endpoint.TrimEnd('/') + "/"), cancellationToken))
+            {
+                yield return frame;
+            }
+
+            yield break;
+        }
+
         var request = new OllamaPullStreamRequest { Name = model };
 
         var chunks = http is null

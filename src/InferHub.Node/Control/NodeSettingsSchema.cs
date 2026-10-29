@@ -31,6 +31,7 @@ public static class NodeSettingsSchema
         new("Node:Management:MaxModelGiB", "int", true, "sharing", "The largest model, in GiB on disk, the coordinator may install. Empty: no cap."),
         new("Node:Management:KeepFreeGiB", "int", true, "sharing", "GiB the coordinator's installs must leave free on the disk. 0: no floor."),
         new("Node:ResourceLimits:Engines", "json", true, "limits", "Hard limits per runtime: {ollama|llamacpp|colibri|strata|tools: {CpuPercent, Cores, MemoryMiB, VramMiB, Gpus}}."),
+        new("Node:Sealed", "bool", false, "network", "Sealed: reach nothing outside this network but the coordinator — no cloud engines, no public API, downloads only through the coordinator."),
         new("Coordinator:Enabled", "bool", false, "network", "Join a network: connect to a coordinator."),
         new("Coordinator:Url", "string", false, "network", "The coordinator's address, e.g. https://hub.example.com/."),
         new("Coordinator:EnrollmentSecret", "secret", false, "network", "The secret the coordinator expects from its nodes."),

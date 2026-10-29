@@ -58,7 +58,10 @@ public sealed record NodeRegistration(
     /// Phase 120. The owner's terms for the hub's model management here (<c>Node:Management</c>), as they were when
     /// the node connected — what the console shows. The node decides each request live by its own; null is a node
     /// before v3.81, which has no such management.
-    InferHub.Shared.Fit.ManagementTerms? Management = null);
+    InferHub.Shared.Fit.ManagementTerms? Management = null,
+    /// Phase 122. True when the node runs <c>Node:Sealed</c> — it reaches nothing outside its network but this hub, and
+    /// downloads only through the hub's relay. Null is an unsealed node or one before v3.82.
+    bool? Sealed = null);
 
 /// <summary>
 /// One row of a node's on-disk vector replica inventory, reported at registration so the

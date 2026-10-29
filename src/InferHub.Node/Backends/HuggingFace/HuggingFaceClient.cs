@@ -221,7 +221,7 @@ public sealed class HuggingFaceClient(HttpClient http, Uri endpoint, string? tok
     private HttpRequestMessage Request(HttpMethod method, string relative)
     {
         var request = new HttpRequestMessage(method, relative.StartsWith("http", StringComparison.OrdinalIgnoreCase)
-            ? new Uri(relative)
+            ? OnEndpoint(new Uri(relative))
             : new Uri(endpoint, relative));
 
         if (!string.IsNullOrWhiteSpace(token))
@@ -231,6 +231,15 @@ public sealed class HuggingFaceClient(HttpClient http, Uri endpoint, string? tok
 
         return request;
     }
+
+    /// <summary>
+    /// A next-page link names huggingface.co itself; through a mirror or a sealed node's relay (122) the same path is
+    /// asked of the endpoint this client was given, never of the host the answer happened to name.
+    /// </summary>
+    private Uri OnEndpoint(Uri absolute)
+        => string.Equals(absolute.Authority, endpoint.Authority, StringComparison.OrdinalIgnoreCase)
+            ? absolute
+            : new Uri(endpoint, absolute.PathAndQuery.TrimStart('/'));
 
     private static async Task EnsureAsync(HttpResponseMessage response, HfReference reference)
     {

@@ -50,6 +50,8 @@ public static class NodeHostBuilderExtensions
             .Bind(builder.Configuration.GetSection(NodeOptions.SectionName))
             .ValidateOnStart();
         builder.Services.AddSingleton<IValidateOptions<NodeOptions>, NodeOptionsValidator>();
+        builder.Services.AddSingleton<IValidateOptions<NodeOptions>, SealedModeValidator>();
+        AddSealing(builder);
 
         builder.Services
             .AddOptions<OllamaOptions>()
@@ -753,6 +755,41 @@ public static class NodeHostBuilderExtensions
     }
 
     /// <summary>
+    /// Phase 122. <c>Node:Sealed</c>: the boot check is the validator above; this is the rest — every factory client
+    /// passes <see cref="SealedEgressHandler"/>, and the Ollama and Python children this node starts inherit the
+    /// switches that keep them home (122 D4, D5).
+    /// </summary>
+    private static void AddSealing(IHostApplicationBuilder builder)
+    {
+        if (!SealedMode.IsOn(builder.Configuration))
+        {
+            return;
+        }
+
+        builder.Services.AddSingleton(new SealedEgress(builder.Configuration));
+        builder.Services.AddSingleton<Backends.SealedOllama>();
+        builder.Services.AddHttpClient(Backends.SealedOllama.RegistryClientName, http => http.Timeout = Timeout.InfiniteTimeSpan).RemoveAllLoggers();
+        builder.Services.ConfigureHttpClientDefaults(http =>
+            http.AddHttpMessageHandler(services => new SealedEgressHandler(services.GetRequiredService<SealedEgress>())));
+
+        // Inherited by `ollama serve` when the supervisor or the image starts it, and by every tool worker: Ollama's
+        // cloud models and web search off, and Hugging Face's libraries reading only what is on disk.
+        Environment.SetEnvironmentVariable("OLLAMA_NO_CLOUD", "1");
+        Environment.SetEnvironmentVariable("HF_HUB_OFFLINE", "1");
+        Environment.SetEnvironmentVariable("TRANSFORMERS_OFFLINE", "1");
+    }
+
+    /// <summary>A sealed node asks the relay for what it would have fetched; a mirror on its own network it asks itself.</summary>
+    internal static Uri RelayedOr(IServiceProvider services, string configured, string upstream)
+    {
+        var direct = new Uri(configured.TrimEnd('/') + "/");
+
+        return services.GetService<SealedEgress>() is { } egress && !SealedMode.IsLocalHost(direct.Host)
+            ? egress.RelayBase(upstream) ?? direct
+            : direct;
+    }
+
+    /// <summary>
     /// Phase 101. <c>Update:</c> — always registered, so every node reports its version; it looks for releases
     /// only with <c>Update:Check</c>. The applier is the host's: the Windows service registers one before
     /// calling <see cref="AddInferHubNode"/>, every other host gets the one that says why not (D5).
@@ -846,7 +883,7 @@ public static class NodeHostBuilderExtensions
             var logger = services.GetRequiredService<ILoggerFactory>().CreateLogger("InferHub.Node.HuggingFace");
             var factory = services.GetRequiredService<IHttpClientFactory>();
             var engines = services.GetService<MultiBackend>();
-            var endpoint = new Uri(hf.Endpoint.TrimEnd('/') + "/");
+            var endpoint = RelayedOr(services, hf.Endpoint, InferHub.Shared.Contracts.NodeRelay.HuggingFace);
 
             return new Backends.HuggingFace.HuggingFaceStore(
                 hf,
@@ -905,10 +942,10 @@ public static class NodeHostBuilderExtensions
             var hf = services.GetRequiredService<IOptions<Backends.HuggingFace.HuggingFaceOptions>>().Value;
             var factory = services.GetRequiredService<IHttpClientFactory>();
             Func<Backends.HuggingFace.HuggingFaceClient>? client = hf.Enabled
-                ? () => new Backends.HuggingFace.HuggingFaceClient(factory.CreateClient(Backends.HuggingFace.HuggingFaceStore.HttpClientName), new Uri(hf.Endpoint.TrimEnd('/') + "/"), hf.Token)
+                ? () => new Backends.HuggingFace.HuggingFaceClient(factory.CreateClient(Backends.HuggingFace.HuggingFaceStore.HttpClientName), RelayedOr(services, hf.Endpoint, InferHub.Shared.Contracts.NodeRelay.HuggingFace), hf.Token)
                 : null;
 
-            var reader = new Fit.ModelFactsReader(client, factory.CreateClient(Fit.ModelFactsReader.RegistryClientName), Fit.ModelFactsReader.DefaultRegistry);
+            var reader = new Fit.ModelFactsReader(client, factory.CreateClient(Fit.ModelFactsReader.RegistryClientName), RelayedOr(services, Fit.ModelFactsReader.DefaultRegistry.ToString(), InferHub.Shared.Contracts.NodeRelay.OllamaRegistry));
             var backend = services.GetRequiredService<IOptions<BackendOptions>>().Value;
             var probe = new Fit.MachineProbe(
                 new Resources.Limits.NvmlGpuCards(),
@@ -948,11 +985,11 @@ public static class NodeHostBuilderExtensions
             var hf = services.GetRequiredService<IOptions<Backends.HuggingFace.HuggingFaceOptions>>().Value;
             var factory = services.GetRequiredService<IHttpClientFactory>();
             Func<Backends.HuggingFace.HuggingFaceClient>? client = hf.Enabled
-                ? () => new Backends.HuggingFace.HuggingFaceClient(factory.CreateClient(Backends.HuggingFace.HuggingFaceStore.HttpClientName), new Uri(hf.Endpoint.TrimEnd('/') + "/"), hf.Token)
+                ? () => new Backends.HuggingFace.HuggingFaceClient(factory.CreateClient(Backends.HuggingFace.HuggingFaceStore.HttpClientName), RelayedOr(services, hf.Endpoint, InferHub.Shared.Contracts.NodeRelay.HuggingFace), hf.Token)
                 : null;
             var probe = services.GetRequiredService<Fit.FitService>();
 
-            return new Fit.CatalogService(client, factory.CreateClient(Fit.CatalogService.LibraryClientName), Fit.CatalogService.DefaultLibrary, probe.Machine, services.GetService<TimeProvider>());
+            return new Fit.CatalogService(client, factory.CreateClient(Fit.CatalogService.LibraryClientName), RelayedOr(services, Fit.CatalogService.DefaultLibrary.ToString(), InferHub.Shared.Contracts.NodeRelay.OllamaLibrary), probe.Machine, services.GetService<TimeProvider>());
         });
 
         // Phase 120: the same three questions from the coordinator, under Node:Management — composed always, refusing until allowed.

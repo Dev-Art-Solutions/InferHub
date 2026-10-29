@@ -205,6 +205,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 118 | [Will it fit?](#will-it-fit-choose-a-context-get-the-engine-v379) — a link and a context in, the engines that can run it with the arithmetic, and the install with that context (done) | `v3.79.0` |
 | 119 | [Browse models that fit](#browse-models-that-fit-v380) — what is trending and popular on Hugging Face and in Ollama's library, ordered by what fits this machine (done) | `v3.80.0` |
 | 120 | [Models from the coordinator](#models-from-the-coordinator-v381) — the hub browses, checks fit and installs on a node, only where its owner said yes at install, within a per-model cap and a free-disk floor (done) | `v3.81.0` |
+| 122 | [A sealed node](#a-sealed-node-v382) — `Node:Sealed`: a node reaches nothing outside its network but its coordinator, refuses to start with a door open, and downloads through the hub's `Relay` (done) | `v3.82.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -1006,6 +1007,54 @@ POST /api/admin/nodes/{id}/fit/install  {"link": "…", "context": 32768, "engin
 - **Not covered by these keys:** the older hub commands (pull by name, a Hugging Face link, a
   Strata install), which behave as before. Hugging Face is still reached only under
   `HuggingFace:Enabled`.
+
+### A sealed node (v3.82+)
+
+One setting for a node that must not reach the internet: `Node:Sealed=true`. It talks to its
+coordinator and to its own network, and nothing else. What it needs from outside, it gets
+**through the coordinator**.
+
+```bash
+# on the node
+Node__Sealed=true
+# on the coordinator — the node's one way out
+Relay__Enabled=true
+```
+
+- **It refuses to start with a door open, and names every one.** A `chatgpt`, `openrouter`,
+  `anthropic` or `gemini` engine, or any engine at a public `BaseUrl`. An Ollama outside this
+  network. `LocalApi:Urls` on a wildcard or a public address (loopback or one private address is
+  fine). A corpus kept elsewhere. `HuggingFace:Enabled` with no coordinator and no local mirror.
+  `Ollama:Supervisor:AutoInstall`, `Update:Check`/`Auto`/`AllowFromHub` from GitHub,
+  `Tools:AllowModelDownload`, and any `CloudMedia` provider. You get the whole list in one error,
+  so you fix it in one edit.
+- **"Local"** means loopback, private and link-local addresses, `100.64.0.0/10` (a Tailscale
+  mesh), a single-label name (a container, a LAN host), and `.local`, `.lan`, `.internal` and
+  `.home.arpa`. A public name counts as outside, even if it resolves to `10.x` today.
+- **Running, every HTTP client of the node refuses a non-local host** other than the coordinator.
+  The boot check covers the keys, and this covers any code path the list missed.
+- **Its Ollama stays home.** The Ollama and Python processes the node starts get
+  `OLLAMA_NO_CLOUD=1` (no cloud models, no web search) and `HF_HUB_OFFLINE=1`. Ollama's cloud models
+  are never reported to the hub and are refused if asked for by name. If you started that Ollama
+  yourself, the node checks its `/api/status` and logs an error until you set `OLLAMA_NO_CLOUD=1`
+  there.
+- **Downloads go through the coordinator.** An Ollama pull, a Hugging Face link, the model
+  catalogue and *Check fit* all use the hub's relay, at
+  `/node/relay/{hf|ollama-registry|ollama-library}/…`, behind the node enrollment secret. The hub
+  follows the CDN redirects itself and streams the bytes, ranges included, so the node never
+  addresses Hugging Face, `registry.ollama.ai`, `ollama.com` or their CDNs. For an Ollama pull,
+  the node opens a registry on its own loopback for the length of that one pull. Ollama pulls from
+  it, and the model lands under the name you asked for.
+- **What downloads by itself is refused, with the way that works.** A llama.cpp router pull
+  (llama-server fetches from Hugging Face itself) and a Strata install (its setup does) are
+  refused. For a GGUF, send it as a Hugging Face link instead: the store downloads it through the
+  relay.
+- `Relay:Enabled` is `false` by default (a 403 that names the key). Point `Relay:HuggingFace`,
+  `Relay:OllamaRegistry` and `Relay:OllamaLibrary` at mirrors if the hub must not reach them
+  either. A sealed node shows a `sealed` pill in the console and `sealed: true` on `/api/status`.
+  The hub logs a warning when a sealed node connects while its relay is off.
+- **It is not a firewall.** It is a promise the node keeps about its own code and the processes it
+  starts. An Ollama somebody else runs, or a process started by hand, is still yours to fence.
 
 ### A private corpus on a networked node
 
@@ -4364,6 +4413,7 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Queue:MaxWaitSeconds` | `30` | How long a request may wait for a saturated fleet before `503`. |
 | `Queue:MaxDepth` | `64` | How many requests may wait at once. Past it, an immediate `503`. |
 | `Queue:SlotWaitSeconds` | `0` | **v3.74+** — how long a request may wait at the hub while every node holding its model is running all it has [slots](#waiting-for-a-free-slot-v374) for. `0` = off. Past it the request is sent on anyway, never a `503`. |
+| `Relay:Enabled` | `false` | **v3.82+** — fetch for this hub's [sealed nodes](#a-sealed-node-v382): `/node/relay/{hf\|ollama-registry\|ollama-library}/…`, behind the node enrollment secret. `Relay:HuggingFace`, `Relay:OllamaRegistry`, `Relay:OllamaLibrary` point at the upstreams (or your mirrors). |
 | `Images:MaxBatch` | `4` | v3.14. The absolute ceiling on `n`, whatever the size. A batch runs on **one** node. Bound by both hosts from the same section, so a request refused on a hub is refused identically on a solo node. |
 | `Images:MaxResponseBytes` | `26214400` | v3.14. An upper-bound estimate (`w × h × 4 × n`) checked *before a step runs*, with the refusal naming the largest `n` that fits. **Clamped by `Tools:MaxAttachmentBytes`** at use, because that cap sizes the mesh's SignalR message limit and exceeding a SignalR limit tears a node's connection down rather than failing a message. Raising one without the other gets you no change, deliberately. **v3.25: it bounds a video too** — there is no `Videos:` section, because two keys for one wire ceiling are two numbers you could raise independently. A clip's size cannot be estimated from its geometry (that is an encoder's output), so what the edge checks instead is that the recipe offers the `(size, seconds)` pair you asked for. |
 | `Images:SyncMaxWaitSeconds` | `120` | v3.15. How long `/v1/images/generations` waits for its own job before a `503` naming the async route. **The job keeps running** and the message carries its id — discarding a minute of GPU because an HTTP client got bored is your call, not the hub's. See [A job that takes two minutes](#a-job-that-takes-two-minutes-v315). |
@@ -4398,6 +4448,7 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `Node:DataDirectory` | `null` | Directory for writable node state (the `.inferhub-node-id` file). `null` = next to the executable (content root). Set to e.g. `C:\ProgramData\InferHub\Node` when running as a Windows service under a least-privilege account. |
 | `Node:MaxConcurrency` | `null` | Advisory in-flight cap reported to the coordinator (null = unbounded). |
 | `Node:Labels` | `{}` | Free-form key/value pairs surfaced on `GET /api/nodes`. |
+| `Node:Sealed` | `false` | **v3.82+** — reach nothing outside this network but the coordinator: refuses to start with a door open, and downloads through the hub's `Relay`. See [A sealed node](#a-sealed-node-v382). |
 | `Node:Models:Include` | `[]` | Whitelist of model names to advertise (empty = all). |
 | `Node:Models:Exclude` | `[]` | Names dropped before reporting. |
 | `Node:Capabilities:Disabled` | `[]` | v3.8. What this node is **not** routed for — `["chat"]` makes it an embeddings-only box. Subtractive only; disabling both `chat` and `embed` fails startup. See [What a node is for](#what-a-node-is-for-v38). |

@@ -1,8 +1,9 @@
 # InferHub.Node/Control — agent context
 
-**Scope: `src/InferHub.Node/Control/`, `LocalApi/LocalControlEndpoints.cs`, `Configuration/NodeLocalSettings.cs`.**
-A node as a unit of its own: the control API a desktop app (or `curl`) drives, the owner's sharing modes, and a
-corpus the fleet never sees. **Started here in phase 112** rather than in `src/InferHub.Node/CLAUDE.md`, which was at
+**Scope: `src/InferHub.Node/Control/`, `LocalApi/LocalControlEndpoints.cs`, `Configuration/NodeLocalSettings.cs`,
+`Configuration/SealedMode.cs`, `Backends/SealedOllama.cs`.**
+A node as a unit of its own: the control API a desktop app (or `curl`) drives, the owner's sharing modes, a
+corpus the fleet never sees, and a node sealed to its network (122). **Started here in phase 112** rather than in `src/InferHub.Node/CLAUDE.md`, which was at
 its 1100-line budget.
 
 > **Read the root `CLAUDE.md` first**, then `src/InferHub.Node/CLAUDE.md` — phase 37 (solo mode: the local surface,
@@ -167,3 +168,56 @@ or containing `Vector:ReplicaDirectory`, naming both keys (`Overlaps`).
 live in `LocalApi/LocalControlEndpoints.Fit.cs`, behind 112 D1's token like every route here; the install is 112 D6's
 model command with an engine and `ModelCommand.Context`. The decisions are in `src/InferHub.Node/Backends/CLAUDE.md`
 (Phase 118).
+
+### Phase 122 (a sealed node) — `Node:Sealed`, the hub's `Relay`
+
+One setting that makes a node reach nothing outside its own network but its coordinator. What it would have fetched
+— a Hugging Face file, an Ollama pull, the 119 catalogue, the 118 estimate's registry reads — it asks the hub for, at
+`{hub}/node/relay/{hf|ollama-registry|ollama-library}/{path}` with its enrollment secret
+([NodeRelayEndpoints](../../InferHub.Coordinator/Services/NodeRelayEndpoints.cs), `Relay:Enabled`, off by default).
+
+**D1 — local is an address you can see is not the internet.** Loopback, RFC 1918, link-local, 100.64/10 (a Tailscale
+mesh), fc00::/7, a single-label name (a container, a LAN host) and `.local`/`.lan`/`.internal`/`.home.arpa`. A dotted
+public name is outside even if it resolves to 10.x today: the setting is a promise about tomorrow too. *Rejected:*
+resolving the name at boot — it answers for the moment of the check and costs a DNS query to the outside.
+
+**D2, load-bearing — refuse to start, and name every door at once.** [SealedModeValidator](../Configuration/SealedMode.cs)
+reads configuration (38 D1's cycle) and fails boot with one sentence per door: a `chatgpt`/vendor engine or one at a
+public `BaseUrl`, an Ollama outside the network, `LocalApi:Urls` on a wildcard or a public address (its own public
+API — loopback or one private address is fine), a corpus elsewhere, `HuggingFace:Enabled` with no hub and no local
+mirror, `Ollama:Supervisor:AutoInstall`, `Update:Check|Auto|AllowFromHub` from GitHub, `Tools:AllowModelDownload`,
+any `CloudMedia` provider. All of them, so it is fixed in one edit, not one restart per key. *Rejected:* quietly
+switching those features off — a node that "starts fine" and then cannot do what its config says is 37 D8's silent
+failure.
+
+**D3 — the relay knows three upstreams by name, follows redirects itself and streams.** A URL in the request would make
+the hub an open proxy with its address on it. A Hugging Face resolve and a registry blob both redirect to a signed CDN
+URL; handing that back would send the node to the CDN, so the hub follows (and .NET drops `Authorization` on the way —
+the node's own HF token reaches Hugging Face, never the CDN). `Range` passes through: Ollama asks for a blob in parts.
+A path cannot move the host (`Target` checks scheme and authority). Logged per request with the path, never the query.
+
+**D4 — a floor under all of it: every factory client of a sealed node passes `SealedEgressHandler`.** Registered with
+`ConfigureHttpClientDefaults`; anything to a non-local host that is not the coordinator throws before a socket opens,
+and a request to the relay gets the secret. The boot check covers the keys; this covers a code path nobody listed.
+**Not covered:** a redirect followed *inside* a primary handler from a local server to the outside, and the SignalR
+connection (it is the coordinator). The Ollama and Python children inherit `OLLAMA_NO_CLOUD=1`, `HF_HUB_OFFLINE=1`
+and `TRANSFORMERS_OFFLINE=1`, set on the node's own process at composition.
+
+**D5 — an Ollama's cloud is not this node's.** Ollama 0.40 lists a cloud model with `remote_host` and says on
+`/api/status` whether its cloud is off. Sealed, the listing is read raw, cloud models are not reported and a request
+for one is refused before Ollama sees it (a `…cloud` tag not yet pulled too). An Ollama this node did not start (a
+service, the desktop app) does not inherit `OLLAMA_NO_CLOUD`; the node logs an error once naming the variable.
+
+**D6 — an Ollama pull is still Ollama's, through a registry on loopback.** [SealedOllama](../Backends/SealedOllama.cs)
+opens a one-pull registry on 127.0.0.1 (plain sockets: `HttpListener` needs an http.sys reservation, Kestrel stays in
+`LocalApi/` by rule 2), pulls `127.0.0.1:port/ns/model:tag` with `insecure`, copies it to the asked name and deletes
+the loopback one — the blobs are shared, the copy is a manifest. **Found by running it:** a blob GET must redirect to a
+*different host*, or Ollama follows it and fails "no Location header"; the redirect goes to `localhost`, so there is an
+IPv6 listener too (Windows dials `localhost` as `::1` only). *Rejected:* assembling the model from blobs via
+`/api/create` — a second implementation of Ollama's manifest, wrong the day a layer type ships. Only the default
+registry (`hf.co/…` names are refused), and only an Ollama on this machine's loopback.
+
+**D7 — what downloads by itself is refused, not relayed.** A llama.cpp router pull (llama-server fetches from Hugging
+Face itself) and a Strata install (its setup does) end in one terminal frame naming the way that works: a GGUF as a
+Hugging Face link, which the store downloads through the relay. The hub logs a warning when a sealed node registers
+and its relay is off; the console shows a neutral `sealed` pill (`sealed` on `/api/status` and `/api/admin/nodes`).

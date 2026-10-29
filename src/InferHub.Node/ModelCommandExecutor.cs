@@ -18,7 +18,8 @@ public sealed class ModelCommandExecutor(
     ToolExecutor? tools = null,
     Backends.HuggingFace.HuggingFaceStore? huggingFace = null,
     Backends.Strata.StrataInstaller? strata = null,
-    Fit.ModelContexts? contexts = null)
+    Fit.ModelContexts? contexts = null,
+    Configuration.SealedEgress? sealedNode = null)
 {
     /// <summary>Phase 98: this node downloads from Hugging Face, so it manages models even when no engine does.</summary>
     public bool ManagesModels => backend.SupportsModelManagement || huggingFace is not null;
@@ -170,6 +171,14 @@ public sealed class ModelCommandExecutor(
 
         if (strataLink)
         {
+            // 122 D7: Strata's setup downloads its sizes itself, past this node's HttpClients and the relay.
+            if (sealedNode is not null)
+            {
+                yield return Terminal(command, nodeId, "error",
+                    $"'{command.ModelName}' is installed by Strata's own setup, which downloads from Hugging Face itself; Node:Sealed installs it only on a machine that may reach the internet");
+                yield break;
+            }
+
             if (strata is null)
             {
                 yield return Terminal(command, nodeId, "error",
@@ -294,6 +303,18 @@ public sealed class ModelCommandExecutor(
 
         try
         {
+            // 122 D7: only an Ollama pull goes through the coordinator; a llama.cpp router downloads from Hugging Face itself.
+            if (sealedNode is not null)
+            {
+                var target = backend is MultiBackend multi ? multi.Manager(ModelCommand.KindPull, command.ModelName, command.Engine).Backend : backend;
+
+                if (target is not OllamaBackend)
+                {
+                    throw new InvalidOperationException(
+                        $"a {target.Name} pull downloads from the internet itself; Node:Sealed pulls a GGUF through the coordinator as a Hugging Face link (HuggingFace:Enabled, engine \"huggingface\")");
+                }
+            }
+
             frames = (backend is MultiBackend engines
                     ? engines.PullAsync(command.ModelName, command.Engine, cancellationToken)
                     : backend.PullAsync(command.ModelName, cancellationToken))

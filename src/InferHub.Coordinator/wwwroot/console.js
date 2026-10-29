@@ -86,6 +86,11 @@
       pills.push(`<span class="pill" title="${escapeHtml(node.sharing.reason ?? "")}">not sharing${escapeHtml(until)}</span>`);
     }
 
+    // Phase 122. Neutral: the owner's choice. It reaches nothing but this hub, and downloads only through Relay.
+    if (node.sealed === true) {
+      pills.push(`<span class="pill" title="Node:Sealed — reaches nothing outside its network but this coordinator; downloads only through Relay">sealed</span>`);
+    }
+
     // Phase 69. Beside `online`, not instead of it: the connection genuinely is up, and saying so
     // while the backend is down is the whole of what this row has to communicate.
     if (node.backendHealth && node.backendHealth !== "healthy") {

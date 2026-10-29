@@ -61,6 +61,16 @@ public sealed class NodeHub(
             registration.Name,
             Context.ConnectionId);
 
+        // Phase 122: a sealed node downloads only through this hub; with the relay off, every pull it is sent will fail.
+        if (registration.Sealed == true
+            && services.GetService(typeof(Microsoft.Extensions.Options.IOptionsMonitor<RelayOptions>)) is Microsoft.Extensions.Options.IOptionsMonitor<RelayOptions> { CurrentValue.Enabled: false })
+        {
+            logger.LogWarning(
+                "Node {NodeId} ({NodeName}) is sealed and this coordinator does not relay (Relay:Enabled=false): it can run what it has, and download nothing",
+                registration.NodeId,
+                registration.Name);
+        }
+
         return Task.CompletedTask;
     }
 

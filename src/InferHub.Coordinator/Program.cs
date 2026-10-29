@@ -241,6 +241,11 @@ builder.Services.AddHttpClient(InferHub.Coordinator.ChatGpt.ChatGptAccounts.Http
     .RemoveAllLoggers();
 builder.Services.AddSingleton<InferHub.Coordinator.ChatGpt.ChatGptAccounts>();
 
+// Phase 122. The relay a sealed node fetches through — off by default; inert and 403 until Relay:Enabled.
+// No loggers: a Hugging Face resolve redirects to a signed CDN URL, and the factory would log it.
+builder.Services.Configure<RelayOptions>(builder.Configuration.GetSection(RelayOptions.SectionName));
+builder.Services.AddHttpClient(NodeRelayEndpoints.HttpClientName, http => http.Timeout = Timeout.InfiniteTimeSpan).RemoveAllLoggers();
+
 // High availability (phase 32). Off by default and inert when off: no lease, no Postgres
 // connection, and SingleCoordinatorMembership reports Enabled=false so the role header, the
 // standby 503 and the status block never appear — byte-identical to v2.13.
@@ -370,6 +375,7 @@ if (vectorStoreEnabled)
     app.MapFederatedRetrievalEndpoints();
 }
 
+app.MapNodeRelay();
 app.MapHub<NodeHub>("/hubs/node");
 
 app.Run();

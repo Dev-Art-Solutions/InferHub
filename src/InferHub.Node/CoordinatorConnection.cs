@@ -1046,7 +1046,9 @@ public sealed class CoordinatorConnection(
             // nothing for every backend but Ollama.
             ModelSlots: node.ModelSlots ?? backend.ModelSlots,
             // Phase 120: the owner's terms, for the console to show; each request is decided live on this side.
-            Management: management?.Terms());
+            Management: management?.Terms(),
+            // Phase 122: said, so the hub can show it and warn when its relay is off.
+            Sealed: node.Sealed ? true : null);
 
         await connection.InvokeAsync("Register", registration, cancellationToken);
         await RequestProfileAsync(cancellationToken);
