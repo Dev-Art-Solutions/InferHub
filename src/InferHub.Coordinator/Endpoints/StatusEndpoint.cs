@@ -81,7 +81,8 @@ public static class StatusEndpoint
                     snapshot,
                     services.GetService(typeof(InferHub.Coordinator.ChatGpt.ChatGptAccounts)) as InferHub.Coordinator.ChatGpt.ChatGptAccounts),
                 BuildQueueBlock(queue),
-                BuildClusterBlock(membership)));
+                BuildClusterBlock(membership),
+                BuildRelayBlock(services.GetService(typeof(RelayCache)) as RelayCache)));
         });
 
         return app;
@@ -358,7 +359,16 @@ public static class StatusEndpoint
             Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
         IReadOnlyList<ProviderStatusBlock>? Providers,
         QueueStatusBlock Queue,
-        ClusterStatusBlock? Cluster);
+        ClusterStatusBlock? Cluster,
+        // Phase 123. Omitted unless Relay:Cache is on, so a hub that never kept a blob reports v3.82's payload.
+        [property: System.Text.Json.Serialization.JsonIgnore(
+            Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        RelayStatusBlock? Relay = null);
+
+    internal sealed record RelayStatusBlock(RelayCacheSnapshot Cache);
+
+    internal static RelayStatusBlock? BuildRelayBlock(RelayCache? cache)
+        => cache?.Snapshot() is { } snapshot ? new RelayStatusBlock(snapshot) : null;
 
     internal sealed record ClusterStatusBlock(
         string Instance,

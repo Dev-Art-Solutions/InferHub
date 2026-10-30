@@ -30,7 +30,9 @@ public sealed record PrometheusScrape(
     // Phase 66. What the operator configured, as opposed to what has happened — the two questions
     // the dispatch counter alone cannot tell apart (66 D5). Empty on a hub with no `Providers:`
     // block, which is exactly the v3.33 scrape.
-    IReadOnlyList<ProviderScrapeSample>? Providers = null);
+    IReadOnlyList<ProviderScrapeSample>? Providers = null,
+    // Phase 123. Null unless the relay's cache is on, which is exactly the v3.82 scrape.
+    RelayCacheSnapshot? RelayCache = null);
 
 /// <summary>
 /// One configured provider, described rather than measured (phase 66, D5).
@@ -226,6 +228,19 @@ public static class PrometheusFormatter
             Gauge(builder, "inferhub_image_queue_depth", "Image jobs waiting for a node.", images.Queued);
             Gauge(builder, "inferhub_image_jobs_active", "Image jobs queued or running right now.", images.Active);
             Gauge(builder, "inferhub_image_retained_bytes", "Bytes of finished image results held in memory, waiting to be collected or to expire.", images.RetainedBytes);
+        }
+
+        if (scrape.RelayCache is { } relay)
+        {
+            Gauge(builder, "inferhub_relay_cache_bytes", "Bytes of relayed blobs this hub keeps for its sealed nodes.", relay.Bytes);
+            Gauge(builder, "inferhub_relay_cache_max_bytes", "Relay:Cache:MaxGiB, in bytes.", relay.MaxBytes);
+            Gauge(builder, "inferhub_relay_cache_entries", "Blobs the relay cache holds.", relay.Entries);
+            Counter(builder, "inferhub_relay_cache_hits_total", "Relayed blobs served from the hub's disk.", relay.Hits);
+            Counter(builder, "inferhub_relay_cache_misses_total", "Relayed blobs the cache could hold and did not.", relay.Misses);
+            Counter(builder, "inferhub_relay_cache_filled_total", "Blobs kept after their sha256 matched.", relay.Filled);
+            Counter(builder, "inferhub_relay_cache_discarded_total", "Blobs whose bytes did not hash to the digest the upstream named.", relay.Discarded);
+            Counter(builder, "inferhub_relay_cache_skipped_total", "Blobs not kept: too big, unknown length or not enough disk.", relay.Skipped);
+            Counter(builder, "inferhub_relay_cache_served_bytes_total", "Bytes served from the cache instead of the uplink.", relay.ServedBytes);
         }
 
         PerAudio(builder, m.PerAudio);

@@ -78,6 +78,10 @@ ENV Images__Jobs__DataDirectory=/data/images
 # volume at /data or a container restart forgets the sign-in (and the host id with it).
 ENV ChatGpt__DataDirectory=/data/chatgpt
 
+# The relay cache (phase 123) keeps blobs under /data when Relay:Cache:Enabled=true. Same trap as the
+# others: ./data/relay is /app/data under USER app. Inert unless the cache is on.
+ENV Relay__Cache__DataDirectory=/data/relay
+
 EXPOSE 8080
 
 # Non-root. The runtime image ships this user for exactly this purpose.

@@ -12,7 +12,7 @@ its 1100-line budget — 62 D6, 67 D6, 69 D8 and 81 a fifth time, with phases 86
 
 ## Related context
 
-- The relay a sealed node fetches through (`NodeRelayEndpoints.cs`, `Relay:`): `src/InferHub.Node/Control/CLAUDE.md`, phase 122 D3
+- The relay a sealed node fetches through (`NodeRelayEndpoints.cs`, `Relay:`) and its cache (`RelayCache.cs`, `Relay:Cache:`): `src/InferHub.Node/Control/CLAUDE.md`, phase 122 D3 and phase 123
 - Everything else on this host: `src/InferHub.Coordinator/CLAUDE.md`
 - What a node declares about its slots (108 D1–D3) and how an engine is asked (109): `src/InferHub.Node/CLAUDE.md`, `src/InferHub.Node/Backends/CLAUDE.md`
 

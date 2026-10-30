@@ -17,6 +17,9 @@ public static class NodeRelay
     /// <summary>Header the node presents — the same one the SignalR handshake carries.</summary>
     public const string SecretHeader = "X-Node-Enrollment-Secret";
 
+    /// <summary>Phase 123: <c>hit</c> or <c>miss</c> on a blob the hub's cache could hold; absent on anything else.</summary>
+    public const string CacheHeader = "X-InferHub-Relay-Cache";
+
     public const string HuggingFace = "hf";
 
     public const string OllamaRegistry = "ollama-registry";

@@ -1,7 +1,7 @@
 # InferHub.Node/Control — agent context
 
 **Scope: `src/InferHub.Node/Control/`, `LocalApi/LocalControlEndpoints.cs`, `Configuration/NodeLocalSettings.cs`,
-`Configuration/SealedMode.cs`, `Backends/SealedOllama.cs`.**
+`Configuration/SealedMode.cs`, `Backends/SealedOllama.cs`, and the hub's `Services/RelayCache.cs`.**
 A node as a unit of its own: the control API a desktop app (or `curl`) drives, the owner's sharing modes, a
 corpus the fleet never sees, and a node sealed to its network (122). **Started here in phase 112** rather than in `src/InferHub.Node/CLAUDE.md`, which was at
 its 1100-line budget.
@@ -221,3 +221,45 @@ registry (`hf.co/…` names are refused), and only an Ollama on this machine's l
 Face itself) and a Strata install (its setup does) end in one terminal frame naming the way that works: a GGUF as a
 Hugging Face link, which the store downloads through the relay. The hub logs a warning when a sealed node registers
 and its relay is off; the console shows a neutral `sealed` pill (`sealed` on `/api/status` and `/api/admin/nodes`).
+
+### Phase 123 (the hub keeps what it relayed) — `Relay:Cache`
+
+[RelayCache](../../InferHub.Coordinator/Services/RelayCache.cs) beside the relay: blobs under
+`<Relay:Cache:DataDirectory>/blobs/<sha256>`, written to `partial/` first. Nothing on the node changed — a 3.82 node gets
+it the day its hub turns it on. Why: after 122 every byte a sealed node fetches crosses the hub, and crosses again for
+the next node; a fleet behind a slow uplink is exactly the fleet that sealed its nodes.
+
+**D1, load-bearing — the upstream is asked every time; the cache replaces only the body, keyed by the sha256 the
+upstream named.** The relay's client no longer follows redirects itself (`AllowAutoRedirect=false`, `FollowAsync` by
+hand, dropping `Authorization` off the first host as .NET did — 122 D3 holds). The first hop is the upstream's: a
+registry blob is addressed by its digest in the path, a Hugging Face resolve names its LFS file in `X-Linked-Etag`
+(checked live on Xet storage, 2026-10-30). A hit needs a 2xx/3xx first hop, so a gated repo still refuses a node
+without access, and `main` still resolves today. *Rejected:* keying by URL — a `main` that moved serves yesterday's
+file, and one node's token would open a gated file for every other node. *Rejected:* skipping the first hop for a
+digest-addressed blob — the cheapest request in the pull is the one that carries the access decision.
+
+**D2 — hashed while written, kept only on a match.** `RelayFill` hashes every byte; a whole blob whose hash differs is
+deleted and counted (`discarded`), a partial one simply deleted. The node's own bytes are relayed as before either way —
+98's sha256 check and Ollama's digest check are what refuse a bad download; the hub only declines to keep it. A
+restart deletes `partial/` and indexes `blobs/` by name without re-hashing: a blob got there only after a match.
+
+**D3 — a whole GET is kept as it passes; a ranged miss is relayed as before and the hub fetches the whole blob once,
+beside it.** Ollama asks for a blob in parts (found again live: a 206 for every layer, even one of 89 bytes), so keeping only
+what passed would keep nothing. `FillInBackground` repeats the whole GET from the first hop (a signed CDN URL may
+expire); one fill per digest at a time, a second node's parts in the meantime pass through. The hub's uplink carries a
+first pull twice — once for the node, once for itself. *Rejected:* making the first node wait for the whole blob before
+its first range — a 20 GB wait before byte one of a request that asked for 100 MB.
+
+**D4 — rule 4's sixth exception: off by default, bounded, and losing it costs a download.** `Relay:Cache:Enabled`
+false; `MaxGiB` (200) evicts least recently served (the file's write time is touched on a hit, so the order survives a
+restart); a blob that would leave less than `KeepFreeGiB` (20) free, or bigger than the cache, or of unknown length, is
+not kept (`skipped`). Not content in rule 7's sense — public model weights by hash — but a gated repo's weights are the
+gate's owner's, which is why D1 asks the gate every time.
+
+**D5 — visible where the relay already is.** `X-InferHub-Relay-Cache: hit|miss` on a cacheable blob, absent otherwise;
+`relay.cache` on `/api/status` and `inferhub_relay_cache_*` on `/metrics`, absent unless the cache is on (28 D5). Logged
+per kept, evicted and discarded blob by a 12-character digest prefix. HEAD is always relayed live.
+
+Tests: `RelayCacheTests` (Coordinator — digests, keep/discard/abandon, single flight, eviction order, a restart),
+`RelayCacheMeshTests` (Mesh — a gated HF file kept as it passes then served while the first hop is still asked and the
+CDN is not; a refused first hop over a held blob; an Ollama blob in parts fetched whole once; corrupt bytes; off).

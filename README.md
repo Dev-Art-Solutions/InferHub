@@ -206,6 +206,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 119 | [Browse models that fit](#browse-models-that-fit-v380) — what is trending and popular on Hugging Face and in Ollama's library, ordered by what fits this machine (done) | `v3.80.0` |
 | 120 | [Models from the coordinator](#models-from-the-coordinator-v381) — the hub browses, checks fit and installs on a node, only where its owner said yes at install, within a per-model cap and a free-disk floor (done) | `v3.81.0` |
 | 122 | [A sealed node](#a-sealed-node-v382) — `Node:Sealed`: a node reaches nothing outside its network but its coordinator, refuses to start with a door open, and downloads through the hub's `Relay` (done) | `v3.82.0` |
+| 123 | [The hub keeps what it relayed](#the-hub-keeps-what-it-relayed-v383) — `Relay:Cache`: a model a sealed fleet pulls crosses the hub's uplink once; the upstream is still asked every time (done) | `v3.83.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -1055,6 +1056,43 @@ Relay__Enabled=true
   The hub logs a warning when a sealed node connects while its relay is off.
 - **It is not a firewall.** It is a promise the node keeps about its own code and the processes it
   starts. An Ollama somebody else runs, or a process started by hand, is still yours to fence.
+
+### The hub keeps what it relayed (v3.83+)
+
+Every byte a [sealed node](#a-sealed-node-v382) downloads crosses its coordinator. Without a
+cache it crosses again for the next node: ten sealed nodes given the same model pull it ten times
+over the one uplink the hub has. `Relay:Cache` keeps each blob the relay passed on, so the second
+node's pull comes from the hub's disk.
+
+```bash
+# on the coordinator
+Relay__Enabled=true
+Relay__Cache__Enabled=true
+Relay__Cache__MaxGiB=200        # least recently served goes first
+Relay__Cache__KeepFreeGiB=20    # never fill the disk past this
+```
+
+- **It keeps blobs by the sha256 the upstream named, and nothing else.** An Ollama registry blob is
+  addressed by its digest. A Hugging Face LFS file is named by the hash Hugging Face sends on the
+  resolve (`X-Linked-Etag`). Manifests, model pages and the catalogue change, are small, and are
+  always relayed live.
+- **The upstream is still asked every time.** The first hop of every request goes to Hugging Face
+  or the registry, with the node's own token. It decides whether this node may have the file (a
+  gated repo) and what `main` points at today. Only the body behind its redirect can come from the
+  cache. So a node without access to a gated repo does not get it because another node downloaded
+  it, and a cached copy can never be an old version.
+- **It is hashed while it is written** and kept only if the bytes match. A mismatch is relayed as
+  before (the node checks its own download) and counted, never kept.
+- **Ollama pulls in parts.** The hub relays the parts as before and fetches the whole blob once,
+  beside them, so the first node never waits for a download it did not ask for. A whole download
+  (a Hugging Face file) is kept as it passes.
+- **You can see it.** Answers carry `X-InferHub-Relay-Cache: hit` or `miss`. `/api/status` has a
+  `relay.cache` block (entries, bytes, hits, misses, kept, discarded, skipped, bytes served) and
+  `/metrics` has `inferhub_relay_cache_*`. Both appear only while the cache is on.
+- **Off by default, and it is the hub's sixth on-disk exception.** It writes under
+  `Relay:Cache:DataDirectory` (`/data/relay` in the image). Deleting the directory costs a
+  download, never a wrong answer. Nodes need nothing new: a 3.82 node gets the cache the day its
+  hub turns it on.
 
 ### A private corpus on a networked node
 
@@ -4414,6 +4452,7 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Queue:MaxDepth` | `64` | How many requests may wait at once. Past it, an immediate `503`. |
 | `Queue:SlotWaitSeconds` | `0` | **v3.74+** — how long a request may wait at the hub while every node holding its model is running all it has [slots](#waiting-for-a-free-slot-v374) for. `0` = off. Past it the request is sent on anyway, never a `503`. |
 | `Relay:Enabled` | `false` | **v3.82+** — fetch for this hub's [sealed nodes](#a-sealed-node-v382): `/node/relay/{hf\|ollama-registry\|ollama-library}/…`, behind the node enrollment secret. `Relay:HuggingFace`, `Relay:OllamaRegistry`, `Relay:OllamaLibrary` point at the upstreams (or your mirrors). |
+| `Relay:Cache:Enabled` | `false` | **v3.83+** — keep each blob the relay passed on, by its sha256, under `Relay:Cache:DataDirectory` (`./data/relay`; `/data/relay` in the image), within `Relay:Cache:MaxGiB` (200) and `Relay:Cache:KeepFreeGiB` (20). See [The hub keeps what it relayed](#the-hub-keeps-what-it-relayed-v383). |
 | `Images:MaxBatch` | `4` | v3.14. The absolute ceiling on `n`, whatever the size. A batch runs on **one** node. Bound by both hosts from the same section, so a request refused on a hub is refused identically on a solo node. |
 | `Images:MaxResponseBytes` | `26214400` | v3.14. An upper-bound estimate (`w × h × 4 × n`) checked *before a step runs*, with the refusal naming the largest `n` that fits. **Clamped by `Tools:MaxAttachmentBytes`** at use, because that cap sizes the mesh's SignalR message limit and exceeding a SignalR limit tears a node's connection down rather than failing a message. Raising one without the other gets you no change, deliberately. **v3.25: it bounds a video too** — there is no `Videos:` section, because two keys for one wire ceiling are two numbers you could raise independently. A clip's size cannot be estimated from its geometry (that is an encoder's output), so what the edge checks instead is that the recipe offers the `(size, seconds)` pair you asked for. |
 | `Images:SyncMaxWaitSeconds` | `120` | v3.15. How long `/v1/images/generations` waits for its own job before a `503` naming the async route. **The job keeps running** and the message carries its id — discarding a minute of GPU because an HTTP client got bored is your call, not the hub's. See [A job that takes two minutes](#a-job-that-takes-two-minutes-v315). |

@@ -66,7 +66,10 @@ public static class ScrapeSnapshotBuilder
             // Phase 66. Resolved the same way, for the same reason: a host that maps /metrics
             // without the provider seam — every fixture that predates phase 61 — keeps working
             // and simply describes no vendor.
-            ProviderSamples(services.GetService(typeof(IProviderRegistry)) as IProviderRegistry));
+            ProviderSamples(services.GetService(typeof(IProviderRegistry)) as IProviderRegistry),
+
+            // Phase 123. Null unless Relay:Cache is on — no series for a cache nobody turned on.
+            (services.GetService(typeof(RelayCache)) as RelayCache)?.Snapshot());
     }
 
     /// <summary>

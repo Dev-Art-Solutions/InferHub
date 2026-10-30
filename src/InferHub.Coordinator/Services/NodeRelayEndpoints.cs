@@ -1,5 +1,6 @@
 using InferHub.Coordinator.Auth;
 using InferHub.Shared.Contracts;
+using System.Net;
 using Microsoft.Extensions.Options;
 
 namespace InferHub.Coordinator.Services;
@@ -22,6 +23,9 @@ public sealed class RelayOptions
 
     /// <summary>Ollama's library pages, which the node's catalogue reads (119 D3).</summary>
     public string OllamaLibrary { get; set; } = "https://ollama.com";
+
+    /// <summary>Phase 123: the blobs this hub relayed, kept by sha256. Off by default.</summary>
+    public RelayCacheOptions Cache { get; set; } = new();
 
     public string? BaseFor(string upstream) => upstream switch
     {
@@ -88,21 +92,45 @@ public static class NodeRelayEndpoints
             return;
         }
 
-        using var request = new HttpRequestMessage(new HttpMethod(context.Request.Method), target);
+        var client = factory.CreateClient(HttpClientName);
+        var method = new HttpMethod(context.Request.Method);
+        var forwarded = ForwardedRequestHeaders
+            .Where(name => context.Request.Headers.ContainsKey(name))
+            .Select(name => (Name: name, Values: context.Request.Headers[name].Select(value => value ?? string.Empty).ToArray()))
+            .ToArray();
 
-        foreach (var name in ForwardedRequestHeaders)
-        {
-            if (context.Request.Headers.TryGetValue(name, out var value))
-            {
-                request.Headers.TryAddWithoutValidation(name, value.ToArray());
-            }
-        }
+        // Resolved rather than injected, so a host that maps the relay without the cache keeps 3.82's relay exactly.
+        var cache = context.RequestServices.GetService<RelayCache>() is { Enabled: true } enabled && !HttpMethods.IsHead(context.Request.Method)
+            ? enabled
+            : null;
 
         HttpResponseMessage response;
+        string? digest = null;
 
         try
         {
-            response = await factory.CreateClient(HttpClientName).SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            // 123 D1: the first hop is always the upstream's. It decides access (a gated repo, a node's token) and
+            // names the content; only the body behind it can come from the hub's disk.
+            var first = await client.SendAsync(Request(method, target, forwarded, target), HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            digest = cache is null ? null : DigestOf(upstream, path, first);
+
+            if (digest is not null && (int)first.StatusCode is >= 200 and < 400 && cache!.Open(digest) is { } blob)
+            {
+                first.Dispose();
+
+                await using (blob.Stream)
+                {
+                    var (status, bytes) = await ServeCachedAsync(context, blob, upstream, cancellationToken);
+                    cache.Served(bytes);
+                    logger.LogInformation(
+                        "Relayed {Method} {Upstream}/{Path} for {RemoteIp} from the cache: {Status}, {Bytes} bytes",
+                        context.Request.Method, upstream, path, context.Connection.RemoteIpAddress, status, bytes);
+                }
+
+                return;
+            }
+
+            response = await FollowAsync(client, first, method, target, forwarded, cancellationToken);
         }
         catch (HttpRequestException ex)
         {
@@ -133,6 +161,31 @@ public static class NodeRelayEndpoints
                 context.Response.ContentLength = length;
             }
 
+            // 123 D3: a whole blob is kept as it passes; a part is relayed as before and the hub fetches the whole
+            // blob once, beside it — never making this node wait for twenty gigabytes before its first range.
+            using var fill = digest is not null && response.StatusCode == HttpStatusCode.OK
+                ? cache!.Begin(digest, response.Content.Headers.ContentLength)
+                : null;
+
+            if (digest is not null)
+            {
+                context.Response.Headers[NodeRelay.CacheHeader] = "miss";
+
+                if (response.StatusCode == HttpStatusCode.PartialContent)
+                {
+                    var whole = forwarded
+                        .Where(header => !header.Name.Equals("Range", StringComparison.OrdinalIgnoreCase)
+                            && !header.Name.Equals("If-Range", StringComparison.OrdinalIgnoreCase))
+                        .ToArray();
+
+                    cache!.FillInBackground(digest, async token =>
+                    {
+                        var hop = await client.SendAsync(Request(HttpMethod.Get, target, whole, target), HttpCompletionOption.ResponseHeadersRead, token);
+                        return await FollowAsync(client, hop, HttpMethod.Get, target, whole, token);
+                    });
+                }
+            }
+
             long sent = 0;
 
             if (!HttpMethods.IsHead(context.Request.Method))
@@ -144,8 +197,11 @@ public static class NodeRelayEndpoints
                 while ((read = await body.ReadAsync(buffer, cancellationToken)) > 0)
                 {
                     await context.Response.Body.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                    fill?.Write(buffer.AsSpan(0, read));
                     sent += read;
                 }
+
+                fill?.Complete();
             }
 
             // The path names a model, never a prompt; the query is dropped — a resolve carries a revision and nothing else,
@@ -154,6 +210,158 @@ public static class NodeRelayEndpoints
                 "Relayed {Method} {Upstream}/{Path} for {RemoteIp}: {Status}, {Bytes} bytes",
                 context.Request.Method, upstream, path, context.Connection.RemoteIpAddress, (int)response.StatusCode, sent);
         }
+    }
+
+    /// <summary>
+    /// The relay's client and its cache. Redirects are followed here rather than by the handler: the first hop is where
+    /// Hugging Face names a file's sha256 (<c>X-Linked-Etag</c>), and the handler would follow past it to a CDN that
+    /// does not (123 D1). No loggers: a resolve redirects to a signed CDN URL, and the factory would log it.
+    /// </summary>
+    public static IServiceCollection AddNodeRelay(this IServiceCollection services)
+    {
+        services.AddSingleton<RelayCache>();
+        services.AddHttpClient(HttpClientName, http => http.Timeout = Timeout.InfiniteTimeSpan)
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false })
+            .RemoveAllLoggers();
+        return services;
+    }
+
+    /// <summary>
+    /// The sha256 the upstream itself named for what this path answers (123 D1): a registry blob is addressed by its
+    /// digest; a Hugging Face LFS file's first hop carries it as <c>X-Linked-Etag</c>. Anything else is not kept.
+    /// </summary>
+    internal static string? DigestOf(string upstream, string? path, HttpResponseMessage first)
+    {
+        var relative = (path ?? string.Empty).TrimStart('/');
+
+        if (upstream == NodeRelay.OllamaRegistry)
+        {
+            var at = relative.LastIndexOf("/blobs/", StringComparison.Ordinal);
+            return relative.StartsWith("v2/", StringComparison.Ordinal) && at > 0
+                ? RelayCache.Sha256Of(relative[(at + "/blobs/".Length)..])
+                : null;
+        }
+
+        if (upstream == NodeRelay.HuggingFace && relative.Contains("/resolve/", StringComparison.Ordinal)
+            && first.Headers.TryGetValues("X-Linked-Etag", out var linked))
+        {
+            return RelayCache.Sha256Of(linked.FirstOrDefault());
+        }
+
+        return null;
+    }
+
+    private static HttpRequestMessage Request(HttpMethod method, Uri uri, (string Name, string[] Values)[] headers, Uri origin)
+    {
+        var request = new HttpRequestMessage(method, uri);
+
+        foreach (var (name, values) in headers)
+        {
+            // .NET's own redirect handling dropped Authorization off the upstream's host, and 3.82's relay relied on it:
+            // the node's Hugging Face token reaches Hugging Face, never the CDN (122 D3). Kept by hand.
+            if (name.Equals("Authorization", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(uri.Authority, origin.Authority, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            request.Headers.TryAddWithoutValidation(name, values);
+        }
+
+        return request;
+    }
+
+    private static async Task<HttpResponseMessage> FollowAsync(
+        HttpClient client, HttpResponseMessage response, HttpMethod method, Uri origin, (string Name, string[] Values)[] headers, CancellationToken cancellationToken)
+    {
+        var at = response.RequestMessage?.RequestUri ?? origin;
+
+        for (var hop = 0; hop < 10 && (int)response.StatusCode is 301 or 302 or 303 or 307 or 308 && response.Headers.Location is { } location; hop++)
+        {
+            var next = location.IsAbsoluteUri ? location : new Uri(at, location);
+
+            if (next.Scheme is not ("http" or "https"))
+            {
+                break;
+            }
+
+            response.Dispose();
+            response = await client.SendAsync(Request(method, next, headers, origin), HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            at = next;
+        }
+
+        return response;
+    }
+
+    /// <summary>The kept blob, as the CDN would have answered: a single <c>Range</c> honoured, anything else whole.</summary>
+    private static async Task<(int Status, long Bytes)> ServeCachedAsync(HttpContext context, CachedBlob blob, string upstream, CancellationToken cancellationToken)
+    {
+        var size = blob.Length;
+        long from = 0, to = size - 1;
+        var status = StatusCodes.Status200OK;
+
+        if (Microsoft.Net.Http.Headers.RangeHeaderValue.TryParse(context.Request.Headers.Range.ToString(), out var range)
+            && range.Unit.Equals("bytes", StringComparison.OrdinalIgnoreCase) && range.Ranges.Count == 1)
+        {
+            var only = range.Ranges.Single();
+
+            if (only.From is { } start)
+            {
+                from = start;
+                to = only.To is { } end ? Math.Min(end, size - 1) : size - 1;
+            }
+            else if (only.To is { } suffix)
+            {
+                from = Math.Max(0, size - suffix);
+            }
+
+            if (from >= size || from > to)
+            {
+                context.Response.StatusCode = StatusCodes.Status416RangeNotSatisfiable;
+                context.Response.Headers.ContentRange = $"bytes */{size}";
+                return (StatusCodes.Status416RangeNotSatisfiable, 0);
+            }
+
+            status = StatusCodes.Status206PartialContent;
+            context.Response.Headers.ContentRange = $"bytes {from}-{to}/{size}";
+        }
+
+        var count = to - from + 1;
+        context.Response.StatusCode = status;
+        context.Response.ContentType = "application/octet-stream";
+        context.Response.ContentLength = count;
+        context.Response.Headers.AcceptRanges = "bytes";
+        context.Response.Headers.ETag = $"\"{blob.Sha256}\"";
+        context.Response.Headers[NodeRelay.CacheHeader] = "hit";
+
+        if (upstream == NodeRelay.OllamaRegistry)
+        {
+            context.Response.Headers["Docker-Content-Digest"] = "sha256:" + blob.Sha256;
+        }
+
+        if (HttpMethods.IsHead(context.Request.Method))
+        {
+            return (status, 0);
+        }
+
+        blob.Stream.Seek(from, SeekOrigin.Begin);
+        var buffer = new byte[81920];
+        var left = count;
+
+        while (left > 0)
+        {
+            var read = await blob.Stream.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, left)), cancellationToken);
+
+            if (read == 0)
+            {
+                break;
+            }
+
+            await context.Response.Body.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+            left -= read;
+        }
+
+        return (status, count - left);
     }
 
     /// <summary>The upstream's base plus the path, and nowhere else: a path cannot move the host (122 D3).</summary>

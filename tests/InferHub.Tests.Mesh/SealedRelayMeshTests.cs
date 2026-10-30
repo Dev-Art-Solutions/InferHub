@@ -155,7 +155,7 @@ public class SealedRelayMeshTests
             builder.Services.Configure<ApiKeyOptions>(o => o.NodeEnrollmentSecret = Secret);
             builder.Services.AddSingleton<Microsoft.Extensions.Options.IOptionsMonitor<RelayOptions>>(new FixedMonitor<RelayOptions>(hub.Options));
             builder.Services.AddSingleton<NodeAuthFilter>();
-            builder.Services.AddHttpClient(NodeRelayEndpoints.HttpClientName);
+            builder.Services.AddNodeRelay();
 
             hub.app = builder.Build();
             hub.app.MapGet("/health", () => "ok");
