@@ -204,7 +204,10 @@ public sealed class SealedOllama(SealedEgress egress, IHttpClientFactory http, I
 
                 if (root.TryGetProperty("error", out var error))
                 {
-                    throw new InvalidOperationException(Readable(error.GetString(), registry.Port));
+                    // Phase 124: Ollama says "file does not exist"; the hub said why.
+                    throw new InvalidOperationException(registry.Refusal is { } refusal
+                        ? $"the coordinator does not supply '{target}': {refusal}"
+                        : Readable(error.GetString(), registry.Port));
                 }
 
                 var status = root.TryGetProperty("status", out var s) ? s.GetString() : null;
@@ -275,6 +278,9 @@ internal sealed class LoopbackRegistry : IAsyncDisposable
     }
 
     public int Port { get; }
+
+    /// <summary>Phase 124: why the hub would not answer — its refusal under <c>Relay:Supply:Only</c> — once it said so.</summary>
+    public string? Refusal { get; private set; }
 
     public static LoopbackRegistry Start(Func<HttpClient> client, Uri relay, ILogger logger)
     {
@@ -386,6 +392,13 @@ internal sealed class LoopbackRegistry : IAsyncDisposable
 
         using var answer = await client().SendAsync(forward, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         var passed = new List<(string, string)>();
+
+        if (answer.Headers.TryGetValues(NodeRelay.SupplyHeader, out var supply) && supply.Contains(NodeRelay.NotSupplied))
+        {
+            Refusal = await HuggingFace.HuggingFaceClient.RefusalAsync(answer);
+            await WriteHeadAsync(stream, 404, "Not Found", [], 0, cancellationToken);
+            return;
+        }
 
         foreach (var name in new[] { "Content-Range", "Accept-Ranges", "Docker-Content-Digest", "ETag" })
         {

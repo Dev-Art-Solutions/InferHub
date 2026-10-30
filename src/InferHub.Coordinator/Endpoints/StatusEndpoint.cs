@@ -82,7 +82,10 @@ public static class StatusEndpoint
                     services.GetService(typeof(InferHub.Coordinator.ChatGpt.ChatGptAccounts)) as InferHub.Coordinator.ChatGpt.ChatGptAccounts),
                 BuildQueueBlock(queue),
                 BuildClusterBlock(membership),
-                BuildRelayBlock(services.GetService(typeof(RelayCache)) as RelayCache)));
+                BuildRelayBlock(
+                    services.GetService(typeof(RelayCache)) as RelayCache,
+                    services.GetService(typeof(RelaySupply)) as RelaySupply,
+                    services.GetService(typeof(SupplyJobs)) as SupplyJobs)));
         });
 
         return app;
@@ -360,15 +363,26 @@ public static class StatusEndpoint
         IReadOnlyList<ProviderStatusBlock>? Providers,
         QueueStatusBlock Queue,
         ClusterStatusBlock? Cluster,
-        // Phase 123. Omitted unless Relay:Cache is on, so a hub that never kept a blob reports v3.82's payload.
+        // Phase 123. Omitted unless Relay:Cache or (phase 124) Relay:Supply is on, so a hub with neither reports v3.82's payload.
         [property: System.Text.Json.Serialization.JsonIgnore(
             Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
         RelayStatusBlock? Relay = null);
 
-    internal sealed record RelayStatusBlock(RelayCacheSnapshot Cache);
+    internal sealed record RelayStatusBlock(
+        [property: System.Text.Json.Serialization.JsonIgnore(
+            Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        RelayCacheSnapshot? Cache,
+        // Phase 124. Absent unless Relay:Supply is on, so a 3.83 dashboard reading relay.cache sees what it saw.
+        [property: System.Text.Json.Serialization.JsonIgnore(
+            Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        RelaySupplySnapshot? Supply = null);
 
-    internal static RelayStatusBlock? BuildRelayBlock(RelayCache? cache)
-        => cache?.Snapshot() is { } snapshot ? new RelayStatusBlock(snapshot) : null;
+    internal static RelayStatusBlock? BuildRelayBlock(RelayCache? cache, RelaySupply? supply = null, SupplyJobs? jobs = null)
+    {
+        var kept = cache?.Snapshot();
+        var supplied = supply?.Snapshot(jobs?.Running ?? 0);
+        return kept is null && supplied is null ? null : new RelayStatusBlock(kept, supplied);
+    }
 
     internal sealed record ClusterStatusBlock(
         string Instance,

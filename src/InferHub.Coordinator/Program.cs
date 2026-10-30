@@ -243,6 +243,7 @@ builder.Services.AddSingleton<InferHub.Coordinator.ChatGpt.ChatGptAccounts>();
 
 // Phase 122. The relay a sealed node fetches through — off by default; inert and 403 until Relay:Enabled.
 // Phase 123: its cache (Relay:Cache, off by default) holds the blobs it relayed, by sha256.
+// Phase 124: its supply (Relay:Supply, off by default) holds models fetched or imported once, answered without the upstream.
 builder.Services.Configure<RelayOptions>(builder.Configuration.GetSection(RelayOptions.SectionName));
 builder.Services.AddNodeRelay();
 
@@ -376,6 +377,7 @@ if (vectorStoreEnabled)
 }
 
 app.MapNodeRelay();
+app.MapRelaySupply();
 app.MapHub<NodeHub>("/hubs/node");
 
 app.Run();

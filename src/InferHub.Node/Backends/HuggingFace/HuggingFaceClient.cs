@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
+using InferHub.Shared.Contracts;
 using InferHub.Shared.HuggingFace;
 
 namespace InferHub.Node.Backends.HuggingFace;
@@ -248,6 +249,12 @@ public sealed class HuggingFaceClient(HttpClient http, Uri endpoint, string? tok
             return;
         }
 
+        // Phase 124: a hub on Relay:Supply:Only that does not supply this repo says so; that is the error, not "Hugging Face has no…".
+        if (response.Headers.TryGetValues(NodeRelay.SupplyHeader, out var supply) && supply.Contains(NodeRelay.NotSupplied))
+        {
+            throw new InvalidOperationException($"the coordinator does not supply '{reference.RepoId}': {await RefusalAsync(response)}");
+        }
+
         throw response.StatusCode switch
         {
             HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => new InvalidOperationException(
@@ -257,6 +264,22 @@ public sealed class HuggingFaceClient(HttpClient http, Uri endpoint, string? tok
             _ => new InvalidOperationException(
                 $"Hugging Face answered {(int)response.StatusCode} for '{reference.RepoId}': {Trim(await response.Content.ReadAsStringAsync())}")
         };
+    }
+
+    /// <summary>The <c>error</c> of a hub's JSON refusal, or its body as it came.</summary>
+    internal static async Task<string> RefusalAsync(HttpResponseMessage response)
+    {
+        var text = await response.Content.ReadAsStringAsync();
+
+        try
+        {
+            using var document = JsonDocument.Parse(text);
+            return document.RootElement.TryGetProperty("error", out var error) && error.GetString() is { } message ? message : Trim(text);
+        }
+        catch (JsonException)
+        {
+            return Trim(text);
+        }
     }
 
     private static string? NextPage(HttpResponseMessage response)

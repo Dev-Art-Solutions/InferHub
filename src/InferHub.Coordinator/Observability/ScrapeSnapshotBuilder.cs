@@ -69,7 +69,10 @@ public static class ScrapeSnapshotBuilder
             ProviderSamples(services.GetService(typeof(IProviderRegistry)) as IProviderRegistry),
 
             // Phase 123. Null unless Relay:Cache is on — no series for a cache nobody turned on.
-            (services.GetService(typeof(RelayCache)) as RelayCache)?.Snapshot());
+            (services.GetService(typeof(RelayCache)) as RelayCache)?.Snapshot(),
+
+            // Phase 124. Null unless Relay:Supply is on.
+            (services.GetService(typeof(RelaySupply)) as RelaySupply)?.Snapshot((services.GetService(typeof(SupplyJobs)) as SupplyJobs)?.Running ?? 0));
     }
 
     /// <summary>

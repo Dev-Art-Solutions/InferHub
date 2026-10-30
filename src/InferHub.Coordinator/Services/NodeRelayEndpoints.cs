@@ -27,6 +27,9 @@ public sealed class RelayOptions
     /// <summary>Phase 123: the blobs this hub relayed, kept by sha256. Off by default.</summary>
     public RelayCacheOptions Cache { get; set; } = new();
 
+    /// <summary>Phase 124: models fetched or imported once, answered without the upstream. Off by default.</summary>
+    public RelaySupplyOptions Supply { get; set; } = new();
+
     public string? BaseFor(string upstream) => upstream switch
     {
         NodeRelay.HuggingFace => HuggingFace,
@@ -83,6 +86,29 @@ public static class NodeRelayEndpoints
             await Refuse(context, StatusCodes.Status403Forbidden,
                 "this coordinator does not fetch for its nodes (Relay:Enabled=false); a sealed node downloads nothing until it does");
             return;
+        }
+
+        // 124 D1/D4: what the admin supplied is answered from the hub's disk, and under Only nothing else is answered.
+        if (context.RequestServices.GetService<RelaySupply>() is { Enabled: true } supply)
+        {
+            if (supply.Find(upstream, path) is { } answer && await ServeSuppliedAsync(context, supply, answer, cancellationToken) is { } bytes)
+            {
+                logger.LogInformation(
+                    "Relayed {Method} {Upstream}/{Path} for {RemoteIp} from the supply: {Status}, {Bytes} bytes",
+                    context.Request.Method, upstream, path, context.Connection.RemoteIpAddress, context.Response.StatusCode, bytes);
+                return;
+            }
+
+            if (supply.Only)
+            {
+                supply.Refused();
+                context.Response.Headers[NodeRelay.SupplyHeader] = NodeRelay.NotSupplied;
+                logger.LogInformation("Refused {Upstream}/{Path} for {RemoteIp}: not supplied (Relay:Supply:Only)", upstream, path, context.Connection.RemoteIpAddress);
+                await Refuse(context, StatusCodes.Status404NotFound,
+                    $"'{upstream}/{(path ?? string.Empty).TrimStart('/')}' is not supplied by this coordinator, and Relay:Supply:Only gives its nodes nothing else; "
+                    + "an admin supplies a model with POST /api/admin/supply, or imports one with POST /api/admin/supply/import");
+                return;
+            }
         }
 
         if (Target(relay, upstream, path, context.Request.QueryString.Value) is not { } target)
@@ -220,6 +246,8 @@ public static class NodeRelayEndpoints
     public static IServiceCollection AddNodeRelay(this IServiceCollection services)
     {
         services.AddSingleton<RelayCache>();
+        services.AddSingleton<RelaySupply>();
+        services.AddSingleton<SupplyJobs>();
         services.AddHttpClient(HttpClientName, http => http.Timeout = Timeout.InfiniteTimeSpan)
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false })
             .RemoveAllLoggers();
@@ -251,7 +279,7 @@ public static class NodeRelayEndpoints
         return null;
     }
 
-    private static HttpRequestMessage Request(HttpMethod method, Uri uri, (string Name, string[] Values)[] headers, Uri origin)
+    internal static HttpRequestMessage Request(HttpMethod method, Uri uri, (string Name, string[] Values)[] headers, Uri origin)
     {
         var request = new HttpRequestMessage(method, uri);
 
@@ -271,7 +299,7 @@ public static class NodeRelayEndpoints
         return request;
     }
 
-    private static async Task<HttpResponseMessage> FollowAsync(
+    internal static async Task<HttpResponseMessage> FollowAsync(
         HttpClient client, HttpResponseMessage response, HttpMethod method, Uri origin, (string Name, string[] Values)[] headers, CancellationToken cancellationToken)
     {
         var at = response.RequestMessage?.RequestUri ?? origin;
@@ -296,7 +324,68 @@ public static class NodeRelayEndpoints
     /// <summary>The kept blob, as the CDN would have answered: a single <c>Range</c> honoured, anything else whole.</summary>
     private static async Task<(int Status, long Bytes)> ServeCachedAsync(HttpContext context, CachedBlob blob, string upstream, CancellationToken cancellationToken)
     {
-        var size = blob.Length;
+        context.Response.Headers[NodeRelay.CacheHeader] = "hit";
+
+        if (upstream == NodeRelay.OllamaRegistry)
+        {
+            context.Response.Headers["Docker-Content-Digest"] = "sha256:" + blob.Sha256;
+        }
+
+        return await ServeFileAsync(context, blob.Stream, blob.Sha256, "application/octet-stream", cancellationToken);
+    }
+
+    /// <summary>
+    /// A supplied answer (124 D3): a blob as the CDN would have served it, or the replayed JSON. Null when the blob is
+    /// gone from the disk — then it is not supplied, which under <c>Only</c> is a refusal rather than a fetch.
+    /// </summary>
+    private static async Task<long?> ServeSuppliedAsync(HttpContext context, RelaySupply supply, SupplyAnswer answer, CancellationToken cancellationToken)
+    {
+        FileStream? stream = null;
+
+        if (answer.Sha256 is { } sha256 && (stream = supply.OpenBlob(sha256)) is null)
+        {
+            return null;
+        }
+
+        context.Response.Headers[NodeRelay.SupplyHeader] = NodeRelay.Supplied;
+
+        foreach (var (name, value) in answer.Headers)
+        {
+            context.Response.Headers[name] = value;
+        }
+
+        long bytes;
+
+        if (answer.Sha256 is null)
+        {
+            var body = answer.Body ?? [];
+            context.Response.StatusCode = StatusCodes.Status200OK;
+            context.Response.ContentType = answer.ContentType;
+            context.Response.ContentLength = body.Length;
+
+            if (!HttpMethods.IsHead(context.Request.Method))
+            {
+                await context.Response.Body.WriteAsync(body, cancellationToken);
+            }
+
+            bytes = HttpMethods.IsHead(context.Request.Method) ? 0 : body.Length;
+        }
+        else
+        {
+            await using (stream!)
+            {
+                (_, bytes) = await ServeFileAsync(context, stream!, answer.Sha256, answer.ContentType, cancellationToken);
+            }
+        }
+
+        supply.Served(bytes);
+        return bytes;
+    }
+
+    /// <summary>A file on the hub's disk, as the CDN would have answered: a single <c>Range</c> honoured, anything else whole.</summary>
+    private static async Task<(int Status, long Bytes)> ServeFileAsync(HttpContext context, Stream file, string sha256, string contentType, CancellationToken cancellationToken)
+    {
+        var size = file.Length;
         long from = 0, to = size - 1;
         var status = StatusCodes.Status200OK;
 
@@ -328,29 +417,23 @@ public static class NodeRelayEndpoints
 
         var count = to - from + 1;
         context.Response.StatusCode = status;
-        context.Response.ContentType = "application/octet-stream";
+        context.Response.ContentType = contentType;
         context.Response.ContentLength = count;
         context.Response.Headers.AcceptRanges = "bytes";
-        context.Response.Headers.ETag = $"\"{blob.Sha256}\"";
-        context.Response.Headers[NodeRelay.CacheHeader] = "hit";
-
-        if (upstream == NodeRelay.OllamaRegistry)
-        {
-            context.Response.Headers["Docker-Content-Digest"] = "sha256:" + blob.Sha256;
-        }
+        context.Response.Headers.ETag = $"\"{sha256}\"";
 
         if (HttpMethods.IsHead(context.Request.Method))
         {
             return (status, 0);
         }
 
-        blob.Stream.Seek(from, SeekOrigin.Begin);
+        file.Seek(from, SeekOrigin.Begin);
         var buffer = new byte[81920];
         var left = count;
 
         while (left > 0)
         {
-            var read = await blob.Stream.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, left)), cancellationToken);
+            var read = await file.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, left)), cancellationToken);
 
             if (read == 0)
             {

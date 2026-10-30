@@ -82,6 +82,11 @@ ENV ChatGpt__DataDirectory=/data/chatgpt
 # others: ./data/relay is /app/data under USER app. Inert unless the cache is on.
 ENV Relay__Cache__DataDirectory=/data/relay
 
+# The relay's supply (phase 124) keeps supplied models under /data when Relay:Supply:Enabled=true, and an
+# offline import reads only under /import — mount the disk there (read-only is enough). Inert unless on.
+ENV Relay__Supply__DataDirectory=/data/supply
+ENV Relay__Supply__ImportDirectory=/import
+
 EXPOSE 8080
 
 # Non-root. The runtime image ships this user for exactly this purpose.

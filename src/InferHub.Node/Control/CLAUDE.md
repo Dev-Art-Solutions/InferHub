@@ -1,7 +1,8 @@
 # InferHub.Node/Control — agent context
 
 **Scope: `src/InferHub.Node/Control/`, `LocalApi/LocalControlEndpoints.cs`, `Configuration/NodeLocalSettings.cs`,
-`Configuration/SealedMode.cs`, `Backends/SealedOllama.cs`, and the hub's `Services/RelayCache.cs`.**
+`Configuration/SealedMode.cs`, `Backends/SealedOllama.cs`, and the hub's `Services/RelayCache.cs`, `Services/RelaySupply*.cs`
+and `Services/SupplyJobs.cs`.**
 A node as a unit of its own: the control API a desktop app (or `curl`) drives, the owner's sharing modes, a
 corpus the fleet never sees, and a node sealed to its network (122). **Started here in phase 112** rather than in `src/InferHub.Node/CLAUDE.md`, which was at
 its 1100-line budget.
@@ -263,3 +264,64 @@ per kept, evicted and discarded blob by a 12-character digest prefix. HEAD is al
 Tests: `RelayCacheTests` (Coordinator — digests, keep/discard/abandon, single flight, eviction order, a restart),
 `RelayCacheMeshTests` (Mesh — a gated HF file kept as it passes then served while the first hop is still asked and the
 CDN is not; a refused first hop over a held blob; an Ollama blob in parts fetched whole once; corrupt bytes; off).
+
+### Phase 124 (models supplied through the coordinator) — `Relay:Supply`
+
+[RelaySupply](../../InferHub.Coordinator/Services/RelaySupply.cs) beside the relay and its cache: `blobs/<sha256>`,
+`models/<id>.json`, `partial/`. [SupplyJobs](../../InferHub.Coordinator/Services/SupplyJobs.cs) fills it — `POST
+/api/admin/supply {ollama | huggingFace, revision, include}` fetches, `POST /api/admin/supply/import {path, name}` imports
+— and the console has a panel for both while `relay.supply` is on `/api/status`. Why: after 123 the hub keeps what it
+relayed, but it is still a relay — a model is fetched at the moment a node needs it, and a hub with no internet has
+nothing to relay. An air-gapped site could not run model management at all.
+
+**D1, load-bearing — a supplied model is the admin's decision, so the relay answers it without asking the upstream.**
+The opposite of 123 D1, and the reason it is a separate set rather than a cache setting: what decides access is the
+admin who fetched it (with the hub's own `HuggingFaceToken` for a gated repo), and what `main` means is what it meant
+that day. Checked before the cache and before `Target`, after `Relay:Enabled` — supply without the relay reaches no node.
+*Rejected:* a "never ask" switch on the cache — it would serve a gated file to every node because one node had access,
+which is the hole 123 D1 closed. *Rejected:* the node fetching from a hub-side model store by a new route — every
+sealed path (98's store, 118, the loopback registry) already speaks Hugging Face and the registry through the relay, so
+the hub answering those paths is zero node change and a 3.82 node gets it.
+
+**D2 — every byte is checked before it is supplied; a model is whole or not supplied.** An Ollama blob against its
+digest (and the manifest against `Docker-Content-Digest` where the registry names it), a Hugging Face LFS file against
+its sha256, a small file against its git oid (`sha1("blob {size}\0" + bytes)`), sizes always. Written to `partial/`,
+moved in only on a match, deleted otherwise; the job fails naming the file. `Save` refuses a record with a blob missing,
+and a restart skips one whose blob has gone (logged, the record kept for the admin to fetch again).
+
+**D3 — the upstream's answers are recorded, not re-derived.** The manifest's bytes as a blob (served with its media
+type and digest), the commit the revision pinned, the files with their sha256, the model info 118 reads. The relay
+replays them on the paths a node asks: `v2/{ns}/{model}/manifests/{tag|digest}` and `/blobs/`, `api/models/{repo}`
+(+`/revision/{rev}`) — the stored info with `sha` set to the commit — `api/models/{repo}/tree/{rev}` and
+`{repo}/resolve/{rev}/{file}`, `rev` being the name or the commit. The tree lists **every** file with its sha256 as
+`lfs.oid`, so 98's check covers a small file too. A blob is answered only under a repo whose record names it. A tag
+does not move: fetching again replaces the record and deletes blobs nothing else needs.
+
+**D4 — `Only` closes the last door: what is not supplied is a 404 naming the key, never a fetch.**
+`X-InferHub-Relay-Supply: not-supplied` on it; the node's Hugging Face client and the loopback registry read that
+header and end the pull with the hub's sentence rather than Ollama's "file does not exist". The admin's own fetch still
+reaches the upstreams — which may be a mirror beside the hub (`Relay:HuggingFace`/`OllamaRegistry`, 122). The 119
+catalogue and the library pages are not models; under `Only` a sealed node's browse fails, and `GET /api/admin/supply`
+is the list. *Rejected:* `Only` falling through to the cache — that is a fetch.
+
+**D5 — an offline import reads what the internet side already produces, and only under `ImportDirectory`.** Three
+layouts, detected: an Ollama models dir (`manifests/registry.ollama.ai/…`, and `manifests-v2/ollama.com/…` — **found on
+this box**: Ollama 0.40 writes a new pull there, the same manifest), a Hugging Face cache (`models--owner--repo`, `refs/`
+→ commit, `snapshots/<commit>/`; a file whose cache blob is named by a sha256 must match it), and another hub's supply
+dir (records re-hashed blob by blob). Copied, never moved — the disk is somebody's. The request's path is relative;
+`..`, a rooted path or a drive is a 400: an admin key is not a shell on the hub host. *Rejected:* an export endpoint —
+the supply dir is already the bundle. *Rejected:* an upload route — a 20 GB multipart body through Kestrel, when the
+disk is already on the machine.
+
+**D6 — rule 4's seventh exception: off by default, never evicted, removed by the admin.** `Relay:Supply:Enabled` false:
+no directory, no header, no status field, no series, and `/api/admin/supply` says it is off (404). Unlike 123 D4 there
+is no `MaxGiB` — evicting a supplied model under `Only` would take it off the fleet; `KeepFreeGiB` (20) refuses a fetch
+or an import before its first byte instead. `DELETE /api/admin/supply/{id}` removes one. Jobs are in memory (a restart
+forgets jobs, never models). Visible: `X-InferHub-Relay-Supply: supplied`, `relay.supply` on `/api/status` (models, bytes,
+only, served, servedBytes, refused, running), `inferhub_relay_supply_*` on `/metrics`; the relay's log says `from the
+supply` per request.
+
+Tests: `RelaySupplyTests` (Coordinator — names, globs, the import root, lookup per path, whole-or-nothing, a restart,
+orphan blobs, off), `RelaySupplyMeshTests` (Mesh — fetched from a fake registry and Hugging Face behind a counting CDN,
+then served with the upstream stopped, pulled by the node's own `HuggingFaceClient`; `Only` refusing with the upstream
+untouched; corrupt bytes never supplied; an Ollama dir in both layouts and a Hugging Face cache imported; off).

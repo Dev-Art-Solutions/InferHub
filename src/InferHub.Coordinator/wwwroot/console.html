@@ -345,6 +345,41 @@
   </section>
 
   <!--
+    Phase 124. The relay's supply: models this hub fetched and checked once, or imported from a disk,
+    that a sealed node pulls without the hub asking the upstream. Shown only while relay.supply is on
+    /api/status; every button here is an /api/admin/supply call behind the admin key.
+  -->
+  <section id="supply-section" style="display:none">
+    <h2>Supplied models (Relay:Supply)</h2>
+    <div class="card" style="margin-bottom:12px">
+      <div class="actions" style="flex-wrap:wrap;gap:8px;align-items:center">
+        <input id="sp-ollama" placeholder="qwen3:8b" style="min-width:180px" title="an Ollama model, from Relay:OllamaRegistry">
+        <button id="sp-ollama-go">Supply from Ollama</button>
+        <input id="sp-hf" placeholder="owner/repo" style="min-width:200px" title="a Hugging Face repo, from Relay:HuggingFace">
+        <input id="sp-hf-rev" placeholder="main" style="width:90px" title="revision (pinned to its commit when fetched)">
+        <input id="sp-hf-include" placeholder="*Q4_K_M.gguf, config.json" style="min-width:200px" title="files to supply, comma-separated globs; empty is every file">
+        <button id="sp-hf-go">Supply from Hugging Face</button>
+      </div>
+      <div class="actions" style="flex-wrap:wrap;gap:8px;align-items:center;padding-top:8px">
+        <input id="sp-import" placeholder="disk1" style="min-width:200px" title="a directory under Relay:Supply:ImportDirectory: an Ollama models dir, a Hugging Face cache or another hub's supply dir">
+        <input id="sp-import-name" placeholder="only this model (optional)" style="min-width:180px">
+        <button id="sp-import-go">Import from disk</button>
+        <button id="sp-refresh">Refresh</button>
+      </div>
+      <div id="sp-note" class="meta" style="padding:8px 0 0"></div>
+      <div id="sp-jobs" style="padding:8px 0 0"></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Kind</th><th>Model</th><th>Revision</th><th>Files</th><th>Size</th><th>From</th><th>Supplied</th><th></th></tr>
+        </thead>
+        <tbody id="sp-models"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!--
     Phase 95. The engines a Backend:Engines node may run — ollama, llama.cpp, colibri — and which of
     them are running. Start and Stop write the node's profile; the node's own list is the ceiling,
     so an engine it never configured never appears here to be started.

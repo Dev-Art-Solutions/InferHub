@@ -207,6 +207,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 120 | [Models from the coordinator](#models-from-the-coordinator-v381) — the hub browses, checks fit and installs on a node, only where its owner said yes at install, within a per-model cap and a free-disk floor (done) | `v3.81.0` |
 | 122 | [A sealed node](#a-sealed-node-v382) — `Node:Sealed`: a node reaches nothing outside its network but its coordinator, refuses to start with a door open, and downloads through the hub's `Relay` (done) | `v3.82.0` |
 | 123 | [The hub keeps what it relayed](#the-hub-keeps-what-it-relayed-v383) — `Relay:Cache`: a model a sealed fleet pulls crosses the hub's uplink once; the upstream is still asked every time (done) | `v3.83.0` |
+| 124 | [Models supplied through the coordinator](#models-supplied-through-the-coordinator-v384) — `Relay:Supply`: the hub fetches and checks a model once, or imports it from a disk for an air-gapped site, and its sealed nodes pull only from there (done) | `v3.84.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -1093,6 +1094,60 @@ Relay__Cache__KeepFreeGiB=20    # never fill the disk past this
   `Relay:Cache:DataDirectory` (`/data/relay` in the image). Deleting the directory costs a
   download, never a wrong answer. Nodes need nothing new: a 3.82 node gets the cache the day its
   hub turns it on.
+
+### Models supplied through the coordinator (v3.84+)
+
+A [sealed node](#a-sealed-node-v382) downloads through its hub, and the hub [keeps what it
+relayed](#the-hub-keeps-what-it-relayed-v383), but the hub is still a relay: a model is fetched
+the moment a node asks for it, and a hub with no internet has nothing to relay. `Relay:Supply`
+makes the hub the fleet's source instead. An admin fetches a model once, or imports it from a
+disk, and the hub answers its sealed nodes from its own disk without asking anybody.
+
+```bash
+# on the coordinator
+Relay__Enabled=true
+Relay__Supply__Enabled=true
+Relay__Supply__Only=true                # optional: nothing that is not supplied, ever
+Relay__Supply__ImportDirectory=/import  # where a carried-in disk is mounted
+```
+
+```http
+POST /api/admin/supply         {"ollama": "qwen3:8b"}
+POST /api/admin/supply         {"huggingFace": "owner/repo", "revision": "main", "include": ["*Q4_K_M.gguf"]}
+POST /api/admin/supply/import  {"path": "disk1", "name": "qwen3:8b"}
+GET  /api/admin/supply         the models, their sizes, and the jobs
+DELETE /api/admin/supply/{id}
+```
+
+The console has a **Supplied models** panel for the same calls.
+
+- **Fetched once and checked.** A fetch is a job (202). It reads from `Relay:OllamaRegistry` and
+  `Relay:HuggingFace`, so a mirror beside the hub works too. Every Ollama blob is checked against
+  its digest, every Hugging Face file against its sha256 (or, for a small file, its git oid), and
+  every size. A model is supplied whole or not at all: a file that does not match fails the job
+  and is deleted.
+- **Imported offline.** An air-gapped hub reads a directory under `Relay:Supply:ImportDirectory`,
+  in the layout an internet-side machine already has: an Ollama models directory
+  (`~/.ollama/models`), a Hugging Face cache (`models--owner--repo`, as `huggingface-cli download`
+  leaves it), or another hub's supply directory. Each file is hashed as it is copied, and the source
+  is left as it was. A path that leaves the import directory is refused.
+- **The upstream is not asked.** That is the difference from the cache. The admin's fetch was the
+  decision, so a supplied model is served as it was on the day it was fetched: `main` stays the
+  commit it pinned, `qwen3:8b` stays that manifest. Fetch it again to update it.
+- **`Only` closes the last door.** With `Relay:Supply:Only=true`, anything not supplied is a `404`
+  that names the key, and the hub fetches nothing for a node. A node's pull ends with that sentence,
+  not with Ollama's "file does not exist". Browsing the catalogue on a sealed node does not work
+  under `Only` (library pages are not models). `GET /api/admin/supply` is the list.
+- **Nodes need nothing new.** The hub answers the same paths a 3.82 sealed node already asks
+  through the relay: the Ollama registry's manifests and blobs, Hugging Face's revision, tree,
+  model info and resolve.
+- **You can see it.** Answers carry `X-InferHub-Relay-Supply: supplied` (or `not-supplied` on a
+  refusal). `/api/status` has `relay.supply` and `/metrics` has `inferhub_relay_supply_*`. Both
+  appear only while the supply is on.
+- **Off by default, and it is the hub's seventh on-disk exception.** It writes under
+  `Relay:Supply:DataDirectory` (`/data/supply` in the image). Nothing is evicted; a fetch or an
+  import that would leave less than `KeepFreeGiB` (20) free is refused before it starts. A gated
+  Hugging Face repo needs the hub's own token in `Relay__Supply__HuggingFaceToken`.
 
 ### A private corpus on a networked node
 
@@ -4453,6 +4508,7 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Queue:SlotWaitSeconds` | `0` | **v3.74+** — how long a request may wait at the hub while every node holding its model is running all it has [slots](#waiting-for-a-free-slot-v374) for. `0` = off. Past it the request is sent on anyway, never a `503`. |
 | `Relay:Enabled` | `false` | **v3.82+** — fetch for this hub's [sealed nodes](#a-sealed-node-v382): `/node/relay/{hf\|ollama-registry\|ollama-library}/…`, behind the node enrollment secret. `Relay:HuggingFace`, `Relay:OllamaRegistry`, `Relay:OllamaLibrary` point at the upstreams (or your mirrors). |
 | `Relay:Cache:Enabled` | `false` | **v3.83+** — keep each blob the relay passed on, by its sha256, under `Relay:Cache:DataDirectory` (`./data/relay`; `/data/relay` in the image), within `Relay:Cache:MaxGiB` (200) and `Relay:Cache:KeepFreeGiB` (20). See [The hub keeps what it relayed](#the-hub-keeps-what-it-relayed-v383). |
+| `Relay:Supply:Enabled` | `false` | **v3.84+** — answer this hub's sealed nodes from models an admin fetched (`POST /api/admin/supply`) or imported from under `Relay:Supply:ImportDirectory` (`./data/import`; `/import` in the image), kept under `Relay:Supply:DataDirectory` (`./data/supply`; `/data/supply` in the image), without asking the upstream. `Relay:Supply:Only` refuses everything else; `Relay:Supply:HuggingFaceToken` is the hub's own; `Relay:Supply:KeepFreeGiB` (20). See [Models supplied through the coordinator](#models-supplied-through-the-coordinator-v384). |
 | `Images:MaxBatch` | `4` | v3.14. The absolute ceiling on `n`, whatever the size. A batch runs on **one** node. Bound by both hosts from the same section, so a request refused on a hub is refused identically on a solo node. |
 | `Images:MaxResponseBytes` | `26214400` | v3.14. An upper-bound estimate (`w × h × 4 × n`) checked *before a step runs*, with the refusal naming the largest `n` that fits. **Clamped by `Tools:MaxAttachmentBytes`** at use, because that cap sizes the mesh's SignalR message limit and exceeding a SignalR limit tears a node's connection down rather than failing a message. Raising one without the other gets you no change, deliberately. **v3.25: it bounds a video too** — there is no `Videos:` section, because two keys for one wire ceiling are two numbers you could raise independently. A clip's size cannot be estimated from its geometry (that is an encoder's output), so what the edge checks instead is that the recipe offers the `(size, seconds)` pair you asked for. |
 | `Images:SyncMaxWaitSeconds` | `120` | v3.15. How long `/v1/images/generations` waits for its own job before a `503` naming the async route. **The job keeps running** and the message carries its id — discarding a minute of GPU because an HTTP client got bored is your call, not the hub's. See [A job that takes two minutes](#a-job-that-takes-two-minutes-v315). |

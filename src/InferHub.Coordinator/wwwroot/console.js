@@ -735,6 +735,100 @@
     });
   };
 
+  // Phase 124. The relay's supply — models this hub fetched or imported once, answered to its sealed nodes
+  // without asking the upstream. Read when relay.supply first appears on /api/status, and while a job runs.
+  let supplyLoaded = false;
+  let supplyTimer = null;
+
+  const supplyCall = async (method, path, body, interactive = true) => {
+    if (interactive && !adminKey && !promptForKey("Admin key required to manage the supply.")) {
+      throw new Error("admin key not provided");
+    }
+    const res = await fetch(`/api/admin/supply${path}`, {
+      method,
+      headers: adminHeaders(body === undefined ? undefined : { "Content-Type": "application/json" }),
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+    if (res.status === 401) {
+      if (!interactive) throw new Error("the admin key is needed to read this panel — set it at the top of the page, then Refresh");
+      if (!promptForKey("Admin key rejected.")) throw new Error("admin key rejected");
+      return supplyCall(method, path, body);
+    }
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.error ?? `HTTP ${res.status}`);
+    return payload;
+  };
+
+  const loadSupply = async (interactive = true) => {
+    const s = await supplyCall("GET", "", undefined, interactive);
+    const only = s.only
+      ? `<span class="pill pill-warn" title="Relay:Supply:Only — a sealed node gets nothing that is not supplied here">only</span> `
+      : "";
+    const relayOff = s.relay ? "" : `<span class="why">Relay:Enabled is false — no node reaches any of this until it is on.</span> `;
+    document.getElementById("sp-note").innerHTML =
+      `${only}${relayOff}<span class="meta">${escapeHtml(fmtBytes(s.bytes ?? 0))} in <code>${escapeHtml(s.directory)}</code> · imports read <code>${escapeHtml(s.importDirectory)}</code></span>`;
+
+    const rows = (s.models ?? []).map(m => `<tr>
+      <td>${escapeHtml(m.kind)}</td>
+      <td><code>${escapeHtml(m.name)}</code></td>
+      <td>${escapeHtml(m.revision ?? "")}${m.commit ? ` <span class="meta">${escapeHtml(m.commit.slice(0, 10))}</span>` : ""}</td>
+      <td>${m.files}</td>
+      <td>${escapeHtml(fmtBytes(m.bytes))}</td>
+      <td>${escapeHtml(m.source)} <span class="meta">${escapeHtml(m.from)}</span></td>
+      <td>${escapeHtml(new Date(m.suppliedUtc).toLocaleString())}</td>
+      <td><button data-supply-remove="${escapeHtml(m.id)}">Remove</button></td></tr>`);
+    document.getElementById("sp-models").innerHTML = rows.join("") || `<tr><td colspan="8" class="meta">Nothing supplied yet.</td></tr>`;
+
+    document.getElementById("sp-jobs").innerHTML = (s.jobs ?? []).slice(0, 8).map(j => {
+      const pct = j.totalBytes ? Math.floor(100 * j.doneBytes / j.totalBytes) : 0;
+      const state = j.state === "running" ? `<span class="pill">${pct}%</span>`
+        : j.state === "done" ? `<span class="pill pill-ok">done</span>` : `<span class="pill pill-err">failed</span>`;
+      const notes = (j.notes ?? []).length ? ` <span class="meta">${escapeHtml(j.notes.join("; "))}</span>` : "";
+      return `<div>${state} ${escapeHtml(j.action)} <code>${escapeHtml(j.name)}</code>${j.error ? ` <span class="why">${escapeHtml(j.error)}</span>` : ""}${notes}</div>`;
+    }).join("");
+
+    clearTimeout(supplyTimer);
+    if ((s.jobs ?? []).some(j => j.state === "running")) {
+      supplyTimer = setTimeout(() => loadSupply(false).catch(() => {}), 2000);
+    }
+  };
+
+  const renderSupply = (status) => {
+    const section = document.getElementById("supply-section");
+    if (!section) return;
+    const on = !!status?.relay?.supply;
+    section.style.display = on ? "" : "none";
+    if (on && !supplyLoaded) {
+      supplyLoaded = true;
+      loadSupply(false).catch(err => {
+        document.getElementById("sp-note").innerHTML = `<span class="why">${escapeHtml(err.message)}</span>`;
+      });
+    }
+  };
+
+  const supplyStart = (path, body) => supplyCall("POST", path, body)
+    .then(job => { toast("Supply", `${job.action} ${job.name} started`, "ok"); return loadSupply(); })
+    .catch(err => toast("Supply", err.message, "err"));
+
+  const supplyValue = (id) => document.getElementById(id)?.value.trim() ?? "";
+
+  document.getElementById("sp-refresh")?.addEventListener("click", () => loadSupply().catch(err => toast("Supply", err.message, "err")));
+  document.getElementById("sp-ollama-go")?.addEventListener("click", () => {
+    if (supplyValue("sp-ollama")) supplyStart("", { ollama: supplyValue("sp-ollama") });
+  });
+  document.getElementById("sp-hf-go")?.addEventListener("click", () => {
+    if (!supplyValue("sp-hf")) return;
+    const include = supplyValue("sp-hf-include").split(",").map(p => p.trim()).filter(Boolean);
+    supplyStart("", { huggingFace: supplyValue("sp-hf"), revision: supplyValue("sp-hf-rev") || null, include });
+  });
+  document.getElementById("sp-import-go")?.addEventListener("click", () =>
+    supplyStart("/import", { path: supplyValue("sp-import"), name: supplyValue("sp-import-name") || null }));
+  document.getElementById("sp-models")?.addEventListener("click", (e) => {
+    const id = e.target?.dataset?.supplyRemove;
+    if (!id || !confirm(`Remove ${id} from the supply? A sealed node cannot pull it until it is supplied again.`)) return;
+    supplyCall("DELETE", `/${encodeURIComponent(id)}`).then(() => loadSupply()).catch(err => toast("Supply", err.message, "err"));
+  });
+
   document.getElementById("cg-provider")?.addEventListener("change", () => {
     chatGptLoadedFor = null;
     document.getElementById("cg-pairing").style.display = "none";
@@ -1429,6 +1523,7 @@
       renderCapabilityMatrix(latestStatus);
       renderProviders(latestStatus);
       renderChatGpt(latestStatus);
+      renderSupply(latestStatus);
       renderTools(latestStatus);
       renderEngines(latestStatus);
       renderUpdates(latestStatus);

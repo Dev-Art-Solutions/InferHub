@@ -20,6 +20,16 @@ public static class NodeRelay
     /// <summary>Phase 123: <c>hit</c> or <c>miss</c> on a blob the hub's cache could hold; absent on anything else.</summary>
     public const string CacheHeader = "X-InferHub-Relay-Cache";
 
+    /// <summary>
+    /// Phase 124: <c>supplied</c> on an answer from the hub's supply (the upstream was not asked), <c>not-supplied</c>
+    /// on the 404 a hub with <c>Relay:Supply:Only</c> gives for anything else; absent while the supply is off.
+    /// </summary>
+    public const string SupplyHeader = "X-InferHub-Relay-Supply";
+
+    public const string Supplied = "supplied";
+
+    public const string NotSupplied = "not-supplied";
+
     public const string HuggingFace = "hf";
 
     public const string OllamaRegistry = "ollama-registry";

@@ -32,7 +32,8 @@ public sealed record PrometheusScrape(
     // block, which is exactly the v3.33 scrape.
     IReadOnlyList<ProviderScrapeSample>? Providers = null,
     // Phase 123. Null unless the relay's cache is on, which is exactly the v3.82 scrape.
-    RelayCacheSnapshot? RelayCache = null);
+    RelayCacheSnapshot? RelayCache = null,
+    RelaySupplySnapshot? RelaySupply = null);
 
 /// <summary>
 /// One configured provider, described rather than measured (phase 66, D5).
@@ -241,6 +242,16 @@ public static class PrometheusFormatter
             Counter(builder, "inferhub_relay_cache_discarded_total", "Blobs whose bytes did not hash to the digest the upstream named.", relay.Discarded);
             Counter(builder, "inferhub_relay_cache_skipped_total", "Blobs not kept: too big, unknown length or not enough disk.", relay.Skipped);
             Counter(builder, "inferhub_relay_cache_served_bytes_total", "Bytes served from the cache instead of the uplink.", relay.ServedBytes);
+        }
+
+        if (scrape.RelaySupply is { } supply)
+        {
+            Gauge(builder, "inferhub_relay_supply_models", "Models this hub supplies to its sealed nodes.", supply.Models);
+            Gauge(builder, "inferhub_relay_supply_bytes", "Bytes of supplied model files on the hub's disk.", supply.Bytes);
+            Gauge(builder, "inferhub_relay_supply_jobs_running", "Supply fetches and imports running now.", supply.Running);
+            Counter(builder, "inferhub_relay_supply_served_total", "Relay answers given from the supply, the upstream not asked.", supply.Served);
+            Counter(builder, "inferhub_relay_supply_served_bytes_total", "Bytes served from the supply.", supply.ServedBytes);
+            Counter(builder, "inferhub_relay_supply_refused_total", "Relay requests refused under Relay:Supply:Only: not supplied.", supply.Refused);
         }
 
         PerAudio(builder, m.PerAudio);
