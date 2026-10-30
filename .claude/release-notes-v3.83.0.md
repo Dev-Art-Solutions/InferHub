@@ -78,3 +78,12 @@ HTTP handler doing it. `Authorization` is dropped when the host changes, exactly
     the first GET was a `miss` and took 139 s, the second was a `hit` and took **0.63 s**. Both copies hash to the
     `X-Linked-ETag` Hugging Face sent (`2e8040ce…`). A 4-byte range from the cache read `GGUF`.
   - `/metrics` showed the nine `inferhub_relay_cache_*` series. They were absent with the cache off (mesh test).
+
+## The published image
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.83.0` carries revision `47b0eaf` and sets
+`Relay__Cache__DataDirectory=/data/relay` beside the other `/data` paths. Docker Desktop was down, so its layers were
+pulled through the registry API, `/app` was extracted and the coordinator run natively (`3.83.0` on `/health`) with
+`Relay:Cache` on and the same sealed node: the first pull of `smollm:135m` took 23 s (5 blobs kept), and the re-pull
+after `ollama rm` took 5 s with `hits: 5`, `servedBytes: 91 739 413`. A chat through it answered. The container itself
+(USER `app` writing `/data/relay`) was not run; the directory is under the same `chown app:app /data` as the other five.
