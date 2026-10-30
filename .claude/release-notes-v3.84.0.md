@@ -108,3 +108,22 @@ and no series, and `/api/admin/supply` answers 404 saying it is off. The relay b
   - The Hugging Face GGUF read through the relay with the upstream offline: `supplied`, 290 ms, `X-Repo-Commit`
     `09816acd…`, and it hashes to `2e8040ce…` (the `X-Linked-ETag` 3.83's live check recorded). It starts `GGUF`.
   - `/metrics`: `inferhub_relay_supply_models 4`, `…_served_total 7`, `…_refused_total 1`.
+
+## The published image
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.84.0` carries revision `de5e71a` and sets
+`Relay__Supply__DataDirectory=/data/supply` and `Relay__Supply__ImportDirectory=/import`. Docker Desktop was up this
+time, so the container itself ran: `Only=true`, all three upstreams at `http://127.0.0.1:9` (the container's own
+loopback, closed), and this box's real Ollama models directory mounted read-only at `/import`.
+
+- `POST /api/admin/supply/import {"path":".","name":"qwen2.5:0.5b"}` imported the model (5 files, 397 821 319 bytes) in
+  2 s. The container runs as `app`, and `/data/supply/{blobs,models,partial}` were created owned by `app` under the
+  image's `chown app:app /data`.
+- The sealed node (from source at the tag) pulled `qwen2.5:0.5b` through the container: the manifest came `from the
+  supply`, Ollama already held the blobs, and the copy to its own name followed. A pull of `tinyllama:latest` was
+  `Refused … not supplied (Relay:Supply:Only)` and the node's pull failed with the hub's sentence.
+- The model layer read through the container's relay was `supplied` and hashes to its digest `c5396e06…`.
+- `/metrics` (behind the admin key, as host→container is not loopback): `inferhub_relay_supply_models 1`,
+  `…_served_total 2`, `…_refused_total 1`.
+- Not run against the container: a chat (no `Auth:ApiKeys` was set on it, so inference answered 401, as it should), and
+  a fetch (the upstreams were closed on purpose).
