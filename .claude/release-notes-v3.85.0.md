@@ -93,3 +93,18 @@ answers `{"enabled":false}` naming the key. No node change, no wire change, no n
     in 20.6 s, and the line says `"nodes":["<gpu-d>","<gpu-c>"]`.
   - `grep` of the audit directory for the prompts, the query value and both keys: nothing.
   - `/api/status` `audit` `{"written":37,"dropped":0,"days":1,"bytes":5924}` and the four series on `/metrics`.
+
+## The published image
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.85.0` carries revision `eef1d55` and sets
+`Audit__DataDirectory=/data/audit`. Docker Desktop was not running, so the image's `/app` was pulled from GHCR's
+registry API and the published DLLs were run natively, with a node from source at the tag and the real Ollama.
+
+- **Off (the default):** a refused request, then `GET /api/admin/audit` answered `{"enabled":false,…}` naming the
+  key; `/api/status` had no `audit` key, `/metrics` no `inferhub_audit_*`, and no directory was created.
+- **On:** `node.registered` (`pub-node`), a chat from `alice` (200, 1.6 s, `qwen2.5:0.5b`, the node's id), a stolen key
+  (`-`, 401), a cordon (`admin:d2a23839`), the trail's own read, and `node.disconnected` when the node was stopped
+  through its control API. `/api/status` `audit` `{"written":7,"dropped":0,"days":1,"bytes":1477}`.
+- A search of the files for the prompt, the query value and both keys: nothing.
+- Not run: the container itself (so not `/data/audit` under `USER app`; the directory is the same `/data` the image
+  already `chown`s for its other exceptions).
