@@ -87,6 +87,10 @@ ENV Relay__Cache__DataDirectory=/data/relay
 ENV Relay__Supply__DataDirectory=/data/supply
 ENV Relay__Supply__ImportDirectory=/import
 
+# The audit trail (phase 125) appends day files under /data when Audit:Enabled=true — ./data/audit would be
+# /app/data under USER app, the permissions trap once more. Inert unless the trail is on.
+ENV Audit__DataDirectory=/data/audit
+
 EXPOSE 8080
 
 # Non-root. The runtime image ships this user for exactly this purpose.

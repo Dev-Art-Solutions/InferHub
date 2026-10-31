@@ -89,6 +89,7 @@ public sealed class Dispatcher(
 
         registry.IncrementInFlight(node.ConnectionId, model);
         metrics.RecordRequestStart(node.NodeId);
+        AuditScope.Dispatched(node.NodeId, model, CapabilityKinds.ForJobKind(job.Kind));
 
         try
         {
@@ -142,6 +143,7 @@ public sealed class Dispatcher(
 
         registry.IncrementInFlight(node.ConnectionId, pending.Model);
         metrics.RecordRequestStart(node.NodeId);
+        AuditScope.Dispatched(node.NodeId, pending.Model, CapabilityKinds.ForJobKind(job.Kind));
 
         try
         {
@@ -211,6 +213,7 @@ public sealed class Dispatcher(
 
         registry.IncrementInFlight(node.ConnectionId);
         metrics.RecordRequestStart(node.NodeId);
+        AuditScope.Dispatched(node.NodeId, job.Model, job.Capability);
 
         try
         {
@@ -263,6 +266,7 @@ public sealed class Dispatcher(
 
         registry.IncrementInFlight(node.ConnectionId);
         metrics.RecordRequestStart(node.NodeId);
+        AuditScope.Dispatched(node.NodeId, job.Model, job.Capability);
 
         try
         {

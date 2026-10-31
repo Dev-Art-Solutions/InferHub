@@ -208,6 +208,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 122 | [A sealed node](#a-sealed-node-v382) — `Node:Sealed`: a node reaches nothing outside its network but its coordinator, refuses to start with a door open, and downloads through the hub's `Relay` (done) | `v3.82.0` |
 | 123 | [The hub keeps what it relayed](#the-hub-keeps-what-it-relayed-v383) — `Relay:Cache`: a model a sealed fleet pulls crosses the hub's uplink once; the upstream is still asked every time (done) | `v3.83.0` |
 | 124 | [Models supplied through the coordinator](#models-supplied-through-the-coordinator-v384) — `Relay:Supply`: the hub fetches and checks a model once, or imports it from a disk for an air-gapped site, and its sealed nodes pull only from there (done) | `v3.84.0` |
+| 125 | [An audit trail](#an-audit-trail-v385) — `Audit:Enabled`: one line per request (who, from where, path, status, model, every node a job went to) and per node registered, refused or gone; never what was said (done) | `v3.85.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -1104,6 +1105,7 @@ makes the hub the fleet's source instead. An admin fetches a model once, or impo
 disk, and the hub answers its sealed nodes from its own disk without asking anybody.
 
 ```bash
+
 # on the coordinator
 Relay__Enabled=true
 Relay__Supply__Enabled=true
@@ -1148,6 +1150,52 @@ The console has a **Supplied models** panel for the same calls.
   `Relay:Supply:DataDirectory` (`/data/supply` in the image). Nothing is evicted; a fetch or an
   import that would leave less than `KeepFreeGiB` (20) free is refused before it starts. A gated
   Hugging Face repo needs the hub's own token in `Relay__Supply__HuggingFaceToken`.
+
+### An audit trail (v3.85+)
+
+Who used which key, from where, for which model, and which machine ran it — without the content.
+Turn it on at the hub and it appends one JSON line per request to a file per UTC day.
+
+```bash
+# on the coordinator
+Audit__Enabled=true                 # off by default
+Audit__RetentionDays=90             # day files older than this are deleted
+```
+
+```json
+{"at":"2026-10-31T19:45:57Z","event":"request","who":"alice","remote":"10.0.0.5","method":"POST",
+ "path":"/api/chat","status":200,"ms":20637,"model":"qwen2.5:0.5b","capability":"chat",
+ "nodes":["<gpu-d>","<gpu-c>"],"servedBy":"node"}
+{"at":"2026-10-31T19:45:41Z","event":"node.disconnected","who":"node","node":"<gpu-d>","nodeName":"gpu-d"}
+{"at":"2026-10-31T19:39:54Z","event":"request","who":"admin:d2a23839","method":"POST","path":"/api/admin/nodes/<id>/cordon","status":200}
+```
+
+```http
+GET /api/admin/audit?from=2026-10-31T00:00:00Z&node=<id>&who=alice&model=&event=&status=401&limit=100
+```
+
+- **What a line says.** When; **who** — the client id a key resolved to, `admin:` and the first
+  8 hex digits of the admin key's SHA-256, `loopback`, `node` for the relay, or `-` for a key that
+  resolved to nobody; the remote address; the method and the **path, never the query string**;
+  the status and the milliseconds (a stream is measured to its last byte); the model asked for and
+  the kind of work; **every node a job of the request was sent to, in order** — a failover appends,
+  so the last one answered it; and `X-InferHub-Served-By`.
+- **What it never says.** A prompt, an answer, a body, a query string, a header value, a key, or a
+  hash of any of them. The tests write a prompt and both keys through the real guards and grep the
+  files for them.
+- **What is recorded.** `/api`, `/v1`, the sealed nodes' relay and ChatGPT pairing. Reads of
+  `/api/status` and of the admin API are not (the console polls them), **except a refused one** —
+  a wrong key is recorded on every method — and a read of the trail itself. The node hub adds
+  `node.registered`, `node.refused` (a wrong or missing enrollment secret, with its address; a node
+  retrying with a stale secret writes one every five seconds) and `node.disconnected`.
+- **Off the request path.** One writer appends; a full queue or an unwritable directory drops a
+  line and counts it in `inferhub_audit_dropped_total`, it never slows or fails a request.
+- **You can see it.** `/api/status` has `audit` (written, dropped, days, bytes) and `/metrics` has
+  `inferhub_audit_*`, only while it is on. The files are plain JSONL; a log shipper can tail them
+  (open them with shared read/write, the hub holds today's for append).
+- **Off by default, and it is the hub's eighth on-disk exception.** Each coordinator of a cluster
+  writes its own. Not covered: which node ran an async image or video job (the submit's line is
+  written at its 202), and tamper-evidence — a box's root can edit any file.
 
 ### A private corpus on a networked node
 
@@ -4509,6 +4557,7 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Relay:Enabled` | `false` | **v3.82+** — fetch for this hub's [sealed nodes](#a-sealed-node-v382): `/node/relay/{hf\|ollama-registry\|ollama-library}/…`, behind the node enrollment secret. `Relay:HuggingFace`, `Relay:OllamaRegistry`, `Relay:OllamaLibrary` point at the upstreams (or your mirrors). |
 | `Relay:Cache:Enabled` | `false` | **v3.83+** — keep each blob the relay passed on, by its sha256, under `Relay:Cache:DataDirectory` (`./data/relay`; `/data/relay` in the image), within `Relay:Cache:MaxGiB` (200) and `Relay:Cache:KeepFreeGiB` (20). See [The hub keeps what it relayed](#the-hub-keeps-what-it-relayed-v383). |
 | `Relay:Supply:Enabled` | `false` | **v3.84+** — answer this hub's sealed nodes from models an admin fetched (`POST /api/admin/supply`) or imported from under `Relay:Supply:ImportDirectory` (`./data/import`; `/import` in the image), kept under `Relay:Supply:DataDirectory` (`./data/supply`; `/data/supply` in the image), without asking the upstream. `Relay:Supply:Only` refuses everything else; `Relay:Supply:HuggingFaceToken` is the hub's own; `Relay:Supply:KeepFreeGiB` (20). See [Models supplied through the coordinator](#models-supplied-through-the-coordinator-v384). |
+| `Audit:Enabled` | `false` | **v3.85+** — append one JSON line per audited request and node event to `Audit:DataDirectory` (`./data/audit`; `/data/audit` in the image), one file per UTC day, kept `Audit:RetentionDays` (90). Never a body, a query string or a key. Read with `GET /api/admin/audit`. See [An audit trail](#an-audit-trail-v385). |
 | `Images:MaxBatch` | `4` | v3.14. The absolute ceiling on `n`, whatever the size. A batch runs on **one** node. Bound by both hosts from the same section, so a request refused on a hub is refused identically on a solo node. |
 | `Images:MaxResponseBytes` | `26214400` | v3.14. An upper-bound estimate (`w × h × 4 × n`) checked *before a step runs*, with the refusal naming the largest `n` that fits. **Clamped by `Tools:MaxAttachmentBytes`** at use, because that cap sizes the mesh's SignalR message limit and exceeding a SignalR limit tears a node's connection down rather than failing a message. Raising one without the other gets you no change, deliberately. **v3.25: it bounds a video too** — there is no `Videos:` section, because two keys for one wire ceiling are two numbers you could raise independently. A clip's size cannot be estimated from its geometry (that is an encoder's output), so what the edge checks instead is that the recipe offers the `(size, seconds)` pair you asked for. |
 | `Images:SyncMaxWaitSeconds` | `120` | v3.15. How long `/v1/images/generations` waits for its own job before a `503` naming the async route. **The job keeps running** and the message carries its id — discarding a minute of GPU because an HTTP client got bored is your call, not the hub's. See [A job that takes two minutes](#a-job-that-takes-two-minutes-v315). |

@@ -161,6 +161,9 @@ internal static class InferenceCore
         // rather than passed in, so the two client dialects cannot disagree about it.
         var capability = CapabilityKinds.ForJobKind(kind);
 
+        // Phase 125: the model as asked, so a request a provider answered — or nobody did — names it on the trail too.
+        AuditScope.Asked(model, capability);
+
         // Admission first: a client over its limits must not consume routing, queue capacity
         // or an upstream call. Everything after this point holds the client's concurrency
         // lease and must release it on every path out.

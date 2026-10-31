@@ -247,6 +247,15 @@ builder.Services.AddSingleton<InferHub.Coordinator.ChatGpt.ChatGptAccounts>();
 builder.Services.Configure<RelayOptions>(builder.Configuration.GetSection(RelayOptions.SectionName));
 builder.Services.AddNodeRelay();
 
+// Phase 125. The audit trail — off by default; when off the middleware passes straight through and nothing is created.
+builder.Services.AddOptions<AuditTrailOptions>()
+    .Bind(builder.Configuration.GetSection(AuditTrailOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<AuditTrailOptions>, AuditTrailOptionsValidator>();
+builder.Services.TryAddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<AuditTrail>();
+builder.Services.AddHostedService(services => services.GetRequiredService<AuditTrail>());
+
 // High availability (phase 32). Off by default and inert when off: no lease, no Postgres
 // connection, and SingleCoordinatorMembership reports Enabled=false so the role header, the
 // standby 503 and the status block never appear — byte-identical to v2.13.
@@ -290,6 +299,8 @@ var version = typeof(Program).Assembly
     .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
     .InformationalVersion ?? typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown";
 
+// Phase 125. Before the guards, so a request they turn away is on the trail too.
+app.UseMiddleware<AuditMiddleware>();
 app.UseMiddleware<AdminApiKeyMiddleware>();
 app.UseMiddleware<BearerApiKeyMiddleware>();
 
@@ -378,6 +389,7 @@ if (vectorStoreEnabled)
 
 app.MapNodeRelay();
 app.MapRelaySupply();
+app.MapAuditEndpoints();
 app.MapHub<NodeHub>("/hubs/node");
 
 app.Run();

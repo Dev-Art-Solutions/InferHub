@@ -137,3 +137,57 @@ number), `QueueTests`, `ModelSlotRoutingTests`.
 to that node alone (capability `manage`); the node's JSON is passed through, its refusal codes (`ManagementJob.StatusOf`)
 become the status. Install = the node's agreed `ModelCommand` sent via `ModelCommandCoordinator.SendAsync(..., context)`.
 A node without `Management` on its registration (before 3.81) is a 409 without a dispatch. Decisions: `src/InferHub.Node/Backends/CLAUDE.md` Phase 120.
+
+### Phase 125 (the audit trail: who asked, which model, which node answered, when — never what was said)
+
+`AuditTrail.cs` (`Audit:` options + validator, `AuditRecord`, `AuditScope`, the writer and the reader) and
+`AuditMiddleware.cs` (the middleware, `GET /api/admin/audit`). The ask came from the "closed system" list of
+*What I Build* (item 6): *who asked, which model, which node answered and when, without the content.*
+
+**D1 — What a line holds, and what is kept.** `at`, `event`, `who` (the client id a key resolved to; `admin:` and
+the first 8 hex of the admin key's SHA-256, set by `AdminApiKeyMiddleware`; `loopback`; `node` for the relay; `-`
+for a key that resolved to nobody), `remote`, `id` (the trace id), `method`, **`path` — never the query string**,
+`status`, `ms`, `model`, `capability`, `nodes`, `servedBy`. Never a body, a header value or a hash of any of them
+(rule 7; the tests grep the files for a prompt, a query value and both keys). Audited surfaces: `/api`, `/v1`,
+`/node/relay`, `/chatgpt-pairing`. **Reads are not actions:** `GET /api/status` and every admin `GET` are
+skipped (the console polls them; they would bury the lines that matter) — except a refused one (401/403 is kept
+on every method: a wrong key is the line an auditor wants first) and a read of the trail itself (who looked at who
+did what is part of who did what). The middleware is **first** in the pipeline for the same reason: a request the
+guards turn away never reaches anything after them. **Considered and rejected: the remote address as an option**
+— a trail that cannot say where a stolen key was used from is not a security record.
+
+**D2, load-bearing — the scope rides an `AsyncLocal`, written where the fact is known.** The middleware begins an
+`AuditScope`; `InferenceCore.DispatchAsync` says the model and capability as asked (`AuditScope.Asked`, so a
+request a provider answered or that was refused at admission still names its model); each of `Dispatcher`'s four
+dispatch entries says the node (`AuditScope.Dispatched`), so **a failover appends** — `nodes` is every node a job of
+the request was sent to, in order, and the last one answered it if `status` is 2xx. No endpoint passes anything
+along: forty-odd endpoints reach the dispatcher, and one that forgot would be a silent gap. `Close()` is called
+when the line is written; anything later (an image job's background dispatch that outlives its 202) is dropped,
+not half-reported — **an async image or video job's node is therefore not on the submit's line** (named, not fixed).
+
+**D3 — Off the request path, and a dropped line is counted.** One `BackgroundService` reads a bounded channel
+(10 000) and appends to `audit-yyyy-MM-dd.jsonl` (UTC; flushed after each batch; a line that does not parse —
+a torn tail after a crash — is skipped by the reader). `Write` never blocks and never throws: a full queue, or a
+directory the writer cannot open, drops the line and counts it (`inferhub_audit_dropped_total`, a warning at most
+once a minute). **`FullMode.Wait`, not `DropWrite`**: under `DropWrite` `TryWrite` answers true for a line it threw
+away. **Considered and rejected: writing inline** — a slow disk would become every request's latency; **and
+Postgres** — the files are the record an auditor can copy off the box without the hub running.
+
+**D4 — Reading it.** `GET /api/admin/audit?from&to&who&node&model&event&status&limit` behind the admin key:
+newest first, exact case-insensitive matches (`node` matches any node a failover tried), `limit` default 100, at
+most 1000; reads day files newest-first and stops at the limit. With the trail off it answers 200 `enabled:false`
+naming the key, so a console can ask without knowing.
+
+**D5 — Rule 4's eighth exception.** Off by default (`Audit:Enabled`); when off the middleware passes straight
+through without allocating a scope, nothing is created, `/api/status` has no `audit` key and `/metrics` no
+`inferhub_audit_*`. Day files older than `RetentionDays` (default 90, 1–3660) are deleted at start and at each day
+change — only files the trail named. Losing the directory loses history, never an answer. The image sets
+`Audit__DataDirectory=/data/audit`. Each coordinator of a cluster (phase 32) writes its own trail.
+
+**D6 — The fleet's door.** `NodeHub` writes `node.registered` (node id, name), `node.refused` (a wrong or missing
+enrollment secret, `who` `-`) and `node.disconnected` (looked up before the registry forgets the connection), each
+with the remote address and the connection id. The hub socket itself is not a request line: it lives for days.
+
+Tests: `AuditTrailTests` (Coordinator — the real guards over a real socket, the file, the window, the filters, the
+privacy grep, the scrape), `AuditTrailMeshTests` (real SignalR: a node registers, runs a job through the real
+`Dispatcher`, a stranger is refused, the node leaves).

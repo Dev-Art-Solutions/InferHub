@@ -20,6 +20,7 @@ public sealed class NodeHub(
     {
         if (!nodeAuth.IsAuthorized(Context))
         {
+            Audit(AuditRecord.NodeRefused, nodeId: null, name: null);
             Context.Abort();
             throw new HubException("unauthorized node");
         }
@@ -54,6 +55,7 @@ public sealed class NodeHub(
         replication?.ApplyInventory(Context.ConnectionId, registration.Replicas);
 
         registry.Upsert(Context.ConnectionId, registration, DateTimeOffset.UtcNow);
+        Audit(AuditRecord.NodeRegistered, registration.NodeId, registration.Name);
 
         logger.LogInformation(
             "Node {NodeId} ({NodeName}) registered on connection {ConnectionId}",
@@ -520,9 +522,19 @@ public sealed class NodeHub(
     {
         connections.Forget(Context.ConnectionId);
 
+        // Phase 125: who is leaving has to be asked before the registry forgets the connection.
+        var leaving = Trail is not null
+            ? registry.Snapshot(DateTimeOffset.UtcNow).FirstOrDefault(node => node.ConnectionId == Context.ConnectionId)
+            : null;
+
         if (registry.Remove(Context.ConnectionId))
         {
             logger.LogInformation("Node connection {ConnectionId} disconnected", Context.ConnectionId);
+
+            if (leaving is not null)
+            {
+                Audit(AuditRecord.NodeDisconnected, leaving.NodeId, leaving.Name);
+            }
         }
 
         dispatcher.FailForConnection(Context.ConnectionId, exception);
@@ -531,5 +543,26 @@ public sealed class NodeHub(
         // its warm conversations must survive that. Affinity now keys on the node id, so a hint for a
         // momentarily-absent node is a clean miss until the node returns or the sliding window lapses.
         await base.OnDisconnectedAsync(exception);
+    }
+
+    // Phase 125. Resolved, not injected, like every optional service here: a fixture that predates the trail keeps working.
+    private AuditTrail? Trail => services.GetService(typeof(AuditTrail)) is AuditTrail { Enabled: true } trail ? trail : null;
+
+    /// <summary>The fleet's door on the trail (125 D6): who came in, who was turned away, who left — by node id, from where.</summary>
+    private void Audit(string @event, string? nodeId, string? name)
+    {
+        if (Trail is not { } trail)
+        {
+            return;
+        }
+
+        trail.Write(new AuditRecord(
+            trail.Now,
+            @event,
+            @event == AuditRecord.NodeRefused ? "-" : "node",
+            Context.GetHttpContext()?.Connection.RemoteIpAddress?.ToString(),
+            Id: Context.ConnectionId,
+            Node: nodeId,
+            NodeName: name));
     }
 }

@@ -85,7 +85,8 @@ public static class StatusEndpoint
                 BuildRelayBlock(
                     services.GetService(typeof(RelayCache)) as RelayCache,
                     services.GetService(typeof(RelaySupply)) as RelaySupply,
-                    services.GetService(typeof(SupplyJobs)) as SupplyJobs)));
+                    services.GetService(typeof(SupplyJobs)) as SupplyJobs),
+                (services.GetService(typeof(AuditTrail)) as AuditTrail)?.Snapshot()));
         });
 
         return app;
@@ -366,7 +367,11 @@ public static class StatusEndpoint
         // Phase 123. Omitted unless Relay:Cache or (phase 124) Relay:Supply is on, so a hub with neither reports v3.82's payload.
         [property: System.Text.Json.Serialization.JsonIgnore(
             Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-        RelayStatusBlock? Relay = null);
+        RelayStatusBlock? Relay = null,
+        // Phase 125. Omitted unless Audit:Enabled, so a hub without the trail reports v3.84's payload.
+        [property: System.Text.Json.Serialization.JsonIgnore(
+            Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        AuditTrailSnapshot? Audit = null);
 
     internal sealed record RelayStatusBlock(
         [property: System.Text.Json.Serialization.JsonIgnore(

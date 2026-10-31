@@ -37,6 +37,7 @@ public sealed class AdminApiKeyMiddleware(
 
         if (isLoopback && !settings.RequireAuthForLoopback)
         {
+            context.Items[Services.AuditMiddleware.WhoItemKey] = "loopback";
             await next(context);
             return;
         }
@@ -63,8 +64,16 @@ public sealed class AdminApiKeyMiddleware(
             return;
         }
 
+        context.Items[Services.AuditMiddleware.WhoItemKey] = Fingerprint(token);
         await next(context);
     }
+
+    /// <summary>
+    /// Phase 125. Which admin key was used, for the audit trail: <c>admin:</c> and the first eight hex digits of its
+    /// SHA-256. Enough to tell two operators' keys apart, nothing a key can be recovered from (125 D1).
+    /// </summary>
+    internal static string Fingerprint(string token)
+        => "admin:" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(token)))[..8];
 
     private bool Guards(PathString path)
     {

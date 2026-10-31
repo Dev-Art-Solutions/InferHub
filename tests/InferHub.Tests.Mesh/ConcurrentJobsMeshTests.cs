@@ -146,10 +146,11 @@ public class ConcurrentJobsMeshTests
             ? $$"""{"model":"{{model}}","messages":[],"stream":true}"""
             : $$"""{"model":"{{model}}","messages":[]}""");
 
-    private sealed class JobMesh : IAsyncDisposable
+    // Internal since phase 125: AuditTrailMeshTests runs the same real hub and node with the trail on.
+    internal sealed class JobMesh : IAsyncDisposable
     {
-        private const string NodeId = "concurrent-node";
-        private const string Secret = "concurrent-mesh-secret";
+        public const string NodeId = "concurrent-node";
+        public const string Secret = "concurrent-mesh-secret";
 
         private WebApplication app = null!;
         private CoordinatorConnection node = null!;
@@ -163,12 +164,19 @@ public class ConcurrentJobsMeshTests
 
         private int? configuredSlots;
 
-        public static async Task<JobMesh> StartAsync(int? configuredSlots = null, int? backendSlots = null)
+        private Action<IServiceCollection>? services;
+
+        public IServiceProvider Services => app.Services;
+
+        public string Url => app.Urls.First();
+
+        public static async Task<JobMesh> StartAsync(int? configuredSlots = null, int? backendSlots = null, Action<IServiceCollection>? services = null)
         {
             var mesh = new JobMesh
             {
                 scratch = Path.Combine(Path.GetTempPath(), "inferhub-concurrent-" + Guid.NewGuid().ToString("N")),
-                configuredSlots = configuredSlots
+                configuredSlots = configuredSlots,
+                services = services
             };
             mesh.Backend.ModelSlots = backendSlots;
             await mesh.StartCoordinatorAsync();
@@ -215,6 +223,7 @@ public class ConcurrentJobsMeshTests
             builder.Services.AddSingleton<NodeProfileCoordinator>();
             builder.Services.AddSingleton<InferHub.Coordinator.Cluster.IClusterMembership,
                 InferHub.Coordinator.Cluster.SingleCoordinatorMembership>();
+            services?.Invoke(builder.Services);
 
             app = builder.Build();
             app.MapHub<NodeHub>("/hubs/node");
@@ -259,6 +268,9 @@ public class ConcurrentJobsMeshTests
             await WaitForAsync(() => Registry.FindConnectionIdByNodeId(NodeId) is not null);
         }
 
+        /// <summary>The node leaves the way a stopped service does: its connection closes.</summary>
+        public Task StopNodeAsync() => node.StopAsync(CancellationToken.None);
+
         public async ValueTask DisposeAsync()
         {
             Backend.Release();
@@ -299,7 +311,7 @@ public class ConcurrentJobsMeshTests
     }
 
     /// <summary>A chat backend that holds every request until released, counting who is inside.</summary>
-    private sealed class HeldBackend : IInferenceBackend
+    internal sealed class HeldBackend : IInferenceBackend
     {
         private readonly TaskCompletionSource released = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int running;

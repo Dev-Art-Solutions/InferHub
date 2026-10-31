@@ -33,7 +33,9 @@ public sealed record PrometheusScrape(
     IReadOnlyList<ProviderScrapeSample>? Providers = null,
     // Phase 123. Null unless the relay's cache is on, which is exactly the v3.82 scrape.
     RelayCacheSnapshot? RelayCache = null,
-    RelaySupplySnapshot? RelaySupply = null);
+    RelaySupplySnapshot? RelaySupply = null,
+    // Phase 125. Null unless Audit:Enabled, which is exactly the v3.84 scrape.
+    AuditTrailSnapshot? Audit = null);
 
 /// <summary>
 /// One configured provider, described rather than measured (phase 66, D5).
@@ -252,6 +254,14 @@ public static class PrometheusFormatter
             Counter(builder, "inferhub_relay_supply_served_total", "Relay answers given from the supply, the upstream not asked.", supply.Served);
             Counter(builder, "inferhub_relay_supply_served_bytes_total", "Bytes served from the supply.", supply.ServedBytes);
             Counter(builder, "inferhub_relay_supply_refused_total", "Relay requests refused under Relay:Supply:Only: not supplied.", supply.Refused);
+        }
+
+        if (scrape.Audit is { } audit)
+        {
+            Counter(builder, "inferhub_audit_records_total", "Lines written to the audit trail since the hub started.", audit.Written);
+            Counter(builder, "inferhub_audit_dropped_total", "Audit lines dropped: the writer's queue was full or the directory unwritable.", audit.Dropped);
+            Gauge(builder, "inferhub_audit_days", "Day files the audit trail holds.", audit.Days);
+            Gauge(builder, "inferhub_audit_bytes", "Bytes of audit trail on the hub's disk.", audit.Bytes);
         }
 
         PerAudio(builder, m.PerAudio);
