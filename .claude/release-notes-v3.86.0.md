@@ -63,3 +63,15 @@ package.
     seconds (13.4 s and 10.6 s in all).
   - The audit lines carried `essential`, `normal` and `background`, the lowered one included; `/metrics` said background
     held 3, released 3, timed out 0.
+
+## The published image
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.86.0` carries revision `6ba0d0a`. Docker Desktop was not running, so the
+image's `/app` was pulled through GHCR's registry API and run natively (`/health` said `3.86.0`), with the same three
+clients and two nodes from source at the tag on the real Ollama.
+
+- gpu-b stopped through its control API: a `batch` request waited (`background: waiting 1, held 1`); `ops` was answered in
+  0.33 s and `team` in 0.02 s on the remaining node.
+- gpu-b registered again and the `batch` request went (10.6 s in all). The audit lines carried `essential`, `normal`,
+  `background`, and the node leaving and returning.
+- Not run: the container itself.
