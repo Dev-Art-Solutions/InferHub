@@ -191,3 +191,45 @@ with the remote address and the connection id. The hub socket itself is not a re
 Tests: `AuditTrailTests` (Coordinator — the real guards over a real socket, the file, the window, the filters, the
 privacy grep, the scrape), `AuditTrailMeshTests` (real SignalR: a node registers, runs a job through the real
 `Dispatcher`, a stranger is refused, the node leaves).
+
+### Phase 126 (priority classes: when capacity runs short, essential work keeps running and background work waits)
+
+`PriorityGate.cs` (`Priority:` options + validator, `PriorityClasses`, the gate) and three hooks: `InferenceCore.DispatchAsync`
+(the background hold, the class into the capacity wait, essential past the slot wait), `RequestQueue.WaitForCapacityAsync(model,
+priority, …)`, and `ClientContext.From` (the class, once per request). Chat and generate on both dialects only: embeddings
+(`IEmbeddingDispatcher`), tools, audio, images and video do not pass through `InferenceCore` and are not classed.
+
+**D1 — Three classes, set by the operator per client.** `Auth:Clients[].Priority` = `essential` | `normal` (default) |
+`background`; a misspelt one fails startup (`ApiKeyOptionsValidator`) because the mistake would otherwise run silently as
+normal. Anonymous and flat `Auth:ApiKeys` are normal. Off by default (`Priority:Enabled`): `ClassOf` answers `normal` for
+everyone, `ClientContext.Priority` is null, no hook runs, `/api/status` has no `priority`, `/metrics` no `inferhub_priority_*`,
+the audit line no `priority`. **Considered and rejected: numeric priorities** — a number invites a scheduler, and three names
+are what an operator can reason about at 03:00.
+
+**D2 — A request may lower its class, never raise it.** `X-InferHub-Priority` (same shape as 65's provider steer: it only
+narrows). A batch job on an essential key can say `background`; a background key saying `essential` is ignored, as is an
+unknown value. The class is on the audit line (125) while priority is on.
+
+**D3, load-bearing — "capacity running short" is free places, and background never takes the last `ReserveSlots`.**
+`FreePlaces(model, capability)` sums, over the nodes `FindNodesWithModel` routes to *now* (so a failed, paused, cordoned or
+throttled node has already left the sum), the lesser of `MaxConcurrency − LocalInFlight` and the model's slots left (108/109).
+Background work is held while that sum is `≤ ReserveSlots` (default 1) or while a higher class waits for the model; it polls
+every 100 ms and goes when there is room, or answers 503 after `BackgroundMaxWaitSeconds` (default 600 — it is paused, not
+refused). So when nodes fail or fill, background is what pauses first, with no "failure" signal of its own to get wrong.
+**A node that declares neither a cap nor slots makes the sum unbounded (null) and nothing is held** — the hub cannot reserve
+what it cannot count; every Ollama node declares slots (108), so in practice this is a node with neither and an unknown engine.
+**Considered and rejected: stopping running background jobs** to make room — a half-generated answer is lost work, and a
+preempted stream is a failure the caller sees; named as not done.
+
+**D4 — A wait does not go ahead of a higher class.** `RequestQueue.WaitForCapacityAsync` (25 D5, the declared-cap queue)
+registers each waiter with the gate by (model key, rank); a waiter is admitted only when the fleet is not saturated **and**
+no higher class waits for the same model. Counts only — no second queue, the poll that existed decides.
+
+**D5 — Essential skips the hub's slot wait.** 110's wait exists to be polite to an engine's FIFO; holding essential work at
+the hub behind it would invert the point, so with priority on an essential request goes to the engine at once (it lands ahead
+of everything the hub is still holding). Normal and background wait as in 110. The 110 D3 turnstile is untouched.
+
+Tests: `PriorityTests` (Coordinator — the real `Router` and `RequestQueue` through `InferenceCore`: off by default; the reserve
+held and released; a node removed makes background wait while essential and normal run; the 503; an unbounded node; the
+header table; essential first in the capacity wait — red with D4's condition removed; essential past the slot wait; the
+validators; the scrape).

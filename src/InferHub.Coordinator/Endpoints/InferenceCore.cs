@@ -123,16 +123,23 @@ internal static class InferenceCore
         ResolvedClient Client,
         AdmissionControl Admission,
         UsageMeter Usage,
-        IRequestQueue Queue)
+        IRequestQueue Queue,
+        PriorityGate? Priority = null,
+        string PriorityClass = PriorityClasses.Normal)
     {
         public static ClientContext From(HttpContext httpContext)
         {
             var services = httpContext.RequestServices;
+            var client = BearerApiKeyMiddleware.ClientOf(httpContext);
+            var gate = services.GetService<PriorityGate>() is { Enabled: true } enabled ? enabled : null;
+
             return new ClientContext(
-                BearerApiKeyMiddleware.ClientOf(httpContext),
+                client,
                 services.GetRequiredService<AdmissionControl>(),
                 services.GetRequiredService<UsageMeter>(),
-                services.GetRequiredService<IRequestQueue>());
+                services.GetRequiredService<IRequestQueue>(),
+                gate,
+                gate?.ClassOf(client, httpContext.Request.Headers[PriorityGate.Header].ToString()) ?? PriorityClasses.Normal);
         }
     }
 
@@ -163,6 +170,12 @@ internal static class InferenceCore
 
         // Phase 125: the model as asked, so a request a provider answered — or nobody did — names it on the trail too.
         AuditScope.Asked(model, capability);
+
+        // Phase 126: the class this request runs at, on the trail too while priority is on.
+        if (context.Priority is not null)
+        {
+            AuditScope.Prioritised(context.PriorityClass);
+        }
 
         // Admission first: a client over its limits must not consume routing, queue capacity
         // or an upstream call. Everything after this point holds the client's concurrency
@@ -301,11 +314,31 @@ internal static class InferenceCore
                 return DispatchOutcome.Failure(StatusCodes.Status404NotFound, $"model '{model}' not found");
             }
 
+            // Phase 126 D3: background work does not take a model's last free places. It waits — paused, not refused —
+            // and goes once there is room beyond the reserve, or after Priority:BackgroundMaxWaitSeconds as a 503.
+            if (context.Priority is { } gate)
+            {
+                gate.Counted(context.PriorityClass);
+
+                if (context.PriorityClass == PriorityClasses.Background
+                    && (await gate.HoldBackgroundAsync(model, capability, cancellationToken)) is PriorityOutcome.TimedOut)
+                {
+                    return DispatchOutcome.Failure(
+                        StatusCodes.Status503ServiceUnavailable,
+                        $"background work for '{model}' waited {gate.Options.BackgroundMaxWaitSeconds}s and every free place stayed within the "
+                        + $"{gate.Options.ReserveSlots} kept for essential and normal work (Priority:ReserveSlots)",
+                        Math.Max(1, Math.Min(gate.Options.BackgroundMaxWaitSeconds, 60)));
+                }
+
+                node = router.Route(model, conversationKey, capability: capability) ?? node;
+            }
+
             // Every capable node is at its declared cap: wait for a slot, briefly, then say so
             // (phase 25, D5). Nodes that declared no cap are never saturated and never queue.
+            // Phase 126 D4: while it waits, it does not go ahead of a higher class waiting for the same model.
             if (context.Queue.IsSaturated(model))
             {
-                var queueOutcome = await context.Queue.WaitForCapacityAsync(model, cancellationToken);
+                var queueOutcome = await context.Queue.WaitForCapacityAsync(model, context.PriorityClass, cancellationToken);
 
                 if (queueOutcome is not QueueOutcome.Admitted)
                 {
@@ -326,7 +359,11 @@ internal static class InferenceCore
             // set, wait here for the first one to free rather than queueing inside one engine now; the
             // wait never refuses (D2). The ticket holds the model's line until the dispatch below has
             // counted this job (D3).
-            using var slotTicket = await context.Queue.WaitForFreeSlotAsync(model, capability, cancellationToken);
+            // Phase 126 D5: essential work is not held at the hub for a free slot — it goes to the engine's own queue now,
+            // ahead of everything the hub is still holding.
+            using var slotTicket = context.Priority is not null && context.PriorityClass == PriorityClasses.Essential
+                ? SlotTicket.None
+                : await context.Queue.WaitForFreeSlotAsync(model, capability, cancellationToken);
 
             if (!ReferenceEquals(slotTicket, SlotTicket.None))
             {

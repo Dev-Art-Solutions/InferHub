@@ -75,7 +75,10 @@ public static class ScrapeSnapshotBuilder
             (services.GetService(typeof(RelaySupply)) as RelaySupply)?.Snapshot((services.GetService(typeof(SupplyJobs)) as SupplyJobs)?.Running ?? 0),
 
             // Phase 125. Null unless Audit:Enabled.
-            (services.GetService(typeof(AuditTrail)) as AuditTrail)?.Snapshot());
+            (services.GetService(typeof(AuditTrail)) as AuditTrail)?.Snapshot(),
+
+            // Phase 126. Null unless Priority:Enabled.
+            (services.GetService(typeof(PriorityGate)) as PriorityGate)?.Snapshot());
     }
 
     /// <summary>

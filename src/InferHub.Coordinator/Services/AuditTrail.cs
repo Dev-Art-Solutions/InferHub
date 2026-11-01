@@ -70,7 +70,9 @@ public sealed record AuditRecord(
     [property: JsonPropertyName("nodes"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? Nodes = null,
     [property: JsonPropertyName("servedBy"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ServedBy = null,
     [property: JsonPropertyName("node"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Node = null,
-    [property: JsonPropertyName("nodeName"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? NodeName = null)
+    [property: JsonPropertyName("nodeName"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? NodeName = null,
+    // Phase 126: the class the request ran at, present only while Priority:Enabled.
+    [property: JsonPropertyName("priority"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Priority = null)
 {
     public const string Request = "request";
 
@@ -112,6 +114,9 @@ public sealed class AuditScope
 
     public string? Capability { get; private set; }
 
+    /// <summary>Phase 126: the request's class, said only while priority is on.</summary>
+    public string? Priority { get; private set; }
+
     internal static AuditScope? Current => current.Value;
 
     internal static AuditScope Begin()
@@ -138,6 +143,18 @@ public sealed class AuditScope
 
             scope.Model ??= string.IsNullOrWhiteSpace(model) ? null : model;
             scope.Capability ??= string.IsNullOrWhiteSpace(capability) ? null : capability;
+        }
+    }
+
+    /// <summary>Phase 126: the class the request runs at.</summary>
+    public static void Prioritised(string priority)
+    {
+        if (Current is { } scope)
+        {
+            lock (scope.gate)
+            {
+                scope.Priority ??= scope.closed ? null : priority;
+            }
         }
     }
 

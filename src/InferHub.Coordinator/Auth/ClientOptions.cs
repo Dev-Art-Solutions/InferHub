@@ -22,6 +22,12 @@ public sealed class ClientConfig
     /// on the client itself rather than inside a "limits" bag an operator might read as advisory.
     /// </summary>
     public List<string>? Collections { get; set; }
+
+    /// <summary>
+    /// Phase 126: <c>essential</c>, <c>normal</c> (the default) or <c>background</c>. Read only while <c>Priority:Enabled</c>;
+    /// a request may ask for a lower class with <c>X-InferHub-Priority</c>, never a higher one.
+    /// </summary>
+    public string? Priority { get; set; }
 }
 
 /// <summary>All limits are nullable; <c>null</c> means unlimited.</summary>

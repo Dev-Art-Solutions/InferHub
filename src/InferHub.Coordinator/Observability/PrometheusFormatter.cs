@@ -35,7 +35,9 @@ public sealed record PrometheusScrape(
     RelayCacheSnapshot? RelayCache = null,
     RelaySupplySnapshot? RelaySupply = null,
     // Phase 125. Null unless Audit:Enabled, which is exactly the v3.84 scrape.
-    AuditTrailSnapshot? Audit = null);
+    AuditTrailSnapshot? Audit = null,
+    // Phase 126. Null unless Priority:Enabled.
+    PrioritySnapshot? Priority = null);
 
 /// <summary>
 /// One configured provider, described rather than measured (phase 66, D5).
@@ -262,6 +264,16 @@ public static class PrometheusFormatter
             Counter(builder, "inferhub_audit_dropped_total", "Audit lines dropped: the writer's queue was full or the directory unwritable.", audit.Dropped);
             Gauge(builder, "inferhub_audit_days", "Day files the audit trail holds.", audit.Days);
             Gauge(builder, "inferhub_audit_bytes", "Bytes of audit trail on the hub's disk.", audit.Bytes);
+        }
+
+        if (scrape.Priority is { } priority)
+        {
+            Gauge(builder, "inferhub_priority_reserve_slots", "Free places per model that background work may not take.", priority.ReserveSlots);
+            PerClass(builder, "inferhub_priority_waiting", "gauge", "Requests of this class waiting at the hub now.", priority, c => c.Waiting);
+            PerClass(builder, "inferhub_priority_requests_total", "counter", "Inference requests that reached the hub's priority gate, by class.", priority, c => c.Requests);
+            PerClass(builder, "inferhub_priority_held_total", "counter", "Requests of this class that had to wait for a place.", priority, c => c.Held);
+            PerClass(builder, "inferhub_priority_released_total", "counter", "Waiting requests of this class let through.", priority, c => c.Released);
+            PerClass(builder, "inferhub_priority_timed_out_total", "counter", "Waiting requests of this class whose wait ran out (503).", priority, c => c.TimedOut);
         }
 
         PerAudio(builder, m.PerAudio);
@@ -808,5 +820,18 @@ public static class PrometheusFormatter
         return value == Math.Floor(value) && Math.Abs(value) < 1e15
             ? ((long)value).ToString(CultureInfo.InvariantCulture)
             : value.ToString("0.######", CultureInfo.InvariantCulture);
+    }
+
+    // Phase 126. One series per class, all three always written while priority is on, so a zero is a zero.
+    private static void PerClass(StringBuilder builder, string name, string type, string help, PrioritySnapshot priority, Func<PriorityClassSnapshot, long> value)
+    {
+        builder.Append("# HELP ").Append(name).Append(' ').Append(help).Append('\n');
+        builder.Append("# TYPE ").Append(name).Append(' ').Append(type).Append('\n');
+
+        foreach (var row in priority.Classes)
+        {
+            builder.Append(name).Append("{class=\"").Append(row.Class).Append("\"} ")
+                .Append(value(row).ToString(CultureInfo.InvariantCulture)).Append('\n');
+        }
     }
 }

@@ -169,6 +169,12 @@ builder.Services.AddOptions<UsageOptions>()
 builder.Services.AddSingleton<IValidateOptions<UsageOptions>, UsageOptionsValidator>();
 builder.Services.AddSingleton<AdmissionControl>();
 builder.Services.AddSingleton<UsageMeter>();
+// Phase 126. Priority classes — off by default; when off every request is normal and the queue behaves as before.
+builder.Services.AddOptions<PriorityOptions>()
+    .Bind(builder.Configuration.GetSection(PriorityOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<PriorityOptions>, PriorityOptionsValidator>();
+builder.Services.AddSingleton<PriorityGate>();
 builder.Services.AddSingleton<IRequestQueue, RequestQueue>();
 
 var usagePersistence = builder.Configuration

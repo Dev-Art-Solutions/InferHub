@@ -59,7 +59,8 @@ public sealed class AuditMiddleware(RequestDelegate next, AuditTrail trail)
                     nodes,
                     context.Response.Headers.TryGetValue(Endpoints.InferenceCore.ServedByHeader, out var servedBy)
                         ? servedBy.ToString()
-                        : null));
+                        : null,
+                    Priority: scope.Priority));
             }
         }
     }

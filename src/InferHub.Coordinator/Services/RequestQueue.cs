@@ -110,6 +110,10 @@ public interface IRequestQueue
     /// <summary>Waits for the model's fleet to free a slot, within the configured bounds.</summary>
     Task<QueueOutcome> WaitForCapacityAsync(string model, CancellationToken cancellationToken);
 
+    /// <summary>Phase 126: the same wait, standing back while a higher class waits for the model.</summary>
+    Task<QueueOutcome> WaitForCapacityAsync(string model, string priority, CancellationToken cancellationToken)
+        => WaitForCapacityAsync(model, cancellationToken);
+
     int MaxWaitSeconds { get; }
 
     /// <summary>
@@ -147,7 +151,8 @@ public sealed class SlotTicket(SemaphoreSlim? turnstile) : IDisposable
 public sealed class RequestQueue(
     INodeRegistry registry,
     IOptions<QueueOptions> options,
-    ILogger<RequestQueue> logger) : IRequestQueue
+    ILogger<RequestQueue> logger,
+    PriorityGate? priority = null) : IRequestQueue
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(200);
 
@@ -178,8 +183,13 @@ public sealed class RequestQueue(
 
     public int MaxWaitSeconds => Math.Max(0, options.Value.MaxWaitSeconds);
 
-    public async Task<QueueOutcome> WaitForCapacityAsync(string model, CancellationToken cancellationToken)
+    public Task<QueueOutcome> WaitForCapacityAsync(string model, CancellationToken cancellationToken)
+        => WaitForCapacityAsync(model, PriorityClasses.Normal, cancellationToken);
+
+    public async Task<QueueOutcome> WaitForCapacityAsync(string model, string priorityClass, CancellationToken cancellationToken)
     {
+        var gate = priority is { Enabled: true } enabled ? enabled : null;
+        var rank = PriorityClasses.Rank(priorityClass);
         var settings = options.Value;
         var maxDepth = Math.Max(1, settings.MaxDepth);
 
@@ -192,6 +202,8 @@ public sealed class RequestQueue(
         }
 
         Interlocked.Increment(ref queued);
+        gate?.Queued(priorityClass);
+        using var standing = gate?.Waiting(model, priorityClass);
         var started = DateTimeOffset.UtcNow;
         var deadline = started.AddSeconds(Math.Max(0, settings.MaxWaitSeconds));
 
@@ -199,9 +211,10 @@ public sealed class RequestQueue(
         {
             while (true)
             {
-                if (!FleetSaturation.HasSaturatedFleet(registry, model))
+                if (!FleetSaturation.HasSaturatedFleet(registry, model) && gate?.HigherWaiting(model, rank) != true)
                 {
                     Interlocked.Increment(ref admitted);
+                    gate?.Released(priorityClass);
                     RecordWait(started);
                     return QueueOutcome.Admitted;
                 }
@@ -209,6 +222,7 @@ public sealed class RequestQueue(
                 if (DateTimeOffset.UtcNow >= deadline)
                 {
                     Interlocked.Increment(ref timedOut);
+                    gate?.TimedOut(priorityClass);
                     RecordWait(started);
                     logger.LogWarning(
                         "Request for model {Model} waited {Seconds}s for fleet capacity and timed out",

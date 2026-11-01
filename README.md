@@ -209,6 +209,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 123 | [The hub keeps what it relayed](#the-hub-keeps-what-it-relayed-v383) — `Relay:Cache`: a model a sealed fleet pulls crosses the hub's uplink once; the upstream is still asked every time (done) | `v3.83.0` |
 | 124 | [Models supplied through the coordinator](#models-supplied-through-the-coordinator-v384) — `Relay:Supply`: the hub fetches and checks a model once, or imports it from a disk for an air-gapped site, and its sealed nodes pull only from there (done) | `v3.84.0` |
 | 125 | [An audit trail](#an-audit-trail-v385) — `Audit:Enabled`: one line per request (who, from where, path, status, model, every node a job went to) and per node registered, refused or gone; never what was said (done) | `v3.85.0` |
+| 126 | [Priority classes](#priority-classes-v386) — `Auth:Clients[].Priority` essential, normal or background: when nodes fail or fill, background work waits and essential work keeps running (done) | `v3.86.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -1196,6 +1197,43 @@ GET /api/admin/audit?from=2026-10-31T00:00:00Z&node=<id>&who=alice&model=&event=
 - **Off by default, and it is the hub's eighth on-disk exception.** Each coordinator of a cluster
   writes its own. Not covered: which node ran an async image or video job (the submit's line is
   written at its 202), and tamper-evidence — a box's root can edit any file.
+
+### Priority classes (v3.86+)
+
+When nodes fail or every one of them is busy, some work matters more than other work. Give each
+client a class, and the hub keeps room for the essential ones and makes background work wait.
+
+```bash
+# on the coordinator
+Priority__Enabled=true                       # off by default
+Auth__Clients__0__Id=ops      Auth__Clients__0__Priority=essential
+Auth__Clients__1__Id=team                    # normal, the default
+Auth__Clients__2__Id=batch    Auth__Clients__2__Priority=background
+Priority__ReserveSlots=1                     # free places background work may not take
+Priority__BackgroundMaxWaitSeconds=600       # how long it waits before a 503
+```
+
+- **Background work leaves the last free places alone.** The hub counts the free places for the
+  model on the nodes it can route to now: per node, what is left of its `MaxConcurrency` and of
+  the model's slots, the lesser of the two. Background work goes only while more than
+  `ReserveSlots` are free. Otherwise it waits. It is paused, not refused, until
+  `BackgroundMaxWaitSeconds`.
+- **A failed node is lost capacity.** A node that disconnects, is paused by its owner, is over its
+  own limits or is cordoned has already left the count. So when nodes fail, background work is what
+  waits first, while essential and normal work runs on what is left.
+- **A wait does not overtake a higher class.** Requests waiting for a full fleet
+  (`Queue:MaxWaitSeconds`) go in class order for the same model.
+- **Essential work is not held for a slot.** With `Queue:SlotWaitSeconds` set, essential work goes
+  straight to the engine instead of waiting at the hub.
+- **A request may lower its own class** with `X-InferHub-Priority: background`, never raise it.
+  A misspelt class in config fails startup.
+- **You can see it.** `/api/status` has `priority` (per class: waiting, held, released, timed out,
+  requests), `/metrics` has `inferhub_priority_*{class=…}`, and the [audit trail](#an-audit-trail-v385)
+  gains `priority`. All only while it is on.
+- **What it does not do.** It never stops a running job to make room. It covers chat and generate
+  (`/api/chat`, `/api/generate`, `/v1/chat/completions`, `/v1/completions`), not embeddings,
+  tools, audio, images or video. A node that declares neither a concurrency cap nor slots has no
+  count the hub can reserve from, so nothing is held for it.
 
 ### A private corpus on a networked node
 
@@ -4558,6 +4596,7 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Relay:Cache:Enabled` | `false` | **v3.83+** — keep each blob the relay passed on, by its sha256, under `Relay:Cache:DataDirectory` (`./data/relay`; `/data/relay` in the image), within `Relay:Cache:MaxGiB` (200) and `Relay:Cache:KeepFreeGiB` (20). See [The hub keeps what it relayed](#the-hub-keeps-what-it-relayed-v383). |
 | `Relay:Supply:Enabled` | `false` | **v3.84+** — answer this hub's sealed nodes from models an admin fetched (`POST /api/admin/supply`) or imported from under `Relay:Supply:ImportDirectory` (`./data/import`; `/import` in the image), kept under `Relay:Supply:DataDirectory` (`./data/supply`; `/data/supply` in the image), without asking the upstream. `Relay:Supply:Only` refuses everything else; `Relay:Supply:HuggingFaceToken` is the hub's own; `Relay:Supply:KeepFreeGiB` (20). See [Models supplied through the coordinator](#models-supplied-through-the-coordinator-v384). |
 | `Audit:Enabled` | `false` | **v3.85+** — append one JSON line per audited request and node event to `Audit:DataDirectory` (`./data/audit`; `/data/audit` in the image), one file per UTC day, kept `Audit:RetentionDays` (90). Never a body, a query string or a key. Read with `GET /api/admin/audit`. See [An audit trail](#an-audit-trail-v385). |
+| `Priority:Enabled` | `false` | **v3.86+** — read `Auth:Clients[].Priority` (`essential`, `normal`, `background`). Background work never takes a model's last `Priority:ReserveSlots` (1) free places and waits up to `Priority:BackgroundMaxWaitSeconds` (600). See [Priority classes](#priority-classes-v386). |
 | `Images:MaxBatch` | `4` | v3.14. The absolute ceiling on `n`, whatever the size. A batch runs on **one** node. Bound by both hosts from the same section, so a request refused on a hub is refused identically on a solo node. |
 | `Images:MaxResponseBytes` | `26214400` | v3.14. An upper-bound estimate (`w × h × 4 × n`) checked *before a step runs*, with the refusal naming the largest `n` that fits. **Clamped by `Tools:MaxAttachmentBytes`** at use, because that cap sizes the mesh's SignalR message limit and exceeding a SignalR limit tears a node's connection down rather than failing a message. Raising one without the other gets you no change, deliberately. **v3.25: it bounds a video too** — there is no `Videos:` section, because two keys for one wire ceiling are two numbers you could raise independently. A clip's size cannot be estimated from its geometry (that is an encoder's output), so what the edge checks instead is that the recipe offers the `(size, seconds)` pair you asked for. |
 | `Images:SyncMaxWaitSeconds` | `120` | v3.15. How long `/v1/images/generations` waits for its own job before a `503` naming the async route. **The job keeps running** and the message carries its id — discarding a minute of GPU because an HTTP client got bored is your call, not the hub's. See [A job that takes two minutes](#a-job-that-takes-two-minutes-v315). |
