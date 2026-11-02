@@ -78,7 +78,10 @@ public static class ScrapeSnapshotBuilder
             (services.GetService(typeof(AuditTrail)) as AuditTrail)?.Snapshot(),
 
             // Phase 126. Null unless Priority:Enabled.
-            (services.GetService(typeof(PriorityGate)) as PriorityGate)?.Snapshot());
+            (services.GetService(typeof(PriorityGate)) as PriorityGate)?.Snapshot(),
+
+            // Phase 127. Null unless Identity:Enabled.
+            (services.GetService(typeof(InferHub.Coordinator.Auth.NodeCertificateAuthority)) as InferHub.Coordinator.Auth.NodeCertificateAuthority)?.Snapshot());
     }
 
     /// <summary>

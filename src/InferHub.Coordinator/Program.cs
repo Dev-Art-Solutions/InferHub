@@ -253,6 +253,13 @@ builder.Services.AddSingleton<InferHub.Coordinator.ChatGpt.ChatGptAccounts>();
 builder.Services.Configure<RelayOptions>(builder.Configuration.GetSection(RelayOptions.SectionName));
 builder.Services.AddNodeRelay();
 
+// Phase 127. A certificate per node — off by default; when off the shared enrollment secret works exactly as before.
+builder.Services.AddOptions<InferHub.Coordinator.Auth.NodeIdentityOptions>()
+    .Bind(builder.Configuration.GetSection(InferHub.Coordinator.Auth.NodeIdentityOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<InferHub.Coordinator.Auth.NodeIdentityOptions>, InferHub.Coordinator.Auth.NodeIdentityOptionsValidator>();
+builder.Services.AddSingleton<InferHub.Coordinator.Auth.NodeCertificateAuthority>();
+
 // Phase 125. The audit trail — off by default; when off the middleware passes straight through and nothing is created.
 builder.Services.AddOptions<AuditTrailOptions>()
     .Bind(builder.Configuration.GetSection(AuditTrailOptions.SectionName))
@@ -396,6 +403,7 @@ if (vectorStoreEnabled)
 app.MapNodeRelay();
 app.MapRelaySupply();
 app.MapAuditEndpoints();
+app.MapNodeIdentity();
 app.MapHub<NodeHub>("/hubs/node");
 
 app.Run();

@@ -29,6 +29,13 @@ public sealed class CoordinatorOptions
 
     public string EnrollmentSecret { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Phase 127: a one-time token from the coordinator's admin (<c>POST /api/admin/identity/tokens</c>). With it and no
+    /// certificate yet, the node makes its own key, enrolls once, and proves itself with the certificate from then on.
+    /// Spent on first use; env or the setup only.
+    /// </summary>
+    public string? EnrollmentToken { get; set; }
+
     public TimeSpan HeartbeatInterval { get; set; } = TimeSpan.FromSeconds(10);
 
     public TimeSpan ModelRefreshInterval { get; set; } = TimeSpan.FromSeconds(60);

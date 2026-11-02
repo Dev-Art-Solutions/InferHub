@@ -48,6 +48,21 @@ public sealed class NodeHub(
 
     public Task Register(NodeRegistration registration)
     {
+        // Phase 127 D2: a certificate names one node; it cannot register as another.
+        if (Context.Items.TryGetValue(NodeAuthFilter.CertifiedNodeKey, out var certified)
+            && certified is string certifiedId
+            && !string.Equals(certifiedId, registration.NodeId, StringComparison.Ordinal))
+        {
+            logger.LogWarning(
+                "Refusing registration on connection {ConnectionId}: its certificate is node {Certified}'s, and it registered as {Claimed}",
+                Context.ConnectionId,
+                certifiedId,
+                registration.NodeId);
+            Audit(AuditRecord.NodeRefused, registration.NodeId, registration.Name);
+            Context.Abort();
+            throw new HubException("this certificate belongs to another node");
+        }
+
         // Recognise any on-disk replicas the node reports BEFORE the registry fires its
         // Changed event, so the placement loop sees the existing holder and doesn't
         // schedule a full re-push for a replica the node already has on disk.

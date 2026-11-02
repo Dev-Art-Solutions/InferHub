@@ -37,7 +37,9 @@ public sealed record PrometheusScrape(
     // Phase 125. Null unless Audit:Enabled, which is exactly the v3.84 scrape.
     AuditTrailSnapshot? Audit = null,
     // Phase 126. Null unless Priority:Enabled.
-    PrioritySnapshot? Priority = null);
+    PrioritySnapshot? Priority = null,
+    // Phase 127. Null unless Identity:Enabled.
+    InferHub.Coordinator.Auth.NodeIdentitySnapshot? Identity = null);
 
 /// <summary>
 /// One configured provider, described rather than measured (phase 66, D5).
@@ -274,6 +276,17 @@ public static class PrometheusFormatter
             PerClass(builder, "inferhub_priority_held_total", "counter", "Requests of this class that had to wait for a place.", priority, c => c.Held);
             PerClass(builder, "inferhub_priority_released_total", "counter", "Waiting requests of this class let through.", priority, c => c.Released);
             PerClass(builder, "inferhub_priority_timed_out_total", "counter", "Waiting requests of this class whose wait ran out (503).", priority, c => c.TimedOut);
+        }
+
+        if (scrape.Identity is { } identity)
+        {
+            builder.Append("# HELP inferhub_node_certificates Node certificates this coordinator issued, by state.\n");
+            builder.Append("# TYPE inferhub_node_certificates gauge\n");
+            builder.Append("inferhub_node_certificates{state=\"active\"} ").Append(identity.Active.ToString(CultureInfo.InvariantCulture)).Append('\n');
+            builder.Append("inferhub_node_certificates{state=\"revoked\"} ").Append(identity.Revoked.ToString(CultureInfo.InvariantCulture)).Append('\n');
+            builder.Append("inferhub_node_certificates{state=\"expired\"} ").Append(identity.Expired.ToString(CultureInfo.InvariantCulture)).Append('\n');
+            Gauge(builder, "inferhub_node_enrollment_tokens", "One-time enrollment tokens not yet used or expired.", identity.PendingTokens);
+            Counter(builder, "inferhub_node_identity_refused_total", "Node connections, relay requests and enrollments refused by the certificate check.", identity.Refused);
         }
 
         PerAudio(builder, m.PerAudio);

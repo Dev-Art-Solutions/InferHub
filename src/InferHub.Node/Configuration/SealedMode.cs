@@ -308,7 +308,7 @@ public sealed class SealedEgress
 /// network fails before a socket opens, unless it is to the coordinator — and one to the coordinator's relay carries
 /// the node's secret. The keys are refused at boot; this is the floor under a code path nobody thought of.
 /// </summary>
-public sealed class SealedEgressHandler(SealedEgress egress) : DelegatingHandler
+public sealed class SealedEgressHandler(SealedEgress egress, Identity.NodeCredential? credential = null) : DelegatingHandler
 {
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
@@ -329,6 +329,17 @@ public sealed class SealedEgressHandler(SealedEgress egress) : DelegatingHandler
             && !request.Headers.Contains(NodeRelay.SecretHeader))
         {
             request.Headers.TryAddWithoutValidation(NodeRelay.SecretHeader, egress.Secret);
+        }
+
+        // Phase 127: with a certificate, every relay request carries a fresh proof (checked before the secret).
+        if (credential is not null
+            && uri.AbsolutePath.Contains(NodeRelay.PathPrefix + "/", StringComparison.OrdinalIgnoreCase)
+            && !request.Headers.Contains(NodeProof.CertificateHeader))
+        {
+            foreach (var (name, value) in credential.Proof())
+            {
+                request.Headers.TryAddWithoutValidation(name, value);
+            }
         }
 
         return base.SendAsync(request, cancellationToken);

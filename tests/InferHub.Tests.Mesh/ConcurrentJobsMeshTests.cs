@@ -170,17 +170,34 @@ public class ConcurrentJobsMeshTests
 
         public string Url => app.Urls.First();
 
-        public static async Task<JobMesh> StartAsync(int? configuredSlots = null, int? backendSlots = null, Action<IServiceCollection>? services = null)
+        // Phase 127: routes the hub maps beyond the node hub, and a node that carries a certificate (enrolling with a token).
+        private Action<WebApplication>? map;
+        private string? enrollmentToken;
+        private bool certificate;
+
+        public InferHub.Node.Identity.NodeCredential? Credential { get; private set; }
+
+        public static async Task<JobMesh> StartAsync(
+            int? configuredSlots = null,
+            int? backendSlots = null,
+            Action<IServiceCollection>? services = null,
+            Action<WebApplication>? map = null,
+            Func<IServiceProvider, string?>? enrollmentToken = null,
+            bool certificate = false,
+            bool waitForRegistration = true)
         {
             var mesh = new JobMesh
             {
                 scratch = Path.Combine(Path.GetTempPath(), "inferhub-concurrent-" + Guid.NewGuid().ToString("N")),
                 configuredSlots = configuredSlots,
-                services = services
+                services = services,
+                map = map,
+                certificate = certificate
             };
             mesh.Backend.ModelSlots = backendSlots;
             await mesh.StartCoordinatorAsync();
-            await mesh.StartNodeAsync();
+            mesh.enrollmentToken = enrollmentToken?.Invoke(mesh.Services);
+            await mesh.StartNodeAsync(waitForRegistration);
             return mesh;
         }
 
@@ -227,12 +244,13 @@ public class ConcurrentJobsMeshTests
 
             app = builder.Build();
             app.MapHub<NodeHub>("/hubs/node");
+            map?.Invoke(app);
 
             await app.StartAsync();
             Dispatcher = app.Services.GetRequiredService<Dispatcher>();
         }
 
-        private async Task StartNodeAsync()
+        private async Task StartNodeAsync(bool waitForRegistration)
         {
             var toolOptions = Options.Create(new ToolOptions());
             var runtime = new NoToolRuntime();
@@ -241,14 +259,26 @@ public class ConcurrentJobsMeshTests
                 NullLogger<ReplicaStore>.Instance);
             var nodeOptions = Options.Create(new NodeOptions { Name = NodeId, MaxConcurrency = 4, ModelSlots = configuredSlots });
 
+            var coordinatorOptions = Options.Create(new CoordinatorOptions
+            {
+                Url = app.Urls.First(),
+                EnrollmentSecret = Secret,
+                EnrollmentToken = enrollmentToken,
+                HeartbeatInterval = TimeSpan.FromSeconds(30),
+                ModelRefreshInterval = TimeSpan.FromSeconds(30),
+                RetryDelay = TimeSpan.FromMilliseconds(500)
+            });
+            Credential = certificate
+                ? new InferHub.Node.Identity.NodeCredential(
+                    coordinatorOptions,
+                    Options.Create(new NodeOptions { DataDirectory = Path.Combine(scratch, "node") }),
+                    new Microsoft.Extensions.Hosting.Internal.HostingEnvironment { ContentRootPath = scratch },
+                    new FixedIdentity(NodeId),
+                    NullLogger<InferHub.Node.Identity.NodeCredential>.Instance)
+                : null;
+
             node = new CoordinatorConnection(
-                Options.Create(new CoordinatorOptions
-                {
-                    Url = app.Urls.First(),
-                    EnrollmentSecret = Secret,
-                    HeartbeatInterval = TimeSpan.FromSeconds(30),
-                    ModelRefreshInterval = TimeSpan.FromSeconds(30)
-                }),
+                coordinatorOptions,
                 nodeOptions,
                 new FixedIdentity(NodeId),
                 Backend,
@@ -262,7 +292,15 @@ public class ConcurrentJobsMeshTests
                 replicas,
                 new NoBackendSupervisor(),
                 InferHub.Node.Resources.NoResourceGovernor.Instance,
-                NullLogger<CoordinatorConnection>.Instance);
+                NullLogger<CoordinatorConnection>.Instance,
+                credential: Credential);
+
+            if (!waitForRegistration)
+            {
+                // A refused node retries forever; its start never returns, so it runs beside the test.
+                _ = node.StartAsync(CancellationToken.None);
+                return;
+            }
 
             await node.StartAsync(CancellationToken.None);
             await WaitForAsync(() => Registry.FindConnectionIdByNodeId(NodeId) is not null);

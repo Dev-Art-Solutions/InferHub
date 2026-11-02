@@ -227,6 +227,8 @@ public static class NodeHostBuilderExtensions
         // Phase 43. Always registered, and inert without a profile: its effective state starts as
         // the node's own configuration, so a fleet that defines no profile behaves exactly as v3.10.
         builder.Services.AddSingleton<Profiles.NodeProfileApplier>();
+        // Phase 127. Inert without a certificate on disk and without Coordinator:EnrollmentToken.
+        builder.Services.AddSingleton<Identity.NodeCredential>();
         builder.Services.AddSingleton<CoordinatorConnection>();
         builder.Services.AddHostedService<Worker>();
 
@@ -770,7 +772,7 @@ public static class NodeHostBuilderExtensions
         builder.Services.AddSingleton<Backends.SealedOllama>();
         builder.Services.AddHttpClient(Backends.SealedOllama.RegistryClientName, http => http.Timeout = Timeout.InfiniteTimeSpan).RemoveAllLoggers();
         builder.Services.ConfigureHttpClientDefaults(http =>
-            http.AddHttpMessageHandler(services => new SealedEgressHandler(services.GetRequiredService<SealedEgress>())));
+            http.AddHttpMessageHandler(services => new SealedEgressHandler(services.GetRequiredService<SealedEgress>(), services.GetService<Identity.NodeCredential>())));
 
         // Inherited by `ollama serve` when the supervisor or the image starts it, and by every tool worker: Ollama's
         // cloud models and web search off, and Hugging Face's libraries reading only what is on disk.

@@ -87,7 +87,8 @@ public static class StatusEndpoint
                     services.GetService(typeof(RelaySupply)) as RelaySupply,
                     services.GetService(typeof(SupplyJobs)) as SupplyJobs),
                 (services.GetService(typeof(AuditTrail)) as AuditTrail)?.Snapshot(),
-                (services.GetService(typeof(PriorityGate)) as PriorityGate)?.Snapshot()));
+                (services.GetService(typeof(PriorityGate)) as PriorityGate)?.Snapshot(),
+                (services.GetService(typeof(InferHub.Coordinator.Auth.NodeCertificateAuthority)) as InferHub.Coordinator.Auth.NodeCertificateAuthority)?.Snapshot()));
         });
 
         return app;
@@ -376,7 +377,11 @@ public static class StatusEndpoint
         // Phase 126. Omitted unless Priority:Enabled, so a hub without classes reports v3.85's payload.
         [property: System.Text.Json.Serialization.JsonIgnore(
             Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-        PrioritySnapshot? Priority = null);
+        PrioritySnapshot? Priority = null,
+        // Phase 127. Omitted unless Identity:Enabled, so a hub without node certificates reports v3.86's payload.
+        [property: System.Text.Json.Serialization.JsonIgnore(
+            Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        InferHub.Coordinator.Auth.NodeIdentitySnapshot? Identity = null);
 
     internal sealed record RelayStatusBlock(
         [property: System.Text.Json.Serialization.JsonIgnore(

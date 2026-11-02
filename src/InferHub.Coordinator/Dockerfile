@@ -91,6 +91,10 @@ ENV Relay__Supply__ImportDirectory=/import
 # /app/data under USER app, the permissions trap once more. Inert unless the trail is on.
 ENV Audit__DataDirectory=/data/audit
 
+# Node certificates (phase 127): the CA key and the record of what was issued, under /data when Identity:Enabled=true.
+# Losing the volume means every node enrolls again. Inert unless identity is on.
+ENV Identity__DataDirectory=/data/identity
+
 EXPOSE 8080
 
 # Non-root. The runtime image ships this user for exactly this purpose.

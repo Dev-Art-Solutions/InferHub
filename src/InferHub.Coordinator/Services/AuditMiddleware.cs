@@ -74,6 +74,7 @@ public sealed class AuditMiddleware(RequestDelegate next, AuditTrail trail)
         => path.StartsWithSegments("/api")
             || path.StartsWithSegments(BearerApiKeyMiddleware.OpenAiPathPrefix)
             || path.StartsWithSegments(NodeRelay.PathPrefix)
+            || path.StartsWithSegments("/node/identity")
             || path.StartsWithSegments("/chatgpt-pairing");
 
     /// <summary>
@@ -115,6 +116,12 @@ public sealed class AuditMiddleware(RequestDelegate next, AuditTrail trail)
             return named;
         }
 
+        // Phase 127: a request a node proved with its certificate is that node's.
+        if (context.Items.TryGetValue(Auth.NodeAuthFilter.CertifiedNodeKey, out var certified) && certified is string nodeId)
+        {
+            return "node:" + nodeId;
+        }
+
         if (context.Items.TryGetValue(BearerApiKeyMiddleware.ClientItemKey, out var value) && value is ResolvedClient client)
         {
             return client.Id;
@@ -125,7 +132,7 @@ public sealed class AuditMiddleware(RequestDelegate next, AuditTrail trail)
             return "-";
         }
 
-        return context.Request.Path.StartsWithSegments(NodeRelay.PathPrefix) ? "node" : "-";
+        return context.Request.Path.StartsWithSegments("/node") ? "node" : "-";
     }
 
     // The path, never the query string: a query is where a caller's own text can ride (rule 7).

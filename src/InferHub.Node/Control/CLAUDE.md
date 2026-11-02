@@ -325,3 +325,52 @@ Tests: `RelaySupplyTests` (Coordinator — names, globs, the import root, lookup
 orphan blobs, off), `RelaySupplyMeshTests` (Mesh — fetched from a fake registry and Hugging Face behind a counting CDN,
 then served with the upstream stopped, pulled by the node's own `HuggingFaceClient`; `Only` refusing with the upstream
 untouched; corrupt bytes never supplied; an Ollama dir in both layouts and a Hugging Face cache imported; off).
+
+## Phase 127 (a certificate per node, issued by its coordinator, instead of one shared secret)
+
+Hub: `src/InferHub.Coordinator/Auth/NodeCertificateAuthority.cs` (`Identity:` options + validator, the CA, tokens, issue /
+renew / revoke, the proof check), `NodeIdentityEndpoints.cs` (`/api/admin/identity…`, `/node/identity/enroll|renew`),
+`NodeAuthFilter` (checks a proof before the secret), `NodeHub.Register` (the certificate's node id must be the one
+registered). Node: `src/InferHub.Node/Identity/NodeCredential.cs` (key, certificate, enroll, renew, proofs) and the hooks in
+`CoordinatorConnection.BuildConnection` / `ConnectUntilSuccessfulAsync` and `SealedEgressHandler`. Shared: `Contracts/NodeProof.cs`.
+
+**D1 — The coordinator is a CA for its own nodes, and a node's key never leaves it.** ECDSA P-256 CA created on first use
+in `Identity:DataDirectory` (`ca.key` PKCS#8 PEM + `ca.crt`, owner-only on Linux). The node makes its own P-256 key and sends
+only the SubjectPublicKeyInfo; the certificate is CN=node id, client-auth EKU, `CertificateDays` (90). **Considered and
+rejected: mutual TLS on the wire** — it needs TLS end to end at the hub, breaks behind every TLS-terminating proxy and
+tunnel a node's owner already uses, and .NET's SignalR client would need a client certificate store per platform. A signed
+proof in headers gives the same "this key, this node, now" over any transport; the certificate is standard X.509 so it can
+move to mTLS later without re-enrolling.
+
+**D2 — One-time tokens, one certificate per node.** `POST /api/admin/identity/tokens` returns a token once (only its SHA-256
+is kept), valid `TokenMinutes`; enrolling spends it. Enrolling again for the same node id revokes the previous certificate as
+superseded; renewal (`/node/identity/renew`, proved with the current certificate, after two thirds of its life, at connect
+time) does the same as renewed. `NodeHub.Register` refuses a connection whose certificate names another node id.
+
+**D3, load-bearing — the check.** Four headers (`NodeProof`): the certificate (DER b64), a signature over
+`inferhub-node-proof\n{nodeId}\n{unix}\n{nonce}`, the time, the nonce. The hub accepts it only if the certificate is one it
+**recorded** (SHA-256 thumbprint in `issued.json` — the record is the authority, the CA signature makes it readable by any
+tool), not revoked, not expired; the time within `ClockSkewSeconds` (300); the signature by the certificate's key over the
+**recorded** node id; and the nonce new (kept per node id, swept past 2× the window). The nonce is recorded last, so a bad
+signature cannot burn one a real node is about to use. The node signs a fresh proof per request: the WebSocket upgrade (the
+request `GetHttpContext()` returns, the one the hub checks) through `WebSocketConfiguration`, the negotiate through
+`NodeProofHandler`, each relay request through `SealedEgressHandler` — so SignalR's automatic reconnect never replays one.
+
+**D4 — A presented certificate is decided on its own; `Require` closes the secret.** If a certificate is presented and fails,
+the request is refused even when the shared secret beside it is right — so a revoked node that still has the secret in its
+config does not get back in by sending both. It can still drop the certificate and send only the secret unless
+`Identity:Require=true`, which refuses every node without one. `Require` without `Enabled` fails startup.
+
+**D5 — Revocation is immediate.** `POST /api/admin/identity/nodes/{id}/revoke` marks every certificate of that node id and
+aborts its live connection (`INodeConnectionTracker.Abort`); its reconnects are refused from then on. There is no CRL or
+OCSP: the hub that issued is the only party that checks.
+
+**D6 — Rule 4's ninth exception.** Off by default; when off the filter is the 3.86 secret check, no directory, no status
+key, no series, every route 404 naming the key. The directory holds the CA key and the record; losing it costs every node
+an enrollment, never a node let in. Each coordinator of an HA pair has its own CA — **not shared**: a node enrolled with
+one is refused by the other (named, not solved; share the directory read-write between them at your own risk).
+
+Tests: `NodeIdentityTests` (Coordinator — token spent/expired, replay, clock skew, a foreign key, a self-signed lookalike,
+another node's id, superseded/revoked/expired by name, renewal, restart, the filter under Require and the no-fallback rule,
+the scrape), `NodeIdentityMeshTests` (real SignalR + HTTP: enroll with a token and run a job; an aborted connection comes
+back with a fresh proof; revoke drops it and keeps it out; the secret alone refused under Require; accepted without it).

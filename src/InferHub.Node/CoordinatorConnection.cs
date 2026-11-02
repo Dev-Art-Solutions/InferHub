@@ -40,7 +40,8 @@ public sealed class CoordinatorConnection(
     Resources.Limits.IEngineLimiter? limiter = null,
     InferHub.Shared.Quota.QuotaTracker? quota = null,
     Control.NodeSharing? sharing = null,
-    Fit.HubManagement? management = null) : IAsyncDisposable
+    Fit.HubManagement? management = null,
+    Identity.NodeCredential? credential = null) : IAsyncDisposable
 {
     /// <summary>
     /// Phase 97's catalogue report, one per engine that has a catalogue (99): each has its own hub
@@ -786,7 +787,7 @@ public sealed class CoordinatorConnection(
         var hubUrl = BuildHubUrl(coordinatorUrl);
         var enrollmentSecret = coordinator.EnrollmentSecret;
 
-        if (string.IsNullOrWhiteSpace(enrollmentSecret))
+        if (string.IsNullOrWhiteSpace(enrollmentSecret) && credential is not { HasCertificate: true })
         {
             logger.LogWarning(
                 "Coordinator:EnrollmentSecret is not configured; the coordinator will refuse this node.");
@@ -798,6 +799,21 @@ public sealed class CoordinatorConnection(
                 if (!string.IsNullOrWhiteSpace(enrollmentSecret))
                 {
                     options.Headers["X-Node-Enrollment-Secret"] = enrollmentSecret;
+                }
+
+                // Phase 127: a fresh proof on every request the client makes — the negotiate through the handler, the
+                // WebSocket upgrade (the one the hub checks) through its own callback. An automatic reconnect makes new
+                // ones too, so a nonce is never sent twice. No certificate: both add nothing.
+                if (credential is not null)
+                {
+                    options.HttpMessageHandlerFactory = inner => new Identity.NodeProofHandler(credential) { InnerHandler = inner };
+                    options.WebSocketConfiguration = socket =>
+                    {
+                        foreach (var (name, value) in credential.Proof())
+                        {
+                            socket.SetRequestHeader(name, value);
+                        }
+                    };
                 }
             });
 
@@ -937,6 +953,13 @@ public sealed class CoordinatorConnection(
                 try
                 {
                     logger.LogInformation("Connecting to coordinator {CoordinatorUrl}", url);
+
+                    // Phase 127: enroll with a one-time token, or renew a certificate past two thirds of its life.
+                    if (credential is not null)
+                    {
+                        await credential.EnsureAsync(url, cancellationToken);
+                    }
+
                     var candidate = BuildConnection(url);
                     RegisterConnectionHandlers(candidate);
 

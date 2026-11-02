@@ -210,6 +210,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 124 | [Models supplied through the coordinator](#models-supplied-through-the-coordinator-v384) — `Relay:Supply`: the hub fetches and checks a model once, or imports it from a disk for an air-gapped site, and its sealed nodes pull only from there (done) | `v3.84.0` |
 | 125 | [An audit trail](#an-audit-trail-v385) — `Audit:Enabled`: one line per request (who, from where, path, status, model, every node a job went to) and per node registered, refused or gone; never what was said (done) | `v3.85.0` |
 | 126 | [Priority classes](#priority-classes-v386) — `Auth:Clients[].Priority` essential, normal or background: when nodes fail or fill, background work waits and essential work keeps running (done) | `v3.86.0` |
+| 127 | [A certificate per node](#a-certificate-per-node-v387) — `Identity:Enabled`: the coordinator issues each node its own certificate from a one-time token, every connection is signed with it, and one node can be revoked and dropped at once (done) | `v3.87.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -1234,6 +1235,52 @@ Priority__BackgroundMaxWaitSeconds=600       # how long it waits before a 503
   (`/api/chat`, `/api/generate`, `/v1/chat/completions`, `/v1/completions`), not embeddings,
   tools, audio, images or video. A node that declares neither a concurrency cap nor slots has no
   count the hub can reserve from, so nothing is held for it.
+
+### A certificate per node (v3.87+)
+
+Every node used to prove itself with the same enrollment secret. Anyone with it could join, and
+taking one node out meant changing the secret on all of them. Now the coordinator can issue each
+node its own certificate, and revoke one node on its own.
+
+```bash
+# on the coordinator
+Identity__Enabled=true                 # off by default
+Identity__Require=true                 # optional: no certificate, no connection
+```
+
+```http
+POST /api/admin/identity/tokens                  {"label": "gpu-3"}   → a one-time token, shown once
+GET  /api/admin/identity                         the certificates, their state, the CA fingerprint
+POST /api/admin/identity/nodes/{nodeId}/revoke   {"reason": "…"}      → revoked and disconnected now
+```
+
+```bash
+# on the node, once
+Coordinator__EnrollmentToken=ihn_…
+```
+
+- **The node's key stays on the node.** With a token and no certificate, the node makes its own
+  ECDSA P-256 key under `<Node:DataDirectory>/identity/`, sends only the public half, and gets a
+  certificate for its node id (`Identity:CertificateDays`, 90). The token is spent. The node
+  renews by itself once two thirds of the certificate's life have passed.
+- **Every connection is signed.** The hub connection and every relay request of a sealed node
+  carry the certificate and a fresh signature over the node id, the time and a nonce. The hub
+  accepts only a certificate it issued and has not revoked, a time within
+  `Identity:ClockSkewSeconds`, and a nonce it has not seen. A captured set of headers is useless
+  the second time. A certificate cannot register as another node.
+- **Revoking is immediate.** The node is disconnected and refused from then on. A certificate that
+  fails is never rescued by the shared secret sent beside it.
+- **`Require` closes the old door.** Without it a node with no certificate can still use the
+  shared secret, so existing fleets keep working while nodes enroll one by one. With it, the shared
+  secret alone is refused.
+- **Visible.** `/api/status` has `identity` (active, revoked, expired, pending tokens, refused,
+  the CA fingerprint), `/metrics` has `inferhub_node_certificates{state}`,
+  `inferhub_node_enrollment_tokens` and `inferhub_node_identity_refused_total`, and the
+  [audit trail](#an-audit-trail-v385) names a certified node as `node:<id>`. All only while it is on.
+- **Keep the directory.** It holds the CA key and the record of what was issued. Losing it means
+  every node enrolls again; it never lets a node in. Each coordinator of an HA pair has its own CA.
+- **Not mutual TLS.** The proof travels in headers, so it works through any proxy or tunnel in
+  front of the coordinator. The certificates are standard X.509.
 
 ### A private corpus on a networked node
 
@@ -4597,6 +4644,7 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Relay:Supply:Enabled` | `false` | **v3.84+** — answer this hub's sealed nodes from models an admin fetched (`POST /api/admin/supply`) or imported from under `Relay:Supply:ImportDirectory` (`./data/import`; `/import` in the image), kept under `Relay:Supply:DataDirectory` (`./data/supply`; `/data/supply` in the image), without asking the upstream. `Relay:Supply:Only` refuses everything else; `Relay:Supply:HuggingFaceToken` is the hub's own; `Relay:Supply:KeepFreeGiB` (20). See [Models supplied through the coordinator](#models-supplied-through-the-coordinator-v384). |
 | `Audit:Enabled` | `false` | **v3.85+** — append one JSON line per audited request and node event to `Audit:DataDirectory` (`./data/audit`; `/data/audit` in the image), one file per UTC day, kept `Audit:RetentionDays` (90). Never a body, a query string or a key. Read with `GET /api/admin/audit`. See [An audit trail](#an-audit-trail-v385). |
 | `Priority:Enabled` | `false` | **v3.86+** — read `Auth:Clients[].Priority` (`essential`, `normal`, `background`). Background work never takes a model's last `Priority:ReserveSlots` (1) free places and waits up to `Priority:BackgroundMaxWaitSeconds` (600). See [Priority classes](#priority-classes-v386). |
+| `Identity:Enabled` | `false` | **v3.87+** — the coordinator issues node certificates (CA under `Identity:DataDirectory`, `./data/identity`; `/data/identity` in the image). `Identity:Require` refuses a node without one; `Identity:CertificateDays` (90), `Identity:TokenMinutes` (60), `Identity:ClockSkewSeconds` (300). On the node: `Coordinator:EnrollmentToken`. See [A certificate per node](#a-certificate-per-node-v387). |
 | `Images:MaxBatch` | `4` | v3.14. The absolute ceiling on `n`, whatever the size. A batch runs on **one** node. Bound by both hosts from the same section, so a request refused on a hub is refused identically on a solo node. |
 | `Images:MaxResponseBytes` | `26214400` | v3.14. An upper-bound estimate (`w × h × 4 × n`) checked *before a step runs*, with the refusal naming the largest `n` that fits. **Clamped by `Tools:MaxAttachmentBytes`** at use, because that cap sizes the mesh's SignalR message limit and exceeding a SignalR limit tears a node's connection down rather than failing a message. Raising one without the other gets you no change, deliberately. **v3.25: it bounds a video too** — there is no `Videos:` section, because two keys for one wire ceiling are two numbers you could raise independently. A clip's size cannot be estimated from its geometry (that is an encoder's output), so what the edge checks instead is that the recipe offers the `(size, seconds)` pair you asked for. |
 | `Images:SyncMaxWaitSeconds` | `120` | v3.15. How long `/v1/images/generations` waits for its own job before a `503` naming the async route. **The job keeps running** and the message carries its id — discarding a minute of GPU because an HTTP client got bored is your call, not the hub's. See [A job that takes two minutes](#a-job-that-takes-two-minutes-v315). |

@@ -35,6 +35,7 @@ public static class NodeSettingsSchema
         new("Coordinator:Enabled", "bool", false, "network", "Join a network: connect to a coordinator."),
         new("Coordinator:Url", "string", false, "network", "The coordinator's address, e.g. https://hub.example.com/."),
         new("Coordinator:EnrollmentSecret", "secret", false, "network", "The secret the coordinator expects from its nodes."),
+        new("Coordinator:EnrollmentToken", "secret", false, "network", "A one-time token from the coordinator's admin: this node enrolls once and gets its own certificate."),
         new("LocalApi:Urls", "string", false, "local", "Where this node's own API listens, e.g. http://127.0.0.1:5081."),
         new("LocalApi:ApiKeys", "json", false, "local", "Keys a client of the local API must send (an array). Not shown once set.", null),
         new("LocalApi:Retrieval:Enabled", "bool", false, "local", "RAG over a corpus on this node."),
