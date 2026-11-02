@@ -84,3 +84,15 @@ authentication later would not need nodes to enroll again.
     `node:3cb7447d-…` for the relay request.
   - Revoked with a reason: the node was gone from the fleet in 161 ms, and each retry (certificate and secret both) was
     refused naming the revocation and the reason. `/metrics`: one revoked certificate, 18 refusals.
+
+## The published images
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.87.0` and `inferhub-node:3.87.0` both carry revision `a36ce46`. Docker
+Desktop was not running, so both images' `/app` were pulled through GHCR's registry API and run natively (`/health` said
+`3.87.0`), with `Identity:Require`, the relay and the audit trail on, and a fresh identity directory.
+
+- A token from the published coordinator; the published node enrolled with it (a new CA, fingerprint `5acbc4b1…`, the same
+  in both logs), registered, and a chat through it answered 200 in 2.3 s.
+- A pull on the sealed node: the manifest came through the relay, signed with the certificate.
+- Revoked: gone from the fleet in 173 ms; the retry refused naming the revocation and the reason.
+- Not run: the containers themselves.
