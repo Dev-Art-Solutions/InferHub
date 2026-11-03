@@ -65,3 +65,14 @@ package. A coordinator older than 3.88 ignores the report; the node's log and co
 - The rules from `/api/control/firewall`: the PowerShell script parsed with 0 errors (PowerShell's own parser; not run);
   the nftables file, regenerated with the fix through the `firewall` verb, has 0 CR bytes and `nft -c` in WSL Ubuntu accepts
   it, where a CRLF control file is rejected with the same error as before the fix.
+
+## The published images
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.88.0` and `inferhub-node:3.88.0` both carry revision `5340a84`. Docker
+Desktop was not running, so both images' `/app` were pulled through GHCR's registry API and run natively.
+
+- The published node's `firewall nftables --no-dns` printed rules with 0 CR bytes, and `nft -c` in WSL accepted them.
+- The published sealed node, against the published coordinator, reported all three probes open on this machine:
+  `nodes[].egress.open` on `/api/status`, `inferhub_node_egress_open{node=…} 3`, and the coordinator's warning.
+  `POST /api/control/egress/check` ran a check on demand.
+- Not run: the containers themselves, and the rules applied.
