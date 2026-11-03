@@ -41,7 +41,8 @@ public sealed class CoordinatorConnection(
     InferHub.Shared.Quota.QuotaTracker? quota = null,
     Control.NodeSharing? sharing = null,
     Fit.HubManagement? management = null,
-    Identity.NodeCredential? credential = null) : IAsyncDisposable
+    Identity.NodeCredential? credential = null,
+    Configuration.EgressCheck? egress = null) : IAsyncDisposable
 {
     /// <summary>
     /// Phase 97's catalogue report, one per engine that has a catalogue (99): each has its own hub
@@ -67,6 +68,7 @@ public sealed class CoordinatorConnection(
     private Task? modelRefreshTask;
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> activeJobs = new();
     private int inFlight;
+    private int subscribedToEgress;
 
     /// <summary>Mesh jobs running on this node now — what an automatic update waits to reach zero (101 D4).</summary>
     public int InFlight => Volatile.Read(ref inFlight);
@@ -344,6 +346,30 @@ public sealed class CoordinatorConnection(
         // next refresh — the same re-report a recovered backend sends.
         sharing.SharedModelsChanged += OnBackendRecovered;
     }
+
+    /// <summary>
+    /// Phase 128: a sealed node's egress check, to the hub on registration and whenever a check runs. A hub older than
+    /// 3.88 has no such method; the node's own log and /api/control/egress still say it.
+    /// </summary>
+    private async Task ReportEgressStateAsync(CancellationToken cancellationToken)
+    {
+        if (egress?.Latest is not { } state || connection is not { State: HubConnectionState.Connected } activeConnection)
+        {
+            return;
+        }
+
+        try
+        {
+            await activeConnection.InvokeAsync("ReportEgressState", state, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogDebug(ex, "Could not report the egress check to the coordinator");
+        }
+    }
+
+    private void OnEgressChecked(NodeEgressState state)
+        => _ = Task.Run(() => ReportEgressStateAsync(lifetime.Token));
 
     private void OnSharingChanged(NodeSharingState state)
     {
@@ -1083,6 +1109,13 @@ public sealed class CoordinatorConnection(
         await ReportLimitsStateAsync(cancellationToken);
         // Phase 113: before any job can be routed here, whether this node takes them.
         await ReportSharingStateAsync(cancellationToken);
+
+        if (egress is not null && Interlocked.Exchange(ref subscribedToEgress, 1) == 0)
+        {
+            egress.Changed += OnEgressChecked;
+        }
+
+        await ReportEgressStateAsync(cancellationToken);
         // Phase 106: a provider at its limit is exactly when the engine may look down.
         await ReportQuotaStateAsync(cancellationToken);
 

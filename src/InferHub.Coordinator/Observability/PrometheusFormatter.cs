@@ -39,7 +39,9 @@ public sealed record PrometheusScrape(
     // Phase 126. Null unless Priority:Enabled.
     PrioritySnapshot? Priority = null,
     // Phase 127. Null unless Identity:Enabled.
-    InferHub.Coordinator.Auth.NodeIdentitySnapshot? Identity = null);
+    InferHub.Coordinator.Auth.NodeIdentitySnapshot? Identity = null,
+    // Phase 128. Empty unless a sealed node reported its egress check.
+    IReadOnlyList<NodeEgressState>? Egress = null);
 
 /// <summary>
 /// One configured provider, described rather than measured (phase 66, D5).
@@ -276,6 +278,18 @@ public static class PrometheusFormatter
             PerClass(builder, "inferhub_priority_held_total", "counter", "Requests of this class that had to wait for a place.", priority, c => c.Held);
             PerClass(builder, "inferhub_priority_released_total", "counter", "Waiting requests of this class let through.", priority, c => c.Released);
             PerClass(builder, "inferhub_priority_timed_out_total", "counter", "Waiting requests of this class whose wait ran out (503).", priority, c => c.TimedOut);
+        }
+
+        if (scrape.Egress is { Count: > 0 } egress)
+        {
+            builder.Append("# HELP inferhub_node_egress_open Probes outside the network a sealed node's operating system let it reach (0: sealed).\n");
+            builder.Append("# TYPE inferhub_node_egress_open gauge\n");
+
+            foreach (var state in egress.OrderBy(e => e.NodeId, StringComparer.Ordinal))
+            {
+                builder.Append("inferhub_node_egress_open{node=\"").Append(state.NodeId).Append("\"} ")
+                    .Append(state.Open.Count.ToString(CultureInfo.InvariantCulture)).Append('\n');
+            }
         }
 
         if (scrape.Identity is { } identity)

@@ -56,6 +56,32 @@ internal static partial class LocalControlEndpoints
         group.MapPut("/settings/file", SaveFileAsync);
         group.MapPut("/sharing", SetSharingAsync);
         group.MapPost("/restart", Restart);
+
+        // Phase 128: what a sealed node's egress check found, and firewall rules that match it.
+        group.MapGet("/egress", (IServiceProvider services) =>
+            services.GetService<Configuration.EgressCheck>() is { } check
+                ? Results.Json(new { sealedNode = true, latest = check.Latest }, Json)
+                : Results.Json(new { sealedNode = false, message = "this node is not sealed (Node:Sealed=false); nothing is checked" }, Json));
+        group.MapPost("/egress/check", async (IServiceProvider services, CancellationToken cancellationToken) =>
+            services.GetService<Configuration.EgressCheck>() is { } check
+                ? Results.Json(await check.CheckAsync(cancellationToken), Json)
+                : Results.Conflict(new { error = "this node is not sealed (Node:Sealed=false)" }));
+        group.MapGet("/firewall", (Microsoft.Extensions.Options.IOptions<Configuration.CoordinatorOptions> coordinator, string? format, bool? dns) =>
+        {
+            try
+            {
+                var rules = Configuration.SealedFirewall.Rules(
+                    format ?? (OperatingSystem.IsWindows() ? Configuration.SealedFirewall.PowerShell : Configuration.SealedFirewall.Nftables),
+                    Configuration.SealedFirewall.Targets(coordinator.Value),
+                    dns ?? true,
+                    DateTimeOffset.UtcNow);
+                return Results.Text(rules, "text/plain; charset=utf-8");
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+        });
         group.MapGet("/models", ModelsAsync);
         group.MapPost("/models/{name}/{action}", ModelCommandAsync);
         group.MapDelete("/models/{name}", (HttpContext context, string name, string? engine, string? tool) =>

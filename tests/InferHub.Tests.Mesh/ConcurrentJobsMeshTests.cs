@@ -174,6 +174,7 @@ public class ConcurrentJobsMeshTests
         private Action<WebApplication>? map;
         private string? enrollmentToken;
         private bool certificate;
+        private InferHub.Node.Configuration.EgressCheck? egress;
 
         public InferHub.Node.Identity.NodeCredential? Credential { get; private set; }
 
@@ -184,7 +185,8 @@ public class ConcurrentJobsMeshTests
             Action<WebApplication>? map = null,
             Func<IServiceProvider, string?>? enrollmentToken = null,
             bool certificate = false,
-            bool waitForRegistration = true)
+            bool waitForRegistration = true,
+            InferHub.Node.Configuration.EgressCheck? egress = null)
         {
             var mesh = new JobMesh
             {
@@ -192,7 +194,8 @@ public class ConcurrentJobsMeshTests
                 configuredSlots = configuredSlots,
                 services = services,
                 map = map,
-                certificate = certificate
+                certificate = certificate,
+                egress = egress
             };
             mesh.Backend.ModelSlots = backendSlots;
             await mesh.StartCoordinatorAsync();
@@ -293,7 +296,8 @@ public class ConcurrentJobsMeshTests
                 new NoBackendSupervisor(),
                 InferHub.Node.Resources.NoResourceGovernor.Instance,
                 NullLogger<CoordinatorConnection>.Instance,
-                credential: Credential);
+                credential: Credential,
+                egress: egress);
 
             if (!waitForRegistration)
             {

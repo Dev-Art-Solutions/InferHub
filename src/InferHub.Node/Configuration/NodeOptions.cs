@@ -61,6 +61,9 @@ public sealed class NodeOptions
     /// <c>Relay</c>. Off by default; a restart applies it.
     /// </summary>
     public bool Sealed { get; set; }
+
+    /// <summary>Phase 128: how a sealed node checks that the machine itself reaches nothing outside. Read only while sealed.</summary>
+    public EgressOptions Egress { get; set; } = new();
 }
 
 /// <summary>

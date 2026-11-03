@@ -374,3 +374,38 @@ Tests: `NodeIdentityTests` (Coordinator — token spent/expired, replay, clock s
 another node's id, superseded/revoked/expired by name, renewal, restart, the filter under Require and the no-fallback rule,
 the scrape), `NodeIdentityMeshTests` (real SignalR + HTTP: enroll with a token and run a job; an aborted connection comes
 back with a fresh proof; revoke drops it and keeps it out; the secret alone refused under Require; accepted without it).
+
+## Phase 128 (network rules that match a sealed node, and a check that the machine itself is sealed)
+
+`src/InferHub.Node/Configuration/SealedNetwork.cs` (`Node:Egress:` options, `EgressCheck`, `SealedFirewall`, the `firewall`
+verb), `LocalApi/LocalControlEndpoints.cs` (`/api/control/egress`, `/egress/check`, `/firewall`), `CoordinatorConnection`
+(`ReportEgressState` on registration and after each check). Hub: `Services/NodeEgressRegistry.cs`, `NodeHub.ReportEgressState`,
+`nodes[].egress` on `/api/status`, `inferhub_node_egress_open{node}`. Shared: `Contracts/NodeEgressState.cs`.
+
+**D1, load-bearing — the check is below InferHub's own code.** 122's `SealedEgressHandler` stops InferHub's HTTP clients; it
+says nothing about the operating system, which lets every other program — and an engine's own downloader — out. So a sealed
+node tries a bare TCP connect (no byte sent) to `Node:Egress:Probes` (default `1.1.1.1:443`, `8.8.8.8:443`, `9.9.9.9:443`) at
+start and every `CheckMinutes` (15): a probe that connects is an open door. **IP literals only** — a name would need DNS, and
+the resolver the rules allow would make a closed machine look open; a name in the list is never probed. Empty list: off.
+Registered only under `Node:Sealed`; a node that is not sealed probes nothing and reports nothing.
+
+**D2 — The rules are generated from the node's own config.** `InferHub.Node firewall [powershell|nftables] [--no-dns]` (and
+`GET /api/control/firewall?format=&dns=`) resolves every coordinator endpoint now and prints: allow TCP to those addresses and
+ports, optionally DNS (to the system resolvers on Windows; port 53 on nftables, with a note to narrow it), loopback and
+replies kept, everything else dropped (`DefaultOutboundAction Block` / `policy drop`), with the undo line in the header. A
+host that does not resolve is a comment saying so, never a silently missing rule. **The nftables text is LF always** — on
+Windows `AppendLine` wrote CRLF and `nft -c` rejected every line ("unexpected junk"); found by checking the generated file.
+
+**D3 — Printed, never applied.** The rules change the whole machine's network (Windows Defender Firewall applies block
+rules before allow rules, so they cannot be scoped to InferHub's processes without blocking everything for them anyway);
+that is its owner's decision, and an InferHub that rewrote a firewall would be one bug away from cutting a box off.
+**Considered and rejected: applying them from the installer** — named as a later step, behind its own explicit question.
+
+**D4 — The hub is told, and only told.** `ReportEgressState` lands in `NodeEgressRegistry` under the node id the connection
+registered as (never the report's); an open door is logged once per change, shown on `/api/status` and counted on
+`/metrics`. The hub does not refuse the node: it is still the operator's machine, and refusing work would punish the fleet
+for a fact it can do nothing about. A hub older than 3.88 has no such method; the node's log and control API still say it.
+
+Tests: `SealedNetworkTests` (Node — a probe that connects and one refused, names never probed, the verdict, the event, both
+rule formats, IPv6, an unresolved host, no CR in nftables, the verb), `EgressCheckMeshTests` (real SignalR: the check reaches
+the hub on registration and a later check replaces it; the scrape).

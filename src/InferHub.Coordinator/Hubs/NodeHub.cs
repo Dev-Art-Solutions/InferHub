@@ -192,6 +192,18 @@ public sealed class NodeHub(
     /// Phase 113: whether a node takes new jobs, as its owner set it — the mailbox again, and the hub holds it: the
     /// router skips a paused node as it skips an over-cap one. A node that said nothing is never read as paused.
     /// </summary>
+    /// <summary>Phase 128: a sealed node's check that its machine reaches nothing outside, kept under the id it registered as.</summary>
+    public Task ReportEgressState(NodeEgressState state)
+    {
+        if (services.GetService(typeof(NodeEgressRegistry)) is NodeEgressRegistry egress
+            && registry.Snapshot(DateTimeOffset.UtcNow).FirstOrDefault(node => node.ConnectionId == Context.ConnectionId) is { } node)
+        {
+            egress.Report(node.NodeId, node.Name, state);
+        }
+
+        return Task.CompletedTask;
+    }
+
     public Task ReportSharingState(NodeSharingState state)
     {
         registry.RecordSharing(Context.ConnectionId, state);

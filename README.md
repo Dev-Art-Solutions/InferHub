@@ -211,6 +211,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 125 | [An audit trail](#an-audit-trail-v385) — `Audit:Enabled`: one line per request (who, from where, path, status, model, every node a job went to) and per node registered, refused or gone; never what was said (done) | `v3.85.0` |
 | 126 | [Priority classes](#priority-classes-v386) — `Auth:Clients[].Priority` essential, normal or background: when nodes fail or fill, background work waits and essential work keeps running (done) | `v3.86.0` |
 | 127 | [A certificate per node](#a-certificate-per-node-v387) — `Identity:Enabled`: the coordinator issues each node its own certificate from a one-time token, every connection is signed with it, and one node can be revoked and dropped at once (done) | `v3.87.0` |
+| 128 | [Firewall rules for a sealed node](#firewall-rules-for-a-sealed-node-v388) — the node prints OS firewall rules that let it reach only its coordinator, and checks below InferHub that its machine reaches nothing else, telling its coordinator (done) | `v3.88.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -1281,6 +1282,38 @@ Coordinator__EnrollmentToken=ihn_…
   every node enrolls again; it never lets a node in. Each coordinator of an HA pair has its own CA.
 - **Not mutual TLS.** The proof travels in headers, so it works through any proxy or tunnel in
   front of the coordinator. The certificates are standard X.509.
+
+### Firewall rules for a sealed node (v3.88+)
+
+A [sealed node](#a-sealed-node-v382) keeps InferHub's own code off the internet. It cannot stop
+anything else on the machine. That is the operating system's firewall, so now the node writes the
+rules for it and checks that they are in place.
+
+```bash
+InferHub.Node firewall powershell      # Windows Defender Firewall, run the output as Administrator
+InferHub.Node firewall nftables        # Linux: save the output, then nft -f it as root
+InferHub.Node firewall nftables --no-dns   # the coordinator is an IP or in /etc/hosts
+```
+
+```http
+GET  /api/control/firewall?format=nftables&dns=false   the same rules, from the node's control API
+GET  /api/control/egress                               what the last check found
+POST /api/control/egress/check                         check now
+```
+
+- **Rules from the node's own config.** Outbound TCP to each coordinator endpoint (resolved when
+  the rules are printed), DNS unless `--no-dns`, loopback and replies kept, and everything else
+  dropped. The undo line is at the top. A coordinator name that does not resolve is a comment
+  saying so, not a missing rule.
+- **Printed, never applied.** They change the whole machine's network, so applying them is the
+  machine owner's decision.
+- **The check.** A sealed node tries a bare TCP connect to each `Node:Egress:Probes` address (IP
+  literals; nothing is sent) at start and every `Node:Egress:CheckMinutes`. Any that connects is an
+  open door. The node logs it, `/api/control/egress` shows it, and the coordinator gets it.
+- **The coordinator is told.** `/api/status` gains `nodes[].egress` (`probed`, `open`,
+  `closed`, `checkedUtc`) and `/metrics` gains `inferhub_node_egress_open{node}` (0 means
+  sealed). It logs a warning when a sealed node can reach outside. It does not refuse the node.
+- A node that is not sealed probes nothing and reports nothing.
 
 ### A private corpus on a networked node
 
@@ -4645,6 +4678,7 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Audit:Enabled` | `false` | **v3.85+** — append one JSON line per audited request and node event to `Audit:DataDirectory` (`./data/audit`; `/data/audit` in the image), one file per UTC day, kept `Audit:RetentionDays` (90). Never a body, a query string or a key. Read with `GET /api/admin/audit`. See [An audit trail](#an-audit-trail-v385). |
 | `Priority:Enabled` | `false` | **v3.86+** — read `Auth:Clients[].Priority` (`essential`, `normal`, `background`). Background work never takes a model's last `Priority:ReserveSlots` (1) free places and waits up to `Priority:BackgroundMaxWaitSeconds` (600). See [Priority classes](#priority-classes-v386). |
 | `Identity:Enabled` | `false` | **v3.87+** — the coordinator issues node certificates (CA under `Identity:DataDirectory`, `./data/identity`; `/data/identity` in the image). `Identity:Require` refuses a node without one; `Identity:CertificateDays` (90), `Identity:TokenMinutes` (60), `Identity:ClockSkewSeconds` (300). On the node: `Coordinator:EnrollmentToken`. See [A certificate per node](#a-certificate-per-node-v387). |
+| `Node:Egress:Probes` | `1.1.1.1:443`, `8.8.8.8:443`, `9.9.9.9:443` | **v3.88+**, node, sealed only — addresses (IP:port) a sealed node tries with a bare TCP connect to check that its machine reaches nothing outside; empty turns the check off. `Node:Egress:CheckMinutes` (15; 0 = only at start), `Node:Egress:TimeoutSeconds` (3). See [Firewall rules for a sealed node](#firewall-rules-for-a-sealed-node-v388). |
 | `Images:MaxBatch` | `4` | v3.14. The absolute ceiling on `n`, whatever the size. A batch runs on **one** node. Bound by both hosts from the same section, so a request refused on a hub is refused identically on a solo node. |
 | `Images:MaxResponseBytes` | `26214400` | v3.14. An upper-bound estimate (`w × h × 4 × n`) checked *before a step runs*, with the refusal naming the largest `n` that fits. **Clamped by `Tools:MaxAttachmentBytes`** at use, because that cap sizes the mesh's SignalR message limit and exceeding a SignalR limit tears a node's connection down rather than failing a message. Raising one without the other gets you no change, deliberately. **v3.25: it bounds a video too** — there is no `Videos:` section, because two keys for one wire ceiling are two numbers you could raise independently. A clip's size cannot be estimated from its geometry (that is an encoder's output), so what the edge checks instead is that the recipe offers the `(size, seconds)` pair you asked for. |
 | `Images:SyncMaxWaitSeconds` | `120` | v3.15. How long `/v1/images/generations` waits for its own job before a `503` naming the async route. **The job keeps running** and the message carries its id — discarding a minute of GPU because an HTTP client got bored is your call, not the hub's. See [A job that takes two minutes](#a-job-that-takes-two-minutes-v315). |

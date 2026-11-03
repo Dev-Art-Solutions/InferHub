@@ -81,7 +81,11 @@ public static class ScrapeSnapshotBuilder
             (services.GetService(typeof(PriorityGate)) as PriorityGate)?.Snapshot(),
 
             // Phase 127. Null unless Identity:Enabled.
-            (services.GetService(typeof(InferHub.Coordinator.Auth.NodeCertificateAuthority)) as InferHub.Coordinator.Auth.NodeCertificateAuthority)?.Snapshot());
+            (services.GetService(typeof(InferHub.Coordinator.Auth.NodeCertificateAuthority)) as InferHub.Coordinator.Auth.NodeCertificateAuthority)?.Snapshot(),
+
+            // Phase 128. Only for nodes still here, like the tool states above.
+            (services.GetService(typeof(NodeEgressRegistry)) as NodeEgressRegistry)?.All()
+                .Where(state => nodes.Any(node => node.NodeId == state.NodeId)).ToArray());
     }
 
     /// <summary>

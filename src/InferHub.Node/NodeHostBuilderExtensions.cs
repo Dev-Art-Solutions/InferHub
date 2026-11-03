@@ -769,6 +769,10 @@ public static class NodeHostBuilderExtensions
         }
 
         builder.Services.AddSingleton(new SealedEgress(builder.Configuration));
+
+        // Phase 128: and a check below InferHub's own code that the operating system lets nothing else out either.
+        builder.Services.AddSingleton<EgressCheck>();
+        builder.Services.AddHostedService(services => services.GetRequiredService<EgressCheck>());
         builder.Services.AddSingleton<Backends.SealedOllama>();
         builder.Services.AddHttpClient(Backends.SealedOllama.RegistryClientName, http => http.Timeout = Timeout.InfiniteTimeSpan).RemoveAllLoggers();
         builder.Services.ConfigureHttpClientDefaults(http =>

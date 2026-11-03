@@ -70,7 +70,8 @@ public static class StatusEndpoint
                     node.SlotsByModel,
                     node.Sharing,
                     node.Management,
-                    node.Sealed)).ToArray(),
+                    node.Sealed,
+                    (services.GetService(typeof(NodeEgressRegistry)) as NodeEgressRegistry)?.Of(node.NodeId))).ToArray(),
                 models,
                 registry.CapabilitySummary(),
                 snapshot,
@@ -555,7 +556,11 @@ public static class StatusEndpoint
         // Phase 120: whether the hub may manage models on this node, and the owner's disk terms. Null before 3.81.
         InferHub.Shared.Fit.ManagementTerms? Management = null,
         // Phase 122: the node is sealed — downloads only through this hub's relay. Null when it is not.
-        bool? Sealed = null);
+        bool? Sealed = null,
+        // Phase 128: what the sealed node's own egress check found. Null from a node that is not sealed, or before 3.88.
+        [property: System.Text.Json.Serialization.JsonIgnore(
+            Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        NodeEgressState? Egress = null);
 
     internal sealed record NodeProfileStatusBlock(
         string? Name,
