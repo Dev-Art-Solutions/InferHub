@@ -53,3 +53,16 @@ Nothing changes for a coordinator that does not call the new routes. No new pack
   exactly the plan's environment lines enrolled with its token, registered sealed and certified, and answered a chat. The
   checklist then said 7 of 8: the one failing line was `nodes-egress`, naming `gpu-site-1`, because this machine can reach
   the internet.
+
+## The published images
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.89.0` and `inferhub-node:3.89.0` both carry revision `5bd425c`; the
+coordinator image contains `wwwroot/site.html`. Docker Desktop was not running, so both images' `/app` were pulled through
+GHCR's registry API and run natively.
+
+- The published coordinator, set up as a closed site, served `/site.html` (200) and said 5 of 8 required lines with no node.
+- Its plan for `gpu-pub-1` named `InferHub-Node-Setup-3.89.0-win-x64.exe` (attached to this release) and
+  `ghcr.io/dev-art-solutions/inferhub-node:3.89.0` (on GHCR): both exist.
+- The published node, started with the plan's environment lines, enrolled, registered sealed and certified, and answered a
+  chat; the checklist said 7 of 8, failing only `nodes-egress` for `gpu-pub-1`.
+- Not run: the containers themselves, and the setup installed.
