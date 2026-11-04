@@ -405,6 +405,7 @@ app.MapNodeRelay();
 app.MapRelaySupply();
 app.MapAuditEndpoints();
 app.MapNodeIdentity();
+app.MapSiteEndpoints(); // phase 129
 app.MapHub<NodeHub>("/hubs/node");
 
 app.Run();

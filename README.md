@@ -212,6 +212,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 126 | [Priority classes](#priority-classes-v386) — `Auth:Clients[].Priority` essential, normal or background: when nodes fail or fill, background work waits and essential work keeps running (done) | `v3.86.0` |
 | 127 | [A certificate per node](#a-certificate-per-node-v387) — `Identity:Enabled`: the coordinator issues each node its own certificate from a one-time token, every connection is signed with it, and one node can be revoked and dropped at once (done) | `v3.87.0` |
 | 128 | [Firewall rules for a sealed node](#firewall-rules-for-a-sealed-node-v388) — the node prints OS firewall rules that let it reach only its coordinator, and checks below InferHub that its machine reaches nothing else, telling its coordinator (done) | `v3.88.0` |
+| 129 | [A closed site, checked and planned](#a-closed-site-checked-and-planned-v389) — `/api/admin/site`: a checklist of what a closed site needs and which nodes fail it, and a plan per node (token, setup command, container, env) (done) | `v3.89.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -1314,6 +1315,32 @@ POST /api/control/egress/check                         check now
   `closed`, `checkedUtc`) and `/metrics` gains `inferhub_node_egress_open{node}` (0 means
   sealed). It logs a warning when a sealed node can reach outside. It does not refuse the node.
 - A node that is not sealed probes nothing and reports nothing.
+
+### A closed site, checked and planned (v3.89+)
+
+Phases 3.82 to 3.88 each added one piece of a closed site: sealed nodes, a relay, supplied models,
+node certificates, an audit trail, priority classes, firewall rules. The coordinator now checks them
+together and plans each node, at `/site.html` or through the API.
+
+```http
+GET  /api/admin/site                                   the checklist, and every node's state
+POST /api/admin/site/nodes  {"name": "gpu-03"}          a plan for one node, with a one-time token
+```
+
+- **The checklist** has eight required lines: an admin key; node certificates on and required;
+  the relay on; no cloud provider; and every connected node sealed, holding a certificate, and with
+  its own egress check closed. It has four recommended lines: supplied models only, the audit
+  trail, priority classes, and keys required on loopback. `ready` means every required line holds.
+  A failing line names the nodes that fail it and the key that fixes it. The checklist only reads;
+  it changes nothing.
+- **A plan per node** creates a one-time enrollment token labelled with the node's name and returns
+  the same settings three ways: the Windows setup's silent command, a `docker run`, and environment
+  lines for a Linux service. Then it says what to do next (the firewall rules, the checklist
+  again). `coordinatorUrl` defaults to the address you reached the coordinator on. Needs
+  `Identity:Enabled`.
+- **The Windows setup takes the plan.** It has two new silent parameters, `/EnrollmentToken=` and
+  `/Sealed=yes|no`, written only when given. The installed service also answers
+  `InferHub.Node.Service.exe firewall`.
 
 ### A private corpus on a networked node
 

@@ -409,3 +409,33 @@ for a fact it can do nothing about. A hub older than 3.88 has no such method; th
 Tests: `SealedNetworkTests` (Node — a probe that connects and one refused, names never probed, the verdict, the event, both
 rule formats, IPv6, an unresolved host, no CR in nftables, the verb), `EgressCheckMeshTests` (real SignalR: the check reaches
 the hub on registration and a later check replaces it; the scrape).
+
+## Phase 129 (a closed site, checked and planned from one place)
+
+`src/InferHub.Coordinator/Endpoints/SiteEndpoints.cs` (`GET /api/admin/site`, `POST /api/admin/site/nodes`), the page
+`wwwroot/site.html`, the Windows setup's `/EnrollmentToken=` and `/Sealed=` (`deploy/windows/installer/InferHubNode.iss`),
+and the `firewall` verb on `InferHub.Node.Service.exe` (it had only reached the console host in 128).
+
+**D1 — The checklist reads what is configured and what the fleet reported; it changes nothing.** Eight required lines (an
+admin key; `Identity:Enabled` and `Require`; `Relay:Enabled`; no cloud provider and no `Fallback:`; every connected node
+sealed, holding an active certificate, and its own egress check closed) and four recommended (supply `Only`, the audit
+trail, priority classes, `RequireAuthForLoopback`). `ready` is every required line; a recommended one never blocks it. Each
+failing line says which nodes fail it and names the key that fixes it. No node connected is not ready — an empty fleet is
+not a closed site, it is no site. **Considered and rejected: a "seal the site" switch that sets them all** — several are a
+restart, two depend on the machines' owners (the firewall, the node's own `Sealed`), and a switch that half-applied would be
+worse than a list that says what is missing.
+
+**D2 — A plan per node, the same answers in every shape.** `POST /api/admin/site/nodes {name, coordinatorUrl?, sealed?}`
+creates a one-time enrollment token (127; 409 naming `Identity__Enabled` when off) labelled with the node's name, and returns
+the node's settings, as env lines, as the Windows setup's silent command and as a `docker run` — all from one dictionary, so
+they cannot disagree — plus what to do after (the firewall rules, the checklist again). `coordinatorUrl` defaults to the
+address the admin reached the hub on. The version in the commands is this hub's. The token is in the response once; the
+audit trail (125) records the request without it (a body is never on the trail).
+
+**D3 — The setup takes the plan.** `/EnrollmentToken=` and `/Sealed=yes|no` are silent-only parameters, written to
+`node.settings.json` through the existing `configure` verb only when given, so an update (a silent run with no parameters)
+keeps them. Not in the wizard: a token is pasted from the plan, not typed.
+
+Tests: `SiteTests` (Coordinator — the default hub's lines and their keys; a closed hub with one good node is ready; a failing
+node named in each line; a cloud fallback fails `no-cloud`; the plan's shapes agree; through HTTP a planned token enrolls, a
+bad name is 400, no identity is 409).

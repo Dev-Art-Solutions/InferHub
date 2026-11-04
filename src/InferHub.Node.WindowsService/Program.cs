@@ -18,6 +18,12 @@ if (InferHub.Node.Backends.ChatGpt.ChatGptCommands.Handles(args))
         args, AppContext.BaseDirectory, NodeSettingsFile.DefaultPath, Console.Out, Console.Error);
 }
 
+// Phase 128, wired here in 129: an installed node prints its firewall rules from the setup's own settings file.
+if (FirewallCommand.Handles(args))
+{
+    return FirewallCommand.Run(args, NodeHostFactory.Create([], NodeSettingsFile.DefaultPath).Configuration, Console.Out, Console.Error);
+}
+
 // Same factory the console host uses (phase 37), so the two cannot drift on host shape any more
 // than they can on services: a web host when solo mode is on, the plain worker host otherwise.
 // Phase 101, D1: plus the setup's settings file in %ProgramData%, which no update overwrites.

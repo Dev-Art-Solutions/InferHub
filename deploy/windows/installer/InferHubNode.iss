@@ -17,6 +17,7 @@
 ;     /OllamaEndpoint=http://localhost:11434/ /Account=system|virtual /Updates=auto|request|report|off
 ;     /UpdateSource=<a mirror of GitHub's release list>   (not in the wizard; written only when given)
 ;     /HubModels=yes|no /HubMaxModelGiB=<empty = no cap> /HubKeepFreeGiB=20   (phase 120; a mesh node only)
+;     /EnrollmentToken=ihn_... /Sealed=yes|no   (phase 129, from POST /api/admin/site/nodes; not in the wizard)
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -519,6 +520,16 @@ begin
     AddLine(Lines, 'Coordinator:Url=' + Trim(CoordPage.Values[0]));
     if Trim(CoordPage.Values[1]) <> '' then
       AddLine(Lines, 'Coordinator:EnrollmentSecret=' + Trim(CoordPage.Values[1]));
+    { Phase 129: a site plan's one-time token and the sealed switch. Not in the wizard; written only when given. }
+    if ParamGiven('EnrollmentToken') then
+      AddLine(Lines, 'Coordinator:EnrollmentToken=' + Trim(ExpandConstant('{param:EnrollmentToken|}')));
+    if ParamGiven('Sealed') then
+    begin
+      if LowerCase(Trim(ExpandConstant('{param:Sealed|no}'))) = 'yes' then
+        AddLine(Lines, 'Node:Sealed=true')
+      else
+        AddLine(Lines, 'Node:Sealed=false');
+    end;
     AddLine(Lines, 'LocalApi:Enabled=false');
   end;
 

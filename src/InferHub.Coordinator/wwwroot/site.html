@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>InferHub — site setup</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #161a22;
+      --panel-border: #232936;
+      --text: #e4e7ee;
+      --muted: #8b94a7;
+      --accent: #4ea1ff;
+      --ok: #4ade80;
+      --warn: #facc15;
+      --err: #f87171;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    body { background: var(--bg); color: var(--text); margin: 0; padding: 32px; line-height: 1.4; max-width: 1100px; }
+    h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: 0.4px; }
+    h1 a { color: var(--accent); text-decoration: none; font-size: 13px; margin-left: 12px; }
+    h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); margin: 28px 0 12px; }
+    .meta { color: var(--muted); font-size: 13px; }
+    .card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+    table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 8px; }
+    th, td { padding: 9px 12px; text-align: left; font-size: 13px; border-bottom: 1px solid var(--panel-border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 500; text-transform: uppercase; font-size: 11px; letter-spacing: 0.6px; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; }
+    .ok { background: rgba(74, 222, 128, 0.12); color: var(--ok); }
+    .warn { background: rgba(250, 204, 21, 0.12); color: var(--warn); }
+    .err { background: rgba(248, 113, 113, 0.12); color: var(--err); }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+    pre { background: #0b0d11; border: 1px solid var(--panel-border); border-radius: 6px; padding: 10px; white-space: pre-wrap; word-break: break-all; }
+    input { background: #0b0d11; color: var(--text); border: 1px solid var(--panel-border); border-radius: 6px; padding: 6px 8px; font-size: 13px; }
+    button { background: transparent; color: var(--accent); border: 1px solid rgba(78, 161, 255, 0.35); border-radius: 6px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
+    button:hover { background: rgba(78, 161, 255, 0.08); }
+    label { font-size: 13px; color: var(--muted); margin-right: 12px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    #error { color: var(--err); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>InferHub site setup <a href="console.html">console</a><a href="status.html">status</a></h1>
+  <div class="meta">A closed site: every node sealed, with its own certificate, and nothing leaving but through this coordinator.
+    The admin key stays in this tab's memory only.</div>
+
+  <h2>Admin key</h2>
+  <div class="row">
+    <input id="key" type="password" placeholder="admin key (empty on an unguarded loopback hub)" size="40">
+    <button id="load">Check the site</button>
+    <span id="error"></span>
+  </div>
+
+  <h2>Checklist</h2>
+  <div id="summary" class="meta">Not checked yet.</div>
+  <table>
+    <thead><tr><th></th><th>Check</th><th>What it means</th><th>Fix</th></tr></thead>
+    <tbody id="checks"></tbody>
+  </table>
+
+  <h2>Nodes</h2>
+  <table>
+    <thead><tr><th>Node</th><th>Sealed</th><th>Certificate</th><th>Machine egress</th></tr></thead>
+    <tbody id="nodes"></tbody>
+  </table>
+
+  <h2>Add a node</h2>
+  <div class="card">
+    <div class="row">
+      <label>Name <input id="name" placeholder="gpu-03" size="14"></label>
+      <label>Coordinator URL the node dials <input id="url" size="34"></label>
+      <label><input id="sealed" type="checkbox" checked> sealed</label>
+      <button id="plan">Make a plan</button>
+    </div>
+    <div id="plan-out"></div>
+  </div>
+
+<script>
+(() => {
+  let adminKey = null;
+  const $ = id => document.getElementById(id);
+  $("url").value = `${location.protocol}//${location.host}/`;
+
+  const text = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  async function call(method, path, body) {
+    const headers = { "Content-Type": "application/json" };
+    if (adminKey) headers["Authorization"] = `Bearer ${adminKey}`;
+    const response = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `${response.status} ${response.statusText}`);
+    return data;
+  }
+
+  function pill(ok, severity) {
+    if (ok) return '<span class="pill ok">ok</span>';
+    return severity === "required" ? '<span class="pill err">missing</span>' : '<span class="pill warn">advised</span>';
+  }
+
+  async function load() {
+    adminKey = $("key").value.trim() || null;
+    $("error").textContent = "";
+    try {
+      const report = await call("GET", "/api/admin/site");
+      $("summary").innerHTML = report.ready
+        ? '<span class="pill ok">ready</span> every required check holds'
+        : `<span class="pill err">not ready</span> ${report.requiredOk} of ${report.required} required checks hold`;
+      $("checks").innerHTML = report.checks.map(c =>
+        `<tr><td>${pill(c.ok, c.severity)}</td><td><code>${text(c.id)}</code><div class="meta">${text(c.severity)}</div></td>`
+        + `<td>${text(c.detail)}</td><td>${c.ok ? "" : `<code>${text(c.fix)}</code>`}</td></tr>`).join("");
+      $("nodes").innerHTML = report.nodes.length === 0
+        ? '<tr><td colspan="4" class="meta">No node is connected.</td></tr>'
+        : report.nodes.map(n =>
+          `<tr><td>${text(n.name)}<div class="meta"><code>${text(n.nodeId)}</code></div></td>`
+          + `<td>${pill(n.sealed, "required")}</td><td>${pill(n.certified, "required")}</td>`
+          + `<td>${n.egressClosed === true ? '<span class="pill ok">closed</span>'
+            : n.egressClosed === false ? `<span class="pill err">open</span> ${text((n.open || []).join(", "))}`
+            : '<span class="pill warn">not checked</span>'}</td></tr>`).join("");
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
+  }
+
+  async function plan() {
+    adminKey = $("key").value.trim() || null;
+    $("plan-out").innerHTML = "";
+    try {
+      const p = await call("POST", "/api/admin/site/nodes", { name: $("name").value.trim(), coordinatorUrl: $("url").value.trim(), sealed: $("sealed").checked });
+      $("plan-out").innerHTML =
+        `<p class="meta">One-time token for <b>${text(p.name)}</b>, valid until ${text(p.expiresUtc)}. It is shown once.</p>`
+        + `<h2>Windows setup</h2><pre>${text(p.windows)}</pre>`
+        + `<h2>Container</h2><pre>${text(p.docker)}</pre>`
+        + `<h2>Environment (Linux service)</h2><pre>${text(p.env.join("\n"))}</pre>`
+        + `<h2>Then</h2><ol>${p.next.map(s => `<li>${text(s)}</li>`).join("")}</ol>`;
+    } catch (e) {
+      $("plan-out").innerHTML = `<p id="error">${text(e.message)}</p>`;
+    }
+  }
+
+  $("load").addEventListener("click", load);
+  $("plan").addEventListener("click", plan);
+})();
+</script>
+</body>
+</html>
