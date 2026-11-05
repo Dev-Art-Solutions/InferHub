@@ -69,6 +69,25 @@ public sealed class NodeHub(
         var replication = services.GetService(typeof(ReplicationCoordinator)) as ReplicationCoordinator;
         replication?.ApplyInventory(Context.ConnectionId, registration.Replicas);
 
+        // Phase 130 D4: a certified node's organisation is the one its certificate was issued for; its own word counts only
+        // when it holds none.
+        if (services.GetService(typeof(OrganisationPolicy)) is OrganisationPolicy { Enabled: true } organisations)
+        {
+            // Only a certificate THIS connection proved counts: a node on the shared secret that names a certified node's id
+            // must not inherit that node's organisation.
+            var proved = Context.Items.TryGetValue(NodeAuthFilter.CertifiedNodeKey, out var provedId)
+                && provedId is string id
+                && string.Equals(id, registration.NodeId, StringComparison.Ordinal);
+            var (hasCertificate, recorded) = proved && services.GetService(typeof(NodeCertificateAuthority)) is NodeCertificateAuthority { Enabled: true } authority
+                ? authority.OrganisationOf(registration.NodeId)
+                : (false, null);
+            registration = registration with
+            {
+                Organisation = hasCertificate ? recorded : (string.IsNullOrWhiteSpace(registration.Organisation) ? null : registration.Organisation.Trim().ToLowerInvariant())
+            };
+            organisations.RecordSource(registration.NodeId, hasCertificate ? "certificate" : "declared");
+        }
+
         registry.Upsert(Context.ConnectionId, registration, DateTimeOffset.UtcNow);
         Audit(AuditRecord.NodeRegistered, registration.NodeId, registration.Name);
 

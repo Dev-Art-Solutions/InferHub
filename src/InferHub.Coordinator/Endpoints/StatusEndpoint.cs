@@ -34,6 +34,7 @@ public static class StatusEndpoint
             var strata = services.GetService(typeof(NodeStrataRegistry)) as NodeStrataRegistry;
             var updates = services.GetService(typeof(NodeUpdateRegistry)) as NodeUpdateRegistry;
             var limits = services.GetService(typeof(NodeLimitsRegistry)) as NodeLimitsRegistry;
+            var organisations = services.GetService(typeof(OrganisationPolicy)) as OrganisationPolicy;
 
             return Results.Ok(new StatusResponse(
                 version,
@@ -71,7 +72,9 @@ public static class StatusEndpoint
                     node.Sharing,
                     node.Management,
                     node.Sealed,
-                    (services.GetService(typeof(NodeEgressRegistry)) as NodeEgressRegistry)?.Of(node.NodeId))).ToArray(),
+                    (services.GetService(typeof(NodeEgressRegistry)) as NodeEgressRegistry)?.Of(node.NodeId),
+                    organisations is { Enabled: true } ? organisations.OrganisationOf(node.Organisation) : null,
+                    organisations is { Enabled: true } ? organisations.SourceOf(node.NodeId) ?? "declared" : null)).ToArray(),
                 models,
                 registry.CapabilitySummary(),
                 snapshot,
@@ -89,7 +92,8 @@ public static class StatusEndpoint
                     services.GetService(typeof(SupplyJobs)) as SupplyJobs),
                 (services.GetService(typeof(AuditTrail)) as AuditTrail)?.Snapshot(),
                 (services.GetService(typeof(PriorityGate)) as PriorityGate)?.Snapshot(),
-                (services.GetService(typeof(InferHub.Coordinator.Auth.NodeCertificateAuthority)) as InferHub.Coordinator.Auth.NodeCertificateAuthority)?.Snapshot()));
+                (services.GetService(typeof(InferHub.Coordinator.Auth.NodeCertificateAuthority)) as InferHub.Coordinator.Auth.NodeCertificateAuthority)?.Snapshot(),
+                organisations?.Snapshot()));
         });
 
         return app;
@@ -382,7 +386,11 @@ public static class StatusEndpoint
         // Phase 127. Omitted unless Identity:Enabled, so a hub without node certificates reports v3.86's payload.
         [property: System.Text.Json.Serialization.JsonIgnore(
             Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-        InferHub.Coordinator.Auth.NodeIdentitySnapshot? Identity = null);
+        InferHub.Coordinator.Auth.NodeIdentitySnapshot? Identity = null,
+        // Phase 130. Omitted unless Organisations:Enabled.
+        [property: System.Text.Json.Serialization.JsonIgnore(
+            Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        OrganisationSnapshot? Organisations = null);
 
     internal sealed record RelayStatusBlock(
         [property: System.Text.Json.Serialization.JsonIgnore(
@@ -560,7 +568,14 @@ public static class StatusEndpoint
         // Phase 128: what the sealed node's own egress check found. Null from a node that is not sealed, or before 3.88.
         [property: System.Text.Json.Serialization.JsonIgnore(
             Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-        NodeEgressState? Egress = null);
+        NodeEgressState? Egress = null,
+        // Phase 130: the node's organisation and where it came from (certificate | declared). Null unless Organisations:Enabled.
+        [property: System.Text.Json.Serialization.JsonIgnore(
+            Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        string? Organisation = null,
+        [property: System.Text.Json.Serialization.JsonIgnore(
+            Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        string? OrganisationSource = null);
 
     internal sealed record NodeProfileStatusBlock(
         string? Name,

@@ -439,3 +439,39 @@ keeps them. Not in the wizard: a token is pasted from the plan, not typed.
 Tests: `SiteTests` (Coordinator — the default hub's lines and their keys; a closed hub with one good node is ready; a failing
 node named in each line; a cloud fallback fails `no-cloud`; the plan's shapes agree; through HTTP a planned token enrolls, a
 bad name is 400, no identity is 409).
+
+## Phase 130 (organisations on one coordinator, and the grants between them)
+
+`src/InferHub.Coordinator/Services/OrganisationPolicy.cs` (`Organisations:` options + validator, the policy, `OrganisationScope`,
+`OrganisationMiddleware`), the filter in `NodeRegistry.FindNodesWithModel` / `DistinctModels`, the organisation on tokens and
+certificates (`NodeCertificateAuthority`, `NodeIdentityEndpoints`, `SiteEndpoints`), `NodeHub.Register` deciding a node's
+organisation, `Auth:Clients[].Organisation`, `Node:Organisation`.
+
+**D1 — One organisation per node and per client; same-organisation use needs nothing.** Unset is `Organisations:Home`.
+Names are `^[a-z0-9][a-z0-9-]{0,63}$`, checked at startup (clients, home, grants) and at token creation.
+
+**D2 — Grants are the owner's.** `{Owner, To, Models, Capabilities}`: Owner's nodes may serve To's clients (`*`: any), for
+the listed models (exact, or a trailing-`*` prefix) and capabilities; an empty list is all. Not transitive, not symmetric.
+
+**D3, load-bearing — enforced where every route finds its nodes.** `OrganisationMiddleware` (after the key guards) begins an
+`AsyncLocal` `OrganisationScope` for client requests under `/api` and `/v1`; `FindNodesWithModel` (every router, queue,
+priority and capability check calls it) and `DistinctModels` (`/api/tags`, `/v1/models`) drop the nodes the scope may not use.
+So a model only another organisation holds is a **404, not a 403**, and absent from the listings — the client cannot tell it
+exists (31's collection scoping, one level up). Admin routes, `/api/status` and background services have no scope and see
+everything. The filter is the last clause, so a refusal is counted (`inferhub_organisation_denied_total`, once per request)
+only for a node that could otherwise have served. **The audit line computes the organisation from the resolved client**: the
+audit middleware runs before this one, and an `AsyncLocal` begun further down never flows back up — every line said null
+live until this was fixed. **Considered and rejected: a filter per endpoint** — forty-odd endpoints, and the one forgotten
+would be a silent leak between organisations. **The image/video job pump is the one route outside the request:** it routes from whatever flow runs it, so `PendingImageJob` keeps the submitter's scope and the pump re-enters it (`OrganisationScope.Enter`) per job; `OrganisationJobTests` is red without it.
+
+**D4 — Trust comes from the certificate.** A token can carry an organisation (`POST /api/admin/identity/tokens {organisation}`,
+the site plan's `organisation`); the certificate records it, renewal keeps it. At `Register`, a connection that **proved**
+that node id's certificate gets the recorded organisation, whatever its `Node:Organisation` says (live: a node declaring
+`lab-a` with a `lab-b` token is `lab-b`); any other connection's organisation is its own word, marked `declared` on
+`/api/status`. With organisations on, the site checklist (129) adds a required line, `organisations-trusted` =
+`Identity:Require`, because a declared organisation lets a node claim another's share.
+
+Tests: `OrganisationTests` (Coordinator — the grant table; the registry filter and the listing per organisation, no scope
+sees all — red with the filter removed; through the real guards the key decides and admins see everything; the audit line
+carries the organisation through the real middleware order; off; names), `OrganisationMeshTests` (real SignalR: a node that
+enrolled with a `lab-b` token is `lab-b`, source `certificate`).

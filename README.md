@@ -213,6 +213,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 127 | [A certificate per node](#a-certificate-per-node-v387) — `Identity:Enabled`: the coordinator issues each node its own certificate from a one-time token, every connection is signed with it, and one node can be revoked and dropped at once (done) | `v3.87.0` |
 | 128 | [Firewall rules for a sealed node](#firewall-rules-for-a-sealed-node-v388) — the node prints OS firewall rules that let it reach only its coordinator, and checks below InferHub that its machine reaches nothing else, telling its coordinator (done) | `v3.88.0` |
 | 129 | [A closed site, checked and planned](#a-closed-site-checked-and-planned-v389) — `/api/admin/site`: a checklist of what a closed site needs and which nodes fail it, and a plan per node (token, setup command, container, env) (done) | `v3.89.0` |
+| 130 | [Organisations and the grants between them](#organisations-and-the-grants-between-them-v390) — `Organisations:Enabled`: each node and client belongs to one organisation, a client reaches its own and what another granted it, and a certified node's organisation comes from its certificate (done) | `v3.90.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -1341,6 +1342,42 @@ POST /api/admin/site/nodes  {"name": "gpu-03"}          a plan for one node, wit
 - **The Windows setup takes the plan.** It has two new silent parameters, `/EnrollmentToken=` and
   `/Sealed=yes|no`, written only when given. The installed service also answers
   `InferHub.Node.Service.exe firewall`.
+
+### Organisations and the grants between them (v3.90+)
+
+When machines from more than one organisation join one coordinator, each organisation decides who
+may use its nodes. Turn on organisations, give each client and node one, and write the grants.
+
+```bash
+Organisations__Enabled=true
+Auth__Clients__0__Id=alice   Auth__Clients__0__Organisation=lab-a
+Auth__Clients__1__Id=bob     Auth__Clients__1__Organisation=lab-b
+# lab-b's nodes may serve lab-a's clients, for qwen models only
+Organisations__Grants__0__Owner=lab-b
+Organisations__Grants__0__To=lab-a
+Organisations__Grants__0__Models__0=qwen2.5*
+```
+
+```http
+POST /api/admin/identity/tokens      {"label": "gpu-7", "organisation": "lab-b"}
+POST /api/admin/site/nodes           {"name": "gpu-7", "organisation": "lab-b"}
+```
+
+- **The rule.** A client reaches the nodes of its own organisation, and those of an organisation
+  that granted it the model and the kind of work. `To: "*"` grants every organisation; empty
+  `Models` or `Capabilities` mean all of them. Grants go one way and are not transitive.
+- **Enforced where every route finds its nodes**, so it holds for chat, embeddings, tools, speech,
+  images and video alike. A model that only another organisation's nodes hold is a `404` and
+  missing from `/v1/models` and `/api/tags`, exactly as if it did not exist. Admin routes and
+  `/api/status` see every node.
+- **A node's organisation comes from its certificate.** Give the enrollment token an organisation,
+  and the node belongs to it, whatever its own `Node:Organisation` says. Without a certificate a
+  node's organisation is its own word, shown as `declared` on `/api/status`. The
+  [site checklist](#a-closed-site-checked-and-planned-v389) then requires `Identity:Require`.
+- **You can see it.** `/api/status` gains `organisations` (home, grants, refusals) and
+  `nodes[].organisation` with `organisationSource`, `/metrics` gains `inferhub_organisation_*`,
+  and the [audit trail](#an-audit-trail-v385) records each request's organisation.
+- **Off by default.** With it off there are no organisations, and every client reaches every node.
 
 ### A private corpus on a networked node
 
@@ -4705,6 +4742,7 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Audit:Enabled` | `false` | **v3.85+** — append one JSON line per audited request and node event to `Audit:DataDirectory` (`./data/audit`; `/data/audit` in the image), one file per UTC day, kept `Audit:RetentionDays` (90). Never a body, a query string or a key. Read with `GET /api/admin/audit`. See [An audit trail](#an-audit-trail-v385). |
 | `Priority:Enabled` | `false` | **v3.86+** — read `Auth:Clients[].Priority` (`essential`, `normal`, `background`). Background work never takes a model's last `Priority:ReserveSlots` (1) free places and waits up to `Priority:BackgroundMaxWaitSeconds` (600). See [Priority classes](#priority-classes-v386). |
 | `Identity:Enabled` | `false` | **v3.87+** — the coordinator issues node certificates (CA under `Identity:DataDirectory`, `./data/identity`; `/data/identity` in the image). `Identity:Require` refuses a node without one; `Identity:CertificateDays` (90), `Identity:TokenMinutes` (60), `Identity:ClockSkewSeconds` (300). On the node: `Coordinator:EnrollmentToken`. See [A certificate per node](#a-certificate-per-node-v387). |
+| `Organisations:Enabled` | `false` | **v3.90+** — nodes and clients belong to organisations (`Auth:Clients[].Organisation`, the token's organisation or `Node:Organisation`; unset: `Organisations:Home`, `home`), and `Organisations:Grants` (`{Owner, To, Models, Capabilities}`) say which organisation's clients may use whose nodes. See [Organisations and the grants between them](#organisations-and-the-grants-between-them-v390). |
 | `Node:Egress:Probes` | `1.1.1.1:443`, `8.8.8.8:443`, `9.9.9.9:443` | **v3.88+**, node, sealed only — addresses (IP:port) a sealed node tries with a bare TCP connect to check that its machine reaches nothing outside; empty turns the check off. `Node:Egress:CheckMinutes` (15; 0 = only at start), `Node:Egress:TimeoutSeconds` (3). See [Firewall rules for a sealed node](#firewall-rules-for-a-sealed-node-v388). |
 | `Images:MaxBatch` | `4` | v3.14. The absolute ceiling on `n`, whatever the size. A batch runs on **one** node. Bound by both hosts from the same section, so a request refused on a hub is refused identically on a solo node. |
 | `Images:MaxResponseBytes` | `26214400` | v3.14. An upper-bound estimate (`w × h × 4 × n`) checked *before a step runs*, with the refusal naming the largest `n` that fits. **Clamped by `Tools:MaxAttachmentBytes`** at use, because that cap sizes the mesh's SignalR message limit and exceeding a SignalR limit tears a node's connection down rather than failing a message. Raising one without the other gets you no change, deliberately. **v3.25: it bounds a video too** — there is no `Videos:` section, because two keys for one wire ceiling are two numbers you could raise independently. A clip's size cannot be estimated from its geometry (that is an encoder's output), so what the edge checks instead is that the recipe offers the `(size, seconds)` pair you asked for. |

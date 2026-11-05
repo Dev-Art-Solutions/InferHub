@@ -170,6 +170,13 @@ builder.Services.AddOptions<UsageOptions>()
 builder.Services.AddSingleton<IValidateOptions<UsageOptions>, UsageOptionsValidator>();
 builder.Services.AddSingleton<AdmissionControl>();
 builder.Services.AddSingleton<UsageMeter>();
+// Phase 130. Organisations and the grants between them — off by default: every client reaches every node, as before.
+builder.Services.AddOptions<OrganisationOptions>()
+    .Bind(builder.Configuration.GetSection(OrganisationOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<OrganisationOptions>, OrganisationOptionsValidator>();
+builder.Services.AddSingleton<OrganisationPolicy>();
+
 // Phase 126. Priority classes — off by default; when off every request is normal and the queue behaves as before.
 builder.Services.AddOptions<PriorityOptions>()
     .Bind(builder.Configuration.GetSection(PriorityOptions.SectionName))
@@ -317,6 +324,9 @@ var version = typeof(Program).Assembly
 app.UseMiddleware<AuditMiddleware>();
 app.UseMiddleware<AdminApiKeyMiddleware>();
 app.UseMiddleware<BearerApiKeyMiddleware>();
+
+// Phase 130. After the key guards: a client's request runs in its organisation, and sees only the nodes it may use.
+app.UseMiddleware<OrganisationMiddleware>();
 
 // After the two auth guards, before anything routes: a standby refuses work but still answers
 // health, status and /metrics, so an operator can see what the standby thinks it is.

@@ -18,7 +18,7 @@ public sealed record SiteNode(string NodeId, string Name, bool Sealed, bool Cert
 public sealed record SiteReport(bool Ready, int Required, int RequiredOk, IReadOnlyList<SiteCheck> Checks, IReadOnlyList<SiteNode> Nodes);
 
 /// <summary>What an admin asks for to add a node to the site (129 D2).</summary>
-public sealed record SiteNodeRequest(string? Name, string? CoordinatorUrl, bool? Sealed);
+public sealed record SiteNodeRequest(string? Name, string? CoordinatorUrl, bool? Sealed, string? Organisation = null);
 
 /// <summary>Phase 129. <c>/api/admin/site</c>: the checklist for a closed site, and a plan to add one node to it.</summary>
 public static class SiteEndpoints
@@ -57,7 +57,18 @@ public static class SiteEndpoints
             }
 
             var by = context.Items.TryGetValue(AuditMiddleware.WhoItemKey, out var who) && who is string named ? named : "admin";
-            var (token, expires) = authority.CreateToken(name, by + " (site plan)");
+            (string Token, DateTimeOffset ExpiresUtc) created;
+
+            try
+            {
+                created = authority.CreateToken(name, by + " (site plan)", Clean(request?.Organisation)?.ToLowerInvariant());
+            }
+            catch (NodeIdentityException ex)
+            {
+                return Results.Json(new { error = ex.Message }, statusCode: ex.Status);
+            }
+
+            var (token, expires) = created;
             return Results.Ok(Plan(name, coordinator.ToString(), token, expires, request?.Sealed ?? true, Version()));
         });
 
@@ -80,6 +91,7 @@ public static class SiteEndpoints
         var authority = services.GetService<NodeCertificateAuthority>();
         var egress = services.GetService<NodeEgressRegistry>();
         var registry = services.GetService<INodeRegistry>();
+        var organisations = services.GetService<OrganisationPolicy>();
 
         var certified = authority is { Enabled: true }
             ? authority.Certificates().Where(c => c.State(now) == "active").Select(c => c.NodeId).ToHashSet(StringComparer.Ordinal)
@@ -134,6 +146,16 @@ public static class SiteEndpoints
             new("loopback-auth", keys.RequireAuthForLoopback, SiteCheck.Recommended,
                 "a key is required even from the coordinator's own machine", "Auth__RequireAuthForLoopback=true")
         };
+
+        // Phase 130: with organisations on, a node's organisation must come from its certificate, not its own word.
+        if (organisations is { Enabled: true })
+        {
+            checks.Add(new("organisations-trusted", identity.Enabled && identity.Require, SiteCheck.Required,
+                identity.Enabled && identity.Require
+                    ? "every node's organisation is the one recorded with its certificate"
+                    : "a node without a certificate declares its own organisation, so it can claim another's nodes' share",
+                "Identity__Enabled=true, Identity__Require=true, and an organisation on each token"));
+        }
 
         var required = checks.Where(c => c.Severity == SiteCheck.Required).ToArray();
         return new SiteReport(required.All(c => c.Ok), required.Length, required.Count(c => c.Ok), checks, nodes);

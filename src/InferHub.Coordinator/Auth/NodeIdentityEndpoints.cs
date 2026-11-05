@@ -28,7 +28,7 @@ public static class NodeIdentityEndpoints
                 authority = authority.AuthorityFingerprint(),
                 certificates = authority.Certificates()
                     .OrderByDescending(c => c.IssuedUtc)
-                    .Select(c => new { c.NodeId, c.Name, c.Serial, c.IssuedUtc, c.ExpiresUtc, state = c.State(now), c.RevokedUtc, c.RevokedBy, c.Reason })
+                    .Select(c => new { c.NodeId, c.Name, c.Organisation, c.Serial, c.IssuedUtc, c.ExpiresUtc, state = c.State(now), c.RevokedUtc, c.RevokedBy, c.Reason })
             });
         });
 
@@ -39,7 +39,18 @@ public static class NodeIdentityEndpoints
                 return Off();
             }
 
-            var (token, expires) = authority.CreateToken(body?.Label, By(context));
+            (string Token, DateTimeOffset ExpiresUtc) created;
+
+            try
+            {
+                created = authority.CreateToken(body?.Label, By(context), body?.Organisation);
+            }
+            catch (NodeIdentityException ex)
+            {
+                return Results.Json(new { error = ex.Message }, statusCode: ex.Status);
+            }
+
+            var (token, expires) = created;
             return Results.Ok(new
             {
                 token,
@@ -123,7 +134,7 @@ public static class NodeIdentityEndpoints
     private static string By(HttpContext context)
         => context.Items.TryGetValue(AuditMiddleware.WhoItemKey, out var who) && who is string named ? named : "admin";
 
-    public sealed record TokenRequest(string? Label);
+    public sealed record TokenRequest(string? Label, string? Organisation = null);
 
     public sealed record RevokeRequest(string? Reason);
 }

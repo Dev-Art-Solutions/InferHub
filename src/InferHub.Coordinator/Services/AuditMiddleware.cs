@@ -60,7 +60,8 @@ public sealed class AuditMiddleware(RequestDelegate next, AuditTrail trail)
                     context.Response.Headers.TryGetValue(Endpoints.InferenceCore.ServedByHeader, out var servedBy)
                         ? servedBy.ToString()
                         : null,
-                    Priority: scope.Priority));
+                    Priority: scope.Priority,
+                    Organisation: OrganisationOf(context)));
             }
         }
     }
@@ -133,6 +134,20 @@ public sealed class AuditMiddleware(RequestDelegate next, AuditTrail trail)
         }
 
         return context.Request.Path.StartsWithSegments("/node") ? "node" : "-";
+    }
+
+    // Phase 130: from the resolved client, not OrganisationScope.Current — that scope is begun by a middleware AFTER this
+    // one, and an AsyncLocal set further down the pipeline never flows back up to here (found live: every line said null).
+    private static string? OrganisationOf(HttpContext context)
+    {
+        if (context.RequestServices.GetService<OrganisationPolicy>() is not { Enabled: true } policy
+            || !context.Items.TryGetValue(BearerApiKeyMiddleware.ClientItemKey, out var value)
+            || value is not ResolvedClient client)
+        {
+            return null;
+        }
+
+        return policy.OrganisationOf(client.Organisation);
     }
 
     // The path, never the query string: a query is where a caller's own text can ride (rule 7).

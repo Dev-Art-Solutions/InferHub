@@ -28,6 +28,12 @@ public sealed class ClientConfig
     /// a request may ask for a lower class with <c>X-InferHub-Priority</c>, never a higher one.
     /// </summary>
     public string? Priority { get; set; }
+
+    /// <summary>
+    /// Phase 130: the organisation this client belongs to. Read only while <c>Organisations:Enabled</c>; unset is the
+    /// coordinator's home organisation. It decides which nodes the client can reach.
+    /// </summary>
+    public string? Organisation { get; set; }
 }
 
 /// <summary>All limits are nullable; <c>null</c> means unlimited.</summary>

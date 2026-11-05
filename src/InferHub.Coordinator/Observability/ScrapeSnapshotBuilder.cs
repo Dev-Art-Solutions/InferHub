@@ -85,7 +85,10 @@ public static class ScrapeSnapshotBuilder
 
             // Phase 128. Only for nodes still here, like the tool states above.
             (services.GetService(typeof(NodeEgressRegistry)) as NodeEgressRegistry)?.All()
-                .Where(state => nodes.Any(node => node.NodeId == state.NodeId)).ToArray());
+                .Where(state => nodes.Any(node => node.NodeId == state.NodeId)).ToArray(),
+
+            // Phase 130. Null unless Organisations:Enabled.
+            (services.GetService(typeof(OrganisationPolicy)) as OrganisationPolicy)?.Snapshot());
     }
 
     /// <summary>

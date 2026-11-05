@@ -1097,7 +1097,8 @@ public sealed class CoordinatorConnection(
             // Phase 120: the owner's terms, for the console to show; each request is decided live on this side.
             Management: management?.Terms(),
             // Phase 122: said, so the hub can show it and warn when its relay is off.
-            Sealed: node.Sealed ? true : null);
+            Sealed: node.Sealed ? true : null,
+            Organisation: string.IsNullOrWhiteSpace(node.Organisation) ? null : node.Organisation.Trim());
 
         await connection.InvokeAsync("Register", registration, cancellationToken);
         await RequestProfileAsync(cancellationToken);

@@ -82,13 +82,14 @@ public sealed record IssuedCertificate(
     DateTimeOffset ExpiresUtc,
     DateTimeOffset? RevokedUtc = null,
     string? RevokedBy = null,
-    string? Reason = null)
+    string? Reason = null,
+    string? Organisation = null)
 {
     public string State(DateTimeOffset now) => RevokedUtc is not null ? "revoked" : ExpiresUtc <= now ? "expired" : "active";
 }
 
 /// <summary>A one-time enrollment token, kept as its SHA-256 only.</summary>
-public sealed record EnrollmentToken(string Hash, string? Label, DateTimeOffset ExpiresUtc, string CreatedBy);
+public sealed record EnrollmentToken(string Hash, string? Label, DateTimeOffset ExpiresUtc, string CreatedBy, string? Organisation = null);
 
 /// <summary>What <c>/api/status</c> says while identity is on. Counts and the CA's fingerprint, never a token.</summary>
 public sealed record NodeIdentitySnapshot(bool Require, string Authority, int Active, int Revoked, int Expired, int PendingTokens, long Refused);
@@ -135,8 +136,13 @@ public sealed class NodeCertificateAuthority
     public string Directory => Path.GetFullPath(options.DataDirectory);
 
     /// <summary>Creates a token an admin hands to one node's operator. Shown once; only its hash is kept.</summary>
-    public (string Token, DateTimeOffset ExpiresUtc) CreateToken(string? label, string createdBy)
+    public (string Token, DateTimeOffset ExpiresUtc) CreateToken(string? label, string createdBy, string? organisation = null)
     {
+        if (organisation is not null && !Services.OrganisationPolicy.IsName(organisation))
+        {
+            throw new NodeIdentityException(400, "organisation must be lowercase letters, digits and '-'");
+        }
+
         var token = "ihn_" + Base64Url(RandomNumberGenerator.GetBytes(32));
         var expires = clock.GetUtcNow().AddMinutes(options.TokenMinutes);
 
@@ -145,7 +151,7 @@ public sealed class NodeCertificateAuthority
             var current = Load();
             Save(current with
             {
-                Tokens = current.Tokens.Where(t => t.ExpiresUtc > clock.GetUtcNow()).Append(new EnrollmentToken(Hash(token), Clean(label), expires, createdBy)).ToList()
+                Tokens = current.Tokens.Where(t => t.ExpiresUtc > clock.GetUtcNow()).Append(new EnrollmentToken(Hash(token), Clean(label), expires, createdBy, organisation)).ToList()
             });
         }
 
@@ -181,6 +187,8 @@ public sealed class NodeCertificateAuthority
 
             var tokens = current.Tokens.Where(t => !ReferenceEquals(t, token)).ToList();
             var (response, issued) = Issue(request.NodeId.Trim(), Clean(request.Name) ?? token.Label, publicKey, now);
+            // Phase 130 D4: the organisation is the token's — the admin's word, never the node's.
+            issued = issued with { Organisation = token.Organisation };
             Save(new State(Supersede(current.Certificates, issued.NodeId, now).Append(issued).ToList(), tokens));
 
             logger.LogInformation("Node {NodeId} ({Name}) enrolled: certificate {Serial} until {Expires:u}", issued.NodeId, issued.Name, issued.Serial, issued.ExpiresUtc);
@@ -197,8 +205,9 @@ public sealed class NodeCertificateAuthority
         {
             var current = Load();
             var now = clock.GetUtcNow();
-            var name = current.Certificates.LastOrDefault(c => c.NodeId == nodeId)?.Name;
-            var (response, issued) = Issue(nodeId, name, publicKey, now);
+            var previous = current.Certificates.LastOrDefault(c => c.NodeId == nodeId);
+            var (response, issued) = Issue(nodeId, previous?.Name, publicKey, now);
+            issued = issued with { Organisation = previous?.Organisation };
             Save(current with { Certificates = Supersede(current.Certificates, nodeId, now, "renewed").Append(issued).ToList() });
 
             logger.LogInformation("Node {NodeId} renewed its certificate: {Serial} until {Expires:u}", nodeId, issued.Serial, issued.ExpiresUtc);
@@ -260,6 +269,18 @@ public sealed class NodeCertificateAuthority
     }
 
     public void CountRefused() => Interlocked.Increment(ref refused);
+
+    /// <summary>Phase 130: the organisation recorded with this node's active certificate, if it has one.</summary>
+    public (bool Certified, string? Organisation) OrganisationOf(string nodeId)
+    {
+        var now = clock.GetUtcNow();
+
+        lock (gate)
+        {
+            var active = Load().Certificates.LastOrDefault(c => c.NodeId == nodeId && c.State(now) == "active");
+            return (active is not null, active?.Organisation);
+        }
+    }
 
     public IReadOnlyList<IssuedCertificate> Certificates()
     {

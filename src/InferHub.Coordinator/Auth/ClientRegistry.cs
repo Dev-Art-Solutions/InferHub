@@ -5,7 +5,7 @@ using Microsoft.Extensions.Options;
 namespace InferHub.Coordinator.Auth;
 
 /// <summary>The identity a bearer token resolved to. Flows on <c>HttpContext.Items</c>.</summary>
-public sealed record ResolvedClient(string Id, ClientLimits? Limits, IReadOnlyList<string>? Collections = null, string? Priority = null)
+public sealed record ResolvedClient(string Id, ClientLimits? Limits, IReadOnlyList<string>? Collections = null, string? Priority = null, string? Organisation = null)
 {
     /// <summary>
     /// A flat <c>Auth:ApiKeys</c> entry, a loopback caller, or no auth at all: one shared
@@ -57,7 +57,7 @@ public sealed class ClientRegistry(IOptionsMonitor<ApiKeyOptions> options) : ICl
 
             if (CryptographicOperations.FixedTimeEquals(presentedHash, keyHash))
             {
-                resolved = new ResolvedClient(client.Id, client.Limits, client.Collections, client.Priority);
+                resolved = new ResolvedClient(client.Id, client.Limits, client.Collections, client.Priority, client.Organisation);
             }
         }
 
@@ -118,6 +118,11 @@ public sealed class ApiKeyOptionsValidator : IValidateOptions<ApiKeyOptions>
             }
 
             // Phase 126: a misspelt class would quietly run as normal — the one mistake a priority setting must not hide.
+            if (client.Organisation is not null && !Services.OrganisationPolicy.IsName(client.Organisation))
+            {
+                failures.Add($"Auth:Clients — client '{client.Id}' has Organisation '{client.Organisation}'; use lowercase letters, digits and '-'.");
+            }
+
             if (client.Priority is not null && !Services.PriorityClasses.IsKnown(client.Priority))
             {
                 failures.Add($"Auth:Clients — client '{client.Id}' has Priority '{client.Priority}'; use essential, normal or background.");

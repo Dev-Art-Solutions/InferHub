@@ -61,7 +61,11 @@ public sealed record NodeRegistration(
     InferHub.Shared.Fit.ManagementTerms? Management = null,
     /// Phase 122. True when the node runs <c>Node:Sealed</c> — it reaches nothing outside its network but this hub, and
     /// downloads only through the hub's relay. Null is an unsealed node or one before v3.82.
-    bool? Sealed = null);
+    bool? Sealed = null,
+    /// Phase 130. The organisation this node says it belongs to (<c>Node:Organisation</c>). A coordinator that issued the
+    /// node a certificate uses the organisation it recorded instead, so a certified node cannot claim another. Null: the
+    /// coordinator's home organisation, or a node before v3.90.
+    string? Organisation = null);
 
 /// <summary>
 /// One row of a node's on-disk vector replica inventory, reported at registration so the

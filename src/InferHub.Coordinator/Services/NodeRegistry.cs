@@ -271,9 +271,13 @@ public sealed class NodeRegistry : INodeRegistry
 
     public IReadOnlyCollection<ModelInfo> DistinctModels()
     {
+        // Phase 130: a client sees only the models of the nodes its organisation may use.
+        var scope = OrganisationScope.Current;
+
         return nodes
             .Values
             .SelectMany(entry => entry.Models.Select(model => new { entry.Registration, model }))
+            .Where(item => scope is null || scope.Allows(item.Registration.Organisation, item.model.Name, null))
             .OrderBy(item => item.model.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(item => item.Registration.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(item => item.Registration.NodeId, StringComparer.OrdinalIgnoreCase)
@@ -348,7 +352,10 @@ public sealed class NodeRegistry : INodeRegistry
                 && (!requireStreamedSpeech || pair.Value.StreamedSpeech is true)
                 && (capability is null
                     ? pair.Value.Models.Any(candidate => ModelNamesMatch(candidate.Name, model))
-                    : NodeCapabilityResolver.Provides(pair.Value.Capabilities, capability, model)))
+                    : NodeCapabilityResolver.Provides(pair.Value.Capabilities, capability, model))
+                // Phase 130 D3: last, so a refusal is counted only for a node that could otherwise have served.
+                && (OrganisationScope.Current is not { } organisation
+                    || organisation.Allows(pair.Value.Registration.Organisation, model, capability)))
             .Select(pair => new RoutableNode(
                 pair.Key,
                 pair.Value.Registration.NodeId,
@@ -534,7 +541,8 @@ public sealed class NodeRegistry : INodeRegistry
             SlotsByModel(entry),
             entry.Sharing,
             entry.Registration.Management,
-            entry.Registration.Sealed);
+            entry.Registration.Sealed,
+            entry.Registration.Organisation);
     }
 
     /// <summary>
@@ -598,7 +606,7 @@ public sealed class NodeRegistry : INodeRegistry
             || before.Switching != after.Switching;
     }
 
-    private static bool ModelNamesMatch(string candidate, string requested)
+    internal static bool ModelNamesMatch(string candidate, string requested)
     {
         return string.Equals(candidate.Trim(), requested.Trim(), StringComparison.OrdinalIgnoreCase);
     }

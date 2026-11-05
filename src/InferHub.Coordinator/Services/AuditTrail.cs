@@ -72,7 +72,9 @@ public sealed record AuditRecord(
     [property: JsonPropertyName("node"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Node = null,
     [property: JsonPropertyName("nodeName"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? NodeName = null,
     // Phase 126: the class the request ran at, present only while Priority:Enabled.
-    [property: JsonPropertyName("priority"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Priority = null)
+    [property: JsonPropertyName("priority"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Priority = null,
+    // Phase 130: the client's organisation, present only while Organisations:Enabled.
+    [property: JsonPropertyName("organisation"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Organisation = null)
 {
     public const string Request = "request";
 

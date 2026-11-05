@@ -62,6 +62,12 @@ public sealed class NodeOptions
     /// </summary>
     public bool Sealed { get; set; }
 
+    /// <summary>
+    /// Phase 130: the organisation this node belongs to, sent at registration. A coordinator that issued this node a
+    /// certificate ignores it and uses the organisation it recorded. Unset: the coordinator's home organisation.
+    /// </summary>
+    public string? Organisation { get; set; }
+
     /// <summary>Phase 128: how a sealed node checks that the machine itself reaches nothing outside. Read only while sealed.</summary>
     public EgressOptions Egress { get; set; } = new();
 }

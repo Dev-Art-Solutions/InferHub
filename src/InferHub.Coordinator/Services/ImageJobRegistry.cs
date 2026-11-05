@@ -95,7 +95,7 @@ public sealed class ImageJobRegistry
             return null;
         }
 
-        pending[id] = new PendingImageJob(client, request, admissionLease, new CancellationTokenSource());
+        pending[id] = new PendingImageJob(client, request, admissionLease, new CancellationTokenSource(), OrganisationScope.Current);
 
         // The capability, the model, the count and the client — never the prompt, and never
         // anything about an uploaded picture. A prompt is content in exactly the sense rule 7
@@ -199,6 +199,9 @@ public sealed class ImageJobRegistry
                 {
                     continue;
                 }
+
+                // Phase 130: the job is routed in its submitter's organisation, not in whichever flow pumps the queue.
+                using var organisation = OrganisationScope.Enter(job.Organisation);
 
                 // Phase 104 D7: a provider takes the job when its policy says so — and under the
                 // default `no-node` only when no node declares the pair at all, so a busy fleet is
@@ -512,7 +515,8 @@ public sealed class ImageJobRegistry
         ResolvedClient Client,
         IImageRequest Request,
         IDisposable? AdmissionLease,
-        CancellationTokenSource Cancellation) : IDisposable
+        CancellationTokenSource Cancellation,
+        OrganisationScope? Organisation = null) : IDisposable
     {
         public void Dispose()
         {
