@@ -73,3 +73,15 @@ every node. Nodes before 3.90 send no organisation and belong to the home organi
   - carol saw no models in `/v1/models`, and her chat was a 404.
   - After the audit fix, the lines said `lab-a`, `lab-b`, `lab-c`; both nodes came back on their own after the coordinator
     restarted, with their certificates and organisations.
+
+## The published images
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.90.0` and `inferhub-node:3.90.0` both carry revision `88534da`. Docker
+Desktop was not running, so both images' `/app` were pulled through GHCR's registry API and run natively, with a fresh
+identity directory and the same organisations, grant and clients as the live run.
+
+- The published nodes enrolled with tokens for `lab-a` and `lab-b`; node-b, which declared `lab-a`, was recorded as
+  `lab-b`, source `certificate`.
+- bob's chats ran on node-b, alice's `smollm:135m` on node-a; carol's `/v1/models` listed 0 models and her chat was a 404.
+- The audit lines carried `lab-a`, `lab-b`, `lab-c`.
+- Not run: the containers themselves.
