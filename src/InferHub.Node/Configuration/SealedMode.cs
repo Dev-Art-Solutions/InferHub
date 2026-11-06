@@ -292,9 +292,23 @@ public sealed class SealedEgress
     /// <summary>Whether there is a hub to fetch through. A solo sealed node downloads nothing.</summary>
     public bool CanRelay => coordinators.Count > 0;
 
-    /// <summary><c>{hub}/node/relay/{upstream}/</c> on the first coordinator — the one an HA list leads with.</summary>
+    private Uri? connected;
+
+    /// <summary>
+    /// Phase 131: the coordinator this node is connected to now. Before it, the relay always used the first of an HA list,
+    /// so after a failover a sealed node's downloads went to the coordinator that had just failed.
+    /// </summary>
+    public void UseCoordinator(string url)
+    {
+        if (Uri.TryCreate(url.TrimEnd('/') + "/", UriKind.Absolute, out var uri) && IsCoordinator(uri))
+        {
+            Volatile.Write(ref connected, uri);
+        }
+    }
+
+    /// <summary><c>{hub}/node/relay/{upstream}/</c> on the coordinator this node is connected to (else the first of the list).</summary>
     public Uri? RelayBase(string upstream)
-        => CanRelay ? new Uri(coordinators[0], $"{NodeRelay.PathPrefix.TrimStart('/')}/{upstream}/") : null;
+        => CanRelay ? new Uri(Volatile.Read(ref connected) ?? coordinators[0], $"{NodeRelay.PathPrefix.TrimStart('/')}/{upstream}/") : null;
 
     public bool IsCoordinator(Uri uri)
         => coordinators.Any(hub => string.Equals(hub.Authority, uri.Authority, StringComparison.OrdinalIgnoreCase));

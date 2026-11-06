@@ -37,10 +37,15 @@ internal static class ConcurrentDdl
 
     private const string DuplicateSchema = "42P06";
 
-    private const int MaxAttempts = 4;
+    // deadlock_detected. Bootstrap DDL that ALTERs a table (ADD COLUMN IF NOT EXISTS) takes an exclusive lock after the
+    // CREATEs took shared ones, so several sessions booting at once can deadlock; the victim was rolled back whole, and
+    // re-running it is as safe as re-running after a duplicate. Found by eight concurrent ledger bootstraps in 3.91.
+    private const string DeadlockDetected = "40P01";
+
+    private const int MaxAttempts = 8;
 
     internal static bool IsConcurrentCreation(PostgresException ex) =>
-        ex.SqlState is UniqueViolation or DuplicateTable or DuplicateObject or DuplicateSchema;
+        ex.SqlState is UniqueViolation or DuplicateTable or DuplicateObject or DuplicateSchema or DeadlockDetected;
 
     /// <summary>Execute <paramref name="action"/>, treating a concurrent creator as success.</summary>
     public static async Task RunAsync(

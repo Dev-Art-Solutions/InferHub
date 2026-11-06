@@ -118,16 +118,30 @@ public sealed class NodeCertificateAuthority
     private readonly object gate = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> nonces = new(StringComparer.Ordinal);
 
+    private readonly INodeIdentityStore store;
+    private readonly Cluster.IClusterMembership? membership;
     private X509Certificate2? authority;
     private State? state;
+    private long stateVersion;
+    private long loadedFence = -1;
     private long refused;
 
-    public NodeCertificateAuthority(IOptions<NodeIdentityOptions> options, TimeProvider clock, ILogger<NodeCertificateAuthority> logger)
+    public NodeCertificateAuthority(
+        IOptions<NodeIdentityOptions> options,
+        TimeProvider clock,
+        ILogger<NodeCertificateAuthority> logger,
+        INodeIdentityStore? store = null,
+        Cluster.IClusterMembership? membership = null)
     {
         this.options = options.Value;
         this.clock = clock;
         this.logger = logger;
+        this.store = store ?? new FileNodeIdentityStore(options.Value.DataDirectory);
+        this.membership = membership;
     }
+
+    /// <summary>Phase 131: where the CA and the record live — a directory, or the cluster's Postgres.</summary>
+    public string Location => store.Describe;
 
     public bool Enabled => options.Enabled;
 
@@ -146,14 +160,15 @@ public sealed class NodeCertificateAuthority
         var token = "ihn_" + Base64Url(RandomNumberGenerator.GetBytes(32));
         var expires = clock.GetUtcNow().AddMinutes(options.TokenMinutes);
 
-        lock (gate)
+        Retrying(() =>
         {
             var current = Load();
             Save(current with
             {
                 Tokens = current.Tokens.Where(t => t.ExpiresUtc > clock.GetUtcNow()).Append(new EnrollmentToken(Hash(token), Clean(label), expires, createdBy, organisation)).ToList()
             });
-        }
+            return 0;
+        });
 
         logger.LogInformation("Enrollment token created by {By} ({Label}), valid until {Expires:u}", createdBy, label ?? "no label", expires);
         return (token, expires);
@@ -172,7 +187,7 @@ public sealed class NodeCertificateAuthority
 
         var publicKey = ImportPublicKey(request.PublicKey);
 
-        lock (gate)
+        return Retrying(() =>
         {
             var current = Load();
             var now = clock.GetUtcNow();
@@ -193,7 +208,7 @@ public sealed class NodeCertificateAuthority
 
             logger.LogInformation("Node {NodeId} ({Name}) enrolled: certificate {Serial} until {Expires:u}", issued.NodeId, issued.Name, issued.Serial, issued.ExpiresUtc);
             return response;
-        }
+        });
     }
 
     /// <summary>A node that proved its current certificate gets a new one for a new key; the old one is revoked as renewed.</summary>
@@ -201,7 +216,7 @@ public sealed class NodeCertificateAuthority
     {
         var publicKey = ImportPublicKey(request.PublicKey);
 
-        lock (gate)
+        return Retrying(() =>
         {
             var current = Load();
             var now = clock.GetUtcNow();
@@ -212,13 +227,13 @@ public sealed class NodeCertificateAuthority
 
             logger.LogInformation("Node {NodeId} renewed its certificate: {Serial} until {Expires:u}", nodeId, issued.Serial, issued.ExpiresUtc);
             return response;
-        }
+        });
     }
 
     /// <summary>Revokes every certificate a node id holds. Returns how many were active.</summary>
     public int Revoke(string nodeId, string by, string? reason)
     {
-        lock (gate)
+        return Retrying(() =>
         {
             var current = Load();
             var now = clock.GetUtcNow();
@@ -241,7 +256,7 @@ public sealed class NodeCertificateAuthority
             }
 
             return count;
-        }
+        });
     }
 
     /// <summary>
@@ -474,16 +489,9 @@ public sealed class NodeCertificateAuthority
             return authority;
         }
 
-        System.IO.Directory.CreateDirectory(Directory);
-        var keyPath = Path.Combine(Directory, CaKeyFile);
-        var certPath = Path.Combine(Directory, CaCertFile);
-
-        if (File.Exists(keyPath) && File.Exists(certPath))
+        if (store.Read(INodeIdentityStore.Authority) is { Body: { } existing })
         {
-            using var key = ECDsa.Create();
-            key.ImportFromPem(File.ReadAllText(keyPath));
-            using var cert = X509CertificateLoader.LoadCertificate(PemToDer(File.ReadAllText(certPath)));
-            authority = cert.CopyWithPrivateKey(key);
+            authority = Parse(existing);
             return authority;
         }
 
@@ -493,51 +501,89 @@ public sealed class NodeCertificateAuthority
             request.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, true, 0, true));
             request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign, true));
             var now = clock.GetUtcNow();
-            authority = request.CreateSelfSigned(now.AddMinutes(-5), now.AddYears(10));
-            WriteOwnerOnly(keyPath, key.ExportPkcs8PrivateKeyPem());
-            WriteOwnerOnly(certPath, authority.ExportCertificatePem());
+            var created = request.CreateSelfSigned(now.AddMinutes(-5), now.AddYears(10));
+
+            // 131 D2: two coordinators of a cluster can boot at the same instant. The first insert wins; the other drops
+            // the CA it just made and uses the winner's, so a cluster never has two.
+            if (!store.TryWrite(INodeIdentityStore.Authority, key.ExportPkcs8PrivateKeyPem() + "\n" + created.ExportCertificatePem(), 0))
+            {
+                created.Dispose();
+                authority = Parse(store.Read(INodeIdentityStore.Authority).Body
+                    ?? throw new InvalidOperationException("the node CA was being created by another coordinator and could not be read"));
+                return authority;
+            }
+
+            authority = created; // CreateSelfSigned already holds the key.
         }
 
         logger.LogInformation(
-            "Created this coordinator's node CA in {Directory} (SHA-256 {Fingerprint}). Keep the directory: losing it means every node enrolls again",
-            Directory,
+            "Created the node CA in {Location} (SHA-256 {Fingerprint}). Keep it: losing it means every node enrolls again",
+            store.Describe,
             Convert.ToHexStringLower(SHA256.HashData(authority.RawData)));
         return authority;
     }
 
     private State Load()
     {
+        // 131 D3: in a cluster the record is shared. A standby never trusts a copy it holds (the active writes), and an
+        // instance that became active again reads afresh: leadership moving is the one moment another hub may have written.
+        if (store.Shared && membership is { Enabled: true } cluster && (!cluster.IsActive || cluster.Fence != loadedFence))
+        {
+            state = null;
+            loadedFence = cluster.IsActive ? cluster.Fence : -1;
+        }
+
         if (state is not null)
         {
             return state;
         }
 
-        var path = Path.Combine(Directory, StateFile);
-        state = File.Exists(path)
-            ? JsonSerializer.Deserialize<State>(File.ReadAllText(path), Json) ?? new State([], [])
-            : new State([], []);
+        var (body, version) = store.Read(INodeIdentityStore.Record);
+        state = body is null ? new State([], []) : JsonSerializer.Deserialize<State>(body, Json) ?? new State([], []);
+        stateVersion = version;
         return state;
     }
 
     private void Save(State next)
     {
-        System.IO.Directory.CreateDirectory(Directory);
-        var path = Path.Combine(Directory, StateFile);
-        var temp = path + ".tmp";
-        WriteOwnerOnly(temp, JsonSerializer.Serialize(next, Json));
-        File.Move(temp, path, overwrite: true);
+        if (!store.TryWrite(INodeIdentityStore.Record, JsonSerializer.Serialize(next, Json), stateVersion))
+        {
+            state = null;
+            throw new StaleRecord();
+        }
+
         state = next;
+        stateVersion = Math.Max(stateVersion + 1, 1);
     }
 
-    private static void WriteOwnerOnly(string path, string content)
+    /// <summary>131 D2: a write that lost to another coordinator's is redone on what that one wrote.</summary>
+    private T Retrying<T>(Func<T> change)
     {
-        File.WriteAllText(path, content, new UTF8Encoding(false));
-
-        if (!OperatingSystem.IsWindows())
+        for (var attempt = 1; ; attempt++)
         {
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            try
+            {
+                lock (gate)
+                {
+                    return change();
+                }
+            }
+            catch (StaleRecord) when (attempt < 5)
+            {
+                logger.LogInformation("The node identity record changed under this write (attempt {Attempt}); reading it again", attempt);
+            }
         }
     }
+
+    private static X509Certificate2 Parse(string bundle)
+    {
+        using var key = ECDsa.Create();
+        key.ImportFromPem(Pem.Block(bundle, "PRIVATE KEY"));
+        using var certificate = X509CertificateLoader.LoadCertificate(Pem.Der(Pem.Block(bundle, "CERTIFICATE")));
+        return certificate.CopyWithPrivateKey(key);
+    }
+
+    private sealed class StaleRecord : Exception;
 
     private static byte[] PemToDer(string pem)
         => Convert.FromBase64String(string.Concat(pem.Split('\n').Select(line => line.Trim()).Where(line => line.Length > 0 && !line.StartsWith("-----", StringComparison.Ordinal))));

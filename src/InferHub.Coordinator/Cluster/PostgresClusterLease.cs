@@ -36,6 +36,35 @@ internal sealed class PostgresClusterLease : IClusterLease, IAsyncDisposable
 
     private string QualifiedTable => Quote(options.Schema) + "." + Quote(options.Table);
 
+    // Phase 131: who is alive, per lease, by the database's clock.
+    private string MembersTable => Quote(options.Schema) + "." + Quote(options.Table + "_members");
+
+    public async Task HeartbeatAsync(CancellationToken cancellationToken)
+    {
+        await EnsureBootstrappedAsync(cancellationToken);
+        await using var command = dataSource.CreateCommand(
+            $"""
+            INSERT INTO {MembersTable} (lease_name, instance, seen_at_utc) VALUES (@name, @instance, now())
+            ON CONFLICT (lease_name, instance) DO UPDATE SET seen_at_utc = now()
+            """);
+        command.CommandTimeout = options.CommandTimeoutSeconds;
+        command.Parameters.AddWithValue("name", options.LeaseName);
+        command.Parameters.AddWithValue("instance", options.InstanceId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<TimeSpan?> SinceSeenAsync(string instance, CancellationToken cancellationToken)
+    {
+        await EnsureBootstrappedAsync(cancellationToken);
+        await using var command = dataSource.CreateCommand(
+            $"SELECT EXTRACT(EPOCH FROM (now() - seen_at_utc))::float8 FROM {MembersTable} WHERE lease_name = @name AND instance = @instance");
+        command.CommandTimeout = options.CommandTimeoutSeconds;
+        command.Parameters.AddWithValue("name", options.LeaseName);
+        command.Parameters.AddWithValue("instance", instance);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is double seconds ? TimeSpan.FromSeconds(Math.Max(0, seconds)) : null;
+    }
+
     public async Task<LeaseResult> TryAcquireOrRenewAsync(CancellationToken cancellationToken)
     {
         await EnsureBootstrappedAsync(cancellationToken);
@@ -170,6 +199,12 @@ internal sealed class PostgresClusterLease : IClusterLease, IAsyncDisposable
                     acquired_at_utc timestamptz NOT NULL,
                     renewed_at_utc  timestamptz NOT NULL,
                     expires_at_utc  timestamptz NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS {MembersTable} (
+                    lease_name  text NOT NULL,
+                    instance    text NOT NULL,
+                    seen_at_utc timestamptz NOT NULL,
+                    PRIMARY KEY (lease_name, instance)
                 );
                 """);
             command.CommandTimeout = options.CommandTimeoutSeconds;

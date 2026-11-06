@@ -153,6 +153,24 @@ public class SealedModeTests
     }
 
     [Fact]
+    public void AfterAFailoverTheRelayFollowsTheCoordinatorTheNodeIsConnectedTo()
+    {
+        var egress = new SealedEgress(Config(
+            ("Coordinator:Endpoints:0", "https://hub-a.example.com"),
+            ("Coordinator:Endpoints:1", "https://hub-b.example.com/"),
+            ("Coordinator:EnrollmentSecret", "s")));
+
+        Assert.Equal("https://hub-a.example.com/node/relay/hf/", egress.RelayBase(NodeRelay.HuggingFace)!.ToString());
+
+        egress.UseCoordinator("https://hub-b.example.com");
+        Assert.Equal("https://hub-b.example.com/node/relay/hf/", egress.RelayBase(NodeRelay.HuggingFace)!.ToString());
+
+        // A URL that is not one of this node's coordinators never becomes the relay.
+        egress.UseCoordinator("https://elsewhere.example.com");
+        Assert.Equal("https://hub-b.example.com/node/relay/hf/", egress.RelayBase(NodeRelay.HuggingFace)!.ToString());
+    }
+
+    [Fact]
     public async Task TheRelayCarriesTheSecretAndNothingElseLeaves()
     {
         var egress = new SealedEgress(Config(("Coordinator:Url", "https://hub.example.com/"), ("Coordinator:EnrollmentSecret", "s3cret")));

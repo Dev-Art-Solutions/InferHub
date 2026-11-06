@@ -44,7 +44,19 @@ internal sealed class ClusterRoleMiddleware(RequestDelegate next, IClusterMember
         // later with no reason attached. Refusing the negotiate is what lets a node tell "standby,
         // try the next endpoint" from "hub is down", and it does so before SignalR is involved at
         // all. (NodeHub keeps its own check as defence in depth.)
-        "/hubs/node"
+        "/hubs/node",
+        // Phase 131: a node's enrollment and renewal write the shared identity record, and only the active writes it.
+        "/node/identity"
+    ];
+
+    /// <summary>
+    /// Phase 131 D3: admin writes to the shared node identity record (tokens, revocations, a site plan's token). Reads stay
+    /// served on a standby, like the rest of the admin API (32 D6); writes go to the one coordinator that writes.
+    /// </summary>
+    private static readonly string[] WriteOnlyPrefixes =
+    [
+        "/api/admin/identity",
+        "/api/admin/site/nodes"
     ];
 
     public async Task InvokeAsync(HttpContext context)
@@ -58,7 +70,7 @@ internal sealed class ClusterRoleMiddleware(RequestDelegate next, IClusterMember
         var active = membership.IsActive;
         context.Response.Headers[RoleHeader] = active ? ActiveRole : StandbyRole;
 
-        if (active || !IsWork(context.Request.Path))
+        if (active || !(IsWork(context.Request.Path) || IsIdentityWrite(context.Request)))
         {
             await next(context);
             return;
@@ -66,6 +78,11 @@ internal sealed class ClusterRoleMiddleware(RequestDelegate next, IClusterMember
 
         await WriteStandbyRefusalAsync(context);
     }
+
+    private static bool IsIdentityWrite(HttpRequest request)
+        => !HttpMethods.IsGet(request.Method)
+           && !HttpMethods.IsHead(request.Method)
+           && WriteOnlyPrefixes.Any(prefix => request.Path.StartsWithSegments(prefix, StringComparison.OrdinalIgnoreCase));
 
     private static bool IsWork(PathString path)
     {
@@ -83,7 +100,7 @@ internal sealed class ClusterRoleMiddleware(RequestDelegate next, IClusterMember
     private static async Task WriteStandbyRefusalAsync(HttpContext context)
     {
         const string message =
-            "this coordinator is a standby and does not accept inference; retry against the active coordinator";
+            "this coordinator is a standby and does not accept inference or writes; retry against the active coordinator";
 
         context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
         context.Response.Headers.RetryAfter = "5";

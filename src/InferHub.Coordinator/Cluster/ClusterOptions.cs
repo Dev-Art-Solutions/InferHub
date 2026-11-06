@@ -54,6 +54,18 @@ public sealed class ClusterOptions
 
     public int CommandTimeoutSeconds { get; set; } = 10;
 
+    /// <summary>
+    /// Phase 131: the instance that should lead whenever it is healthy (empty: none — whoever holds the lease keeps it, as
+    /// before). Another instance does not take the lease while the preferred one is alive, and an active one that is not
+    /// preferred hands the lease back once the preferred has been alive for <see cref="FailbackAfterSeconds"/>.
+    /// </summary>
+    public string? PreferredInstance { get; set; }
+
+    /// <summary>How long the preferred instance must have been alive before an active one hands the lease back.</summary>
+    public int FailbackAfterSeconds { get; set; } = 60;
+
+    public TimeSpan FailbackAfter => TimeSpan.FromSeconds(FailbackAfterSeconds);
+
     public TimeSpan LeaseTtl => TimeSpan.FromSeconds(LeaseTtlSeconds);
 
     public TimeSpan RenewInterval => TimeSpan.FromSeconds(RenewIntervalSeconds);
@@ -66,6 +78,13 @@ public sealed class ClusterOptionsValidator : IValidateOptions<ClusterOptions>
 
     public ValidateOptionsResult Validate(string? name, ClusterOptions options)
     {
+        if (options.Enabled && !string.IsNullOrWhiteSpace(options.PreferredInstance) && options.FailbackAfterSeconds < options.LeaseTtlSeconds)
+        {
+            return ValidateOptionsResult.Fail(
+                $"Cluster:FailbackAfterSeconds ({options.FailbackAfterSeconds}) must be at least Cluster:LeaseTtlSeconds ({options.LeaseTtlSeconds}): "
+                + "a preferred instance that came back for less than one lease's life is not yet one to hand leadership to.");
+        }
+
         if (!options.Enabled)
         {
             return ValidateOptionsResult.Success;

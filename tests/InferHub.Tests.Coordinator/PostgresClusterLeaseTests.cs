@@ -54,6 +54,20 @@ public class PostgresClusterLeaseTests : IAsyncLifetime
     }
 
     [PostgresFact]
+    public async Task MembersSayTheyAreAliveByTheDatabasesClock()
+    {
+        // Phase 131: failback reads this. Never seen is null; a heartbeat is seen at once.
+        var hubA = LeaseFor("hub-a");
+        var hubB = LeaseFor("hub-b");
+
+        Assert.Null(await hubB.SinceSeenAsync("hub-a", CancellationToken.None));
+        await hubA.HeartbeatAsync(CancellationToken.None);
+        var since = await hubB.SinceSeenAsync("hub-a", CancellationToken.None);
+        Assert.NotNull(since);
+        Assert.True(since < TimeSpan.FromSeconds(5));
+    }
+
+    [PostgresFact]
     public async Task TheFirstContenderTakesTheLeaseAndTheSecondDoesNot()
     {
         var a = LeaseFor("hub-a");

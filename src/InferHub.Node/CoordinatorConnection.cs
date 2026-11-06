@@ -42,7 +42,8 @@ public sealed class CoordinatorConnection(
     Control.NodeSharing? sharing = null,
     Fit.HubManagement? management = null,
     Identity.NodeCredential? credential = null,
-    Configuration.EgressCheck? egress = null) : IAsyncDisposable
+    Configuration.EgressCheck? egress = null,
+    Configuration.SealedEgress? sealedEgress = null) : IAsyncDisposable
 {
     /// <summary>
     /// Phase 97's catalogue report, one per engine that has a catalogue (99): each has its own hub
@@ -1003,6 +1004,8 @@ public sealed class CoordinatorConnection(
                     await RegisterAsync(cancellationToken);
                     EnsureHeartbeatLoop();
                     EnsureModelRefreshLoop();
+                    // Phase 131: a sealed node's relay downloads go to the coordinator it is connected to.
+                    sealedEgress?.UseCoordinator(url);
                     logger.LogInformation("Connected to coordinator {CoordinatorUrl}", url);
                     return;
                 }

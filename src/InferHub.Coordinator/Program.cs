@@ -266,6 +266,15 @@ builder.Services.AddOptions<InferHub.Coordinator.Auth.NodeIdentityOptions>()
     .Bind(builder.Configuration.GetSection(InferHub.Coordinator.Auth.NodeIdentityOptions.SectionName))
     .ValidateOnStart();
 builder.Services.AddSingleton<IValidateOptions<InferHub.Coordinator.Auth.NodeIdentityOptions>, InferHub.Coordinator.Auth.NodeIdentityOptionsValidator>();
+// Phase 131: in a cluster the CA and its record live in the cluster's Postgres, so a promoted standby verifies what the
+// old active issued; otherwise in Identity:DataDirectory, as in 3.87.
+builder.Services.AddSingleton<InferHub.Coordinator.Auth.INodeIdentityStore>(services =>
+    services.GetRequiredService<IOptions<ClusterOptions>>().Value.Enabled
+        ? new InferHub.Coordinator.Auth.PostgresNodeIdentityStore(
+            services.GetRequiredService<IOptions<ClusterOptions>>(),
+            new InferHub.Coordinator.Auth.FileNodeIdentityStore(services.GetRequiredService<IOptions<InferHub.Coordinator.Auth.NodeIdentityOptions>>().Value.DataDirectory),
+            services.GetRequiredService<ILoggerFactory>().CreateLogger<InferHub.Coordinator.Auth.PostgresNodeIdentityStore>())
+        : new InferHub.Coordinator.Auth.FileNodeIdentityStore(services.GetRequiredService<IOptions<InferHub.Coordinator.Auth.NodeIdentityOptions>>().Value.DataDirectory));
 builder.Services.AddSingleton<InferHub.Coordinator.Auth.NodeCertificateAuthority>();
 
 // Phase 125. The audit trail — off by default; when off the middleware passes straight through and nothing is created.

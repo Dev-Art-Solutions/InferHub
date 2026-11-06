@@ -4733,6 +4733,7 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Cluster:LeaseName` | `default` | Separates two unrelated meshes sharing one database. |
 | `Cluster:LeaseTtlSeconds` | `15` | Worst-case failover delay, and the window inside which a partitioned old primary fences itself. |
 | `Cluster:RenewIntervalSeconds` | `5` | Renew cadence. Must be ≤ a third of the TTL; startup fails otherwise. |
+| `Cluster:PreferredInstance` | _(empty)_ | **v3.91+** — the hub that should lead whenever healthy; another hands the lease back after `Cluster:FailbackAfterSeconds` (`60`, at least the TTL). See [failback](#one-identity-across-the-cluster-and-failback-v391). |
 | `Queue:MaxWaitSeconds` | `30` | How long a request may wait for a saturated fleet before `503`. |
 | `Queue:MaxDepth` | `64` | How many requests may wait at once. Past it, an immediate `503`. |
 | `Queue:SlotWaitSeconds` | `0` | **v3.74+** — how long a request may wait at the hub while every node holding its model is running all it has [slots](#waiting-for-a-free-slot-v374) for. `0` = off. Past it the request is sent on anyway, never a `503`. |
@@ -5781,6 +5782,8 @@ release.
 | `Cluster:LeaseName` | `default` | Separates two unrelated meshes sharing one database. |
 | `Cluster:LeaseTtlSeconds` | `15` | Worst-case failover delay **and** the fencing window — the same number, on purpose. |
 | `Cluster:RenewIntervalSeconds` | `5` | Must be ≤ a third of the TTL, or one slow round-trip demotes a healthy leader. Startup fails if it is not. |
+| `Cluster:PreferredInstance` | *(empty)* | v3.91+: the hub that leads whenever it is healthy. Empty = none, as before. |
+| `Cluster:FailbackAfterSeconds` | `60` | How long the preferred hub must be alive, without a break, before another hands the lease back. At least the TTL. |
 
 **What a client sees.** Every response from a clustered hub carries `X-InferHub-Role:
 active|standby`, `GET /health` gains a `role` field, and inference against a standby is a `503`
@@ -5806,6 +5809,35 @@ The node side is one key:
 
 Leave it empty and the node uses `Coordinator:Url` exactly as before. A standby refuses the
 SignalR handshake with a `503`, so rotating the list is how a node finds the current leader.
+
+#### One identity across the cluster, and failback (v3.91+)
+
+Before 3.91 the [node CA](#a-certificate-per-node-v387) and its record (certificates issued, pending tokens, revocations,
+each node's [organisation](#organisations-and-the-grants-between-them-v390)) lived in `Identity:DataDirectory` on the hub that wrote them. Under
+`Identity:Require`, a failover locked every certified node out of the coordinator meant to take over. Now, whenever
+`Cluster:Enabled`, that record lives in the cluster's Postgres (table `node_identity` in `Cluster:Schema`): the hub that
+takes over verifies every certificate the old one issued and sees every revocation. A standby serves the record's reads
+and answers `503` to its writes (tokens, revocations, enrollment, renewal). Writes are versioned, so two hubs never
+overwrite each other, and two hubs booting on an empty database make one CA. On upgrade, the first hub to boot moves its
+own CA and record from `Identity:DataDirectory` into Postgres, so the nodes it certified stay certified; a second hub's
+files are left alone and its nodes enroll again. Without a cluster nothing moves.
+
+A sealed node now downloads through the coordinator it is **connected** to, not the first one in `Coordinator:Endpoints`,
+so after a failover the relay follows it.
+
+**Failback** is opt-in. Name the hub that should lead whenever it is healthy:
+
+```jsonc
+"Cluster": {
+  "PreferredInstance": "hub-a",   // the same on every member
+  "FailbackAfterSeconds": 60      // at least LeaseTtlSeconds; startup fails otherwise
+}
+```
+
+Every member records that it is alive (by the database's clock). While `hub-a` is alive no other hub takes the lease.
+When `hub-a` was down and `hub-b` took over, `hub-b` hands the lease back only after `hub-a` has been alive for
+`FailbackAfterSeconds` without a break; a break restarts the count, so a flapping link moves leadership at most once.
+Nodes follow as on any failover. Leave `PreferredInstance` empty and whoever holds the lease keeps it, as before.
 
 A two-coordinator compose overlay and a failover runbook live in
 [`deploy/docker/`](deploy/docker/README.md#high-availability--a-warm-standby-coordinator).

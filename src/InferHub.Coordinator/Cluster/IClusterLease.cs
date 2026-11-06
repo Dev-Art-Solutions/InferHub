@@ -34,4 +34,10 @@ internal interface IClusterLease
     /// the TTL exists for.
     /// </summary>
     Task ReleaseAsync(CancellationToken cancellationToken);
+
+    /// <summary>Phase 131: this instance is alive and reachable, recorded where every member can read it.</summary>
+    Task HeartbeatAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    /// <summary>Phase 131: how long ago <paramref name="instance"/> last said it was alive, by the database's clock; null if never.</summary>
+    Task<TimeSpan?> SinceSeenAsync(string instance, CancellationToken cancellationToken) => Task.FromResult<TimeSpan?>(null);
 }

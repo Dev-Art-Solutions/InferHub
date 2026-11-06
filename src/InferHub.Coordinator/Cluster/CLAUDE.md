@@ -107,3 +107,40 @@ that retries it — the other session winning **is** success — and **all three
 **Rule 5 survived again.** Phase 32 added **zero** new dependencies: the lease is `Npgsql`, already
 recorded for the `postgres` vector provider, and the standby refusal is `System.Text.Json`.
 
+
+### Phase 131 (one identity across the cluster, automatic failback) — also load-bearing
+
+**D1 — In a cluster the node CA and its record live in the cluster's Postgres, not in a hub's files.** Phase 32 D1 says a
+promoted standby needs no migration, and until 3.91 that was false for phases 127 and 130: the CA key, the certificates
+issued, pending tokens and every node's organisation sat in `Identity:DataDirectory` on the hub that issued them. With
+`Identity:Require` a failover locked every certified node out of the coordinator meant to take over. Now
+[INodeIdentityStore](../Auth/NodeIdentityStore.cs) picks `PostgresNodeIdentityStore` (table `node_identity`, schema
+`Cluster:Schema`) whenever `Cluster:Enabled`, else `FileNodeIdentityStore` with the 3.87 layout unchanged. One shared
+truth, not two copies kept in sync: rule 4 again. Upgrading keeps the nodes: when the cluster has no CA yet, the first
+hub to boot moves its own CA and record in, in one transaction (both or neither; a record beside another hub's CA would
+verify nothing). Another hub's files stay on its disk and are not merged; its nodes re-enroll.
+
+**D2 — Writes are optimistic, by a version column.** Every write is `UPDATE … WHERE version = @read`; a write that lost
+reloads and re-applies (bounded retries) instead of overwriting what another hub just wrote. Two hubs booting on an
+empty record race to create the CA the same way: the loser discards its key and uses the winner's.
+`SharedIdentityTests` boots six at once (one CA) and writes ten tokens from two hubs at once (all ten kept).
+
+**D3 — A standby serves the record's reads and refuses its writes.** `/node/identity` joins the refusal set (D6), and
+non-GET `/api/admin/identity` and `/api/admin/site/nodes` answer `503` there. A shared-store authority reloads while it is
+not active and again whenever the fence changes, so a hub that becomes active never trusts a copy cached before another
+hub revoked something.
+
+**D4 — Failback is opt-in and moves leadership once, not back and forth.** `Cluster:PreferredInstance` names the hub that
+should lead when healthy. Every member heartbeats a row in `{Table}_members` (database clock, like the lease). Another
+member does not contend while the preferred is alive (seen within `LeaseTtl`); an active one that is not preferred
+releases the lease and steps down only after the preferred has been alive `FailbackAfterSeconds` without a break, and a
+break restarts that clock. The validator refuses a failback shorter than the lease: back for less than a lease's life is
+not yet healthy. Unset, nothing changes.
+
+**D5 — A sealed node's relay follows the coordinator it is connected to.** `SealedEgress.RelayBase` used the first of
+`Coordinator:Endpoints`, so after a failover downloads went to the hub that had just failed. The connection now tells it
+which hub it reached, and only one of the node's own coordinators can become the relay.
+
+**D6 — D7's retry also covers a deadlock.** Bootstrap that `ALTER`s a table after creating it can deadlock when several
+sessions boot at once (`40P01`). The victim was rolled back whole, so `ConcurrentDdl` re-runs it like a duplicate.
+`ConcurrentBootstrapTests` hit this with eight usage-ledger bootstraps.

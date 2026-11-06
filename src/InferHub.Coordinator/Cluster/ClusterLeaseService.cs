@@ -32,6 +32,9 @@ internal sealed class ClusterLeaseService(
     /// <summary>Local clock, set on every successful renewal. The fence deadline is measured from it.</summary>
     private DateTimeOffset lastProofUtc = DateTimeOffset.MinValue;
 
+    // Phase 131: since when the preferred instance has been alive without a break, as this instance has seen it.
+    private DateTimeOffset? preferredAliveSince;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         logger.LogInformation(
@@ -86,6 +89,15 @@ internal sealed class ClusterLeaseService(
 
         try
         {
+            // Phase 131 D4: failback. Every member says it is alive; one that is not preferred stands aside while the preferred
+            // one is alive, and an active one hands the lease back once the preferred has been alive long enough.
+            await lease.HeartbeatAsync(attempt.Token);
+
+            if (await StandAsideForPreferredAsync(attempt.Token))
+            {
+                return;
+            }
+
             var result = await lease.TryAcquireOrRenewAsync(attempt.Token);
 
             if (result.Held)
@@ -124,6 +136,49 @@ internal sealed class ClusterLeaseService(
     }
 
     /// <summary>Time left before this instance must stop believing it leads, or null if it does not.</summary>
+    /// <summary>
+    /// True when this instance must not lead this tick: it is not the preferred instance and the preferred one is alive. A
+    /// standby then does not contend; an active one keeps leading until the preferred has been alive for
+    /// <c>FailbackAfterSeconds</c> without a break, then releases the lease and steps down, so the preferred one takes it on
+    /// its next tick. Leadership moves once, on purpose, never back and forth on a flapping link.
+    /// </summary>
+    private async Task<bool> StandAsideForPreferredAsync(CancellationToken cancellationToken)
+    {
+        var preferred = options.PreferredInstance?.Trim();
+
+        if (string.IsNullOrEmpty(preferred) || string.Equals(preferred, options.InstanceId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var alive = await lease.SinceSeenAsync(preferred, cancellationToken) is { } since && since < options.LeaseTtl;
+        var now = time.GetUtcNow();
+
+        if (!alive)
+        {
+            preferredAliveSince = null;
+            return false;
+        }
+
+        preferredAliveSince ??= now;
+
+        if (membership.Role is not ClusterRole.Active)
+        {
+            membership.MarkStandby($"the preferred coordinator '{preferred}' is alive; this instance stands by for it");
+            return true;
+        }
+
+        if (now - preferredAliveSince.Value < options.FailbackAfter)
+        {
+            return false;
+        }
+
+        await lease.ReleaseAsync(cancellationToken);
+        Demote($"failing back: the preferred coordinator '{preferred}' has been alive for {options.FailbackAfterSeconds}s");
+        preferredAliveSince = null;
+        return true;
+    }
+
     private TimeSpan? RemainingBeforeFence()
     {
         if (membership.Role is not ClusterRole.Active)
