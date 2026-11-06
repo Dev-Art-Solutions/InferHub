@@ -40,4 +40,14 @@ internal interface IClusterLease
 
     /// <summary>Phase 131: how long ago <paramref name="instance"/> last said it was alive, by the database's clock; null if never.</summary>
     Task<TimeSpan?> SinceSeenAsync(string instance, CancellationToken cancellationToken) => Task.FromResult<TimeSpan?>(null);
+
+    /// <summary>
+    /// Phase 132: the heartbeat of an active-active member, with where the others reach it and what its nodes serve (JSON of
+    /// <see cref="PeerModel"/>).
+    /// </summary>
+    Task AdvertiseAsync(string url, string models, CancellationToken cancellationToken) => HeartbeatAsync(cancellationToken);
+
+    /// <summary>Phase 132: every member's last heartbeat, by the database's clock.</summary>
+    Task<IReadOnlyList<ClusterMemberRow>> MembersAsync(CancellationToken cancellationToken)
+        => Task.FromResult<IReadOnlyList<ClusterMemberRow>>([]);
 }

@@ -45,6 +45,14 @@ public static class ScrapeSnapshotBuilder
             affinity.Count,
             membership.Enabled
                 ? new ClusterScrapeSample(membership.InstanceId, membership.IsActive, membership.Fence)
+                {
+                    // Phase 132: only in active-active, so a standby pair scrapes exactly what it always did.
+                    Peers = membership.ActiveActive && services.GetService(typeof(ClusterPeers)) is ClusterPeers peers ? peers.Live.Count : null,
+                    Forwarded = membership.ActiveActive && services.GetService(typeof(ClusterPeers)) is ClusterPeers counted
+                        ? counted.Forwarded().OrderBy(entry => entry.Key.Peer, StringComparer.Ordinal).ThenBy(entry => entry.Key.Outcome, StringComparer.Ordinal)
+                            .Select(entry => (entry.Key.Peer, entry.Key.Outcome, entry.Value)).ToArray()
+                        : null
+                }
                 : null,
             registry.CapabilitySummary().ToArray(),
             // Only for nodes that are still here. A report from a box that has gone away is not

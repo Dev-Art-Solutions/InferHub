@@ -4733,6 +4733,8 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Cluster:LeaseName` | `default` | Separates two unrelated meshes sharing one database. |
 | `Cluster:LeaseTtlSeconds` | `15` | Worst-case failover delay, and the window inside which a partitioned old primary fences itself. |
 | `Cluster:RenewIntervalSeconds` | `5` | Renew cadence. Must be ≤ a third of the TTL; startup fails otherwise. |
+| `Cluster:Mode` | `standby` | **v3.92+** — `active-active`: every member serves and passes on what its nodes cannot. See [active-active](#active-active-every-coordinator-serves-v392). |
+| `Cluster:AdvertiseUrl` | _(empty)_ | **v3.92+** — required with `active-active`: where the other members reach this one. |
 | `Cluster:PreferredInstance` | _(empty)_ | **v3.91+** — the hub that should lead whenever healthy; another hands the lease back after `Cluster:FailbackAfterSeconds` (`60`, at least the TTL). See [failback](#one-identity-across-the-cluster-and-failback-v391). |
 | `Queue:MaxWaitSeconds` | `30` | How long a request may wait for a saturated fleet before `503`. |
 | `Queue:MaxDepth` | `64` | How many requests may wait at once. Past it, an immediate `503`. |
@@ -5759,9 +5761,9 @@ list of hubs and land on whoever holds the lease. When the active hub dies, the 
 lease within the TTL and the mesh serves again: no manual promotion, no data migration, no
 gossip — the durable state was already shared.
 
-**What it does not do,** stated plainly: no active-active load sharing (one hub serves at a time),
-and no clustering of the `local` vector provider. Those are the rest of the HA track, not this
-release.
+**What it does not do,** stated plainly: in this mode one hub serves at a time (since v3.92,
+[active-active](#active-active-every-coordinator-serves-v392) is a second mode), and there is no clustering of the
+`local` vector provider.
 
 ```jsonc
 // Both coordinators, differing only in InstanceId. Requires VectorStore:Provider=postgres.
@@ -5784,6 +5786,8 @@ release.
 | `Cluster:RenewIntervalSeconds` | `5` | Must be ≤ a third of the TTL, or one slow round-trip demotes a healthy leader. Startup fails if it is not. |
 | `Cluster:PreferredInstance` | *(empty)* | v3.91+: the hub that leads whenever it is healthy. Empty = none, as before. |
 | `Cluster:FailbackAfterSeconds` | `60` | How long the preferred hub must be alive, without a break, before another hands the lease back. At least the TTL. |
+| `Cluster:Mode` | `standby` | v3.92+: `active-active` makes every member serve at once. |
+| `Cluster:AdvertiseUrl` | *(empty)* | v3.92+: required with `active-active`; where the other members reach this one. |
 
 **What a client sees.** Every response from a clustered hub carries `X-InferHub-Role:
 active|standby`, `GET /health` gains a `role` field, and inference against a standby is a `503`
@@ -5838,6 +5842,39 @@ Every member records that it is alive (by the database's clock). While `hub-a` i
 When `hub-a` was down and `hub-b` took over, `hub-b` hands the lease back only after `hub-a` has been alive for
 `FailbackAfterSeconds` without a break; a break restarts the count, so a flapping link moves leadership at most once.
 Nodes follow as on any failover. Leave `PreferredInstance` empty and whoever holds the lease keeps it, as before.
+
+#### Active-active: every coordinator serves (v3.92+)
+
+With `Cluster:Mode=active-active` every member of the cluster serves at once, and each node connects to one of them.
+Put a load balancer in front of all members; any of them answers any request.
+
+```jsonc
+"Cluster": {
+  "Enabled": true,
+  "Mode": "active-active",
+  "InstanceId": "hub-a",
+  "AdvertiseUrl": "http://hub-a:8080/"   // where the other members reach this one
+}
+```
+
+- **A request finds its node on any member.** When none of this member's nodes can serve the model a request asks for,
+  and another member's nodes can, the request is passed to that member once, with all its headers (so every member
+  needs the same `Auth` section), and the answer streams back. The response carries `X-InferHub-Forwarded-To`. A model
+  this member's nodes hold is always served here. `/v1/models` and `/api/tags` list what the other members serve too,
+  within the caller's [organisation](#organisations-and-the-grants-between-them-v390).
+- **Jobs.** A job id this member did not issue (`/api/images/jobs/{id}`) is looked for on the others, so a client
+  behind a balancer can poll any member.
+- **Certificates.** Every member issues tokens, enrolls and revokes; a node revoked on one member is dropped by the
+  member it is connected to within a few seconds.
+- **Failure.** A member that cannot write its heartbeat to the database within `LeaseTtlSeconds` stops serving and
+  drops its nodes. A member that dies drops out of the others' view after the same time; until then a request passed
+  to it is answered by the member it reached.
+- **Visible.** `/api/status` shows `mode` and each peer (URL, last heartbeat, models, requests passed to it);
+  `/metrics` adds `inferhub_cluster_peers` and `inferhub_cluster_forwarded_total{peer,outcome}`.
+
+**Still per member** in this release: client limits and queues (a client behind a balancer can reach each member's
+limits), job lists, the relay's cache and supply. Models a node serves as a tool (voices, image models) are not passed
+on. `CorpusFailover:Enabled` is refused at startup with active-active.
 
 A two-coordinator compose overlay and a failover runbook live in
 [`deploy/docker/`](deploy/docker/README.md#high-availability--a-warm-standby-coordinator).

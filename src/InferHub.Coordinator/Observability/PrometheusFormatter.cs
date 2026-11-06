@@ -79,7 +79,14 @@ public sealed record ProfileScrapeSample(string Profile, string State, int Nodes
 /// the series an alert watches, because a mesh where it sums to 0 has no leader and a mesh where it
 /// sums to 2 has a split brain the fence was supposed to prevent.
 /// </summary>
-public sealed record ClusterScrapeSample(string InstanceId, bool Active, long Fence);
+public sealed record ClusterScrapeSample(string InstanceId, bool Active, long Fence)
+{
+    /// <summary>Phase 132: the other members alive now (active-active only).</summary>
+    public int? Peers { get; init; }
+
+    /// <summary>Phase 132: requests passed to each member, by outcome (active-active only).</summary>
+    public IReadOnlyList<(string Peer, string Outcome, long Count)>? Forwarded { get; init; }
+}
 
 /// <summary>
 /// A client's live window consumption against its configured limits. Counts and ids only — the
@@ -217,12 +224,30 @@ public static class PrometheusFormatter
         if (scrape.Cluster is { } cluster)
         {
             Header(builder, "inferhub_cluster_active", "gauge",
-                "1 when this coordinator holds the lease and serves inference, 0 when it is a standby.");
+                "1 when this coordinator serves inference (holds the lease; in active-active, has proved its own heartbeat), 0 when it does not.");
             Sample(builder, "inferhub_cluster_active", [("instance", cluster.InstanceId)], cluster.Active ? 1 : 0);
 
             Header(builder, "inferhub_cluster_fence", "gauge",
                 "Acquisition counter of the coordinator lease; a change means leadership moved.");
             Sample(builder, "inferhub_cluster_fence", [("instance", cluster.InstanceId)], cluster.Fence);
+
+            if (cluster.Peers is { } peers)
+            {
+                Header(builder, "inferhub_cluster_peers", "gauge",
+                    "Other members of an active-active cluster alive now (by their heartbeats).");
+                Sample(builder, "inferhub_cluster_peers", [("instance", cluster.InstanceId)], peers);
+            }
+
+            if (cluster.Forwarded is { Count: > 0 } forwarded)
+            {
+                Header(builder, "inferhub_cluster_forwarded_total", "counter",
+                    "Requests this member passed to another: served, unreachable (served here instead), missing (a job id it did not hold).");
+
+                foreach (var (peer, outcome, count) in forwarded)
+                {
+                    Sample(builder, "inferhub_cluster_forwarded_total", [("instance", cluster.InstanceId), ("peer", peer), ("outcome", outcome)], count);
+                }
+            }
         }
 
         PerNode(builder, scrape);

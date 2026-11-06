@@ -304,11 +304,34 @@ if (clusterEnabled)
         .GetSection(ClusterOptions.SectionName)
         .GetValue<string>(nameof(ClusterOptions.InstanceId)) ?? Environment.MachineName;
 
-    builder.Services.AddSingleton(new ClusterMembership(instanceId));
+    // Phase 132: active-active — every member serves, and passes on what its own nodes cannot.
+    var activeActive = new ClusterOptions { Mode = builder.Configuration.GetSection(ClusterOptions.SectionName).GetValue<string>(nameof(ClusterOptions.Mode)) ?? ClusterOptions.StandbyMode }.ActiveActive;
+
+    if (activeActive && builder.Configuration.GetValue("CorpusFailover:Enabled", false))
+    {
+        // 132 D6: corpus failover promotes a standby when the owning node is gone from THIS coordinator. In active-active the
+        // owner may simply be connected to another member, and a promotion there is a second owner nobody asked for.
+        throw new InvalidOperationException(
+            "CorpusFailover:Enabled cannot be used with Cluster:Mode=active-active: a node connected to another member looks gone " +
+            "from this one, and corpus failover would promote its standby while it is still serving. Turn one of them off.");
+    }
+
+    builder.Services.AddSingleton(new ClusterMembership(instanceId, activeActive));
     builder.Services.AddSingleton<IClusterMembership>(sp => sp.GetRequiredService<ClusterMembership>());
     builder.Services.AddSingleton<IClusterLease, PostgresClusterLease>();
     builder.Services.AddSingleton(TimeProvider.System);
+    builder.Services.AddSingleton<ClusterPeers>();
     builder.Services.AddHostedService<ClusterLeaseService>();
+
+    // No timeout of its own: a passed-on request lasts as long as the client's, streams included, and ends when it does.
+    builder.Services.AddHttpClient(ClusterForwardingMiddleware.ClientName, http => http.Timeout = Timeout.InfiniteTimeSpan)
+        .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false })
+        .RemoveAllLoggers();
+
+    if (activeActive && builder.Configuration.GetValue("Identity:Enabled", false))
+    {
+        builder.Services.AddHostedService<ClusterRevocationSweep>();
+    }
 }
 else
 {
@@ -340,6 +363,13 @@ app.UseMiddleware<OrganisationMiddleware>();
 // After the two auth guards, before anything routes: a standby refuses work but still answers
 // health, status and /metrics, so an operator can see what the standby thinks it is.
 app.UseMiddleware<ClusterRoleMiddleware>();
+
+// Phase 132: in active-active, a request this member's nodes cannot serve goes to a member whose nodes can. After the role
+// check (a member that stopped serving passes nothing on) and the organisation scope (it decides what "can serve" means).
+if (clusterEnabled)
+{
+    app.UseMiddleware<ClusterForwardingMiddleware>();
+}
 
 // Status page is read-only; serve it from wwwroot/ and surface /status as an alias.
 var defaultFiles = new DefaultFilesOptions();

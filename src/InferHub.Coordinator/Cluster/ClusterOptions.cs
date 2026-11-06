@@ -66,6 +66,25 @@ public sealed class ClusterOptions
 
     public TimeSpan FailbackAfter => TimeSpan.FromSeconds(FailbackAfterSeconds);
 
+    public const string StandbyMode = "standby";
+
+    public const string ActiveActiveMode = "active-active";
+
+    /// <summary>
+    /// Phase 132: <c>standby</c> (the default, phases 32 and 131: one member holds the lease and serves, the others wait) or
+    /// <c>active-active</c>: every member serves at once and accepts nodes, nobody contends for the lease, and a request for a
+    /// model no node of this member holds is passed to a member whose nodes hold it.
+    /// </summary>
+    public string Mode { get; set; } = StandbyMode;
+
+    public bool ActiveActive => string.Equals(Mode?.Trim(), ActiveActiveMode, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Phase 132: the URL the other members reach this one at (<c>http://hub-a:8080/</c>). Required in active-active: it is
+    /// where a request this member cannot serve is passed to it. Recorded with its heartbeat.
+    /// </summary>
+    public string? AdvertiseUrl { get; set; }
+
     public TimeSpan LeaseTtl => TimeSpan.FromSeconds(LeaseTtlSeconds);
 
     public TimeSpan RenewInterval => TimeSpan.FromSeconds(RenewIntervalSeconds);
@@ -91,6 +110,29 @@ public sealed class ClusterOptionsValidator : IValidateOptions<ClusterOptions>
         }
 
         var failures = new List<string>();
+
+        if (!options.ActiveActive && !string.Equals(options.Mode?.Trim(), ClusterOptions.StandbyMode, StringComparison.OrdinalIgnoreCase))
+        {
+            failures.Add($"Cluster:Mode '{options.Mode}' is not one of: standby, active-active.");
+        }
+
+        if (options.ActiveActive)
+        {
+            if (!Uri.TryCreate(options.AdvertiseUrl?.Trim(), UriKind.Absolute, out var advertised)
+                || advertised.Scheme is not ("http" or "https"))
+            {
+                failures.Add(
+                    "Cluster:AdvertiseUrl must be an absolute http(s) URL when Cluster:Mode=active-active: it is where the other " +
+                    "members pass the requests this one serves (for example http://hub-a:8080/).");
+            }
+
+            if (!string.IsNullOrWhiteSpace(options.PreferredInstance))
+            {
+                failures.Add(
+                    "Cluster:PreferredInstance does not apply when Cluster:Mode=active-active: every member serves, so there is no " +
+                    "leadership to hand back. Remove it, or use Cluster:Mode=standby.");
+            }
+        }
 
         if (string.IsNullOrWhiteSpace(options.ConnectionString))
         {

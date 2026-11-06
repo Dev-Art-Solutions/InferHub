@@ -55,7 +55,7 @@ public static class InferenceEndpoints
     {
         loggerFactory.CreateLogger("InferHub.Coordinator.Endpoints.Tags").LogInformation("Model tags requested");
         return Results.Ok(new OllamaTagsResponse(
-            ModelDiscovery.Merge(registry, services.GetService<IProviderRegistry>()).ToArray()));
+            ModelDiscovery.Merge(registry, services.GetService<IProviderRegistry>(), services.GetService<Cluster.ClusterPeers>()).ToArray()));
     }
 
     private static async Task<IResult> HandleEmbedAsync(

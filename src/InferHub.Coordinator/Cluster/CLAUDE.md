@@ -144,3 +144,41 @@ which hub it reached, and only one of the node's own coordinators can become the
 **D6 — D7's retry also covers a deadlock.** Bootstrap that `ALTER`s a table after creating it can deadlock when several
 sessions boot at once (`40P01`). The victim was rolled back whole, so `ConcurrentDdl` re-runs it like a duplicate.
 `ConcurrentBootstrapTests` hit this with eight usage-ledger bootstraps.
+
+### Phase 132 (active-active, first step: every member serves, and a request finds its node on any of them)
+
+**D1 — `Cluster:Mode=active-active` keeps the lease machinery and drops the lease.** Each member writes its own row in
+`{Table}_members` every renew interval (`AdvertiseAsync`: database clock, `AdvertiseUrl`, what its nodes serve) and that
+write is its proof. D3's fence is unchanged and measured the same way, from the last proof: a member that cannot write
+its heartbeat within the TTL stops serving and drops its nodes. Nothing contends for the lease, so a member never waits
+for another; `Fence` stays 0. `standby` stays the default and is byte-identical to 3.91.
+
+**D2 — A node connects to one member, as before.** No member refuses the handshake, so a node stays on the first of its
+list that answers; spreading nodes is the operator's (a different `Coordinator:Url` or endpoint order per node). The
+node needs no change.
+
+**D3 — (load-bearing) A request goes to another member only when no node of this one can serve it.**
+[ClusterForwardingMiddleware](ClusterForwardingMiddleware.cs) runs after the role check and the organisation scope and
+asks the router's own question (`FindNodesWithModel`, scoped). Only then, and only if a live member advertises the model
+to that organisation, is the request passed on: once (`X-InferHub-Forwarded-By` is never forwarded again), with every
+header (the client's key: the serving member authenticates, limits, meters, audits and scopes it as if called
+directly), the answer streamed back as it comes (`X-InferHub-Forwarded-To`). A member that does not answer leaves the
+request to this one, which gives the answer it would have given anyway. Order: this member's nodes, another member's
+nodes, then cloud providers. Advertised models are the serving question's (69 D2, 82, 113: no unhealthy, throttled,
+paused or cordoned holder); the listings show them after this member's own.
+
+**D4 — A job id is found wherever it was issued.** `GET`/`DELETE /api/images/jobs/{id}…` for an id this member does not
+hold goes to each other member in turn until one does not answer 404 (`missing` in the counter). Job lists stay per
+member.
+
+**D5 — Every member writes the identity record.** 131 D2's versioned writes make that safe; a copy is trusted for two
+seconds (no leadership change marks the moment to re-read), and **every change starts from a fresh read**: found by
+`SharedIdentityTests` — a revocation on one member decided from a copy older than another member's enrollment found no
+certificate and wrote nothing, which no version check can catch. A revocation drops the node on the member that issued
+it (127 D5); [ClusterRevocationSweep](ClusterRevocationSweep.cs) drops it on the member it is connected to, within a
+renew interval.
+
+**D6 — What stays per member, said plainly.** Client limits and queues (`AdmissionControl`, `RequestQueue`): a client
+behind a balancer can reach each member's limits. Job lists, the relay's cache and supply, priority. Models a node
+serves as a tool (voices, image models) are capabilities, not advertised models, so they are not passed on. Corpus
+failover would promote a standby whose owner is on another member, so it is refused at startup with active-active.

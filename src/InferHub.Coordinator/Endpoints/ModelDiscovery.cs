@@ -30,9 +30,20 @@ internal static class ModelDiscovery
     /// </summary>
     public static readonly IReadOnlyList<string> ProviderCapabilities = [CapabilityKinds.Chat];
 
-    public static IReadOnlyList<ModelInfo> Merge(INodeRegistry registry, IProviderRegistry? providers)
+    public static IReadOnlyList<ModelInfo> Merge(INodeRegistry registry, IProviderRegistry? providers, Cluster.ClusterPeers? peers = null)
     {
+        // Phase 132: in an active-active cluster a model another member's nodes serve is one a client of this member can call
+        // (its request is passed on), so it is listed — after this member's own nodes, whose entry wins a name both hold.
         var fleet = registry.DistinctModels();
+
+        if (peers is { Live.Count: > 0 })
+        {
+            var local = fleet.Select(model => model.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            fleet = fleet
+                .Concat(peers.ModelsForCaller().Where(model => !local.Contains(model.Name)))
+                .OrderBy(model => model.Name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
 
         if (providers is null)
         {

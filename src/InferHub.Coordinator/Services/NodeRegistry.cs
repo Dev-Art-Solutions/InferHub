@@ -287,6 +287,25 @@ public sealed class NodeRegistry : INodeRegistry
             .ToArray();
     }
 
+    public IReadOnlyCollection<InferHub.Coordinator.Cluster.PeerModel> AdvertisedModels()
+    {
+        // The same serving question FindNodesWithModel asks (69 D2, 82, 113): a member must not send work here for a model
+        // whose only holder is down, over its cap, paused by its owner, or cordoned.
+        return nodes
+            .Values
+            .Where(entry => !entry.Cordoned
+                && entry.Backend is null or BackendHealth.Healthy
+                && entry.ResourceThrottled is not true
+                && entry.Sharing is not { Paused: true })
+            .SelectMany(entry => entry.Models.Select(model => new InferHub.Coordinator.Cluster.PeerModel(
+                model with { Slots = null },
+                entry.Registration.Organisation)))
+            .GroupBy(held => (held.Model.Name.ToLowerInvariant(), held.Organisation))
+            .Select(group => group.First())
+            .OrderBy(held => held.Model.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
     public IReadOnlyCollection<NodeModelInventory> ModelInventory()
     {
         return nodes

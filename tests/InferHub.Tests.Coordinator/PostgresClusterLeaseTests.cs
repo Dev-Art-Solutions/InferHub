@@ -68,6 +68,25 @@ public class PostgresClusterLeaseTests : IAsyncLifetime
     }
 
     [PostgresFact]
+    public async Task AnActiveActiveMemberSaysWhereItIsAndWhatItServesAndEveryMemberReadsIt()
+    {
+        // Phase 132: the members table carries each member's URL and models; a plain 3.91 heartbeat leaves them null.
+        var hubA = LeaseFor("hub-a");
+        var hubB = LeaseFor("hub-b");
+
+        await hubA.AdvertiseAsync("http://hub-a:8080/", """[{"model":{"name":"qwen2.5:0.5b"},"organisation":null}]""", CancellationToken.None);
+        await hubB.HeartbeatAsync(CancellationToken.None);
+        await hubA.AdvertiseAsync("http://hub-a:9090/", "[]", CancellationToken.None);
+
+        var rows = (await hubB.MembersAsync(CancellationToken.None)).ToDictionary(row => row.Instance);
+
+        Assert.Equal("http://hub-a:9090/", rows["hub-a"].Url);
+        Assert.Equal("[]", rows["hub-a"].Models);
+        Assert.True(rows["hub-a"].SeenAgo < TimeSpan.FromSeconds(5));
+        Assert.Null(rows["hub-b"].Url);
+    }
+
+    [PostgresFact]
     public async Task TheFirstContenderTakesTheLeaseAndTheSecondDoesNot()
     {
         var a = LeaseFor("hub-a");

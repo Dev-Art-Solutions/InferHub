@@ -33,6 +33,12 @@ public interface IClusterMembership
 
     /// <summary>One human sentence for the status block: who holds the lease, or why we do not.</summary>
     string? Detail { get; }
+
+    /// <summary>
+    /// Phase 132: every member serves at once (<c>Cluster:Mode=active-active</c>). "Active" then means "has proved its own
+    /// heartbeat within the TTL", not "holds the lease", and anything shared between members may be written by any of them.
+    /// </summary>
+    bool ActiveActive => false;
 }
 
 /// <summary>

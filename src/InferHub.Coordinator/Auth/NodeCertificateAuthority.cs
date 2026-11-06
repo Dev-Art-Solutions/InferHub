@@ -124,6 +124,12 @@ public sealed class NodeCertificateAuthority
     private State? state;
     private long stateVersion;
     private long loadedFence = -1;
+
+    // Phase 132 D5: when the copy was read, for an active-active cluster where any member may have written since.
+    private DateTimeOffset loadedAt = DateTimeOffset.MinValue;
+
+    /// <summary>Phase 132 D5: how stale a copy an active-active member may verify against.</summary>
+    internal static readonly TimeSpan SharedReloadAfter = TimeSpan.FromSeconds(2);
     private long refused;
 
     public NodeCertificateAuthority(
@@ -294,6 +300,21 @@ public sealed class NodeCertificateAuthority
         {
             var active = Load().Certificates.LastOrDefault(c => c.NodeId == nodeId && c.State(now) == "active");
             return (active is not null, active?.Organisation);
+        }
+    }
+
+    /// <summary>
+    /// Phase 132 D5: true when <paramref name="nodeId"/> has been issued certificates, every one is revoked, and none is active.
+    /// A node that never had a certificate, or whose only one ran out, is not this — it is refused at its next connect anyway.
+    /// </summary>
+    public bool IsRevoked(string nodeId)
+    {
+        var now = clock.GetUtcNow();
+
+        lock (gate)
+        {
+            var issued = Load().Certificates.Where(c => c.NodeId == nodeId).ToArray();
+            return issued.Any(c => c.RevokedUtc is not null) && !issued.Any(c => c.State(now) == "active");
         }
     }
 
@@ -527,10 +548,17 @@ public sealed class NodeCertificateAuthority
     {
         // 131 D3: in a cluster the record is shared. A standby never trusts a copy it holds (the active writes), and an
         // instance that became active again reads afresh: leadership moving is the one moment another hub may have written.
-        if (store.Shared && membership is { Enabled: true } cluster && (!cluster.IsActive || cluster.Fence != loadedFence))
+        if (store.Shared && membership is { Enabled: true } cluster)
         {
-            state = null;
-            loadedFence = cluster.IsActive ? cluster.Fence : -1;
+            // 132 D5: in active-active every member writes the record, so no leadership change marks the moment to re-read:
+            // a copy is trusted for two seconds. A write never relies on it either way — it is versioned (131 D2).
+            if (cluster.ActiveActive
+                ? clock.GetUtcNow() - loadedAt >= SharedReloadAfter
+                : !cluster.IsActive || cluster.Fence != loadedFence)
+            {
+                state = null;
+                loadedFence = cluster.IsActive ? cluster.Fence : -1;
+            }
         }
 
         if (state is not null)
@@ -539,6 +567,7 @@ public sealed class NodeCertificateAuthority
         }
 
         var (body, version) = store.Read(INodeIdentityStore.Record);
+        loadedAt = clock.GetUtcNow();
         state = body is null ? new State([], []) : JsonSerializer.Deserialize<State>(body, Json) ?? new State([], []);
         stateVersion = version;
         return state;
@@ -565,6 +594,14 @@ public sealed class NodeCertificateAuthority
             {
                 lock (gate)
                 {
+                    // 132: a change to a shared record starts from what is in it now. The version check catches a write that
+                    // lost a race, but not a decision made on an old copy that writes nothing — a revocation that found no
+                    // certificate because another member enrolled it a moment ago (found by the active-active test).
+                    if (store.Shared)
+                    {
+                        state = null;
+                    }
+
                     return change();
                 }
             }

@@ -25,7 +25,9 @@ internal sealed class ClusterLeaseService(
     IOptions<ClusterOptions> clusterOptions,
     INodeConnectionTracker connections,
     ILogger<ClusterLeaseService> logger,
-    TimeProvider time) : BackgroundService
+    TimeProvider time,
+    INodeRegistry? registry = null,
+    ClusterPeers? peers = null) : BackgroundService
 {
     private readonly ClusterOptions options = clusterOptions.Value;
 
@@ -37,12 +39,25 @@ internal sealed class ClusterLeaseService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation(
-            "Cluster mode is on; instance {InstanceId} is contending for lease '{LeaseName}' (ttl {Ttl}s, renew {Renew}s)",
-            options.InstanceId,
-            options.LeaseName,
-            options.LeaseTtlSeconds,
-            options.RenewIntervalSeconds);
+        if (options.ActiveActive)
+        {
+            logger.LogInformation(
+                "Cluster mode is on, active-active; instance {InstanceId} serves alongside the other members of '{LeaseName}' and is reached at {Url} (ttl {Ttl}s, renew {Renew}s)",
+                options.InstanceId,
+                options.LeaseName,
+                options.AdvertiseUrl,
+                options.LeaseTtlSeconds,
+                options.RenewIntervalSeconds);
+        }
+        else
+        {
+            logger.LogInformation(
+                "Cluster mode is on; instance {InstanceId} is contending for lease '{LeaseName}' (ttl {Ttl}s, renew {Renew}s)",
+                options.InstanceId,
+                options.LeaseName,
+                options.LeaseTtlSeconds,
+                options.RenewIntervalSeconds);
+        }
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -64,7 +79,10 @@ internal sealed class ClusterLeaseService(
             }
         }
 
-        await ReleaseIfActiveAsync();
+        if (!options.ActiveActive)
+        {
+            await ReleaseIfActiveAsync();
+        }
     }
 
     internal async Task TickAsync(CancellationToken cancellationToken)
@@ -89,6 +107,14 @@ internal sealed class ClusterLeaseService(
 
         try
         {
+            // Phase 132 D1: an active-active member holds no lease. Its own heartbeat is its proof, and the fence below is the
+            // same: a member that cannot write it within the TTL stops serving and lets its nodes go to another.
+            if (options.ActiveActive)
+            {
+                await ServeAlongsideAsync(attempt.Token);
+                return;
+            }
+
             // Phase 131 D4: failback. Every member says it is alive; one that is not preferred stands aside while the preferred
             // one is alive, and an active one hands the lease back once the preferred has been alive long enough.
             await lease.HeartbeatAsync(attempt.Token);
@@ -179,6 +205,30 @@ internal sealed class ClusterLeaseService(
         return true;
     }
 
+    private async Task ServeAlongsideAsync(CancellationToken cancellationToken)
+    {
+        var models = ClusterPeers.Describe(registry?.AdvertisedModels() ?? []);
+        await lease.AdvertiseAsync(options.AdvertiseUrl!.Trim(), models, cancellationToken);
+        lastProofUtc = time.GetUtcNow();
+
+        var rows = await lease.MembersAsync(cancellationToken);
+        peers?.Replace(rows, options.InstanceId, options.LeaseTtl);
+
+        var others = rows
+            .Where(row => !string.Equals(row.Instance, options.InstanceId, StringComparison.Ordinal) && row.SeenAgo < options.LeaseTtl)
+            .Select(row => row.Instance)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        var detail = others.Length == 0
+            ? "serving (active-active); no other member is alive"
+            : $"serving alongside {string.Join(", ", others)} (active-active)";
+
+        if (membership.MarkActive(0, lastProofUtc, detail))
+        {
+            logger.LogInformation("Serving as an ACTIVE-ACTIVE member of '{LeaseName}'. Nodes may now register: {Detail}", options.LeaseName, detail);
+        }
+    }
+
     private TimeSpan? RemainingBeforeFence()
     {
         if (membership.Role is not ClusterRole.Active)
@@ -217,6 +267,9 @@ internal sealed class ClusterLeaseService(
         }
 
         logger.LogWarning("Demoted to STANDBY: {Reason}", reason);
+
+        // Phase 132: a member that stopped serving passes nothing on either.
+        peers?.Clear();
 
         // Cut the fleet loose rather than leaving it pointed at a hub that will refuse its work.
         // Nodes reconnect through their endpoint list and land on whoever now holds the lease; a

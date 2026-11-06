@@ -52,6 +52,36 @@ public sealed class SharedIdentityTests
     }
 
     [PostgresFact]
+    public void InActiveActiveEveryMemberWritesAndARevocationOnOneIsSeenOnTheOtherWithinTwoSeconds()
+    {
+        var time = new ClusterLeadershipTests.FakeTimeProvider(DateTimeOffset.UtcNow);
+        var membershipA = new ClusterMembership("hub-a", activeActive: true);
+        var membershipB = new ClusterMembership("hub-b", activeActive: true);
+        membershipA.MarkActive(0, time.GetUtcNow());
+        membershipB.MarkActive(0, time.GetUtcNow());
+        var hubA = Authority(out _, membershipA, time);
+        var hubB = Authority(out _, membershipB, time);
+
+        // A token made on hub-b is spent on hub-a: both members write the one record.
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var (token, _) = hubB.CreateToken("gpu-1", "admin:x");
+        var der = Convert.FromBase64String(hubA.Enroll(new NodeEnrollRequest(token, "node-1", "gpu-1", Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()))).Certificate);
+        Dictionary<string, string> Proof() => NodeProof.Create(der, key, "node-1", time.GetUtcNow()).ToDictionary(h => h.Key, h => h.Value);
+
+        var before = Proof();
+        Assert.True(hubA.Verify(name => before.GetValueOrDefault(name))!.Valid);
+        Assert.False(hubA.IsRevoked("node-1"));
+
+        hubB.Revoke("node-1", "admin:y", "moved");
+        time.Advance(NodeCertificateAuthority.SharedReloadAfter);
+
+        var after = Proof();
+        Assert.Contains("moved", hubA.Verify(name => after.GetValueOrDefault(name))!.Reason);
+        Assert.True(hubA.IsRevoked("node-1"));
+        Assert.False(hubA.IsRevoked("never-certified"));
+    }
+
+    [PostgresFact]
     public async Task TwoCoordinatorsBootingAtOnceMakeOneAuthority()
     {
         var fingerprints = await Task.WhenAll(Enumerable.Range(0, 6).Select(i => Task.Run(() => Authority(out _).AuthorityFingerprint())));
@@ -114,13 +144,13 @@ public sealed class SharedIdentityTests
                 new FileNodeIdentityStore(directory)));
     }
 
-    private NodeCertificateAuthority Authority(out PostgresNodeIdentityStore store, IClusterMembership? membership = null)
+    private NodeCertificateAuthority Authority(out PostgresNodeIdentityStore store, IClusterMembership? membership = null, TimeProvider? time = null)
     {
         var cluster = Options.Create(new ClusterOptions { Enabled = true, ConnectionString = PostgresTestGate.ConnectionString!, Schema = schema });
         store = new PostgresNodeIdentityStore(cluster);
         return new NodeCertificateAuthority(
             Options.Create(new NodeIdentityOptions { Enabled = true }),
-            TimeProvider.System,
+            time ?? TimeProvider.System,
             NullLogger<NodeCertificateAuthority>.Instance,
             store,
             membership);

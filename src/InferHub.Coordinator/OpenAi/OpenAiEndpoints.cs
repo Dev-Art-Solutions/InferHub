@@ -304,7 +304,7 @@ public static class OpenAiEndpoints
         var providers = services.GetService<IProviderRegistry>();
         var created = ResponseTranslator.UnixNow();
         var capabilities = CapabilitiesByModel(registry);
-        var models = ModelDiscovery.Merge(registry, providers)
+        var models = ModelDiscovery.Merge(registry, providers, services.GetService<Cluster.ClusterPeers>())
             .Select(model => new OpenAiModel(
                 model.Name,
                 created,
@@ -340,7 +340,7 @@ public static class OpenAiEndpoints
         metrics.RecordOpenAiRequest();
 
         var providers = services.GetService<IProviderRegistry>();
-        var match = ModelDiscovery.Merge(registry, providers)
+        var match = ModelDiscovery.Merge(registry, providers, services.GetService<Cluster.ClusterPeers>())
             .FirstOrDefault(model => string.Equals(model.Name, id, StringComparison.OrdinalIgnoreCase));
 
         if (match is null)

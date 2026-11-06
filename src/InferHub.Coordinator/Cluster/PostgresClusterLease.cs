@@ -53,6 +53,44 @@ internal sealed class PostgresClusterLease : IClusterLease, IAsyncDisposable
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task AdvertiseAsync(string url, string models, CancellationToken cancellationToken)
+    {
+        await EnsureBootstrappedAsync(cancellationToken);
+        await using var command = dataSource.CreateCommand(
+            $"""
+            INSERT INTO {MembersTable} (lease_name, instance, seen_at_utc, url, models) VALUES (@name, @instance, now(), @url, @models)
+            ON CONFLICT (lease_name, instance) DO UPDATE SET seen_at_utc = now(), url = EXCLUDED.url, models = EXCLUDED.models
+            """);
+        command.CommandTimeout = options.CommandTimeoutSeconds;
+        command.Parameters.AddWithValue("name", options.LeaseName);
+        command.Parameters.AddWithValue("instance", options.InstanceId);
+        command.Parameters.AddWithValue("url", url);
+        command.Parameters.AddWithValue("models", models);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<ClusterMemberRow>> MembersAsync(CancellationToken cancellationToken)
+    {
+        await EnsureBootstrappedAsync(cancellationToken);
+        await using var command = dataSource.CreateCommand(
+            $"SELECT instance, url, EXTRACT(EPOCH FROM (now() - seen_at_utc))::float8, models FROM {MembersTable} WHERE lease_name = @name");
+        command.CommandTimeout = options.CommandTimeoutSeconds;
+        command.Parameters.AddWithValue("name", options.LeaseName);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var rows = new List<ClusterMemberRow>();
+
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new ClusterMemberRow(
+                reader.GetString(0),
+                reader.IsDBNull(1) ? null : reader.GetString(1),
+                TimeSpan.FromSeconds(Math.Max(0, reader.GetDouble(2))),
+                reader.IsDBNull(3) ? null : reader.GetString(3)));
+        }
+
+        return rows;
+    }
+
     public async Task<TimeSpan?> SinceSeenAsync(string instance, CancellationToken cancellationToken)
     {
         await EnsureBootstrappedAsync(cancellationToken);
@@ -206,6 +244,9 @@ internal sealed class PostgresClusterLease : IClusterLease, IAsyncDisposable
                     seen_at_utc timestamptz NOT NULL,
                     PRIMARY KEY (lease_name, instance)
                 );
+                -- Phase 132: where an active-active member is reached, and what its nodes serve.
+                ALTER TABLE {MembersTable} ADD COLUMN IF NOT EXISTS url text;
+                ALTER TABLE {MembersTable} ADD COLUMN IF NOT EXISTS models text;
                 """);
             command.CommandTimeout = options.CommandTimeoutSeconds;
             await command.ExecuteNonQueryAsync(ct);

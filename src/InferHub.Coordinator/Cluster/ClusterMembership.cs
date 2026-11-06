@@ -7,7 +7,7 @@ namespace InferHub.Coordinator.Cluster;
 /// every cold start a window in which two hubs believe they are primary, which is the one thing
 /// this whole phase exists to prevent.
 /// </summary>
-internal sealed class ClusterMembership(string instanceId) : IClusterMembership
+internal sealed class ClusterMembership(string instanceId, bool activeActive = false) : IClusterMembership
 {
     private State state = new(ClusterRole.Standby, 0, null, "waiting for the coordinator lease");
 
@@ -17,6 +17,8 @@ internal sealed class ClusterMembership(string instanceId) : IClusterMembership
 
     public string InstanceId { get; } = instanceId;
 
+    public bool ActiveActive { get; } = activeActive;
+
     public long Fence => Volatile.Read(ref state).Fence;
 
     public DateTimeOffset? ActiveSinceUtc => Volatile.Read(ref state).ActiveSinceUtc;
@@ -24,7 +26,7 @@ internal sealed class ClusterMembership(string instanceId) : IClusterMembership
     public string? Detail => Volatile.Read(ref state).Detail;
 
     /// <summary>Returns true when this was a transition, so the caller logs a promotion once.</summary>
-    public bool MarkActive(long fence, DateTimeOffset nowUtc)
+    public bool MarkActive(long fence, DateTimeOffset nowUtc, string? detail = null)
     {
         var current = Volatile.Read(ref state);
         var promoted = current.Role is not ClusterRole.Active;
@@ -33,7 +35,7 @@ internal sealed class ClusterMembership(string instanceId) : IClusterMembership
             ClusterRole.Active,
             fence,
             promoted ? nowUtc : current.ActiveSinceUtc,
-            $"holding the lease (fence {fence})"));
+            detail ?? $"holding the lease (fence {fence})"));
 
         return promoted;
     }

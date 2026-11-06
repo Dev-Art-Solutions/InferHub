@@ -34,6 +34,13 @@ public interface INodeRegistry
 
     IReadOnlyCollection<ModelInfo> DistinctModels();
 
+    /// <summary>
+    /// Phase 132: what this coordinator's nodes can serve now, with each holder's organisation, for the other members of an
+    /// active-active cluster. Unscoped (it is read off any request), and only nodes that take new work.
+    /// </summary>
+    IReadOnlyCollection<InferHub.Coordinator.Cluster.PeerModel> AdvertisedModels()
+        => DistinctModels().Select(model => new InferHub.Coordinator.Cluster.PeerModel(model with { Slots = null }, null)).ToArray();
+
     /// <summary>Per-node model lists (phase 26) — what the fleet-wide model matrix is built from.</summary>
     IReadOnlyCollection<NodeModelInventory> ModelInventory();
 

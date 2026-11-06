@@ -85,7 +85,7 @@ public static class StatusEndpoint
                     snapshot,
                     services.GetService(typeof(InferHub.Coordinator.ChatGpt.ChatGptAccounts)) as InferHub.Coordinator.ChatGpt.ChatGptAccounts),
                 BuildQueueBlock(queue),
-                BuildClusterBlock(membership),
+                BuildClusterBlock(membership, services.GetService(typeof(ClusterPeers)) as ClusterPeers),
                 BuildRelayBlock(
                     services.GetService(typeof(RelayCache)) as RelayCache,
                     services.GetService(typeof(RelaySupply)) as RelaySupply,
@@ -159,14 +159,26 @@ public static class StatusEndpoint
     /// store is off: a status consumer that never opted into HA never sees a "cluster" key, so
     /// <c>Cluster:Enabled=false</c> stays byte-identical to v2.13.
     /// </summary>
-    internal static ClusterStatusBlock? BuildClusterBlock(IClusterMembership membership)
+    internal static ClusterStatusBlock? BuildClusterBlock(IClusterMembership membership, ClusterPeers? peers = null)
         => membership.Enabled
             ? new ClusterStatusBlock(
                 membership.InstanceId,
                 membership.IsActive ? ClusterRoleMiddleware.ActiveRole : ClusterRoleMiddleware.StandbyRole,
                 membership.Fence,
                 membership.ActiveSinceUtc,
-                membership.Detail)
+                membership.Detail,
+                // Phase 132: present only in active-active, so a standby pair's block is the one it always was.
+                membership.ActiveActive ? ClusterOptions.ActiveActiveMode : null,
+                membership.ActiveActive
+                    ? (peers?.Live ?? []).Select(peer => new ClusterPeerStatus(
+                        peer.Instance,
+                        peer.Url.ToString(),
+                        Math.Round(peer.SeenAgo.TotalSeconds, 1),
+                        peer.Models.Select(held => held.Model.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+                        (peers?.Forwarded() ?? [])
+                            .Where(entry => entry.Key.Peer == peer.Instance)
+                            .ToDictionary(entry => entry.Key.Outcome, entry => entry.Value))).ToArray()
+                    : null)
             : null;
 
     internal static FallbackStatusBlock BuildFallbackBlock(FallbackOptions options, MetricsSnapshot metrics)
@@ -413,7 +425,16 @@ public static class StatusEndpoint
         string Role,
         long Fence,
         DateTimeOffset? ActiveSinceUtc,
-        string? Detail);
+        string? Detail,
+        [property: System.Text.Json.Serialization.JsonIgnore(
+            Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        string? Mode = null,
+        [property: System.Text.Json.Serialization.JsonIgnore(
+            Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        IReadOnlyList<ClusterPeerStatus>? Peers = null);
+
+    /// <summary>Phase 132: another member as this one sees it, and what was passed to it (served, unreachable, missing).</summary>
+    internal sealed record ClusterPeerStatus(string Instance, string Url, double SeenSecondsAgo, int Models, IReadOnlyDictionary<string, long> Forwarded);
 
     internal sealed record QueueStatusBlock(
         int Depth,
