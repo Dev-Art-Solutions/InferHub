@@ -64,6 +64,10 @@ failover would promote a standby whose owner is connected to another member. No 
 - **A forwarded request lost its body when the other member didn't answer.** The first version wrapped the request
   body in the outgoing request, and sending it disposed the body. The member then had nothing to serve. It now sends a
   copy. The test fails without the fix.
+- **A member with no URL counted as a peer on Linux.** CI caught this. The URL was normalised by adding a trailing
+  `/`, and on Linux `/` alone parses as an absolute `file:///` URI, so a member that had never advertised a URL would
+  have been sent requests. Only an http(s) URL now makes a member a peer, and the test covers `file:` explicitly so it
+  fails on Windows too.
 
 ## Verification
 

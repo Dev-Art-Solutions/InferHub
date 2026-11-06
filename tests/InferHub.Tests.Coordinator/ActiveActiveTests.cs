@@ -67,7 +67,9 @@ public class ActiveActiveTests
             new ClusterMemberRow("hub-a", "http://hub-a:8080/", TimeSpan.Zero, null),
             new ClusterMemberRow("hub-b", "http://hub-b:8080/base", TimeSpan.FromSeconds(3), "not json"),
             new ClusterMemberRow("hub-c", "http://hub-c:8080/", TimeSpan.FromSeconds(16), "[]"),
-            new ClusterMemberRow("hub-d", null, TimeSpan.Zero, "[]")
+            new ClusterMemberRow("hub-d", null, TimeSpan.Zero, "[]"),
+            new ClusterMemberRow("hub-e", "/", TimeSpan.Zero, "[]"),
+            new ClusterMemberRow("hub-f", "file:///srv/hub", TimeSpan.Zero, "[]")
         ], "hub-a", TimeSpan.FromSeconds(15));
 
         var peer = Assert.Single(peers.Live);

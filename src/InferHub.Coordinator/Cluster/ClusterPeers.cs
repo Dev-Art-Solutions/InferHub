@@ -64,7 +64,10 @@ public sealed class ClusterPeers
         {
             if (string.Equals(row.Instance, self, StringComparison.Ordinal)
                 || row.SeenAgo >= ttl
-                || !Uri.TryCreate(row.Url?.TrimEnd('/') + "/", UriKind.Absolute, out var url))
+                || string.IsNullOrWhiteSpace(row.Url)
+                // http(s) only: on Linux "/" is an absolute file:/// URI (found by CI), and a member is never reached at one.
+                || !Uri.TryCreate(row.Url.Trim().TrimEnd('/') + "/", UriKind.Absolute, out var url)
+                || url.Scheme is not ("http" or "https"))
             {
                 continue;
             }
