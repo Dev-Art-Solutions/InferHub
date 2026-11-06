@@ -76,3 +76,18 @@ hub to boot on 3.91 moves its record in, so upgrade the hub that has been issuin
   - A pull ordered through hub-b: the relay request went to hub-b. hub-a, first in the node's list, had none.
   - hub-a restarted at 03:03:11 and stood by. At 03:03:33 hub-b logged "failing back: the preferred coordinator 'hub-a'
     has been alive for 20s". At 03:03:37 the node was on hub-a.
+
+## The published images
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.91.0` and `inferhub-node:3.91.0` both carry revision `553d687`. Both
+ran as containers: two published coordinators on one Postgres, with the same settings as the live run, and a published
+sealed node in a container with both hubs in its list.
+
+- hub-b stood by for the preferred hub-a, and a token asked of it was a `503`. The node enrolled through hub-a, and
+  hub-b listed its certificate.
+- `docker stop` on hub-a at 03:40:11: by 03:40:26 hub-b was active and the node was on it, with the certificate hub-a
+  had issued.
+- `docker start` on hub-a at 03:41:07: at 03:41:31 hub-b logged "failing back … alive for 20s", and at 03:41:36 the node
+  was on hub-a again.
+- Not checked here: the relay pull. A sealed node in a container pulls through a registry on its own loopback, which the
+  host's Ollama cannot reach, and the node refuses that by design. The relay pull was checked from source.
