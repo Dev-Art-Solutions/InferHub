@@ -136,6 +136,13 @@ exact host.
 **Ask the image, not the dashboard.** GitHub Actions has reported a finished run as queued for
 hours; the honest question is whether the manifest is on GHCR.
 
+## The shard lab is not an image (phase 133)
+
+`lab/shards/` builds `inferhub-lab-llama` locally — llama.cpp with `GGML_RPC=ON`, because the official images are built
+without it — and runs a head and three workers in compose to measure a model split across machines. Nothing publishes it
+and no workflow builds it; the measurements and the reasoning are in `src/InferHub.Node/Backends/CLAUDE.md`'s Phase 133 and
+the lab's README. Its workers bind `0.0.0.0` on the lab network only: llama.cpp RPC has no authentication.
+
 ## The Windows setup (phase 101)
 
 `windows/installer/InferHubNode.iss` + `build-installer.ps1` (publish self-contained win-x64 → ISCC → a

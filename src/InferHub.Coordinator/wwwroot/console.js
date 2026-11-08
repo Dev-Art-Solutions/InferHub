@@ -2920,7 +2920,46 @@
     }
   };
 
+  // Phase 133: "fits no node, fits these three together" — every node whose owner allows it gives its machine, one reads
+  // the model, and the hub's arithmetic (GroupFit) splits it by whole layers. Read-only: nothing installs or starts.
+  const groupFit = async () => {
+    const out = fitResults();
+    const link = document.getElementById("fit-link")?.value.trim();
+    const context = parseInt(document.getElementById("fit-context")?.value, 10) || null;
+    if (!link) { fitNote("Paste a link (a GGUF repository) first.", true); return; }
+    if (out) out.innerHTML = `<div class="empty">Asking every node about ${escapeHtml(link)}…</div>`;
+    try {
+      const res = await fetch("/api/admin/fit/group", { method: "POST", headers: { ...adminHeaders(), "Content-Type": "application/json" }, body: JSON.stringify({ link, context }) });
+      if (res.status === 401) { promptForKey("Admin key required for this action."); if (out) out.innerHTML = ""; return; }
+      const body = await res.json().catch(() => ({}));
+      const asked = (body.asked ?? []).map(a => a.ok
+        ? `${escapeHtml(a.name)}: ${fitMiB(a.capacityMiB)} (${escapeHtml(a.device)})`
+        : `<span style="opacity:.7" title="${escapeHtml(a.why)}">${escapeHtml(a.name)}: not asked — ${escapeHtml(a.why ?? "no answer")}</span>`).join(" · ");
+      if (!res.ok) { if (out) out.innerHTML = asked ? `<div style="font-size:12px">${asked}</div>` : ""; fitNote(`No group estimate: ${body.error || `HTTP ${res.status}`}`, true); return; }
+      if (body.refused) { if (out) out.innerHTML = `<div style="font-size:12px">${asked}</div>`; fitNote(`${body.model}: ${body.refused}`, true); return; }
+      const rows = (body.plans ?? []).map(p => {
+        const verdict = !p.fits ? (p.members?.length ? `${p.members.length} nodes have the memory — <strong>but</strong> ${escapeHtml(p.why?.[p.why.length - 1] ?? "")}` : "<strong>does not fit</strong>") : p.alone ? `fits <strong>${escapeHtml(p.members[0]?.name ?? p.alone)}</strong> alone` : `fits <strong>${p.members.length} nodes</strong> together`;
+        const members = (p.members ?? []).map(m => `${escapeHtml(m.name)} <span style="opacity:.7">${m.role}</span> — layers ${m.firstLayer}–${m.firstLayer + m.layers - 1} · ${fitMiB(m.memoryMiB)} of ${fitMiB(m.capacityMiB)} (${escapeHtml(m.device)})`).join("<br>");
+        return `<tr>
+          <td>${escapeHtml(p.variant)}</td>
+          <td>${verdict}</td>
+          <td>${fitMiB(p.weightsMiB)} + KV ${fitMiB(p.kvMiB)}</td>
+          <td style="font-size:12px">${members || "—"}</td>
+          <td style="font-size:12px">${(p.why ?? []).map(escapeHtml).join("<br>")}</td>
+        </tr>`;
+      }).join("");
+      fitNote("", false);
+      if (out) out.innerHTML = `<div style="font-size:12px;opacity:.8;margin-bottom:4px">${escapeHtml(body.model)} (${escapeHtml(body.architecture ?? "?")}, ${body.layers} layers) at ${body.context} tokens — split by layers across nodes, llama.cpp RPC; read by ${escapeHtml((body.asked ?? []).find(a => a.nodeId === body.readBy)?.name ?? body.readBy)}<br>${asked}</div>` +
+        (rows ? `<table><thead><tr><th>Variant</th><th>Verdict</th><th>Needs</th><th>Members and their layers</th><th>Why</th></tr></thead><tbody>${rows}</tbody></table>`
+              : `<div class="empty">No variant to split.</div>`);
+    } catch (err) {
+      if (out) out.innerHTML = "";
+      fitNote(`No group estimate: ${err.message}`, true);
+    }
+  };
+
   document.getElementById("mm-node")?.addEventListener("change", renderFitTerms);
+  document.getElementById("fit-group")?.addEventListener("click", groupFit);
   document.getElementById("fit-browse")?.addEventListener("click", browseFit);
   document.getElementById("fit-check")?.addEventListener("click", () => checkFit(document.getElementById("fit-link")?.value.trim()));
   fitResults()?.addEventListener("click", (event) => {

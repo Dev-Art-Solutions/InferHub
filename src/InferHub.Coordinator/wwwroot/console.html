@@ -670,6 +670,7 @@
         <input id="fit-link" placeholder="link: owner/repo, hf.co/… or qwen2.5:14b" style="min-width:240px" />
         <input id="fit-context" type="number" min="256" step="256" value="8192" style="width:90px" title="The context you want — it is what picks the engine" />
         <button id="fit-check" title="The node's own estimate for this link and context: each engine, where the model sits, with the arithmetic">Check fit</button>
+        <button id="fit-group" title="Phase 133: would this model fit across several nodes, split by layers (llama.cpp RPC) — asks every node whose owner allows it; nothing is installed or started">Across nodes</button>
       </div>
       <div id="fit-terms" class="empty" style="padding:6px 0 0"></div>
       <div id="fit-note" style="padding:4px 0 0;font-size:13px"></div>

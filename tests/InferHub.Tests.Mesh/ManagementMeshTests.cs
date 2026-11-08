@@ -66,6 +66,19 @@ public class ManagementMeshTests
             Assert.True(json.RootElement.GetProperty("hub").EnumerateArray().First(h => h.GetProperty("engine").GetString() == FitEngines.LlamaCpp).GetProperty("allowed").GetBoolean());
         }
 
+        // Phase 133: the group estimate across the wire — the node read the model and gave its machine; a model this
+        // small is held alone, and that is the answer rather than a group.
+        var group = await http.PostAsJsonAsync("/api/admin/fit/group", new { link = Repo, context = 8192 });
+        Assert.Equal(HttpStatusCode.OK, group.StatusCode);
+        using (var json = JsonDocument.Parse(await group.Content.ReadAsStringAsync()))
+        {
+            Assert.Equal(ManagementMesh.NodeId, json.RootElement.GetProperty("readBy").GetString());
+            Assert.Equal(4, json.RootElement.GetProperty("layers").GetInt32());
+            Assert.True(json.RootElement.GetProperty("asked")[0].GetProperty("ok").GetBoolean());
+            var plan = json.RootElement.GetProperty("plans")[0];
+            Assert.Equal(ManagementMesh.NodeId, plan.GetProperty("alone").GetString());
+        }
+
         // A link that is not one: the node's 400, not a hub's guess.
         var bad = await http.PostAsJsonAsync($"/api/admin/nodes/{ManagementMesh.NodeId}/fit", new { link = "!!", context = 8192 });
         Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);

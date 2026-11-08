@@ -1,0 +1,68 @@
+# The shard lab (phase 133): one model split across containers that are each too small for it.
+# A head (llama-server) and three workers (ggml-rpc-server), each with a memory limit below the model's size,
+# on one bridge network whose latency and bandwidth netem.sh shapes. See README.md.
+#
+#   LAB_MODEL_DIR=D:/models docker compose up -d      # the directory holding $LAB_MODEL (a GGUF)
+#   ./netem.sh internet                               # 30 ms round trip, 50 Mbit/s between every pair
+#   ./measure.sh                                      # tok/s through the head, at temperature 0
+name: inferhub-shard-lab
+
+x-worker: &worker
+  image: inferhub-lab-llama:b12182
+  build: .
+  # 0.0.0.0 is the lab's network only; llama.cpp RPC has no authentication, which is why a node never does this (track invariant).
+  command: ["ggml-rpc-server", "-H", "0.0.0.0", "-p", "50052", "-t", "${LAB_THREADS:-4}", "-c"]
+  cap_add: [NET_ADMIN]
+  mem_limit: ${LAB_WORKER_MEMORY:-2560m}
+  cpus: ${LAB_CPUS:-4}
+  networks: [lab]
+
+services:
+  worker1: *worker
+  worker2: *worker
+  worker3: *worker
+
+  head:
+    image: inferhub-lab-llama:b12182
+    depends_on: [worker1, worker2, worker3]
+    command:
+      - llama-server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - -m
+      - /models/${LAB_MODEL:-llama31-8b.gguf}
+      - --rpc
+      - worker1:50052,worker2:50052,worker3:50052
+      - -ngl
+      - "999"
+      - --tensor-split
+      - "${LAB_SPLIT:-1,1,1}"
+      - -c
+      - "${LAB_CONTEXT:-4096}"
+      - -t
+      - "${LAB_THREADS:-4}"
+      - --no-warmup
+    cap_add: [NET_ADMIN]
+    mem_limit: ${LAB_HEAD_MEMORY:-2560m}
+    cpus: ${LAB_CPUS:-4}
+    volumes:
+      - ${LAB_MODEL_DIR:?set LAB_MODEL_DIR to the directory holding the GGUF}:/models:ro
+    ports: ["127.0.0.1:18080:8080"]
+    networks: [lab]
+
+  # The same model on one container with no limit — the answer the split one must match, and the speed it costs.
+  whole:
+    image: inferhub-lab-llama:b12182
+    profiles: [whole]
+    command: ["llama-server", "--host", "0.0.0.0", "--port", "8080", "-m", "/models/${LAB_MODEL:-llama31-8b.gguf}",
+              "-c", "${LAB_CONTEXT:-4096}", "-t", "${LAB_THREADS:-4}", "--no-warmup"]
+    cpus: ${LAB_CPUS:-4}
+    volumes:
+      - ${LAB_MODEL_DIR:?set LAB_MODEL_DIR}:/models:ro
+    ports: ["127.0.0.1:18081:8080"]
+    networks: [lab]
+
+networks:
+  lab: {}

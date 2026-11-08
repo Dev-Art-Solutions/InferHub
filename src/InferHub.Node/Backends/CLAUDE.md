@@ -796,3 +796,42 @@ change them without a reinstall.
 
 **Not established:** the console in a browser against a real far-away node; a hub-side refresh of the terms after a live
 change (the snapshot shows what the node connected with until it reconnects — the node's answers are always current).
+
+### Phase 133 (a model no node holds, split by layers across several — the group estimate, and the shard lab that measured it)
+
+Files: `src/InferHub.Shared/Fit/GroupFit.cs`, `ManagementJob.Machine` (`Fit/Management.cs`) answered by `Fit/HubManagement.cs`,
+hub `Services/GroupFitService.cs`, `POST /api/admin/fit/group` in `Endpoints/ManagementEndpoints.cs`, the console's *Across
+nodes*; the lab in `deploy/lab/shards/` (its README holds the measurements). Opens the sharded-models track (133–140).
+
+**D1 — the group estimate is arithmetic in `InferHub.Shared`, over facts each node gave about itself.** One node reads the
+model (its own 118 estimate, reader and cache — the first that can; a 400 from it is the link's fault and ends the
+request); every other node is asked only `machine` (its `MachineFacts`, no network). *Rejected:* every node reading the GGUF
+header — N Range reads, N opinions of one file. *Rejected:* the hub probing hardware — it has no such facts (120 D1).
+
+**D2, load-bearing — whole layers, in proportion, the KV with its layers; alone is 118's own answer.** Per layer: weights ÷
+block count + that layer's share of the KV at the context (spread over every layer — conservative for a hybrid); per member
+118's working reserve once. A member offers 118's usable VRAM **plus** usable RAM for llama.cpp (the owner's 102 limits
+applied): an `rpc-server` takes a device list, card and CPU. **Found live, two nodes from source:** counting the card alone,
+each 256 GB box offered 23 GiB, so no group ever held what one node could not — and on paper a 16 GB card with 32 GB of RAM
+holds more alone (118 adds them) than three such cards together. **Alone is 118's estimate for llama.cpp on that node** (card and RAM together, its disk check included), so the
+two never disagree; a node that holds it alone is the answer, never a group. Otherwise members are taken largest first until
+the layers fit, spread in proportion and never past a member's maximum; the head is the first member with free disk for
+the file (RPC loads from the head and sends the weights). **Found live:** one node with the memory for every layer whose own
+estimate says no (its disk) came out a "group of one" — it is now not a fit, with that node's own reason. *Rejected:* a byte
+split — llama.cpp splits by layer, and a byte plan promises a fit a layer boundary breaks.
+
+**D3 — every plan says what a split costs in words; the number is the lab's, here.** `why` names the members, that every
+token visits each worker in turn, and which members run layers on their CPU. No tok/s constant in code — one box's network is
+not everyone's. **The lab (2026-11-08, b12182 with `GGML_RPC=ON`, CPU, an 8B Q4 over three 2.5 GiB workers):** whole model
+6.70 tok/s; split unshaped 6.42, LAN (0.7 ms) 6.05, internet (30 ms, 50 Mbit/s) **2.29**, far (120 ms) 0.59 — the same text,
+character for character, at temperature 0 on every profile. A token costs nine to thirteen round trips with three workers
+(RPC is a star through the head), so the round trip, not bandwidth, is the price: fewer, larger members. A reload over the
+internet profile with the workers' `-c` cache took 180 s. **Track gate: passed** (internet above 1 tok/s).
+
+**D4 — only what the owner allows is asked (120's consent), and every node is listed.** A node that refuses, is older than
+3.93 (`'machine' is not a management operation`), or cannot read the model appears in `asked[]` with its sentence; nothing is
+installed or started — the endpoint is read-only and audits nothing.
+
+**Not established:** an `rpc-server` offering a card and the CPU together (the lab is CPU-only — D2's capacity assumes it);
+GPUs in a group at all; real home networks (NAT, jitter, loss); models above 8B through RPC; more than three workers; a member's
+memory reserved for groups (134 — the estimate counts it whole, as `why` says).

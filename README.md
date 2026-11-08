@@ -1016,6 +1016,34 @@ POST /api/admin/nodes/{id}/fit/install  {"link": "…", "context": 32768, "engin
   Strata install), which behave as before. Hugging Face is still reached only under
   `HuggingFace:Enabled`.
 
+### Across nodes: a model no node holds (v3.93+)
+
+The first step to running one big model on several machines. Today it is an estimate: which
+nodes together would hold a GGUF that none holds alone, and which layers each would take.
+Nothing is installed or started yet.
+
+```http
+POST /api/admin/fit/group   {"link": "unsloth/DeepSeek-V3.1-GGUF", "context": 8192}
+```
+
+- **One node reads the model**, with its own estimate, and every other node says only what memory
+  it has (`machine`, a new management operation). Only nodes whose owner set
+  `Node:Management:AllowFromHub` are asked. The rest are listed in `asked` with the reason, and so
+  is a node older than 3.93.
+- **Each variant gets a plan.** If one node holds it alone, that is the answer, because one node is
+  faster than any group. "Alone" is the same estimate *Check fit* shows for llama.cpp on that node.
+  Otherwise the plan names the members, largest first, and gives each one whole layers in
+  proportion to its card plus RAM. The **head** is the member with disk space for the file, because
+  it sends the weights to the others.
+- **`why` says what a split costs.** Every token visits each worker in turn, so the round trip
+  between the nodes sets the speed, not the bandwidth. A member whose layers do not fit its card
+  runs them on its CPU, and the group waits for it.
+- **Measured in the shard lab** (`deploy/lab/shards/`: llama.cpp RPC in containers, a network
+  shaped with `tc netem`). Split across three workers, an 8B wrote the same text as the whole
+  model, character for character. Speed: 6.4 tok/s on an unshaped network, 6.0 on a LAN, 2.3 at
+  a 30 ms round trip and 0.6 at 120 ms. The whole model on one container: 6.7.
+- In the console: **Model management → Models that fit → Across nodes**.
+
 ### A sealed node (v3.82+)
 
 One setting for a node that must not reach the internet: `Node:Sealed=true`. It talks to its

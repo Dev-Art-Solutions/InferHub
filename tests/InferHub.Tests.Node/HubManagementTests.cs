@@ -83,6 +83,22 @@ public sealed class HubManagementTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task TheMachineIsTheNodesOwnFactsAndReadsNoModel()
+    {
+        options.Management.AllowFromHub = true;
+        var management = Management();
+
+        var result = await management.RunAsync(Job(ManagementJob.Machine, new ManagementRequest()), CancellationToken.None);
+
+        Assert.True(result.Success, result.Error);
+        var machine = JsonSerializer.Deserialize<MachineFacts>(result.Payload!, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        Assert.Equal(24576, machine.Gpus.Single().TotalMiB);
+        Assert.Equal(65536, machine.RamMiB);
+        Assert.Contains(machine.Engines, e => e.Kind == FitEngines.LlamaCpp && e.DiskFreeMiB == 1 << 20);
+        Assert.Equal(0, asked);
+    }
+
+    [Fact]
     public async Task TheEstimateIsTheNodesOwnWithTheTermsAndAVerdictPerOption()
     {
         options.Management.AllowFromHub = true;

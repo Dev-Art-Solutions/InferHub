@@ -15,6 +15,9 @@ public static class ManagementEndpoints
 {
     public sealed record FitBody(string? Link, int? Context, string? Engine, string? Variant, bool Force = false);
 
+    /// <summary>Phase 133: a link and a context, and optionally which nodes may be members (all connected ones otherwise).</summary>
+    public sealed record GroupBody(string? Link, int? Context, IReadOnlyList<string>? Nodes);
+
     public static RouteGroupBuilder MapNodeManagement(this RouteGroupBuilder group, Func<HttpContext, string> actorOf)
     {
         group.MapGet("/nodes/{nodeId}/fit/catalog", async (
@@ -29,6 +32,27 @@ public static class ManagementEndpoints
         group.MapPost("/nodes/{nodeId}/fit", async (
             string nodeId, FitBody body, NodeManagementControl control, CancellationToken cancellationToken) =>
             Render(await control.AskAsync(nodeId, ManagementJob.Estimate, new ManagementRequest(body.Link, body.Context), cancellationToken)));
+
+        // Phase 133: "fits no node, fits these three together" — read-only, nothing is installed or started.
+        group.MapPost("/fit/group", async (
+            GroupBody body, INodeRegistry registry, NodeManagementControl control, CancellationToken cancellationToken) =>
+        {
+            var answer = await new GroupFitService(registry, control).PlanAsync(body.Link, body.Context, body.Nodes, cancellationToken);
+            return answer.Status == StatusCodes.Status200OK
+                ? Results.Json(new
+                {
+                    link = answer.Link,
+                    context = answer.Context,
+                    model = answer.Model,
+                    architecture = answer.Architecture,
+                    layers = answer.Layers,
+                    readBy = answer.ReadBy,
+                    refused = answer.Refused,
+                    asked = answer.Asked,
+                    plans = answer.Plans
+                }, GroupJson)
+                : Results.Json(new { error = answer.Error, asked = answer.Asked }, GroupJson, statusCode: answer.Status);
+        });
 
         group.MapPost("/nodes/{nodeId}/fit/install", async (
             string nodeId, FitBody body, HttpContext context, NodeManagementControl control, ModelCommandCoordinator commands,
@@ -79,6 +103,11 @@ public static class ManagementEndpoints
 
         return group;
     }
+
+    private static readonly System.Text.Json.JsonSerializerOptions GroupJson = new(System.Text.Json.JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+    };
 
     /// <summary>The node's JSON as it sent it — one estimate, the node's, not a hub's copy of it (118's invariant).</summary>
     private static IResult Render(NodeManagementControl.Answer answer) =>

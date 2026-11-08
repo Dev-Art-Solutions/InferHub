@@ -16,7 +16,11 @@ public static class ManagementJob
     public const string Estimate = "estimate";
     public const string Install = "install";
 
-    public static readonly IReadOnlyList<string> Operations = [Catalog, Estimate, Install];
+    /// <summary>Phase 133: this node's <see cref="MachineFacts"/> alone — what a group estimate needs from every member but
+    /// one, with no model read and nothing reaching the network.</summary>
+    public const string Machine = "machine";
+
+    public static readonly IReadOnlyList<string> Operations = [Catalog, Estimate, Install, Machine];
 
     /// <summary>The node said no on its owner's behalf: <c>Node:Management:AllowFromHub</c> is off.</summary>
     public const string NotAllowed = "management_not_allowed";

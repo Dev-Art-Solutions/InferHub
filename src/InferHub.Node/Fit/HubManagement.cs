@@ -58,6 +58,7 @@ public sealed class HubManagement(FitService fit, CatalogService catalog, IOptio
                     LocalControlEndpoints.Json),
                 ManagementJob.Estimate => await EstimateAsync(request, terms, cancellationToken),
                 ManagementJob.Install => await InstallAsync(request, terms, cancellationToken),
+                ManagementJob.Machine => JsonSerializer.Serialize(fit.Machine(), LocalControlEndpoints.Json),
                 _ => null
             };
 
