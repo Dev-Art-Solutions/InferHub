@@ -45,6 +45,18 @@ Off by default. A node that changes no configuration behaves exactly as in 3.93:
   because shard-a now gives what its owner offered, not its whole machine.
 - Killing the node outright took the worker with it.
 
+## The published images
+
+`ghcr.io/dev-art-solutions/inferhub-node:3.94.0` and `inferhub-coordinator:3.94.0`, both labelled revision `1ad823e`. The
+node image was extended with the lab's llama.cpp (`deploy/lab/shards/node.Dockerfile`, b12182) and run with
+`Node__Shards__Enabled=true`, `RamGiB=2` against the published coordinator:
+
+- The coordinator's `/api/admin/nodes` showed the node's worker `running`, protocol **8.0.1**, endpoint `127.0.0.1:50052`.
+- A `llama-server --rpc 127.0.0.1:50052 --device RPC0 -ngl 999` in the same container loaded Qwen2.5 0.5B through it (the
+  worker at 419 MB) and answered at 90 tok/s.
+- From another container on the same Docker network, `pub-shard:50052` refused the connection: the worker is not
+  reachable off its machine.
+
 ## Found while building it
 
 - **On Windows the worker's banner never arrived while it ran.** The first design read `Starting RPC server vX.Y.Z` and
