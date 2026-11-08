@@ -8,7 +8,8 @@ public sealed record GroupCandidate(string NodeId, string Name, MachineFacts Mac
 /// <summary>One member of a group: which layers it would hold and what that costs it.</summary>
 /// <param name="Role"><see cref="GroupFit.Head"/> (holds the file, runs llama-server) or <see cref="GroupFit.Worker"/>.</param>
 /// <param name="FirstLayer">The first of its layers, counted from 0; members hold consecutive runs, head first.</param>
-/// <param name="Device"><c>card+ram</c> (its card first, the rest of its layers in RAM on its CPU) or <c>ram</c> (no card).</param>
+/// <param name="Device"><c>card+ram</c> (its card first, the rest of its layers in RAM on its CPU) or <c>ram</c> (no card);
+/// prefixed <c>offer:</c> when the member is counted by what its owner offered groups (134), not its whole memory.</param>
 public sealed record GroupMember(string NodeId, string Name, string Role, int FirstLayer, int Layers, long MemoryMiB, long CapacityMiB, string Device);
 
 /// <param name="Alone">A node that holds the model by itself — then no group is needed, and that is the answer.</param>
@@ -99,11 +100,26 @@ public static class GroupFit
                 weights, kv, option.VramMiB + option.RamMiB, option.VramMiB + option.RamMiB, layers, why);
         }
 
+        // Phase 134 D3: llama.cpp checks the RPC protocol when a head connects, so a group is one protocol — the one with
+        // the most memory offered. A node that announced none yet (no worker, or before 3.94) is not filtered.
+        var protocol = offered
+            .Where(c => c.Candidate.Machine.Shards?.Protocol is not null)
+            .GroupBy(c => c.Candidate.Machine.Shards!.Protocol!)
+            .OrderByDescending(g => g.Sum(c => c.Capacity.MiB))
+            .ThenBy(g => g.Key, StringComparer.Ordinal)
+            .FirstOrDefault()?.Key;
+        var other = offered.Where(c => c.Candidate.Machine.Shards?.Protocol is { } p && p != protocol).ToArray();
+
+        if (other.Length > 0)
+        {
+            why.Add($"left out — another llama.cpp RPC protocol than the group's v{protocol}: {string.Join(", ", other.Select(c => $"{c.Candidate.Name} (v{c.Candidate.Machine.Shards!.Protocol})"))}; a head refuses a worker on another version");
+        }
+
         // Largest first, until the members' whole layers cover the model (D2).
         var taken = new List<(GroupCandidate Candidate, (long MiB, string Device) Capacity, int Max)>();
         var room = 0;
 
-        foreach (var (candidate, capacity) in offered)
+        foreach (var (candidate, capacity) in offered.Except(other))
         {
             var max = (int)Math.Max(0, (capacity.MiB - reserve) / Math.Max(1, perLayer));
 
@@ -167,15 +183,30 @@ public static class GroupFit
         var need = weights + kv + reserve * placed.Count;
         why.Add($"{placed.Count} nodes hold its {layers} layers, about {Gib(perLayer)} each: {Gib(weights)} of weights + {Gib(kv)} of KV for {N(context)} tokens, + {Gib(reserve)} working space on every member");
         why.Add($"every token goes to each worker and back in turn, several round trips each: the round trip between the nodes sets the speed, not the bandwidth — fewer, larger members are faster");
-        why.Add("each member's whole usable memory for llama.cpp is counted, its card first and then its RAM (an rpc-server offers both devices)");
+        var whole = placed.Where(p => !p.Device.StartsWith(OfferPrefix, StringComparison.Ordinal)).Select(p => p.Name).ToArray();
+
+        if (whole.Length > 0)
+        {
+            // Phase 134 D4: a node that set nothing aside is counted as 133 counted it, and the plan says so.
+            why.Add($"{string.Join(", ", whole)} offer{(whole.Length == 1 ? "s" : "")} nothing to groups yet (Node:Shards): {(whole.Length == 1 ? "its" : "their")} whole usable memory for llama.cpp is counted, card first and then RAM");
+        }
+
+        if (placed.Count(p => p.Device.StartsWith(OfferPrefix, StringComparison.Ordinal)) is var offering and > 0)
+        {
+            why.Add($"{offering} member{(offering == 1 ? "" : "s")} counted by what {(offering == 1 ? "its owner" : "their owners")} offered groups, not {(offering == 1 ? "its" : "their")} whole memory");
+        }
 
         foreach (var member in placed)
         {
-            var card = Card(candidates.First(c => c.NodeId == member.NodeId).Machine);
+            var machine = candidates.First(c => c.NodeId == member.NodeId).Machine;
+            var card = Card(machine);
 
             if (card == 0)
             {
-                why.Add($"{member.Name} has no card: its {member.Layers} layers run on its CPU, and the group waits for it on every token");
+                // Found live: a node with a card that offered RAM only is not a node "with no card".
+                why.Add(machine.Shards is { TotalMiB: > 0 } && machine.Gpus.Count > 0
+                    ? $"{member.Name} offered groups RAM only: its {member.Layers} layers run on its CPU, and the group waits for it on every token"
+                    : $"{member.Name} has no card: its {member.Layers} layers run on its CPU, and the group waits for it on every token");
             }
             else if (member.MemoryMiB > card)
             {
@@ -188,9 +219,21 @@ public static class GroupFit
         return new GroupPlan(variant.Name, notes.Count == 0, null, placed, weights, kv, need, placed.Sum(p => p.CapacityMiB), layers, why);
     }
 
-    /// <summary>What a node would give a group: 118's usable VRAM and RAM for llama.cpp, the owner's limits applied.</summary>
+    /// <summary>A member's <see cref="GroupMember.Device"/> starts with this when it is counted by its owner's offer (134).</summary>
+    public const string OfferPrefix = "offer:";
+
+    /// <summary>
+    /// What a node would give a group: its owner's offer (<c>Node:Shards</c>, never more than it has — 134 D4), else 118's
+    /// usable VRAM and RAM for llama.cpp with the owner's limits applied, as 133 counted it.
+    /// </summary>
     public static (long MiB, string Device) Capacity(MachineFacts machine)
     {
+        if (machine.Shards is { TotalMiB: > 0 } offer)
+        {
+            var (whole, _) = Capacity(machine with { Shards = null });
+            return (Math.Min(offer.TotalMiB, whole), OfferPrefix + (offer.VramMiB > 0 ? "card+ram" : "ram"));
+        }
+
         var engine = LlamaCpp(machine);
         var scratch = new List<string>();
         var vram = FitEstimator.Vram(machine, engine, scratch);
@@ -198,7 +241,10 @@ public static class GroupFit
         return (vram + ram, vram > 0 ? "card+ram" : "ram");
     }
 
-    private static long Card(MachineFacts machine) => FitEstimator.Vram(machine, LlamaCpp(machine), []);
+    private static long Card(MachineFacts machine) =>
+        machine.Shards is { TotalMiB: > 0 } offer
+            ? offer.VramMiB
+            : FitEstimator.Vram(machine, LlamaCpp(machine), []);
 
     private static EngineFacts LlamaCpp(MachineFacts machine) =>
         machine.Engines.FirstOrDefault(e => e.Kind == FitEngines.LlamaCpp)

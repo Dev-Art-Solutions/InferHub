@@ -835,3 +835,48 @@ installed or started — the endpoint is read-only and audits nothing.
 **Not established:** an `rpc-server` offering a card and the CPU together (the lab is CPU-only — D2's capacity assumes it);
 GPUs in a group at all; real home networks (NAT, jitter, loss); models above 8B through RPC; more than three workers; a member's
 memory reserved for groups (134 — the estimate counts it whole, as `why` says).
+
+### Phase 134 (a node offers a slice of its memory to groups — a supervised llama.cpp RPC worker on loopback, the offer reserved)
+
+Files: `Configuration/NodeOptions.cs` (`ShardOptions`, `Node:Shards`), `Backends/Shards/ShardWorker.cs`, `src/InferHub.Shared/Fit/ShardOffer.cs`
+(`ShardOffer`, `NodeShardState`, `ShardBanner`), `MachineFacts.Shards`, `FitEstimator.Ram/Vram`, `GroupFit.Capacity`; `GET /api/control/shards`;
+`ReportShardState` → hub `NodeShardRegistry` → `/api/admin/nodes` `shards`; the console's node pill; `deploy/lab/shards/node.Dockerfile`.
+
+**D1, load-bearing — off by default, the offer is GiB, and there is no host key.** `Enabled`, `RamGiB`, `VramGiB`, `Port` (50052),
+`Threads`, `Devices` (`-d`), `Cache` (`-c`), `Executable` (default: `ggml-rpc-server[.exe]` or `rpc-server[.exe]` beside a llama.cpp
+engine's `Serve:Executable`, or in the PATH directory where a bare `llama-server` resolves). The worker always gets `-H 127.0.0.1`:
+llama.cpp RPC has no authentication, so only InferHub's own tunnel (135) may ever reach it. A restart applies it. *Rejected:* a
+`Host` key "for the lab" — the one invariant that keeps an unauthenticated tensor port off the network would be a setting.
+
+**D2 — an `EngineProcess`, and "running" is the handshake answered, not the process started.** The worker asks it, every two
+seconds until it answers, what a head asks first: `HELLO` (command 14 — `static_assert`ed "must be always 14" in
+`ggml-rpc.cpp`), 24 bytes of connection capabilities; the answer's first three bytes are the protocol. Once answered it is not
+asked again — a head connected holds the worker's one connection and a second caller would wait, not fail; the process exiting
+takes "running" back. **Found live:** on Windows the worker's stdout to a pipe is fully buffered — its banner (`Starting RPC
+server vX.Y.Z`, the device lines) arrives only when it exits, so a banner-driven "running" never came. The banner is still read
+(where it arrives, it names the devices), and a line with "fail"/"error" becomes the sentence. **Found live:** llama.cpp's default
+port 50052 was held on this box by an unrelated `LicenseService.exe`, and Windows reserves ranges (here 50172–50271) — both
+appear as the worker's own "Failed to create server socket", in the node row. A node killed outright takes its worker with it (95's job).
+
+**D3 — the group key is the RPC protocol.** Measured: winget b10424 answers 5.0.0, the lab's b12182 8.0.1; a head refuses a
+worker of another major. A build number is no key (the lab build, without git, says `build 1`). `GroupFit` keeps the members on
+the protocol with the most memory offered and names the rest in `why`. A node that announced none (no worker, or before 3.94) is not filtered.
+
+**D4 — the offer is reserved and is all a group counts.** `FitEstimator.Ram/Vram` lower every engine's usable memory by it, with a
+`why` line ("24 GiB of RAM is offered to groups (Node:Shards) — not counted for this node's own models", live). `GroupFit.Capacity`
+is the offer (never more than 118 would give the node whole), device `offer:ram` / `offer:card+ram`; a node that offered nothing is
+counted whole as in 133, and the plan says which. **The worker does not enforce the slice**: `rpc-server` has no memory flag (b10424
+and b12182 `--help`), and a head lists it with the machine's whole memory (live: `RPC0: 127.0.0.1:50060 (261985 MiB …)`). What a
+member holds is the plan's `--tensor-split`, which 136 sends; until then the offer is a promise the arithmetic keeps.
+
+**D5 — the hub hears it as other node states.** At registration and on change, only when enabled; filed under the calling
+connection's node (as 128's egress), because 136 will trust that row. The app shows the keys in Settings (schema-driven, no app release).
+
+**Live (2026-11-08, from source):** shard-a offering 24 GiB RAM — the worker found beside winget's `llama-server.exe`, running,
+protocol 5.0.0; a `llama-server --rpc 127.0.0.1:50060 --device RPC0 -ngl 999` on that machine loaded qwen2.5 0.5B through it (the
+worker grew from 32 to 443 MB and cached the tensors) and answered at 95 tok/s. With shard-b offering nothing, DeepSeek V3.1's
+Q3_K_S planned shard-b layers 0–55 (whole) + shard-a 56–60 (23 343 of its 24 576 MiB offer); the Q4/Q5 variants that fit both
+whole in 3.93 no longer fit — the offer, not the machine, is what shard-a gives.
+
+**Not established:** a worker reached from another machine (135); the slice enforced anywhere but the plan; a card offered
+(`VramGiB`, `-d Vulkan0`) — only the CPU device was run; the console pill in a browser (the JSON was read).

@@ -4,13 +4,16 @@ namespace InferHub.Shared.Fit;
 /// <param name="RamMiB">Physical memory (or the container's limit).</param>
 /// <param name="RamAvailableMiB">What is free right now — shown beside the estimate, never used to refuse one: a
 /// model is loaded later, when other programs may have let go.</param>
+/// <param name="Shards">Phase 134: what the owner set aside for groups (<c>Node:Shards</c>) — subtracted from what this
+/// node's own models may use, and all a group counts on here. Null: nothing offered (and every node before 3.94).</param>
 public sealed record MachineFacts(
     IReadOnlyList<GpuFacts> Gpus,
     long RamMiB,
     long? RamAvailableMiB,
     int Cores,
     IReadOnlyList<EngineFacts> Engines,
-    IReadOnlyList<string> Notes);
+    IReadOnlyList<string> Notes,
+    ShardOffer? Shards = null);
 
 /// <param name="FreeMiB">Free now — other programs (another engine, a game) may hold the rest.</param>
 public sealed record GpuFacts(int Index, string Name, long TotalMiB, long? FreeMiB);

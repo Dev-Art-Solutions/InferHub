@@ -49,6 +49,15 @@ public class ManagementMeshTests
         // The terms the node connected with are on the hub's snapshot, for the console to show.
         Assert.Equal(new ManagementTerms(false, null, 20), mesh.Node()!.Management);
 
+        // Phase 134: the node's offer reached the hub with its worker's sentence, filed under the node that sent it.
+        var shards = mesh.Reported();
+        Assert.NotNull(shards);
+        Assert.Equal(ManagementMesh.NodeId, shards.NodeId);
+        Assert.Equal(NodeShardState.Failed, shards.State);
+        Assert.Equal(8 * 1024, shards.RamMiB);
+        Assert.Equal("127.0.0.1:50052", shards.Endpoint);
+        Assert.Contains("does not exist", shards.LastError);
+
         // Off: the node's own sentence, as a 403, and nothing installs.
         var refused = await http.PostAsJsonAsync($"/api/admin/nodes/{ManagementMesh.NodeId}/fit", new { link = Repo, context = 8192 });
         Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
@@ -124,6 +133,11 @@ public class ManagementMeshTests
 
         public NodeOptions Options { get; } = new() { Name = NodeId };
 
+        /// <summary>Phase 134: an offer whose worker cannot run here (no llama.cpp) — its sentence must still reach the hub.</summary>
+        public InferHub.Node.Backends.Shards.ShardWorker Worker { get; } = new(
+            new ShardOptions { Enabled = true, RamGiB = 8, Executable = Path.Combine(Path.GetTempPath(), "no-such-dir", "ggml-rpc-server") },
+            new BackendOptions(), NullLogger.Instance, null, File.Exists, null);
+
         public FakeHuggingFace Hub { get; private set; } = null!;
 
         public string Url => app.Urls.First();
@@ -149,6 +163,19 @@ public class ManagementMeshTests
 
         public NodeSnapshot? Node() => Registry.Snapshot(DateTimeOffset.UtcNow)
             .FirstOrDefault(n => string.Equals(n.NodeId, NodeId, StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>What the hub holds of the node's shard report — waited for, since it follows the registration.</summary>
+        public NodeShardState? Reported()
+        {
+            var registry = app.Services.GetRequiredService<NodeShardRegistry>();
+
+            for (var i = 0; i < 200 && registry.Of(NodeId) is null; i++)
+            {
+                Thread.Sleep(25);
+            }
+
+            return registry.Of(NodeId);
+        }
 
         /// <summary>The next model command that finishes.</summary>
         public Task<ModelCommandProgress> NextDone()
@@ -179,6 +206,7 @@ public class ManagementMeshTests
             builder.Services.AddSingleton<INodeRegistry>(Registry);
             builder.Services.AddSingleton<IProfileRegistry>(new ProfileRegistry(new NoProfileStore(), NullLogger<ProfileRegistry>.Instance));
             builder.Services.AddSingleton(new NodeColibriRegistry());
+            builder.Services.AddSingleton(new NodeShardRegistry());
             builder.Services.AddSingleton<IAuditLog, AuditLog>();
             builder.Services.AddSingleton<IRouter, InferHub.Coordinator.Services.Router>();
             builder.Services.AddSingleton<IConversationAffinity>(new ConversationAffinity(
@@ -269,7 +297,8 @@ public class ManagementMeshTests
                 InferHub.Node.Resources.NoResourceGovernor.Instance,
                 NullLogger<CoordinatorConnection>.Instance,
                 colibri: catalog,
-                management: management);
+                management: management,
+                shards: Worker);
 
             await node.StartAsync(CancellationToken.None);
 

@@ -19,7 +19,9 @@ public sealed class EngineProcess(
     Func<string?> precondition,
     TimeProvider time,
     ILogger logger,
-    string? limitGroup = null) : IAsyncDisposable
+    string? limitGroup = null,
+    Action<string>? onLine = null,
+    Action? onExit = null) : IAsyncDisposable
 {
     private static readonly TimeSpan FirstBackoff = TimeSpan.FromSeconds(2);
 
@@ -152,6 +154,8 @@ public sealed class EngineProcess(
                 LastError = $"exited with code {exitCode}";
             }
 
+            onExit?.Invoke();
+
             logger.LogWarning(
                 "Engine '{Engine}' exited ({ExitCode}); starting it again in {Backoff}.",
                 name,
@@ -235,6 +239,19 @@ public sealed class EngineProcess(
 
     private void Log(string? line)
     {
+        if (line is not null && onLine is not null)
+        {
+            // Phase 134: a shard worker is "running" when it has said so, not when the process started.
+            try
+            {
+                onLine(line);
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "Engine '{Engine}': a line reader failed", name);
+            }
+        }
+
         // Health probes are the node's own and not news; loads, refusals and crashes are.
         if (!string.IsNullOrWhiteSpace(line)
             && !line.Contains("/health", StringComparison.Ordinal))

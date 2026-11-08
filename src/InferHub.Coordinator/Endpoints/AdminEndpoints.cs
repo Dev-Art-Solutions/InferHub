@@ -17,9 +17,9 @@ public static class AdminEndpoints
     {
         var group = app.MapGroup("/api/admin");
 
-        group.MapGet("/nodes", (INodeRegistry registry, IAuditLog audit, IProfileRegistry profiles) =>
+        group.MapGet("/nodes", (INodeRegistry registry, IAuditLog audit, IProfileRegistry profiles, NodeShardRegistry shards) =>
         {
-            var nodes = BuildAdminNodes(registry, audit, profiles);
+            var nodes = BuildAdminNodes(registry, audit, profiles, shards);
             return Results.Ok(nodes);
         });
 
@@ -101,6 +101,7 @@ public static class AdminEndpoints
             backends.Forget(nodeId);
             updates.Forget(nodeId);
             limits.Forget(nodeId);
+            context.RequestServices.GetService<NodeShardRegistry>()?.Forget(nodeId);
             quotas.Forget(nodeId);
             audit.Record(nodeId, "deregister", ActorOf(context), DateTimeOffset.UtcNow);
 
@@ -1348,7 +1349,7 @@ public static class AdminEndpoints
         IProfileRegistry? profiles,
         CancellationToken cancellationToken)
     {
-        var nodes = BuildAdminNodes(registry, audit, profiles);
+        var nodes = BuildAdminNodes(registry, audit, profiles, response.HttpContext.RequestServices.GetService<NodeShardRegistry>());
         var payload = JsonSerializer.Serialize(new { nodes }, StreamJsonOptions);
         await response.WriteAsync("event: snapshot\n", cancellationToken);
         await response.WriteAsync($"data: {payload}\n\n", cancellationToken);
@@ -1376,13 +1377,15 @@ public static class AdminEndpoints
     private static AdminNode[] BuildAdminNodes(
         INodeRegistry registry,
         IAuditLog audit,
-        IProfileRegistry? profiles = null)
+        IProfileRegistry? profiles = null,
+        NodeShardRegistry? shards = null)
     {
         return registry.Snapshot(DateTimeOffset.UtcNow)
             .Select(node => AdminNode.From(
                 node,
                 audit.Get(node.NodeId),
-                ProfileBlock(profiles, node)))
+                ProfileBlock(profiles, node),
+                shards?.Of(node.NodeId)))
             .ToArray();
     }
 
@@ -1450,9 +1453,11 @@ public static class AdminEndpoints
         // Phase 120: the owner's terms for this hub's model management, as the node connected with them. Null before 3.81.
         InferHub.Shared.Fit.ManagementTerms? Management = null,
         // Phase 122: the node is sealed. Null when it is not, or before 3.82.
-        bool? Sealed = null)
+        bool? Sealed = null,
+        // Phase 134: what the node offers groups and whether its worker runs. Null when it offers nothing, or before 3.94.
+        InferHub.Shared.Fit.NodeShardState? Shards = null)
     {
-        public static AdminNode From(NodeSnapshot node, AuditEntry? lastAction, AdminNodeProfile? profile = null)
+        public static AdminNode From(NodeSnapshot node, AuditEntry? lastAction, AdminNodeProfile? profile = null, InferHub.Shared.Fit.NodeShardState? shards = null)
         {
             return new AdminNode(
                 node.ConnectionId,
@@ -1475,7 +1480,8 @@ public static class AdminEndpoints
                     : new AdminNodeAction(lastAction.Action, lastAction.AtUtc, lastAction.By),
                 profile,
                 node.Management,
-                node.Sealed);
+                node.Sealed,
+                shards);
         }
     }
 

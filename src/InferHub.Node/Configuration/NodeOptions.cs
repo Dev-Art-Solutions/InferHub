@@ -49,6 +49,13 @@ public sealed class NodeOptions
     public ManagementOptions Management { get; set; } = new();
 
     /// <summary>
+    /// Phase 134: a slice of this machine's memory offered to groups that split one model across nodes — a supervised
+    /// llama.cpp <c>rpc-server</c> on loopback, the offer reserved from this node's own models. Off by default; a restart
+    /// applies it.
+    /// </summary>
+    public ShardOptions Shards { get; set; } = new();
+
+    /// <summary>
     /// One GPU service at a time, loaded for the request and released after it (phase 85). Off by
     /// default, which is v3.49's behaviour exactly.
     /// </summary>
@@ -342,6 +349,40 @@ public sealed class SharingOptions
     /// it exists.
     /// </summary>
     public ModelFilterOptions Models { get; set; } = new();
+}
+
+/// <summary>
+/// <c>Node:Shards</c> (phase 134). <b>There is no host key, on purpose</b> (D1): llama.cpp RPC has no authentication, so
+/// the worker binds 127.0.0.1 and only InferHub's own tunnel (135) may ever reach it.
+/// </summary>
+public sealed class ShardOptions
+{
+    public bool Enabled { get; set; }
+
+    /// <summary>GiB of RAM offered to groups. Null or 0 with no <see cref="VramGiB"/>: an offer of nothing, which is refused.</summary>
+    public int? RamGiB { get; set; }
+
+    /// <summary>GiB of the card(s) offered to groups.</summary>
+    public int? VramGiB { get; set; }
+
+    /// <summary>The loopback port the worker listens on (llama.cpp's default).</summary>
+    public int Port { get; set; } = 50052;
+
+    /// <summary><c>-t</c>: CPU threads for the worker; null is llama.cpp's own default.</summary>
+    public int? Threads { get; set; }
+
+    /// <summary><c>-d</c>: the devices it offers, comma-separated as <c>ggml-rpc-server --help</c> names them (e.g. <c>Vulkan0,CPU</c>). Null: all.</summary>
+    public string? Devices { get; set; }
+
+    /// <summary><c>-c</c>: keep the tensors a head sent in a local cache, so a reload does not cross the network again.</summary>
+    public bool Cache { get; set; } = true;
+
+    /// <summary>The <c>ggml-rpc-server</c> to run. Null: the one beside this node's llama.cpp engine's executable.</summary>
+    public string? Executable { get; set; }
+
+    public long RamMiB => Math.Max(0, RamGiB ?? 0) * 1024L;
+
+    public long VramMiB => Math.Max(0, VramGiB ?? 0) * 1024L;
 }
 
 /// <summary><c>Node:Management</c> (phase 120): the hub's model management on this node — the owner's terms.</summary>

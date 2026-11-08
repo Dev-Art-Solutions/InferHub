@@ -82,6 +82,9 @@ internal static partial class LocalControlEndpoints
                 return Results.BadRequest(new { error = ex.Message });
             }
         });
+        // Phase 134: the slice this node offers groups, its worker and the protocol it speaks.
+        group.MapGet("/shards", (IServiceProvider services) => Results.Json(
+            services.GetRequiredService<Backends.Shards.ShardWorker>().State(services.GetRequiredService<INodeIdentity>().GetOrCreateNodeId()), Json));
         group.MapGet("/models", ModelsAsync);
         group.MapPost("/models/{name}/{action}", ModelCommandAsync);
         group.MapDelete("/models/{name}", (HttpContext context, string name, string? engine, string? tool) =>
@@ -199,6 +202,7 @@ internal static partial class LocalControlEndpoints
             models = models.Select(m => new { name = m.Name, size = m.SizeBytes, shared = sharing.SharedState(m.Name) }),
             limits = services.GetService<Resources.Limits.IEngineLimiter>()?.State(nodeId),
             update = services.GetService<Update.UpdateManager>()?.State(nodeId),
+            shards = services.GetService<Backends.Shards.ShardWorker>() is { Enabled: true } shardWorker ? shardWorker.State(nodeId) : null,
             restart = restarter.Support
         }, Json);
     }

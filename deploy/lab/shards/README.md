@@ -44,3 +44,18 @@ Llama 3.1 8B Q4 (4.4 GiB), 64-core host, 4 CPUs and 4 threads per container, 3 w
 
 **Not established here:** GPUs (the lab is CPU only, every container shares one host's cores and memory bandwidth);
 real home networks (NAT, jitter, loss — netem adds none); models above 8B; more than three workers.
+
+## A node's own worker (phase 134)
+
+`node.Dockerfile` is the published node image with this lab's llama.cpp copied to `/opt/llama`, so the node's shard
+worker (`Node:Shards`) has a `ggml-rpc-server` to supervise. The worker binds `127.0.0.1` inside the container, so a
+head reaches it only from the same container until 135's tunnel:
+
+```bash
+docker build -f node.Dockerfile --build-arg NODE=3.94.0 -t inferhub-lab-node:3.94.0 .
+docker run -d --name shard-a -e Coordinator__Url=http://host.docker.internal:5080/ -e Coordinator__EnrollmentSecret=… \
+  -e Node__Shards__Enabled=true -e Node__Shards__RamGiB=2 -v "$LAB_MODEL_DIR:/models:ro" inferhub-lab-node:3.94.0
+docker exec shard-a /opt/llama/llama-server -m /models/<model>.gguf --rpc 127.0.0.1:50052 --device RPC0 -ngl 999 --port 18080
+```
+
+The hub's `/api/admin/nodes` then shows `shards: {state: running, protocol: "8.0.1", …}` for that node.

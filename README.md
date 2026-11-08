@@ -1044,6 +1044,37 @@ POST /api/admin/fit/group   {"link": "unsloth/DeepSeek-V3.1-GGUF", "context": 81
   a 30 ms round trip and 0.6 at 120 ms. The whole model on one container: 6.7.
 - In the console: **Model management → Models that fit → Across nodes**.
 
+### A node offers a slice of its memory to groups (v3.94+)
+
+The owner says how much of the machine is for groups. The node then runs llama.cpp's own RPC
+worker for it and keeps that memory away from its own models.
+
+```jsonc
+// node.local.json, the app's Settings tab, or PUT /api/control/settings — then restart the node
+"Node": { "Shards": { "Enabled": true, "RamGiB": 24 } }
+```
+
+- **The worker is llama.cpp's `ggml-rpc-server`**, found beside the node's llama.cpp engine
+  (`llama-server`), or named in `Node:Shards:Executable`. The Windows release of llama.cpp and
+  winget ship it. The node starts it, restarts it if it exits, and stops it with the node.
+- **It listens on `127.0.0.1` only, and there is no setting to change that.** llama.cpp RPC has no
+  authentication. Other nodes will reach it through InferHub's own tunnel (the next release), never
+  through an open port.
+- **"Running" means it answered.** The node sends the worker the same handshake a llama.cpp head
+  sends, and the answer carries the worker's RPC protocol. A group needs one protocol: llama.cpp
+  from winget (b10424) speaks 5.0.0, a recent build (b12182) 8.0.1, and a head refuses a worker of
+  another version. If the worker cannot start, its own words are shown, such as *Failed to create
+  server socket* when another program holds the port.
+- **The offer is reserved.** The node's own estimate (*Check fit*) no longer counts it: "24 GiB of
+  RAM is offered to groups (Node:Shards), not counted for this node's own models". The group
+  estimate counts **only** the offer for that node (`offer:ram`). A node that offered nothing is
+  still counted whole, and the plan says which nodes those are.
+- **Where to see it:** `GET /api/control/shards` on the node, the node's row in the console
+  (*offers groups 24 GiB RAM · RPC 5.0.0 · running*), and the keys in the app's Settings tab.
+- **What the worker does not do:** it has no memory limit of its own. A head sees the whole
+  machine. What a member holds is the plan's layer split, which the hub will send when it runs a
+  group (v3.96).
+
 ### A sealed node (v3.82+)
 
 One setting for a node that must not reach the internet: `Node:Sealed=true`. It talks to its

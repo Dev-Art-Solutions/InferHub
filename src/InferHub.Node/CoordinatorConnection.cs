@@ -43,7 +43,8 @@ public sealed class CoordinatorConnection(
     Fit.HubManagement? management = null,
     Identity.NodeCredential? credential = null,
     Configuration.EgressCheck? egress = null,
-    Configuration.SealedEgress? sealedEgress = null) : IAsyncDisposable
+    Configuration.SealedEgress? sealedEgress = null,
+    Backends.Shards.ShardWorker? shards = null) : IAsyncDisposable
 {
     /// <summary>
     /// Phase 97's catalogue report, one per engine that has a catalogue (99): each has its own hub
@@ -113,6 +114,7 @@ public sealed class CoordinatorConnection(
         SubscribeToCatalogs();
         SubscribeToUpdates();
         SubscribeToLimits();
+        SubscribeToShards();
         SubscribeToSharing();
         SubscribeToQuota();
         retrieval.CorpusChanged += OnCorpusChanged;
@@ -128,6 +130,7 @@ public sealed class CoordinatorConnection(
         UnsubscribeFromCatalogs();
         UnsubscribeFromUpdates();
         UnsubscribeFromLimits();
+        UnsubscribeFromShards();
         if (subscribedToSharing && sharing is not null)
         {
             sharing.Changed -= OnSharingChanged;
@@ -178,6 +181,7 @@ public sealed class CoordinatorConnection(
         UnsubscribeFromCatalogs();
         UnsubscribeFromUpdates();
         UnsubscribeFromLimits();
+        UnsubscribeFromShards();
         if (subscribedToSharing && sharing is not null)
         {
             sharing.Changed -= OnSharingChanged;
@@ -419,6 +423,72 @@ public sealed class CoordinatorConnection(
             {
                 logger.LogWarning("This coordinator cannot hold a sharing pause (it has no ReportSharingState: older than 3.76); this node keeps taking its jobs. {Message}", ex.Message);
             }
+        }
+    }
+
+    private bool subscribedToShards;
+
+    private void SubscribeToShards()
+    {
+        if (shards is not { Enabled: true } || subscribedToShards)
+        {
+            return;
+        }
+
+        subscribedToShards = true;
+        shards.Changed += OnShardsChanged;
+    }
+
+    private void UnsubscribeFromShards()
+    {
+        if (!subscribedToShards || shards is null)
+        {
+            return;
+        }
+
+        subscribedToShards = false;
+        shards.Changed -= OnShardsChanged;
+    }
+
+    private void OnShardsChanged()
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ReportShardStateAsync(lifetime.Token);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "Could not report the shard worker after it changed");
+            }
+        });
+    }
+
+    /// <summary>
+    /// Phase 134 D5: what this node offers groups and whether its worker runs. Sent at registration and on every change —
+    /// only when <c>Node:Shards:Enabled</c>, so a node that offers nothing sends what it always sent. A hub older than
+    /// v3.94 has no such method: a debug line (40 D1).
+    /// </summary>
+    private async Task ReportShardStateAsync(CancellationToken cancellationToken)
+    {
+        var activeConnection = connection;
+
+        if (shards is not { Enabled: true } || activeConnection is not { State: HubConnectionState.Connected })
+        {
+            return;
+        }
+
+        try
+        {
+            await activeConnection.InvokeAsync("ReportShardState", shards.State(nodeId), cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "This coordinator did not accept a shard report (older than 3.94)");
         }
     }
 
@@ -1111,6 +1181,8 @@ public sealed class CoordinatorConnection(
         await ReportUpdateStateAsync(cancellationToken);
         // Phase 102, for the same reason: limits hold whether or not the engine is up.
         await ReportLimitsStateAsync(cancellationToken);
+        // Phase 134: the slice offered to groups, whether or not the engine is up.
+        await ReportShardStateAsync(cancellationToken);
         // Phase 113: before any job can be routed here, whether this node takes them.
         await ReportSharingStateAsync(cancellationToken);
 

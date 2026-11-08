@@ -282,6 +282,20 @@ public sealed class NodeHub(
         return Task.CompletedTask;
     }
 
+    /// <summary>What a node offers groups and whether its worker runs (phase 134). The mailbox again; a node before v3.94 sends none.</summary>
+    public Task ReportShardState(InferHub.Shared.Fit.NodeShardState state)
+    {
+        // Filed under the caller's own node, as egress is (128): a group plan in 136 trusts this row, so a node cannot
+        // offer on another's behalf.
+        if (services.GetService(typeof(NodeShardRegistry)) is NodeShardRegistry shards
+            && registry.Snapshot(DateTimeOffset.UtcNow).FirstOrDefault(node => node.ConnectionId == Context.ConnectionId) is { } node)
+        {
+            shards.Report(state with { NodeId = node.NodeId });
+        }
+
+        return Task.CompletedTask;
+    }
+
     /// <summary>What a node said about its own cloud providers' limits (phase 106). The mailbox again; a node before v3.70 sends none.</summary>
     public Task ReportQuotaState(InferHub.Shared.Quota.NodeQuotaState state)
     {

@@ -91,6 +91,18 @@
       pills.push(`<span class="pill" title="Node:Sealed — reaches nothing outside its network but this coordinator; downloads only through Relay">sealed</span>`);
     }
 
+    // Phase 134. The slice this node's owner offered groups (Node:Shards), its worker's state and protocol. Neutral while
+    // it runs — the owner's choice working; a warning when it cannot, because a group would count on it.
+    if (node.shards) {
+      const s = node.shards;
+      const gib = (mib) => `${Math.round((mib ?? 0) / 1024)} GiB`;
+      const what = [s.ramMiB > 0 ? `${gib(s.ramMiB)} RAM` : null, s.vramMiB > 0 ? `${gib(s.vramMiB)} card` : null].filter(Boolean).join(" + ");
+      const proto = s.protocol ? ` · RPC ${escapeHtml(s.protocol)}` : "";
+      const tip = [`Node:Shards — a llama.cpp RPC worker on ${s.endpoint ?? "127.0.0.1"} (this machine only)`, ...(s.devices ?? []), s.lastError].filter(Boolean).join("\n");
+      const cls = s.state === "running" ? "pill" : s.state === "starting" ? "pill pill-warn" : "pill pill-err";
+      pills.push(`<span class="${cls}" title="${escapeHtml(tip)}">offers groups ${escapeHtml(what)}${proto} · ${escapeHtml(s.state)}</span>`);
+    }
+
     // Phase 69. Beside `online`, not instead of it: the connection genuinely is up, and saying so
     // while the backend is down is the whole of what this row has to communicate.
     if (node.backendHealth && node.backendHealth !== "healthy") {
@@ -2922,6 +2934,11 @@
 
   // Phase 133: "fits no node, fits these three together" — every node whose owner allows it gives its machine, one reads
   // the model, and the hub's arithmetic (GroupFit) splits it by whole layers. Read-only: nothing installs or starts.
+  // Phase 134: "offer:ram" is a member counted by what its owner offered groups (Node:Shards), not its whole memory.
+  const groupDevice = (device) => String(device ?? "").startsWith("offer:")
+    ? `<b>offered</b> · ${escapeHtml(String(device).slice(6))}`
+    : escapeHtml(device);
+
   const groupFit = async () => {
     const out = fitResults();
     const link = document.getElementById("fit-link")?.value.trim();
@@ -2933,13 +2950,13 @@
       if (res.status === 401) { promptForKey("Admin key required for this action."); if (out) out.innerHTML = ""; return; }
       const body = await res.json().catch(() => ({}));
       const asked = (body.asked ?? []).map(a => a.ok
-        ? `${escapeHtml(a.name)}: ${fitMiB(a.capacityMiB)} (${escapeHtml(a.device)})`
+        ? `${escapeHtml(a.name)}: ${fitMiB(a.capacityMiB)} (${groupDevice(a.device)})`
         : `<span style="opacity:.7" title="${escapeHtml(a.why)}">${escapeHtml(a.name)}: not asked — ${escapeHtml(a.why ?? "no answer")}</span>`).join(" · ");
       if (!res.ok) { if (out) out.innerHTML = asked ? `<div style="font-size:12px">${asked}</div>` : ""; fitNote(`No group estimate: ${body.error || `HTTP ${res.status}`}`, true); return; }
       if (body.refused) { if (out) out.innerHTML = `<div style="font-size:12px">${asked}</div>`; fitNote(`${body.model}: ${body.refused}`, true); return; }
       const rows = (body.plans ?? []).map(p => {
         const verdict = !p.fits ? (p.members?.length ? `${p.members.length} nodes have the memory — <strong>but</strong> ${escapeHtml(p.why?.[p.why.length - 1] ?? "")}` : "<strong>does not fit</strong>") : p.alone ? `fits <strong>${escapeHtml(p.members[0]?.name ?? p.alone)}</strong> alone` : `fits <strong>${p.members.length} nodes</strong> together`;
-        const members = (p.members ?? []).map(m => `${escapeHtml(m.name)} <span style="opacity:.7">${m.role}</span> — layers ${m.firstLayer}–${m.firstLayer + m.layers - 1} · ${fitMiB(m.memoryMiB)} of ${fitMiB(m.capacityMiB)} (${escapeHtml(m.device)})`).join("<br>");
+        const members = (p.members ?? []).map(m => `${escapeHtml(m.name)} <span style="opacity:.7">${m.role}</span> — layers ${m.firstLayer}–${m.firstLayer + m.layers - 1} · ${fitMiB(m.memoryMiB)} of ${fitMiB(m.capacityMiB)} (${groupDevice(m.device)})`).join("<br>");
         return `<tr>
           <td>${escapeHtml(p.variant)}</td>
           <td>${verdict}</td>

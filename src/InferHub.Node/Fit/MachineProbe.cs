@@ -23,7 +23,8 @@ public sealed class MachineProbe(
     ColibriOptions colibri,
     StrataOptions strata,
     bool strataInstalls,
-    Func<bool> managesModels)
+    Func<bool> managesModels,
+    Func<ShardOffer?>? shards = null)
 {
     public MachineFacts Read()
     {
@@ -37,7 +38,8 @@ public sealed class MachineProbe(
 
         var (total, available) = Memory();
 
-        return new MachineFacts(gpus, total, available, Environment.ProcessorCount, Engines(), notes);
+        // Phase 134 D4: what the owner set aside for groups goes with the facts, so every estimate reserves it.
+        return new MachineFacts(gpus, total, available, Environment.ProcessorCount, Engines(), notes, shards?.Invoke());
     }
 
     private IReadOnlyList<EngineFacts> Engines()

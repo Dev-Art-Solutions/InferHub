@@ -341,6 +341,13 @@ public static class FitEstimator
         // A card keeps some for the driver and the desktop; 5%, at least 512 MiB.
         var usable = machine.Gpus.Sum(g => Math.Max(0, g.TotalMiB - Math.Max(512, g.TotalMiB / 20)));
 
+        if (machine.Shards is { VramMiB: > 0 } offer)
+        {
+            // Phase 134 D4: what the owner gave groups is not this node's own models' to count on.
+            why.Add($"{Gib(offer.VramMiB)} of VRAM is offered to groups (Node:Shards) — not counted for this node's own models");
+            usable = Math.Max(0, usable - offer.VramMiB);
+        }
+
         if (engine.VramLimitMiB is { } limit && limit < usable)
         {
             why.Add($"the owner limits {engine.Kind} to {Gib(limit)} of VRAM");
@@ -361,6 +368,12 @@ public static class FitEstimator
     {
         // The system and the node itself keep a tenth, at least 4 GiB.
         var usable = Math.Max(0, machine.RamMiB - Math.Max(4096, machine.RamMiB / 10));
+
+        if (machine.Shards is { RamMiB: > 0 } offer)
+        {
+            why.Add($"{Gib(offer.RamMiB)} of RAM is offered to groups (Node:Shards) — not counted for this node's own models");
+            usable = Math.Max(0, usable - offer.RamMiB);
+        }
 
         if (engine.RamLimitMiB is { } limit && limit < usable)
         {

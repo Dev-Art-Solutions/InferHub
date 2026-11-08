@@ -240,6 +240,11 @@ public static class NodeHostBuilderExtensions
         AddHuggingFace(builder);
         AddStrataInstaller(builder);
         AddFit(builder);
+
+        // Phase 134: the slice offered to groups. Registered always (the probe and the connection ask it); launches
+        // nothing and reports nothing unless Node:Shards:Enabled.
+        builder.Services.AddSingleton<Backends.Shards.ShardWorker>();
+        builder.Services.AddHostedService(services => services.GetRequiredService<Backends.Shards.ShardWorker>());
         AddUpdates(builder);
         AddEngines(builder);
         AddOllamaSupervision(builder, ollamaOptions);
@@ -962,7 +967,8 @@ public static class NodeHostBuilderExtensions
                 services.GetRequiredService<IOptions<ColibriOptions>>().Value,
                 services.GetRequiredService<IOptions<Backends.Strata.StrataOptions>>().Value,
                 services.GetService<Backends.Strata.StrataInstaller>() is not null,
-                () => services.GetRequiredService<IInferenceBackend>().SupportsModelManagement);
+                () => services.GetRequiredService<IInferenceBackend>().SupportsModelManagement,
+                () => services.GetRequiredService<Backends.Shards.ShardWorker>().Offer());
 
             // 118 D6: the engines that plan their own placement are asked — Strata with its install, colibri with its catalogue.
             var planners = new List<Fit.IEnginePlanner>();
