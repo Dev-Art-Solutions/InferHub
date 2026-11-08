@@ -75,6 +75,11 @@ Llama 3.1 8B Q4, three workers at 2.5 GiB each, 4 CPUs per container:
 - A deployment that changes no configuration behaves the same: there is one new management operation and one new
   endpoint, both read-only. Zero new packages; `InferHub.Shared.csproj` is still empty.
 
+- **The published images** (`inferhub-coordinator:3.93.0` and `inferhub-node:3.93.0`, both with revision `ae06c1c`) were
+  pulled and run as a hub and two nodes in Docker, with no card and 113 GiB of usable RAM each. Both nodes were asked.
+  No variant of DeepSeek V3.1 fit one node; five 1- and 2-bit variants fit the two together (layers 0–30 and 31–60),
+  with "pub-b has no card" in the reasons.
+
 ## Not established
 
 - **An `rpc-server` offering a card and the CPU together.** The lab is CPU only. The capacity a member offers assumes
