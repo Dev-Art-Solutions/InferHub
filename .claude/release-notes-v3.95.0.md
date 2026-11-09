@@ -52,7 +52,20 @@ Llama 3.1 8B Q4 over its own worker and its doors to the other two.
 - **Revoke:** revoking shard-b dropped it from both other lists within seconds; shard-a then refused it by name
   (*certificate 0d6189fd0774… is not one the coordinator listed*).
 
+## The published images
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.95.0` and `inferhub-node:3.95.0`, both labelled revision `7a901de`. The
+node image was extended with the lab's llama.cpp (`node.Dockerfile --build-arg NODE=3.95.0`) and `tunnel-lab.sh` ran on
+them: three nodes enrolled with tokens from the published coordinator, a full 3 × 3 matrix (0.24–0.40 ms), and the 8B split
+through the tunnels at 6.23 tok/s, **the same text as the whole model**.
+
 ## Found while building it
+
+- **CI's test step hit the runner's inotify limit.** Every host a test starts watches its configuration files, and the
+  Linux runner allows 128 watchers per user. The Mesh suite peaks at about 121. In a Linux container capped at 128, 3.94
+  failed 24 tests and 3.95 failed 29, so the suite had been on the edge and 3.95 tipped it over. The test step now polls
+  configuration files (`DOTNET_USE_POLLING_FILE_WATCHER`), as Microsoft's own SDK image does. The node still reloads its
+  settings live in production.
 
 - **The tunnel started before the certificate existed.** A node enrolls when it first connects to its coordinator, a few
   seconds after its services start, so the first lab run showed every tunnel *off: no node certificate* next to a
