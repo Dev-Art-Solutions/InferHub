@@ -46,7 +46,16 @@ jobs:
       # fail, it passes, having run zero tests. A step that goes green by testing nothing is the
       # worst outcome available here, and naming the solution is what makes a forgotten project
       # impossible: adding one to the .sln is enough to get it run.
+      #
+      # v3.95: every node and hub host a test starts watches its configuration files, one inotify instance
+      # each, and the runner allows 128 per user. The Mesh suite peaks at ~121 (measured in a Linux
+      # container capped at 128: v3.94 failed 24 tests there, v3.95 29), so it sat on the edge until
+      # v3.95 tipped it over with "the configured user limit (128) on the number of inotify instances".
+      # Polling is what Microsoft's own SDK image sets for the same reason; the code under test is
+      # unchanged — a node still reloads node.local.json live in production.
       - name: Test
+        env:
+          DOTNET_USE_POLLING_FILE_WATCHER: "true"
         run: dotnet test InferHub.sln --configuration Release --no-build --verbosity normal
 
   docker-build:
