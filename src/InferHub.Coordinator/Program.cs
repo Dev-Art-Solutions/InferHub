@@ -134,6 +134,7 @@ builder.Services.AddSingleton<NodeUpdateRegistry>();
 builder.Services.AddSingleton<NodeUpdateControl>();
 builder.Services.AddSingleton<NodeLimitsRegistry>();
 builder.Services.AddSingleton<NodeShardRegistry>();
+builder.Services.AddSingleton<ShardPeerPublisher>();
 builder.Services.AddSingleton<NodeEgressRegistry>(); // phase 128
 builder.Services.AddSingleton<NodeLimitsControl>();
 // Phase 120: the catalogue, the estimate and an install, asked of one node on its owner's terms.

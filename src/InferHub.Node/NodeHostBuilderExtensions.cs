@@ -243,6 +243,9 @@ public static class NodeHostBuilderExtensions
 
         // Phase 134: the slice offered to groups. Registered always (the probe and the connection ask it); launches
         // nothing and reports nothing unless Node:Shards:Enabled.
+        // Phase 135: the tunnel first, so the worker reports its state with it; it listens only with an offer and a certificate.
+        builder.Services.AddSingleton<Backends.Shards.ShardTunnel>();
+        builder.Services.AddHostedService(services => services.GetRequiredService<Backends.Shards.ShardTunnel>());
         builder.Services.AddSingleton<Backends.Shards.ShardWorker>();
         builder.Services.AddHostedService(services => services.GetRequiredService<Backends.Shards.ShardWorker>());
         AddUpdates(builder);

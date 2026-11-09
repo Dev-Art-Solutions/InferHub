@@ -35,6 +35,8 @@ public static class NodeSettingsSchema
         new("Node:Shards:VramGiB", "int", false, "sharing", "GiB of the card offered to groups."),
         new("Node:Shards:Port", "int", false, "sharing", "The worker's port on 127.0.0.1 (50052)."),
         new("Node:Shards:Executable", "string", false, "sharing", "The ggml-rpc-server to run. Empty: the one beside this node's llama-server."),
+        new("Node:Shards:TunnelPort", "int", false, "sharing", "The TLS port other nodes reach this worker through — only nodes the coordinator lists, by their certificates. 0: no tunnel."),
+        new("Node:Shards:TunnelAdvertise", "string", false, "sharing", "host:port other nodes dial for this tunnel. Empty: the address this node connects to the coordinator from."),
         new("Node:ResourceLimits:Engines", "json", true, "limits", "Hard limits per runtime: {ollama|llamacpp|colibri|strata|tools: {CpuPercent, Cores, MemoryMiB, VramMiB, Gpus}}."),
         new("Node:Sealed", "bool", false, "network", "Sealed: reach nothing outside this network but the coordinator — no cloud engines, no public API, downloads only through the coordinator."),
         new("Coordinator:Enabled", "bool", false, "network", "Join a network: connect to a coordinator."),

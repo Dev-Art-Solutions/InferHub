@@ -1075,6 +1075,28 @@ worker for it and keeps that memory away from its own models.
   machine. What a member holds is the plan's layer split, which the hub will send when it runs a
   group (v3.96).
 
+### Nodes reach each other's workers through a tunnel (v3.95+)
+
+A worker listens on its own machine only. Other nodes reach it through the node's **tunnel**: TLS on
+`Node:Shards:TunnelPort` (50053), where both ends show the certificate their coordinator issued
+them (`Coordinator:EnrollmentToken`), and each accepts only the nodes the coordinator listed.
+
+- **The coordinator decides who may connect.** It sends every node the list of its peers: connected
+  nodes whose worker runs, with an active certificate, in the same organisation. Each peer is named
+  by the fingerprint of the certificate in the coordinator's own record. **Revoke a node and its
+  door closes at once**: it drops out of every list, and the others cut its open connections.
+- **A local door per peer.** The node opens `127.0.0.1:<port>` for each peer
+  (`GET /api/control/shards` → `peers[].local`). A `llama-server` on that node uses those as
+  `--rpc` endpoints, and llama.cpp needs nothing else.
+- **The round trip, measured through the tunnel** every 30 seconds. The console's
+  **Shard tunnels** table shows node × node.
+- Peers are reached at `Node:Shards:TunnelAdvertise` (`host:port`), or by default at the address
+  the node connects to the coordinator from. Set it by hand behind NAT or in a container network.
+- **Measured in the lab** (`deploy/lab/shards/tunnel-lab.sh`, three nodes in Docker, an 8B split
+  through the tunnels): the same text as the whole model, character for character. 6.3 tok/s against
+  6.4 without TLS, and 2.9 tok/s with 15 ms each way on every link. In a container with limited
+  CPUs, set `Node:Shards:Threads`.
+
 ### A sealed node (v3.82+)
 
 One setting for a node that must not reach the internet: `Node:Sealed=true`. It talks to its

@@ -144,6 +144,8 @@ and no workflow builds it; the measurements and the reasoning are in `src/InferH
 the lab's README. Its workers bind `0.0.0.0` on the lab network only: llama.cpp RPC has no authentication.
 `lab/shards/node.Dockerfile` (phase 134) is the published node image with that llama.cpp copied to `/opt/llama`, so a
 node's own shard worker (`Node:Shards`, which always binds loopback) has a `ggml-rpc-server` to run — also local only.
+`lab/shards/tunnel-lab.sh` (phase 135) runs three such nodes enrolled against a source-built coordinator and splits a model
+through their tunnels; it builds on images tagged `:dev` from this tree.
 
 ## The Windows setup (phase 101)
 

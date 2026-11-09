@@ -57,6 +57,41 @@ public sealed class NodeCredential(
         }
     }
 
+    /// <summary>
+    /// Phase 135: the certificate with its key, for the shard tunnel's TLS (both ends present it). A PKCS#12 round trip, because
+    /// Windows' TLS stack refuses an ephemeral key ("no credentials are available"). Null without a certificate.
+    /// </summary>
+    public X509Certificate2? TlsCertificate()
+    {
+        EnsureLoaded();
+
+        lock (gate)
+        {
+            if (certificate is null || key is null)
+            {
+                return null;
+            }
+
+            using var publicOnly = X509CertificateLoader.LoadCertificate(certificate);
+            using var withKey = publicOnly.CopyWithPrivateKey(key);
+            return X509CertificateLoader.LoadPkcs12(withKey.Export(X509ContentType.Pkcs12), null, X509KeyStorageFlags.Exportable);
+        }
+    }
+
+    /// <summary>Phase 135: the SHA-256 of this node's certificate — the hub's record of it (127 D3). Null without one.</summary>
+    public string? Thumbprint
+    {
+        get
+        {
+            EnsureLoaded();
+
+            lock (gate)
+            {
+                return certificate is null ? null : InferHub.Shared.Fit.ShardTunnelWire.Thumbprint(certificate);
+            }
+        }
+    }
+
     /// <summary>A fresh proof for one request, or nothing when this node has no certificate. A nonce is good once (D3).</summary>
     public IReadOnlyList<KeyValuePair<string, string>> Proof()
     {

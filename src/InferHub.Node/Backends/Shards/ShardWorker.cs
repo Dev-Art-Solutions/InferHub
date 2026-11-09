@@ -28,16 +28,24 @@ public sealed class ShardWorker : IHostedService, IAsyncDisposable
     private bool announced;
     private bool collecting;
     private string? complaint;
+    private readonly ShardTunnel? tunnel;
 
-    public ShardWorker(IOptions<NodeOptions> node, IOptions<BackendOptions> backend, ILogger<ShardWorker> logger, TimeProvider? time = null)
-        : this(node.Value.Shards, backend.Value, logger, time, File.Exists, Environment.GetEnvironmentVariable("PATH"))
+    public ShardWorker(IOptions<NodeOptions> node, IOptions<BackendOptions> backend, ILogger<ShardWorker> logger, ShardTunnel? tunnel = null, TimeProvider? time = null)
+        : this(node.Value.Shards, backend.Value, logger, time, File.Exists, Environment.GetEnvironmentVariable("PATH"), tunnel)
     {
     }
 
-    internal ShardWorker(ShardOptions options, BackendOptions backend, ILogger logger, TimeProvider? time, Func<string, bool> exists, string? path)
+    internal ShardWorker(ShardOptions options, BackendOptions backend, ILogger logger, TimeProvider? time, Func<string, bool> exists, string? path, ShardTunnel? tunnel = null)
     {
         this.options = options;
         this.time = time ?? TimeProvider.System;
+        this.tunnel = tunnel;
+
+        if (tunnel is not null)
+        {
+            // Phase 135: a peer joined or a round trip was measured — the hub hears it with the rest of the state.
+            tunnel.Changed += () => Changed?.Invoke();
+        }
 
         if (!options.Enabled)
         {
@@ -100,7 +108,9 @@ public sealed class ShardWorker : IHostedService, IAsyncDisposable
                 protocol,
                 devices.ToArray(),
                 state == NodeShardState.Running ? null : problem ?? Said(process?.LastError) ?? (state == NodeShardState.Starting ? null : "not started"),
-                time.GetUtcNow());
+                time.GetUtcNow(),
+                tunnel?.State(),
+                tunnel?.Peers());
         }
     }
 

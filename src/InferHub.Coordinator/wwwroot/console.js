@@ -330,6 +330,36 @@
     return btns.join(" ");
   };
 
+  // Phase 135. Node × node: the round trip each node measured to each peer through its tunnel. A blank cell is a pair the
+  // hub did not list (no certificate, another organisation, a worker not running); an error is the dialling node's own words.
+  const renderShardTunnels = (nodes) => {
+    const head = document.getElementById("shard-tunnels-head");
+    const body = document.getElementById("shard-tunnels");
+    if (!head || !body) return;
+    const offering = (nodes ?? []).filter(n => n.shards);
+    if (offering.length === 0) {
+      head.innerHTML = "";
+      body.innerHTML = `<tr><td class="empty">No node offers memory to groups (Node:Shards).</td></tr>`;
+      return;
+    }
+    head.innerHTML = `<tr><th>From \\ to</th>${offering.map(n => `<th>${escapeHtml(n.name)}</th>`).join("")}<th>Tunnel</th></tr>`;
+    body.innerHTML = offering.map(n => {
+      const peers = new Map((n.shards.peers ?? []).map(p => [p.nodeId, p]));
+      const cells = offering.map(to => {
+        if (to.nodeId === n.nodeId) return `<td class="matrix-no">—</td>`;
+        const p = peers.get(to.nodeId);
+        if (!p) return `<td class="matrix-no" title="not listed by this hub">·</td>`;
+        if (p.error) return `<td><span class="pill pill-err" title="${escapeHtml(p.error)}">no answer</span></td>`;
+        if (p.rttMs == null) return `<td class="matrix-no" title="${escapeHtml(p.local ?? "")}">measuring…</td>`;
+        const cls = p.rttMs < 2 ? "pill pill-ok" : p.rttMs < 40 ? "pill pill-warn" : "pill pill-err";
+        return `<td><span class="${cls}" title="${escapeHtml(`${p.endpoint} · local ${p.local ?? "—"}`)}">${p.rttMs.toFixed(p.rttMs < 10 ? 2 : 0)} ms</span></td>`;
+      }).join("");
+      const t = n.shards.tunnel;
+      const tunnel = !t ? "—" : t.off ? `<span class="pill pill-err" title="${escapeHtml(t.off)}">off</span>` : `<code>${escapeHtml(t.advertise ?? `:${t.port}`)}</code>`;
+      return `<tr><td>${escapeHtml(n.name)}</td>${cells}<td>${tunnel}</td></tr>`;
+    }).join("");
+  };
+
   const renderNodes = (nodes) => {
     const tbody = document.getElementById("nodes");
     if (!nodes || nodes.length === 0) {
@@ -1550,6 +1580,7 @@
       renderRefusals(latestStatus);
     }
     renderNodes(latestNodes ?? []);
+    renderShardTunnels(latestNodes ?? []);
     renderVectorFeed();
     renderModelNodeSelect();
   };

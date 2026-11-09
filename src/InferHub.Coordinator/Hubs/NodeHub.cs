@@ -290,7 +290,12 @@ public sealed class NodeHub(
         if (services.GetService(typeof(NodeShardRegistry)) is NodeShardRegistry shards
             && registry.Snapshot(DateTimeOffset.UtcNow).FirstOrDefault(node => node.ConnectionId == Context.ConnectionId) is { } node)
         {
-            shards.Report(state with { NodeId = node.NodeId });
+            shards.Report(state with { NodeId = node.NodeId }, Context.GetHttpContext()?.Connection.RemoteIpAddress);
+
+            // Phase 135: a worker that came up, a tunnel that opened, may change who can reach whom.
+            return services.GetService(typeof(ShardPeerPublisher)) is ShardPeerPublisher publisher
+                ? publisher.PublishAsync(Context.ConnectionAborted)
+                : Task.CompletedTask;
         }
 
         return Task.CompletedTask;
@@ -598,6 +603,20 @@ public sealed class NodeHub(
         }
 
         dispatcher.FailForConnection(Context.ConnectionId, exception);
+
+        // Phase 135 D1: a node gone (a revoke aborts it — 127 D5) is nobody's peer any more; the others' doors close now.
+        if (services.GetService(typeof(ShardPeerPublisher)) is ShardPeerPublisher publisher)
+        {
+            try
+            {
+                await publisher.PublishAsync();
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "Could not republish shard peers after a disconnect");
+            }
+        }
+
         // Deliberately do NOT forget affinity here (phase 30). A disconnect is often a reconnect in
         // progress: the node comes back with a *new* connection id but the same stable node id, and
         // its warm conversations must survive that. Affinity now keys on the node id, so a hint for a

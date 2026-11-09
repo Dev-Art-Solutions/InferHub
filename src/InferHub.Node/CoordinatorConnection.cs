@@ -44,7 +44,8 @@ public sealed class CoordinatorConnection(
     Identity.NodeCredential? credential = null,
     Configuration.EgressCheck? egress = null,
     Configuration.SealedEgress? sealedEgress = null,
-    Backends.Shards.ShardWorker? shards = null) : IAsyncDisposable
+    Backends.Shards.ShardWorker? shards = null,
+    Backends.Shards.ShardTunnel? shardTunnel = null) : IAsyncDisposable
 {
     /// <summary>
     /// Phase 97's catalogue report, one per engine that has a catalogue (99): each has its own hub
@@ -991,6 +992,9 @@ public sealed class CoordinatorConnection(
         hubConnection.On<NodeProfile>("ApplyNodeProfile", OnApplyNodeProfile);
         hubConnection.On("ClearNodeProfile", () => OnApplyNodeProfile(null));
         hubConnection.On<Guid>("CancelJob", CancelJob);
+        // Phase 135 D1: who this node may reach and accept through its shard tunnel, decided by the hub. Offloaded: opening
+        // forwards is quick, but a SignalR client runs handlers one at a time (107).
+        hubConnection.On<InferHub.Shared.Fit.ShardPeerList>("ShardPeers", list => Offload(() => { shardTunnel?.SetPeers(list); return Task.CompletedTask; }));
         hubConnection.On<VectorReplicaAssignment>("AssignVectorReplica", OnAssignVectorReplica);
         hubConnection.On<VectorReplicaOp>("ApplyVectorOp", OnApplyVectorOp);
         hubConnection.On<string>("DropVectorReplica", OnDropVectorReplica);

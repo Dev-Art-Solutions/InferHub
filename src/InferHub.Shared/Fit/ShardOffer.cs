@@ -33,7 +33,9 @@ public sealed record NodeShardState(
     [property: JsonPropertyName("protocol")] string? Protocol,
     [property: JsonPropertyName("devices")] IReadOnlyList<string> Devices,
     [property: JsonPropertyName("lastError")] string? LastError,
-    [property: JsonPropertyName("atUtc")] DateTimeOffset AtUtc)
+    [property: JsonPropertyName("atUtc")] DateTimeOffset AtUtc,
+    [property: JsonPropertyName("tunnel")] ShardTunnelState? Tunnel = null,
+    [property: JsonPropertyName("peers")] IReadOnlyList<ShardPeerState>? Peers = null)
 {
     /// <summary><c>Node:Shards:Enabled</c> is false: nothing offered, nothing running.</summary>
     public const string Off = "off";
@@ -46,6 +48,52 @@ public sealed record NodeShardState(
 
     /// <summary>It cannot run — no executable, an offer of nothing — or it exited; <see cref="LastError"/> says which.</summary>
     public const string Failed = "failed";
+}
+
+/// <summary>
+/// Phase 135: this node's tunnel — the TLS port other nodes reach its worker through (D2). <see cref="Advertise"/> is what it
+/// asked to be reached at (<c>Node:Shards:TunnelAdvertise</c>); null lets the hub use the address its connection came from.
+/// </summary>
+/// <param name="Off">Why there is no tunnel (no certificate, no port), or null when it listens.</param>
+public sealed record ShardTunnelState(
+    [property: JsonPropertyName("port")] int Port,
+    [property: JsonPropertyName("advertise")] string? Advertise,
+    [property: JsonPropertyName("thumbprint")] string? Thumbprint,
+    [property: JsonPropertyName("off")] string? Off);
+
+/// <summary>Phase 135 D1: one node this node may connect to and accept, as the hub decided — reached at <see cref="Endpoint"/>,
+/// proved by the SHA-256 of its certificate.</summary>
+public sealed record ShardPeer(
+    [property: JsonPropertyName("nodeId")] string NodeId,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("endpoint")] string Endpoint,
+    [property: JsonPropertyName("thumbprint")] string Thumbprint);
+
+/// <summary>The hub's list for one node (D1). Replaces the previous one whole; empty closes every door.</summary>
+public sealed record ShardPeerList(
+    [property: JsonPropertyName("peers")] IReadOnlyList<ShardPeer> Peers);
+
+/// <summary>A peer as this node sees it: its local forward (D3) and the round trip through the tunnel (D4).</summary>
+public sealed record ShardPeerState(
+    [property: JsonPropertyName("nodeId")] string NodeId,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("endpoint")] string Endpoint,
+    [property: JsonPropertyName("local")] string? Local,
+    [property: JsonPropertyName("rttMs")] double? RttMs,
+    [property: JsonPropertyName("error")] string? Error,
+    [property: JsonPropertyName("atUtc")] DateTimeOffset? AtUtc);
+
+/// <summary>
+/// The tunnel's first byte after the TLS handshake (D2): <see cref="Rpc"/> pipes to the worker, <see cref="Ping"/> echoes
+/// 8-byte frames. And the thumbprint both ends compare — 127's record, the SHA-256 of the certificate's DER, lower-case hex.
+/// </summary>
+public static class ShardTunnelWire
+{
+    public const byte Rpc = (byte)'R';
+    public const byte Ping = (byte)'P';
+
+    public static string Thumbprint(ReadOnlySpan<byte> der) =>
+        Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(der));
 }
 
 /// <summary>What llama.cpp's <c>rpc-server</c> prints when it starts, read line by line (phase 134, D2).</summary>

@@ -880,3 +880,43 @@ whole in 3.93 no longer fit — the offer, not the machine, is what shard-a give
 
 **Not established:** a worker reached from another machine (135); the slice enforced anywhere but the plan; a card offered
 (`VramGiB`, `-d Vulkan0`) — only the CPU device was run; the console pill in a browser (the JSON was read).
+
+### Phase 135 (nodes reach each other's shard workers through an mTLS tunnel the hub allows; the round trips in the console)
+
+Files: `Backends/Shards/ShardTunnel.cs`, `Identity/NodeCredential.cs` (`TlsCertificate()`, `Thumbprint`), `ShardOptions.TunnelPort/
+TunnelAdvertise`, the `ShardPeers` handler in `CoordinatorConnection`; Shared `Fit/ShardOffer.cs` (`ShardTunnelState`, `ShardPeer`,
+`ShardPeerList`, `ShardPeerState`, `ShardTunnelWire`); hub `Services/NodeShardRegistry.cs` (`ShardPeerPublisher`, the address a
+report came from), `NodeHub.ReportShardState`/`OnDisconnectedAsync`; the console's *Shard tunnels*; `deploy/lab/shards/tunnel-lab.sh`.
+
+**D1, load-bearing — the hub decides who may connect, by certificate thumbprint, and both ends check.** `ShardPeerPublisher.Compute`:
+a node is a peer while it is connected here, its worker is `running`, its tunnel listens, and it holds an **active certificate in
+127's record** — the thumbprint sent is the record's, never what the node reported; peers share the certificate's organisation
+(130). Each node gets `ShardPeers` (hub → node) only when its list changed, and an empty list when it stops being anyone's peer.
+The TLS server accepts a client certificate only if its SHA-256 is in its latest list; the client accepts the server only if it is
+the thumbprint listed for that peer. A list that drops a peer closes its open connections too. Republished on every shard report
+and every disconnect, and a revoke aborts the node's connection (127 D5), so **revoke closes the door at once** (lab: seconds).
+*Rejected:* trusting any certificate the coordinator's CA signed — a revoked node keeps its file, and there is no CRL. *Rejected:*
+SignalR as the transport — 32 KB messages and every tensor through the hub.
+
+**D2 — TLS over TCP on `Node:Shards:TunnelPort` (50053), one mode byte after the handshake:** `R` pipes to the local worker, `P`
+echoes 8-byte frames. The node's 127 key and certificate, via a PKCS#12 round trip (Windows' TLS refuses an ephemeral key); the
+certificate carries only client-auth EKU, which neither end checks — both decide by thumbprint. No certificate, no tunnel, and the
+state says why. **Found in the lab:** a node enrolls when it first connects, after its hosted services start, so the tunnel waits
+for the certificate (polls every 2 s) and then applies the list it may already hold — the hub does not send the same list twice.
+
+**D3 — a loopback forward per peer** (`127.0.0.1:<free>`), shown as `peers[].local`; a head on this node uses it as an `--rpc`
+endpoint. Anything on this machine can use it — the trust is between machines, the private-cloud premise; 138 revisits it.
+
+**D4 — the round trip is measured through the tunnel**: a TLS connection, five pings, the median, every 30 s and at once on a new
+list; in `peers[].rttMs` or `error`. The endpoint is the node's `TunnelAdvertise`, else the address its hub connection came from
+(IPv4-mapped unwrapped, IPv6 bracketed) with the port — right on a flat network, wrong behind NAT or a proxy (139).
+
+**The lab (2026-11-09, Docker, b12182, 8B Q4, 4 CPUs a node):** the split over three nodes' tunnels wrote **the same text as the
+whole model**, at 6.29 tok/s unshaped against 6.42 for 133's plain RPC — TLS costs ~2 %; on `internet` 2.93 tok/s (133: 2.29 — the
+head beside one worker keeps a third of the layers off the network). The matrix read 0.25–0.39 ms; shaping shard-c alone moved
+exactly its pairs to 15.4 ms. Revoking shard-b emptied it from both lists and shard-a refused it by name. **Found in the lab:** a
+worker without `-t` in a 4-CPU container ran the host's thread count and the split fell to 2.5 tok/s — set `Node:Shards:Threads`.
+
+**Not established:** a node behind NAT (the endpoint from the connection is the router's — 139); nodes on two coordinators of an
+active-active cluster (each hub lists its own connections only); a head that survives a lost worker (llama.cpp aborts — 137);
+real WAN loss and jitter; the console matrix looked at in a browser (the JSON was read).

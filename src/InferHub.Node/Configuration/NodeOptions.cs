@@ -380,6 +380,18 @@ public sealed class ShardOptions
     /// <summary>The <c>ggml-rpc-server</c> to run. Null: the one beside this node's llama.cpp engine's executable.</summary>
     public string? Executable { get; set; }
 
+    /// <summary>
+    /// Phase 135: the TLS port other nodes reach this worker through, on every address — only nodes the hub listed, by their
+    /// certificate (D1). Needs a node certificate (127). 0: no tunnel; the worker stays this machine's alone.
+    /// </summary>
+    public int TunnelPort { get; set; } = 50053;
+
+    /// <summary>
+    /// <c>host:port</c> other nodes should dial for this node's tunnel. Null: the address this node's hub connection comes
+    /// from, with <see cref="TunnelPort"/> — wrong behind NAT or a container network, where it is set by hand.
+    /// </summary>
+    public string? TunnelAdvertise { get; set; }
+
     public long RamMiB => Math.Max(0, RamGiB ?? 0) * 1024L;
 
     public long VramMiB => Math.Max(0, VramGiB ?? 0) * 1024L;

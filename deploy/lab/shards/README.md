@@ -59,3 +59,26 @@ docker exec shard-a /opt/llama/llama-server -m /models/<model>.gguf --rpc 127.0.
 ```
 
 The hub's `/api/admin/nodes` then shows `shards: {state: running, protocol: "8.0.1", …}` for that node.
+
+## Through the tunnels (phase 135)
+
+`tunnel-lab.sh` runs a coordinator with node certificates on and three nodes enrolled with one-time tokens, each offering
+3 GiB. Their workers bind loopback; each node reaches the others only through its tunnel (mTLS, the peers the hub listed),
+by a local forward per peer. A head in shard-a splits the 8B over its own worker and its two forwards.
+
+| Setup (Llama 3.1 8B Q4, 4 CPUs per node) | Round trip a↔b | Generate | Text |
+|---|---:|---:|---|
+| whole model, one container | — | 6.71 tok/s | — |
+| through the tunnels, unshaped | 0.25–0.39 ms | **6.29 tok/s** | the same, character for character |
+| through the tunnels, `internet` on all three | 15.4 ms one link shaped; 30 ms both | 2.93 tok/s | the same |
+| 133, plain RPC, unshaped / `internet` | 0.07 / 30 ms | 6.42 / 2.29 tok/s | the same |
+
+- **TLS costs about 2 %** (6.29 against 133's 6.42). The `internet` run is faster than 133's because the head here sits
+  beside one of the workers: a third of the layers never cross the network.
+- **The matrix follows the network:** with only shard-c shaped (15 ms one way), a↔b stayed at 0.3 ms and every pair with c
+  read 15.4 ms.
+- **Revoke closes the door:** revoking shard-b's certificate dropped it from both other lists within seconds; shard-a then
+  refused its connections by name (*certificate 0d6189fd0774… is not one the coordinator listed*). The head that was using
+  shard-b's worker died with it — llama.cpp aborts on a lost worker (137 handles that).
+- **Set `Node:Shards:Threads`** in a CPU-limited container: without it the worker ran llama.cpp's default thread count for
+  the whole host, and the split reached 2.5 tok/s instead of 6.3.
