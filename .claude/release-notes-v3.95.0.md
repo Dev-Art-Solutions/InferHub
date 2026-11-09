@@ -63,9 +63,10 @@ through the tunnels at 6.23 tok/s, **the same text as the whole model**.
 
 - **CI's test step hit the runner's inotify limit.** Every host a test starts watches its configuration files, and the
   Linux runner allows 128 watchers per user. The Mesh suite peaks at about 121. In a Linux container capped at 128, 3.94
-  failed 24 tests and 3.95 failed 29, so the suite had been on the edge and 3.95 tipped it over. The test step now polls
-  configuration files (`DOTNET_USE_POLLING_FILE_WATCHER`), as Microsoft's own SDK image does. The node still reloads its
-  settings live in production.
+  failed 24 tests and 3.95 failed 29, so the suite had been on the edge and 3.95 tipped it over. Polling the files instead
+  (`DOTNET_USE_POLLING_FILE_WATCHER`) was tried first and broke the three tests that prove a setting is applied live, since
+  a polled file is seen up to four seconds late. The CI runner's limit is now raised to 1024 before the tests. Nothing in
+  the node or the coordinator changed.
 
 - **The tunnel started before the certificate existed.** A node enrolls when it first connects to its coordinator, a few
   seconds after its services start, so the first lab run showed every tunnel *off: no node certificate* next to a
