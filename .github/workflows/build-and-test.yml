@@ -51,11 +51,13 @@ jobs:
       # each, and the runner allows 128 per user. The Mesh suite peaks at ~121 (measured in a Linux
       # container capped at 128: v3.94 failed 24 tests there, v3.95 29), so it sat on the edge until
       # v3.95 tipped it over with "the configured user limit (128) on the number of inotify instances".
-      # Polling is what Microsoft's own SDK image sets for the same reason; the code under test is
-      # unchanged — a node still reloads node.local.json live in production.
+      # Raising the limit, not polling: DOTNET_USE_POLLING_FILE_WATCHER was tried first and broke the
+      # three NodeControlTests that prove a setting is applied live — a polled file is seen up to four
+      # seconds late, and those tests are exactly about a real watcher seeing it now.
+      - name: Raise the inotify limit
+        run: sudo sysctl -w fs.inotify.max_user_instances=1024
+
       - name: Test
-        env:
-          DOTNET_USE_POLLING_FILE_WATCHER: "true"
         run: dotnet test InferHub.sln --configuration Release --no-build --verbosity normal
 
   docker-build:
