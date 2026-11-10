@@ -177,6 +177,16 @@ public static class NodeHostBuilderExtensions
         builder.Services.AddSingleton<INodeIdentity, FileNodeIdentity>();
         builder.Services.AddSingleton<IInferenceBackend>(services =>
         {
+            var own = OwnBackend(services);
+
+            // Phase 136 D4: only on a node whose owner lets it head a group — every other node keeps exactly its backend.
+            return services.GetRequiredService<IOptions<NodeOptions>>().Value.Shards is { Enabled: true, AllowHead: true }
+                ? new Backends.Shards.ShardGroupBackend(own, services.GetRequiredService<Backends.Shards.ShardGroupHost>())
+                : own;
+        });
+
+        static IInferenceBackend OwnBackend(IServiceProvider services)
+        {
             var options = services.GetRequiredService<IOptions<BackendOptions>>().Value;
 
             // Phase 67. Four of the five types are one class over one seam (D2) — the dialect is
@@ -206,7 +216,8 @@ public static class NodeHostBuilderExtensions
                 _ when options.IsUpstream() => services.GetRequiredService<UpstreamBackend>(),
                 var type => throw new InvalidOperationException($"Unsupported inference backend '{type}'.")
             };
-        });
+        }
+
         builder.Services.AddSingleton<OllamaBackend>();
         builder.Services.AddSingleton<UpstreamBackend>();
 
@@ -248,6 +259,9 @@ public static class NodeHostBuilderExtensions
         builder.Services.AddHostedService(services => services.GetRequiredService<Backends.Shards.ShardTunnel>());
         builder.Services.AddSingleton<Backends.Shards.ShardWorker>();
         builder.Services.AddHostedService(services => services.GetRequiredService<Backends.Shards.ShardWorker>());
+        // Phase 136: the groups this node heads — inert unless Node:Shards:AllowHead.
+        builder.Services.AddSingleton<Backends.Shards.ShardGroupHost>();
+        builder.Services.AddHostedService(services => services.GetRequiredService<Backends.Shards.ShardGroupHost>());
         AddUpdates(builder);
         AddEngines(builder);
         AddOllamaSupervision(builder, ollamaOptions);

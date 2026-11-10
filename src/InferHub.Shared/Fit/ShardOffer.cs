@@ -35,7 +35,8 @@ public sealed record NodeShardState(
     [property: JsonPropertyName("lastError")] string? LastError,
     [property: JsonPropertyName("atUtc")] DateTimeOffset AtUtc,
     [property: JsonPropertyName("tunnel")] ShardTunnelState? Tunnel = null,
-    [property: JsonPropertyName("peers")] IReadOnlyList<ShardPeerState>? Peers = null)
+    [property: JsonPropertyName("peers")] IReadOnlyList<ShardPeerState>? Peers = null,
+    [property: JsonPropertyName("groups")] IReadOnlyList<ShardGroupState>? Groups = null)
 {
     /// <summary><c>Node:Shards:Enabled</c> is false: nothing offered, nothing running.</summary>
     public const string Off = "off";
@@ -94,6 +95,44 @@ public static class ShardTunnelWire
 
     public static string Thumbprint(ReadOnlySpan<byte> der) =>
         Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(der));
+}
+
+/// <summary>
+/// Phase 136 D3: one member of a group as the head runs it — its worker, in this order after the head's own, holding a
+/// share of the layers in proportion to <see cref="Weight"/> (its offer, MiB).
+/// </summary>
+public sealed record ShardGroupWorker(
+    [property: JsonPropertyName("nodeId")] string NodeId,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("weight")] long Weight);
+
+/// <summary>Phase 136 D1: a group the head should run — the model file (a name in its <c>Node:Shards:ModelsDir</c>), the
+/// context, its own share and the members'. The model answers under <see cref="Name"/>.</summary>
+public sealed record ShardGroupSpec(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("context")] int Context,
+    [property: JsonPropertyName("headWeight")] long HeadWeight,
+    [property: JsonPropertyName("members")] IReadOnlyList<ShardGroupWorker> Members);
+
+/// <summary>The hub's list for one head (D1). Replaces the previous one whole; a group not in it is stopped.</summary>
+public sealed record ShardGroupList(
+    [property: JsonPropertyName("groups")] IReadOnlyList<ShardGroupSpec> Groups);
+
+/// <summary>A group as its head runs it: <see cref="State"/> is <c>waiting</c> (a member's forward not open yet),
+/// <c>starting</c>, <c>running</c> (its llama-server answers /health) or <c>failed</c>, with the sentence.</summary>
+public sealed record ShardGroupState(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("members")] IReadOnlyList<string> Members,
+    [property: JsonPropertyName("endpoint")] string? Endpoint,
+    [property: JsonPropertyName("error")] string? Error)
+{
+    public const string Waiting = "waiting";
+    public const string Starting = "starting";
+    public const string Running = "running";
+    public const string Failed = "failed";
 }
 
 /// <summary>What llama.cpp's <c>rpc-server</c> prints when it starts, read line by line (phase 134, D2).</summary>

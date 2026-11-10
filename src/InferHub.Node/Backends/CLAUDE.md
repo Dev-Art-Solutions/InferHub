@@ -920,3 +920,45 @@ worker without `-t` in a 4-CPU container ran the host's thread count and the spl
 **Not established:** a node behind NAT (the endpoint from the connection is the router's — 139); nodes on two coordinators of an
 active-active cluster (each hub lists its own connections only); a head that survives a lost worker (llama.cpp aborts — 137);
 real WAN loss and jitter; the console matrix looked at in a browser (the JSON was read).
+
+### Phase 136 (private cloud: the coordinator assembles a group the admin defined, and the split model answers like any other)
+
+Files: hub `Services/NodeShardRegistry.cs` (`ShardGroupsOptions`/`ShardGroupDefinition`, `ShardPeerPublisher.ComputeGroups` and the
+`ShardGroups` send, `ShardGroupStatus`), `GET /api/admin/shards/groups` (`ManagementEndpoints`), `NodeRegistry.ServesOnItsOwn` set in
+`Program.cs`; node `Backends/Shards/ShardGroupHost.cs` (`ShardGroupHost`, `ShardGroupBackend`), `ShardOptions.AllowHead/ModelsDir/
+HeadExecutable`, the `ShardGroups` handler; Shared `ShardGroupSpec/List/State/Worker`; the console's groups under *Shard tunnels*.
+
+**D1, load-bearing — a group is configuration on the hub; the head is sent it only when every member is ready.**
+`ShardGroups:<name>` (Head, Members by name or id, Model, Context). Ready = head and members connected, workers `running`,
+tunnels open, every member in the head's 135 list, one RPC protocol. `ComputeGroups` runs inside the 135 publish (every shard
+report and disconnect) and sends the head its whole list on change; a group that stops being ready is taken back. The admin
+endpoint says per group ready or the first thing missing ("member 'shard-c' is not connected", "…is not one of shard-a's
+peers"). *Rejected:* groups stored by an admin API — rule 4, and a group is a fleet decision like a profile.
+
+**D2 — the head's owner consents on its own (`Node:Shards:AllowHead`), and the model is a file name** in `Node:Shards:ModelsDir`
+(default: the llama.cpp engine's `Serve:ModelsDir`); a separator, `..` or a rooted path is refused. `HeadExecutable` default:
+the llama.cpp engine's `llama-server` path, else the one beside the worker.
+
+**D3 — the head runs `llama-server` under `EngineProcess`:** `-m <file> --rpc <own worker>,<forward per member> --device RPC0..n
+-ngl 999 --tensor-split <offers, MiB> -c <context> --host 127.0.0.1 --port <free> --alias <group> [-t Threads]` — every layer on
+a worker, the head's own worker first (135: a third of the layers then never cross the network). It waits for every member's
+forward; running = `/health` 200, checked every 2 s.
+
+**D4 — the model reaches the catalogue through the head's backend.** On a head only, `ShardGroupBackend` wraps the node's backend:
+a request whose `model` is a running group goes to that group's `llama-server` (the same `UpstreamBackend` + `LlamaCppBackend`
+shape a llama.cpp engine has), everything else to the node's own; the groups' names are added to the model list as chat
+models, and a group change reports the list at once. **Found in the lab, twice:** (1) shard-a's own Ollama was down, so the node
+reported its backend unhealthy and the hub refused the group's model with "every node holding model … reports an unhealthy
+inference backend" — the hub now treats a node as serving a model it reports as a **running group** whatever its backend says
+(`NodeRegistry.ServesOnItsOwn`, from the shard registry); (2) an own engine that lists null makes the node leave the hub's
+inventory alone (69), so a group that stopped stayed in the catalogue — once a head has served a group, its list is said even
+while its own engine is down.
+
+**The lab (2026-11-10, `tunnel-lab.sh`, three nodes in Docker, b12182):** `POST /v1/chat/completions {"model":"llama-8b-split"}`
+on the hub answered from three nodes, **the same text as the whole model** for the same chat request, 64 tokens in 9.8 s end to
+end; streaming works. Revoking shard-c made the group not ready, the head stopped it, the model left `/v1/models`, and a request
+got `model 'llama-8b-split' not found`.
+
+**Not established:** a head that keeps answering while a member is replaced (137 — today the group stops and restarts when the
+member is back); a fit check before starting (llama.cpp refuses and the state carries the sentence); groups across an
+active-active cluster; a GPU in a group; models above 8B through a group.

@@ -392,6 +392,19 @@ public sealed class ShardOptions
     /// </summary>
     public string? TunnelAdvertise { get; set; }
 
+    /// <summary>
+    /// Phase 136 D2: this node may be a group's head — hold the model file and run the <c>llama-server</c> its coordinator
+    /// asks for, over its own worker and its tunnels. Offering memory (134) is not this consent. Off by default.
+    /// </summary>
+    public bool AllowHead { get; set; }
+
+    /// <summary>Where a group's model file is, by the name the coordinator sends (never a path). Null: the llama.cpp engine's
+    /// <c>Serve:ModelsDir</c>.</summary>
+    public string? ModelsDir { get; set; }
+
+    /// <summary>The <c>llama-server</c> a head runs. Null: the llama.cpp engine's, else the one beside the worker.</summary>
+    public string? HeadExecutable { get; set; }
+
     public long RamMiB => Math.Max(0, RamGiB ?? 0) * 1024L;
 
     public long VramMiB => Math.Max(0, VramGiB ?? 0) * 1024L;

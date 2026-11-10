@@ -134,6 +134,8 @@ builder.Services.AddSingleton<NodeUpdateRegistry>();
 builder.Services.AddSingleton<NodeUpdateControl>();
 builder.Services.AddSingleton<NodeLimitsRegistry>();
 builder.Services.AddSingleton<NodeShardRegistry>();
+// Phase 136: groups the admin defined (ShardGroups:<name>); none by default.
+builder.Services.Configure<ShardGroupsOptions>(options => builder.Configuration.GetSection(ShardGroupsOptions.SectionName).Bind(options.Groups));
 builder.Services.AddSingleton<ShardPeerPublisher>();
 builder.Services.AddSingleton<NodeEgressRegistry>(); // phase 128
 builder.Services.AddSingleton<NodeLimitsControl>();
@@ -349,6 +351,14 @@ var vectorProvider = vectorSection.GetValue<string>(nameof(VectorStoreOptions.Pr
 var vectorSupportsReplication = vectorStoreEnabled && !VectorStoreProviderExtensions.IsExternal(vectorProvider);
 
 var app = builder.Build();
+
+// Phase 136: a group a head reports running is served by its llama-server, whatever the head's own engine says.
+if (app.Services.GetRequiredService<INodeRegistry>() is NodeRegistry nodeRegistry)
+{
+    var shardStates = app.Services.GetRequiredService<NodeShardRegistry>();
+    nodeRegistry.ServesOnItsOwn = (nodeId, model) => shardStates.Of(nodeId)?.Groups?.Any(group =>
+        group.State == InferHub.Shared.Fit.ShardGroupState.Running && string.Equals(group.Name, model, StringComparison.OrdinalIgnoreCase)) == true;
+}
 
 var version = typeof(Program).Assembly
     .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?

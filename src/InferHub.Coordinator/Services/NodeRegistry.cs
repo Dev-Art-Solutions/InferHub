@@ -15,6 +15,12 @@ public sealed class NodeRegistry : INodeRegistry
 
     public event Action? Changed;
 
+    /// <summary>
+    /// Phase 136: whether a node serves this model on its own whatever its backend says — a group it heads and reports
+    /// running answers through the group's llama-server, not the node's own engine (whose Ollama may be down). Null: none.
+    /// </summary>
+    public Func<string, string, bool>? ServesOnItsOwn { get; set; }
+
     private void RaiseChanged() => Changed?.Invoke();
 
     public void Upsert(string connectionId, NodeRegistration registration, DateTimeOffset now)
@@ -362,7 +368,7 @@ public sealed class NodeRegistry : INodeRegistry
                 // its own resource cap still HAS the model, exactly like an unhealthy-backend node
                 // (69 D2's own distinction), so it is unserviceable for NEW placement the same way.
                 && (includeUnserviceable
-                    || (pair.Value.Backend is null or BackendHealth.Healthy && pair.Value.ResourceThrottled is not true
+                    || ((pair.Value.Backend is null or BackendHealth.Healthy || ServesOnItsOwn?.Invoke(pair.Value.Registration.NodeId, model) == true) && pair.Value.ResourceThrottled is not true
                         // Phase 113: a node its owner paused still has the model, and takes nothing new.
                         && pair.Value.Sharing is not { Paused: true }))
                 && (!requireStreamedAttachments || pair.Value.StreamedAttachments is true)

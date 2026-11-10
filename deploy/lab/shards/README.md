@@ -82,3 +82,17 @@ by a local forward per peer. A head in shard-a splits the 8B over its own worker
   shard-b's worker died with it — llama.cpp aborts on a lost worker (137 handles that).
 - **Set `Node:Shards:Threads`** in a CPU-limited container: without it the worker ran llama.cpp's default thread count for
   the whole host, and the split reached 2.5 tok/s instead of 6.3.
+
+## A group the coordinator assembles (phase 136)
+
+`tunnel-lab.sh` now defines one group on the hub (`ShardGroups__llama-8b-split__…`: head shard-a, members shard-b and shard-c,
+`llama31-8b.gguf`, context 2048) and lets shard-a be a head (`Node__Shards__AllowHead=true`, `ModelsDir=/models`). Nobody starts
+anything by hand: the hub sends the group once all three are ready, shard-a runs `llama-server` over its worker and its two
+forwards, and the script asks the hub's `/v1/chat/completions` for `llama-8b-split`.
+
+- **The same text as the whole model** for the same chat request (a `llama-server` with the whole file, the same `--alias`):
+  64 tokens in 9.8 s through the hub, end to end; streaming answers.
+- **Revoking shard-c:** `/api/admin/shards/groups` said *member 'shard-c' is not connected*, shard-a stopped the group, the model
+  left `/v1/models`, and a request got `model 'llama-8b-split' not found`.
+- **Found here:** shard-a's own engine (an Ollama that is not in the container) is down, so the node reports its backend
+  unhealthy — the hub refused the group's model for it until a running group counted as serving on its own.

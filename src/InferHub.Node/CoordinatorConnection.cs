@@ -45,7 +45,8 @@ public sealed class CoordinatorConnection(
     Configuration.EgressCheck? egress = null,
     Configuration.SealedEgress? sealedEgress = null,
     Backends.Shards.ShardWorker? shards = null,
-    Backends.Shards.ShardTunnel? shardTunnel = null) : IAsyncDisposable
+    Backends.Shards.ShardTunnel? shardTunnel = null,
+    Backends.Shards.ShardGroupHost? shardGroups = null) : IAsyncDisposable
 {
     /// <summary>
     /// Phase 97's catalogue report, one per engine that has a catalogue (99): each has its own hub
@@ -458,6 +459,13 @@ public sealed class CoordinatorConnection(
             try
             {
                 await ReportShardStateAsync(lifetime.Token);
+
+                // Phase 136 D4: a group that started or stopped answering is a model in or out of this node's list now,
+                // not at the next model loop.
+                if (shardGroups is { Enabled: true })
+                {
+                    await ReportModelsAsync(lifetime.Token);
+                }
             }
             catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
             {
@@ -995,6 +1003,8 @@ public sealed class CoordinatorConnection(
         // Phase 135 D1: who this node may reach and accept through its shard tunnel, decided by the hub. Offloaded: opening
         // forwards is quick, but a SignalR client runs handlers one at a time (107).
         hubConnection.On<InferHub.Shared.Fit.ShardPeerList>("ShardPeers", list => Offload(() => { shardTunnel?.SetPeers(list); return Task.CompletedTask; }));
+        // Phase 136 D1: the groups this node heads, whole, as the coordinator decided.
+        hubConnection.On<InferHub.Shared.Fit.ShardGroupList>("ShardGroups", list => Offload(() => { shardGroups?.SetGroups(list); return Task.CompletedTask; }));
         hubConnection.On<VectorReplicaAssignment>("AssignVectorReplica", OnAssignVectorReplica);
         hubConnection.On<VectorReplicaOp>("ApplyVectorOp", OnApplyVectorOp);
         hubConnection.On<string>("DropVectorReplica", OnDropVectorReplica);

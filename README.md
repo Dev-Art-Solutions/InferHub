@@ -1097,6 +1097,37 @@ them (`Coordinator:EnrollmentToken`), and each accepts only the nodes the coordi
   6.4 without TLS, and 2.9 tok/s with 15 ms each way on every link. In a container with limited
   CPUs, set `Node:Shards:Threads`.
 
+### A private cloud: one model across several nodes, answering like any other (v3.96+)
+
+The admin defines a group on the coordinator. The coordinator puts it together once every member
+is ready, and the model answers under the group's name.
+
+```jsonc
+// coordinator
+"ShardGroups": { "llama-8b-split": { "Head": "shard-a", "Members": ["shard-b", "shard-c"], "Model": "llama31-8b.gguf", "Context": 4096 } }
+// the head node: its owner agrees to be a head and holds the file
+"Node": { "Shards": { "Enabled": true, "RamGiB": 3, "AllowHead": true, "ModelsDir": "/models" } }
+```
+
+```http
+POST /v1/chat/completions   {"model": "llama-8b-split", "messages": [...]}   ← answered by three nodes
+```
+
+- **Ready means everyone is there.** The head and every member are connected, their workers run,
+  their tunnels are open, every member is one of the head's peers, and all run one llama.cpp RPC
+  version. Then the coordinator sends the head the group; if one of them leaves, it takes the group
+  back. `GET /api/admin/shards/groups` says, per group, whether it is ready, or the first thing
+  missing.
+- **The head runs `llama-server`** over its own worker and its tunnels to the members. Every layer
+  sits on a worker, each worker's share in proportion to what its owner offered.
+- **Being a head is the head owner's decision** (`Node:Shards:AllowHead`), separate from offering
+  memory. The coordinator names the model file; it never sends a path.
+- **The model is a chat model on the head.** The coordinator routes it like any other: OpenAI and
+  Ollama dialects, streaming. It keeps answering when the head's own Ollama is down.
+- **Measured in the lab** (`deploy/lab/shards/tunnel-lab.sh`): a chat request for the group gave
+  the same text as the whole model. Revoking a member took the group down within seconds, and the
+  model left `/v1/models`.
+
 ### A sealed node (v3.82+)
 
 One setting for a node that must not reach the internet: `Node:Sealed=true`. It talks to its

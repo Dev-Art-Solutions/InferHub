@@ -358,6 +358,13 @@
       const tunnel = !t ? "—" : t.off ? `<span class="pill pill-err" title="${escapeHtml(t.off)}">off</span>` : `<code>${escapeHtml(t.advertise ?? `:${t.port}`)}</code>`;
       return `<tr><td>${escapeHtml(n.name)}</td>${cells}<td>${tunnel}</td></tr>`;
     }).join("");
+    // Phase 136. The groups each head runs: the model answers under the group's name while it is "running".
+    const groups = offering.flatMap(n => (n.shards.groups ?? []).map(g => ({ head: n.name, ...g })));
+    body.innerHTML += groups.map(g => {
+      const cls = g.state === "running" ? "pill pill-ok" : g.state === "failed" ? "pill pill-err" : "pill pill-warn";
+      return `<tr><td colspan="${offering.length + 2}">group <b>${escapeHtml(g.name)}</b> <span class="${cls}" title="${escapeHtml(g.error ?? "")}">${escapeHtml(g.state)}</span>` +
+        ` · <code>${escapeHtml(g.model)}</code> · head ${escapeHtml(g.head)} + ${escapeHtml((g.members ?? []).join(", "))}${g.error ? ` · <span class="matrix-no">${escapeHtml(g.error)}</span>` : ""}</td></tr>`;
+    }).join("");
   };
 
   const renderNodes = (nodes) => {

@@ -70,6 +70,18 @@ public sealed class ShardWorker : IHostedService, IAsyncDisposable
 
     public bool Enabled => options.Enabled;
 
+    /// <summary>The worker's executable as found (134 D1); a head looks for <c>llama-server</c> beside it (136).</summary>
+    public string? Executable => executable;
+
+    private Func<IReadOnlyList<ShardGroupState>>? groups;
+
+    /// <summary>Phase 136: the groups this node heads go out with its state, and their changes with its changes.</summary>
+    public void AttachGroups(ShardGroupHost host)
+    {
+        groups = host.State;
+        host.Changed += () => Changed?.Invoke();
+    }
+
     /// <summary>What this node offers groups, for its own estimate and the group estimate (D4). Null when nothing is offered.</summary>
     public ShardOffer? Offer()
     {
@@ -110,7 +122,8 @@ public sealed class ShardWorker : IHostedService, IAsyncDisposable
                 state == NodeShardState.Running ? null : problem ?? Said(process?.LastError) ?? (state == NodeShardState.Starting ? null : "not started"),
                 time.GetUtcNow(),
                 tunnel?.State(),
-                tunnel?.Peers());
+                tunnel?.Peers(),
+                groups?.Invoke() is { Count: > 0 } heading ? heading : null);
         }
     }
 

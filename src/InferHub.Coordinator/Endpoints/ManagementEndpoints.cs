@@ -20,6 +20,15 @@ public static class ManagementEndpoints
 
     public static RouteGroupBuilder MapNodeManagement(this RouteGroupBuilder group, Func<HttpContext, string> actorOf)
     {
+        // Phase 136: every group the admin defined — ready or why not, and what its head reports.
+        group.MapGet("/shards/groups", (IServiceProvider services) =>
+            Results.Ok(new
+            {
+                groups = (services.GetService(typeof(ShardPeerPublisher)) as ShardPeerPublisher)?.GroupStatus()
+                    .Select(s => new { name = s.Name, head = s.Head, members = s.Members, model = s.Model, ready = s.Ready, why = s.Why, reported = s.Reported })
+                    .ToArray() ?? []
+            }));
+
         group.MapGet("/nodes/{nodeId}/fit/catalog", async (
             string nodeId, string? source, string? sort, string? kind, string? q, int? limit, bool? fitsOnly,
             NodeManagementControl control, CancellationToken cancellationToken) =>
