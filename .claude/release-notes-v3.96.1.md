@@ -15,3 +15,9 @@ Why the source-built lab for v3.96.0 did not show it: there the head's empty mod
 marked its engine unreachable, so nothing was held. On the published images the order was the other way round.
 
 Everything else is v3.96.0. Release notes: <https://github.com/Dev-Art-Solutions/InferHub/releases/tag/v3.96.0>.
+
+## The published images
+
+`inferhub-coordinator:3.96.1` and `inferhub-node:3.96.1`, revision `493ac2f`, run through `tunnel-lab.sh`: the group was
+assembled and answered through `/v1/chat/completions`; after revoking shard-c the coordinator said *member 'shard-c' is not
+connected*, and the model was gone from `/v1/models` at 10, 30 and 60 seconds.

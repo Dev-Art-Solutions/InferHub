@@ -49,6 +49,12 @@ tree with one group defined. Nobody started anything by hand.
 - **Revoking shard-c** made the group not ready (*member 'shard-c' is not connected*). The head stopped the group, the model
   left `/v1/models`, and a request got `model 'llama-8b-split' not found`.
 
+## The published images
+
+`inferhub-coordinator:3.96.0` and `inferhub-node:3.96.0`, revision `9e7be1d`, run through `tunnel-lab.sh`: the group was
+assembled, and the chat request answered with **the same text as the whole model**. The revoke step found the bug fixed in
+v3.96.1 (see below).
+
 ## Found while building it
 
 - **A head with a dead Ollama could not serve its group.** In the lab the head's own engine is an Ollama that is not there,
