@@ -498,7 +498,7 @@ public sealed class ShardGroupBackend(IInferenceBackend inner, ShardGroupHost gr
     public async Task<IReadOnlyList<Shared.Contracts.ModelInfo>?> ListModelsAsync(CancellationToken cancellationToken)
     {
         var own = await inner.ListModelsAsync(cancellationToken);
-        var extra = groups.Models().Select(name => new Shared.Contracts.ModelInfo(name, "shard-group", null)).ToArray();
+        var extra = groups.Models().Select(name => new Shared.Contracts.ModelInfo(name, ShardGroupState.Digest, null)).ToArray();
 
         if (extra.Length > 0)
         {

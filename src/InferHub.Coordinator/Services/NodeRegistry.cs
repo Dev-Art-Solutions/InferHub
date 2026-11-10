@@ -145,10 +145,17 @@ public sealed class NodeRegistry : INodeRegistry
             && existing.Models.Count > 0
             && existing.Backend is not null and not BackendHealth.Healthy;
 
+        // Phase 136, found on the published 3.96.0 image: holding also kept a shard group the head had just stopped, so it
+        // stayed in /v1/models for good. A head reports its groups exactly even while its own engine is down, so what is held
+        // is the engine's models only — a group's model is known by its digest.
+        var held = holdStaleInventory
+            ? existing.Models.Where(model => model.Digest != InferHub.Shared.Fit.ShardGroupState.Digest).ToArray()
+            : normalizedModels;
+
         nodes[connectionId] = Resolved(existing with
         {
             LastSeenUtc = now,
-            Models = holdStaleInventory ? existing.Models : normalizedModels,
+            Models = held,
             // The timestamp is deliberately not advanced while holding: it says when that list was
             // last true, which is the question somebody reading a stale inventory is asking.
             ModelsRefreshedAt = holdStaleInventory ? existing.ModelsRefreshedAt : models.RefreshedAt,

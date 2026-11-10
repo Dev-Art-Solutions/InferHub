@@ -129,6 +129,9 @@ public sealed record ShardGroupState(
     [property: JsonPropertyName("endpoint")] string? Endpoint,
     [property: JsonPropertyName("error")] string? Error)
 {
+    /// <summary>The digest a head gives a group's model in its list — how the hub tells a group from an engine's model.</summary>
+    public const string Digest = "shard-group";
+
     public const string Waiting = "waiting";
     public const string Starting = "starting";
     public const string Running = "running";

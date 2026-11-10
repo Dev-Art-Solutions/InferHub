@@ -121,6 +121,23 @@ public sealed class ShardGroupsTests : IDisposable
         Assert.All(lists.Values, l => Assert.Empty(l.Groups));
     }
 
+    [Fact]
+    public void AStoppedGroupLeavesTheCatalogueEvenWhenTheHeadsOwnEngineIsDownAndItsModelsAreHeld()
+    {
+        // Found on the published 3.96.0 image: the head's Ollama is down, so its empty report is held (69) — and the group it
+        // had just stopped stayed in /v1/models. The engine's models are held; a group is not.
+        var now = DateTimeOffset.UtcNow;
+        registry.Upsert("conn-a", new NodeRegistration("a", "shard-a", "http://x", "3.96.0"), now);
+        registry.ReportModels("conn-a", new NodeModels("a",
+            [new ModelInfo("qwen2.5:0.5b", "sha256:abc", 1), new ModelInfo("llama-8b-split", ShardGroupState.Digest, null)], now), now);
+        registry.Touch("conn-a", new Heartbeat("a", now, InFlight: 0, Backend: BackendHealth.Unreachable), now);
+
+        registry.ReportModels("conn-a", new NodeModels("a", [], now.AddSeconds(5)), now.AddSeconds(5));
+
+        Assert.Equal(["qwen2.5:0.5b"], registry.FindNodesWithModel("qwen2.5:0.5b", includeUnserviceable: true).Select(_ => "qwen2.5:0.5b"));
+        Assert.Empty(registry.FindNodesWithModel("llama-8b-split", includeUnserviceable: true));
+    }
+
     public void Dispose()
     {
         try

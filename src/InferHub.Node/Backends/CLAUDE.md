@@ -957,7 +957,9 @@ while its own engine is down.
 **The lab (2026-11-10, `tunnel-lab.sh`, three nodes in Docker, b12182):** `POST /v1/chat/completions {"model":"llama-8b-split"}`
 on the hub answered from three nodes, **the same text as the whole model** for the same chat request, 64 tokens in 9.8 s end to
 end; streaming works. Revoking shard-c made the group not ready, the head stopped it, the model left `/v1/models`, and a request
-got `model 'llama-8b-split' not found`.
+got `model 'llama-8b-split' not found`. **Found on the published 3.96.0 image (fixed in 3.96.1):** the hub holds a
+node's last model list while its engine is unhealthy (69), and that kept a stopped group listed for good; a held list now keeps
+the engine's models only — a group's model is known by its digest (`ShardGroupState.Digest`).
 
 **Not established:** a head that keeps answering while a member is replaced (137 — today the group stops and restarts when the
 member is back); a fit check before starting (llama.cpp refuses and the state carries the sentence); groups across an
