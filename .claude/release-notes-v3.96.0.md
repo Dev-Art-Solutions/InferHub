@@ -69,6 +69,9 @@ tree with one group defined. Nobody started anything by hand.
 - **Not across an active-active cluster**, no GPU in a group, no model above 8B through a group, no real WAN.
 - **The console** was read as JSON, not looked at in a browser.
 
+**Fixed in v3.96.1:** on the published 3.96.0 images, a group stopped after a member was revoked stayed in `/v1/models`. The
+coordinator held the head's last model list because the head's own engine was down, and that list included the group.
+
 ## Upgrading
 
 Nothing to do. Without `ShardGroups` the coordinator sends nothing; without `AllowHead` a node runs nothing it is sent. A
