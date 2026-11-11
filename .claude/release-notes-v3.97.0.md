@@ -38,6 +38,13 @@ Without `Spares` and without groups, nothing changes.
 - **Pausing shard-b through its own control API during a 200-token answer:** the head showed the group `draining`, the
   answer completed with all 200 tokens, and the next request got a `503` saying why.
 
+## The published images
+
+`inferhub-coordinator:3.97.0` and `inferhub-node:3.97.0`, revision `2bd1d17`, through `tunnel-lab.sh` and `survive-lab.sh`: after
+the revoke, 503s with the reason for 53 s, then **the same text as before**, the layers on shard-d; the pause through shard-b's
+own control API returned `200` (the `/data/node.local.json` fix is in the image), the head drained, and the 200-token answer
+completed.
+
 ## Found while building it
 
 - **The node images could not save a setting.** `node.local.json` is the file the node's control API and the desktop app
