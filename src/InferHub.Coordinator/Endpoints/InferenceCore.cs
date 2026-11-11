@@ -37,6 +37,9 @@ internal static class InferenceCore
     /// </summary>
     private const int CapabilityRetryAfterSeconds = 30;
 
+    /// <summary>Phase 137 D2: a group reassembles in seconds to a minute (a head restarts over its members).</summary>
+    private const int ShardGroupRetryAfterSeconds = 15;
+
     internal readonly record struct DispatchOutcome(
         ChannelReader<InferenceChunk>? Stream,
         string? ResponseJson,
@@ -309,6 +312,14 @@ internal static class InferenceCore
                         StatusCodes.Status503ServiceUnavailable,
                         $"no node currently provides '{capability}' for model '{model}'",
                         CapabilityRetryAfterSeconds);
+                }
+
+                // Phase 137 D2: a shard group the admin configured that answers nobody right now — a member left, a spare
+                // is taking over, the head is starting — is a fleet-state moment, not "no such model".
+                if ((registry as Services.NodeRegistry)?.WhyGroupIsNotServing?.Invoke(model) is { } groupWhy)
+                {
+                    logger.LogInformation("Shard group {Model} answers nobody now: {Why}", model, groupWhy);
+                    return DispatchOutcome.Failure(StatusCodes.Status503ServiceUnavailable, groupWhy, ShardGroupRetryAfterSeconds);
                 }
 
                 return DispatchOutcome.Failure(StatusCodes.Status404NotFound, $"model '{model}' not found");

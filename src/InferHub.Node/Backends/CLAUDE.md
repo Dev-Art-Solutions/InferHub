@@ -964,3 +964,43 @@ the engine's models only — a group's model is known by its digest (`ShardGroup
 **Not established:** a head that keeps answering while a member is replaced (137 — today the group stops and restarts when the
 member is back); a fit check before starting (llama.cpp refuses and the state carries the sentence); groups across an
 active-active cluster; a GPU in a group; models above 8B through a group.
+
+### Phase 137 (a group survives a member leaving: spares, a 503 with the reason in between, a drain before a planned stop, the layers shown)
+
+Files: hub `Services/NodeShardRegistry.cs` (`ShardGroupDefinition.Spares`, readiness in `ComputeGroups`, `ShardGroupStatus.
+Substitutions`, `WhyGroupIsNotServing`, `Watch`), `NodeRegistry.WhyGroupIsNotServing` → `Endpoints/InferenceCore.cs` (the 503);
+node `Backends/Shards/ShardGroupHost.cs` (`Acquire`/`Lease`, `stopping`, `DrainAsync`, `Unavailable`, `LayersAsync`); Shared
+`ShardLayers.Split`, `ShardGroupLayers`, `ShardGroupState.Draining`; the console's layers; `deploy/lab/shards/survive-lab.sh`.
+
+**D1, load-bearing — a member is ready only if its owner lets it share now; a spare stands in for one that is not.** Ready adds
+"not cordoned" and "not paused by its owner" (113/116: idle, paused, out of hours, the allowance used) to 136's list. `Spares` are
+tried in order for each member that is not ready, each once, never the head; the status names it ("shard-d stands in for shard-c
+(member 'shard-c' is not connected)"). With groups configured the publisher also watches the registry (`Watch`), so a pause or
+a cordon is acted on at once, not at the next shard report. *Rejected:* the hub picking any idle node — the members of a private
+cloud are the admin's (138 picks from a pool).
+
+**D2 — a configured group that answers nobody is a 503 with Retry-After 15 and the reason**, never 69's 404: in the dispatch path,
+after "nobody holds it", `WhyGroupIsNotServing` — *not running: <why>*, *reassembling: <substitution>* or *starting on <head>*.
+
+**D3 — the head drains before it stops a group.** A group leaving `running` goes to `stopping`: no new lease (a request that still
+reaches the head is refused "draining", not handed to the node's own engine), the leases in flight finish — up to 60 s — then the
+process stops. The same name starts again only after that: two `llama-server`s on one worker would hold the layers twice. Every
+request on a group holds a lease (`ShardGroupBackend` → `Acquire`), streams included.
+
+**D4 — the layers are llama.cpp's own rule over the split.** The block count from the head's GGUF header; layer `il` of `n` (the
+output is `il = n`) goes to the first device whose cumulative, normalized share exceeds `il / (n + 1)` — `std::upper_bound` in
+`llama-model.cpp`. 8B, three equal offers: 0–10, 11–21, 22–31 + output.
+
+**Found in the lab: the node images could not save a setting.** `node.local.json` — what the control API and the app write on a
+live change — defaulted to `/app`, which the image's `app` user cannot write, so pausing shard-b through its control API was a 500
+(*could not write /app/node.local.json*). Every node Dockerfile now sets `INFERHUB_NODE_LOCAL_SETTINGS=/data/node.local.json` — the
+sixth path of the `/app` family the node Dockerfile's own comments list (replicas, node id, retrieval, tool scratch…).
+
+**The lab (2026-11-11, `tunnel-lab.sh` + `survive-lab.sh`, four nodes, shard-d the spare):** revoking shard-c gave every request a
+503 with Retry-After 15 and *group 'llama-8b-split' is reassembling: shard-d stands in for shard-c*, for 57 s; then the group
+answered with **the same text as before**, the layers moved to shard-d (22–31 + output). Pausing shard-b through its own control
+API during a 200-token request: the head showed `draining`, that request completed (200 tokens), the next got a 503 naming why.
+
+**Not established:** a request in flight on a worker that *vanished* (llama.cpp aborts the head; the request fails with its error
+— the drain is for planned leaves); choosing a spare by fit; a member coming back while its spare serves (the group stays on the
+spare until the list changes again — no fail-back); GPUs; models above 8B.

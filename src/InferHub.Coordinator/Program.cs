@@ -358,6 +358,11 @@ if (app.Services.GetRequiredService<INodeRegistry>() is NodeRegistry nodeRegistr
     var shardStates = app.Services.GetRequiredService<NodeShardRegistry>();
     nodeRegistry.ServesOnItsOwn = (nodeId, model) => shardStates.Of(nodeId)?.Groups?.Any(group =>
         group.State == InferHub.Shared.Fit.ShardGroupState.Running && string.Equals(group.Name, model, StringComparison.OrdinalIgnoreCase)) == true;
+
+    // Phase 137: a configured group that answers nobody is a 503 with its reason, and a pause or a cordon is noticed.
+    var groupPublisher = app.Services.GetRequiredService<ShardPeerPublisher>();
+    nodeRegistry.WhyGroupIsNotServing = groupPublisher.WhyGroupIsNotServing;
+    groupPublisher.Watch();
 }
 
 var version = typeof(Program).Assembly

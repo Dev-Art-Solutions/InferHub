@@ -103,7 +103,7 @@ public sealed class ShardGroupsTests : IDisposable
         Node("b", protocol: "5.0.0");
         Node("c");
 
-        Assert.Contains("protocols differ", Assert.Single(Compute().Status).Why);
+        Assert.Equal("shard-b runs llama.cpp RPC v5.0.0, the head v8.0.1", Assert.Single(Compute().Status).Why);
     }
 
     [Fact]
@@ -136,6 +136,64 @@ public sealed class ShardGroupsTests : IDisposable
 
         Assert.Equal(["qwen2.5:0.5b"], registry.FindNodesWithModel("qwen2.5:0.5b", includeUnserviceable: true).Select(_ => "qwen2.5:0.5b"));
         Assert.Empty(registry.FindNodesWithModel("llama-8b-split", includeUnserviceable: true));
+    }
+
+    [Fact]
+    public void ASpareStandsInForAMemberThatLeftAndTheStatusNamesIt()
+    {
+        options.Groups["llama-8b-split"].Spares = ["shard-d"];
+        Node("a");
+        Node("b");
+        Node("d", 4096);  // shard-c never came
+
+        var (lists, status) = Compute();
+
+        var spec = Assert.Single(lists["conn-a"].Groups);
+        Assert.Equal([("b", 3072L), ("d", 4096L)], spec.Members.Select(m => (m.NodeId, m.Weight)));
+        var group = Assert.Single(status);
+        Assert.True(group.Ready);
+        Assert.Equal(["shard-b", "shard-d"], group.Members);
+        Assert.Contains("shard-d stands in for shard-c (member 'shard-c' is not connected)", Assert.Single(group.Substitutions));
+    }
+
+    [Fact]
+    public void AMemberPausedByItsOwnerOrCordonedIsNotReadyAndASpareTakesItsPlace()
+    {
+        options.Groups["llama-8b-split"].Spares = ["shard-d"];
+        Node("a");
+        Node("b");
+        Node("c");
+        Node("d");
+        registry.RecordSharing("conn-b", new NodeSharingState("b", "paused", true, "outside sharing hours", DateTimeOffset.UtcNow, 0, 0));
+
+        var group = Assert.Single(Compute().Status);
+        Assert.True(group.Ready);
+        Assert.Contains("shard-d stands in for shard-b (shard-b is paused by its owner (outside sharing hours))", Assert.Single(group.Substitutions));
+
+        // shard-c cordoned too, and the only spare is taken: not ready, with both reasons' first.
+        registry.Cordon("c");
+        var stuck = Assert.Single(Compute().Status);
+        Assert.False(stuck.Ready);
+        Assert.Equal("shard-c is cordoned, and no spare can stand in", stuck.Why);
+    }
+
+    [Fact]
+    public void AConfiguredGroupThatAnswersNobodyIsAReasonNotAMissingModel()
+    {
+        Node("a");
+        Node("b");
+        var publisher = Publisher();
+
+        Assert.Equal("group 'llama-8b-split' is not running: member 'shard-c' is not connected", publisher.WhyGroupIsNotServing("llama-8b-split"));
+        Assert.Null(publisher.WhyGroupIsNotServing("qwen2.5:0.5b"));
+
+        // Ready and sent, the head not answering yet: starting.
+        Node("c");
+        Assert.StartsWith("group 'llama-8b-split' is starting on shard-a", publisher.WhyGroupIsNotServing("llama-8b-split"));
+
+        // The head reports it running: nothing to explain — the router finds it.
+        shards.Report(shards.Of("a")! with { Groups = [new ShardGroupState("llama-8b-split", "llama31-8b.gguf", ShardGroupState.Running, ["shard-b", "shard-c"], "127.0.0.1:1", null)] }, IPAddress.Loopback);
+        Assert.Null(publisher.WhyGroupIsNotServing("llama-8b-split"));
     }
 
     public void Dispose()

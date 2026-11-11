@@ -66,6 +66,11 @@ ENV Vector__ReplicaDirectory=/data/vector-replicas
 # Found the only way this class of bug is ever found — by running the container (D7).
 ENV Node__DataDirectory=/data
 
+# Phase 137, found in the shard lab: node.local.json — the file the control API and the desktop app write when a setting
+# changes live — defaulted to /app beside the binaries, which `app` cannot write, so every live change in a container was a
+# 500 ("could not write /app/node.local.json"). The sixth member of the /app family above.
+ENV INFERHUB_NODE_LOCAL_SETTINGS=/data/node.local.json
+
 # Solo mode binds loopback by default, which inside a container means nothing reaches it through
 # `-p`. Set the address here rather than relying on ASPNETCORE_URLS: phase-21 D6 is the third
 # feature to walk into that trap — an appsettings.json value overrides the ASPNETCORE_-prefixed

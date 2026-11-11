@@ -21,6 +21,9 @@ public sealed class NodeRegistry : INodeRegistry
     /// </summary>
     public Func<string, string, bool>? ServesOnItsOwn { get; set; }
 
+    /// <summary>Phase 137 D2: why a configured shard group answers nobody now (the 503's sentence), or null when it is not one.</summary>
+    public Func<string, string?>? WhyGroupIsNotServing { get; set; }
+
     private void RaiseChanged() => Changed?.Invoke();
 
     public void Upsert(string connectionId, NodeRegistration registration, DateTimeOffset now)

@@ -96,8 +96,15 @@ public sealed class ShardGroupHostTests : IDisposable
         Assert.Equal(["llama-8b-split"], host.Models());
         Assert.StartsWith("group@", host.BackendFor("LLAMA-8B-SPLIT")!.Name);
 
-        // The hub stops listing it: gone from the list, the models, the routes.
+        // The hub stops listing it: out of the routes at once, and — with nothing in flight — gone after its drain (137).
         host.SetGroups(new ShardGroupList([]));
+        Assert.Null(host.Acquire("llama-8b-split"));
+
+        for (var i = 0; i < 40 && host.State().Count > 0; i++)
+        {
+            await Task.Delay(100);
+        }
+
         Assert.Empty(host.State());
         Assert.Empty(host.Models());
         Assert.Null(host.BackendFor("llama-8b-split"));
@@ -161,6 +168,90 @@ public sealed class ShardGroupHostTests : IDisposable
 
         host.SetGroups(new ShardGroupList([]));
         Assert.Empty((await backend.ListModelsAsync(CancellationToken.None))!);
+    }
+
+    private async Task<ShardGroupHost> RunningHostAsync(Func<IReadOnlyList<ShardPeerState>>? doors = null)
+    {
+        var host = new ShardGroupHost(new ShardOptions { Enabled = true, RamGiB = 3, AllowHead = true }, models, () => "dotnet",
+            doors ?? (() => [Door("b", "127.0.0.1:41001"), Door("c", "127.0.0.1:41002")]), (_, port) => new NamedBackend($"group@{port}"),
+            _ => Task.FromResult(true), NullLogger.Instance, null) { DrainFor = TimeSpan.FromSeconds(10) };
+        await host.StartAsync(CancellationToken.None);
+        host.SetGroups(new ShardGroupList([Spec()]));
+
+        for (var i = 0; i < 50 && host.BackendFor("llama-8b-split") is null; i++)
+        {
+            await Task.Delay(100);
+        }
+
+        Assert.NotNull(host.BackendFor("llama-8b-split"));
+        return host;
+    }
+
+    [Fact]
+    public async Task AStoppingGroupFinishesTheRequestInFlightTakesNoNewOneAndThenStops()
+    {
+        await using var host = await RunningHostAsync();
+        var inFlight = host.Acquire("llama-8b-split")!;
+
+        // The hub takes the group back (a member's owner paused it).
+        host.SetGroups(new ShardGroupList([]));
+
+        var draining = Assert.Single(host.State());
+        Assert.Equal(ShardGroupState.Draining, draining.State);
+        Assert.Contains("finishing 1 request", draining.Error);
+        Assert.Null(host.Acquire("llama-8b-split"));
+        Assert.Contains("draining", host.Unavailable("llama-8b-split"));
+
+        await Task.Delay(700);
+        Assert.Equal(ShardGroupState.Draining, Assert.Single(host.State()).State);
+
+        inFlight.Dispose();
+
+        for (var i = 0; i < 40 && host.State().Count > 0; i++)
+        {
+            await Task.Delay(100);
+        }
+
+        Assert.Empty(host.State());
+        Assert.Null(host.Unavailable("llama-8b-split"));
+    }
+
+    [Fact]
+    public async Task AReassembledGroupStartsOnlyOnceTheOldOneHasStopped()
+    {
+        await using var host = await RunningHostAsync(() => [Door("b", "127.0.0.1:41001"), Door("c", "127.0.0.1:41002"), Door("d", "127.0.0.1:41003")]);
+        var inFlight = host.Acquire("llama-8b-split")!;
+
+        // shard-d stands in for shard-c: the same name, other members.
+        var reassembled = Spec() with { Members = [new ShardGroupWorker("b", "shard-b", 3072), new ShardGroupWorker("d", "shard-d", 3072)] };
+        host.SetGroups(new ShardGroupList([reassembled]));
+
+        Assert.Equal([ShardGroupState.Draining], host.State().Select(s => s.State));
+
+        inFlight.Dispose();
+
+        for (var i = 0; i < 50 && host.State().FirstOrDefault()?.Members.Contains("shard-d") != true; i++)
+        {
+            await Task.Delay(100);
+        }
+
+        var now = Assert.Single(host.State());
+        Assert.Equal(["shard-b", "shard-d"], now.Members);
+    }
+
+    [Fact]
+    public async Task TheHeadSaysWhichWorkerHoldsWhichLayersByTheModelsOwnBlockCount()
+    {
+        File.WriteAllBytes(Path.Combine(models, "llama31-8b.gguf"), GgufWriter.Llama(layers: 32));
+        var host = new ShardGroupHost(new ShardOptions { Enabled = true, RamGiB = 3, AllowHead = true }, models, () => "dotnet",
+            () => [], (_, _) => new NamedBackend("x"), _ => Task.FromResult(true), NullLogger.Instance, null) { HeadName = "shard-a" };
+
+        var layers = await host.LayersAsync(Spec(), Path.Combine(models, "llama31-8b.gguf"));
+
+        Assert.Equal(
+            [new ShardGroupLayers("shard-a", 0, 9, false), new ShardGroupLayers("shard-b", 9, 8, false), new ShardGroupLayers("shard-c", 17, 15, true)],
+            layers);
+        Assert.Null(await host.LayersAsync(Spec(), Path.Combine(models, "missing.gguf")));
     }
 
     public void Dispose()

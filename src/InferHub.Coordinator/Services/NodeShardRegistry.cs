@@ -47,6 +47,9 @@ public sealed class ShardGroupDefinition
 
     public List<string> Members { get; set; } = [];
 
+    /// <summary>Phase 137 D1: nodes that stand in, in order, for a member that cannot take part now — each one once, never the head.</summary>
+    public List<string> Spares { get; set; } = [];
+
     public string? Model { get; set; }
 
     public int Context { get; set; } = 4096;
@@ -68,7 +71,11 @@ public sealed record ShardGroupStatus(
     string? Model,
     bool Ready,
     string? Why,
-    ShardGroupState? Reported);
+    ShardGroupState? Reported,
+    IReadOnlyList<string>? Substitutions = null)
+{
+    public IReadOnlyList<string> Substitutions { get; init; } = Substitutions ?? [];
+}
 
 /// <summary>
 /// Phase 135 D1: the coordinator decides which nodes' tunnels may reach each other. A node is a peer while it is connected
@@ -111,72 +118,166 @@ public sealed class ShardPeerPublisher(
         foreach (var (name, definition) in Definitions.OrderBy(d => d.Key, StringComparer.OrdinalIgnoreCase))
         {
             var head = Find(definition.Head);
-            var members = definition.Members.Select(m => (Key: m, Node: Find(m))).Where(m => !string.Equals(m.Node?.NodeId, head?.NodeId, StringComparison.OrdinalIgnoreCase) || m.Node is null).ToArray();
             var reported = head is null ? null : shards.Of(head.NodeId)?.Groups?.FirstOrDefault(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase));
-            string? why = null;
+            var listed = head is not null && peerLists.TryGetValue(head.ConnectionId, out var headList)
+                ? headList.Peers.Select(p => p.NodeId).ToHashSet(StringComparer.OrdinalIgnoreCase)
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var protocol = head is null ? null : shards.Of(head.NodeId)?.Protocol;
 
-            if (string.IsNullOrWhiteSpace(definition.Model))
+            // D1 (137): why one node cannot take part right now — or null when it can. The head's own checks are the same,
+            // less "a peer of the head".
+            string? NotReady(string key, Services.NodeSnapshot? node, bool isHead)
             {
-                why = "no Model: the file on the head to run";
-            }
-            else if (head is null)
-            {
-                why = $"the head '{definition.Head}' is not connected";
-            }
-            else if (members.Length == 0)
-            {
-                why = "no members besides the head: a group of one is the head's own llama.cpp";
-            }
-            else if (members.FirstOrDefault(m => m.Node is null) is { Key: { } absent } && members.Any(m => m.Node is null))
-            {
-                why = $"member '{absent}' is not connected";
-            }
-            else
-            {
-                var everyone = new[] { head }.Concat(members.Select(m => m.Node!)).ToArray();
-                var states = everyone.Select(n => (Node: n, State: shards.Of(n.NodeId))).ToArray();
-                var listed = peerLists.TryGetValue(head.ConnectionId, out var headList) ? headList.Peers.Select(p => p.NodeId).ToHashSet(StringComparer.OrdinalIgnoreCase) : [];
+                if (node is null)
+                {
+                    return isHead ? $"the head '{key}' is not connected" : $"member '{key}' is not connected";
+                }
 
-                if (states.FirstOrDefault(s => s.State is not { State: NodeShardState.Running }) is { Node: { } idle })
+                if (node.Cordoned)
                 {
-                    why = $"{idle.Name}'s worker is not running (Node:Shards)";
+                    return $"{node.Name} is cordoned";
                 }
-                else if (states.FirstOrDefault(s => s.State!.Tunnel is not { Off: null }) is { Node: { } closed })
+
+                if (node.Sharing is { Paused: true } paused)
                 {
-                    why = $"{closed.Name}'s tunnel is not open: {shards.Of(closed.NodeId)?.Tunnel?.Off ?? "no tunnel"}";
+                    return $"{node.Name} is paused by its owner ({paused.Reason ?? "not sharing now"})";
                 }
-                else if (members.FirstOrDefault(m => !listed.Contains(m.Node!.NodeId)) is { Node: { } unlisted })
+
+                var state = shards.Of(node.NodeId);
+
+                if (state is not { State: NodeShardState.Running })
                 {
-                    why = $"{unlisted.Name} is not one of {head.Name}'s peers (a certificate, the same organisation — 135)";
+                    return $"{node.Name}'s worker is not running (Node:Shards)";
                 }
-                else if (states.Select(s => s.State!.Protocol).Distinct().Count() > 1)
+
+                if (state.Tunnel is not { Off: null })
                 {
-                    why = "the members' llama.cpp RPC protocols differ: " + string.Join(", ", states.Select(s => $"{s.Node.Name} v{s.State!.Protocol}"));
+                    return $"{node.Name}'s tunnel is not open: {state.Tunnel?.Off ?? "no tunnel"}";
                 }
-                else
+
+                if (!isHead && !listed.Contains(node.NodeId))
                 {
-                    if (!lists.TryGetValue(head.ConnectionId, out var specs))
+                    return $"{node.Name} is not one of {head!.Name}'s peers (a certificate, the same organisation — 135)";
+                }
+
+                return !isHead && state.Protocol != protocol
+                    ? $"{node.Name} runs llama.cpp RPC v{state.Protocol}, the head v{protocol}"
+                    : null;
+            }
+
+            string? why = string.IsNullOrWhiteSpace(definition.Model) ? "no Model: the file on the head to run" : NotReady(definition.Head ?? "", head, isHead: true);
+            var members = new List<(string Slot, Services.NodeSnapshot Node)>();
+            var substitutions = new List<string>();
+
+            if (why is null)
+            {
+                var slots = definition.Members.Where(m => !string.Equals(Find(m)?.NodeId, head!.NodeId, StringComparison.OrdinalIgnoreCase)).ToArray();
+                var spares = definition.Spares
+                    .Select(s => (Key: s, Node: Find(s)))
+                    .Where(s => s.Node is not null && s.Node.NodeId != head!.NodeId && slots.All(m => !string.Equals(Find(m)?.NodeId, s.Node.NodeId, StringComparison.OrdinalIgnoreCase)))
+                    .ToList();
+
+                if (slots.Length == 0)
+                {
+                    why = "no members besides the head: a group of one is the head's own llama.cpp";
+                }
+
+                foreach (var slot in slots)
+                {
+                    var node = Find(slot);
+
+                    if (NotReady(slot, node, isHead: false) is not { } problem)
                     {
-                        lists[head.ConnectionId] = specs = [];
+                        members.Add((slot, node!));
+                        continue;
                     }
 
-                    specs.Add(new ShardGroupSpec(
-                        name,
-                        definition.Model!.Trim(),
-                        definition.Context,
-                        Weight(states[0].State!),
-                        members.Select(m => new ShardGroupWorker(m.Node!.NodeId, m.Node.Name, Weight(shards.Of(m.Node.NodeId)!))).ToArray()));
+                    // D1: the first spare that can take part now stands in; each spare once.
+                    var stand = spares.FirstOrDefault(s => NotReady(s.Key, s.Node, isHead: false) is null);
+
+                    if (stand.Node is null)
+                    {
+                        why ??= definition.Spares.Count > 0 ? $"{problem}, and no spare can stand in" : problem;
+                        continue;
+                    }
+
+                    spares.Remove(stand);
+                    members.Add((slot, stand.Node));
+                    substitutions.Add($"{stand.Node.Name} stands in for {node?.Name ?? slot} ({problem})");
                 }
             }
 
-            status.Add(new ShardGroupStatus(name, head?.Name ?? definition.Head, definition.Members, definition.Model, why is null, why, reported));
+            if (why is null)
+            {
+                if (!lists.TryGetValue(head!.ConnectionId, out var specs))
+                {
+                    lists[head.ConnectionId] = specs = [];
+                }
+
+                specs.Add(new ShardGroupSpec(
+                    name,
+                    definition.Model!.Trim(),
+                    definition.Context,
+                    Weight(shards.Of(head.NodeId)!),
+                    members.Select(m => new ShardGroupWorker(m.Node.NodeId, m.Node.Name, Weight(shards.Of(m.Node.NodeId)!))).ToArray()));
+            }
+
+            status.Add(new ShardGroupStatus(name, head?.Name ?? definition.Head, why is null ? members.Select(m => m.Node.Name).ToArray() : definition.Members,
+                definition.Model, why is null, why, reported, substitutions));
         }
 
         var result = nodes.ToDictionary(n => n.ConnectionId, n => new ShardGroupList(lists.TryGetValue(n.ConnectionId, out var s) ? s : []), StringComparer.Ordinal);
         return (result, status);
     }
 
+    /// <summary>
+    /// D2 (137): why a configured group answers nobody right now — the sentence of a 503 — or null when the model is not a
+    /// group's, or its head serves it.
+    /// </summary>
+    public string? WhyGroupIsNotServing(string model)
+    {
+        if (!Definitions.TryGetValue(model.Trim(), out _))
+        {
+            return null;
+        }
+
+        var status = GroupStatus().FirstOrDefault(s => string.Equals(s.Name, model.Trim(), StringComparison.OrdinalIgnoreCase));
+
+        return status switch
+        {
+            null => null,
+            { Ready: false } => $"group '{status.Name}' is not running: {status.Why}",
+            { Reported.State: ShardGroupState.Running } => null,
+            { Substitutions.Count: > 0 } => $"group '{status.Name}' is reassembling: {string.Join("; ", status.Substitutions)}",
+            _ => $"group '{status.Name}' is starting on {status.Head}: {status.Reported?.State ?? "sent to the head"}"
+        };
+    }
+
     private static long Weight(NodeShardState state) => Math.Max(1, state.RamMiB + state.VramMiB);
+
+    /// <summary>
+    /// Phase 137 D1: with groups configured, any change in the registry — an owner's pause (116), a cordon — is a reason to
+    /// look again, not only a shard report or a disconnect. Lists are still sent only when they change.
+    /// </summary>
+    public void Watch()
+    {
+        if (Definitions.Count == 0)
+        {
+            return;
+        }
+
+        registry.Changed += () => _ = Task.Run(async () =>
+        {
+            try
+            {
+                await PublishAsync();
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "Could not republish shard groups after a registry change");
+            }
+        });
+    }
 
     /// <summary>For <c>GET /api/admin/shards/groups</c>.</summary>
     public IReadOnlyList<ShardGroupStatus> GroupStatus() => ComputeGroups(Compute()).Status;

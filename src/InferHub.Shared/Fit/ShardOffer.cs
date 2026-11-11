@@ -127,8 +127,12 @@ public sealed record ShardGroupState(
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("members")] IReadOnlyList<string> Members,
     [property: JsonPropertyName("endpoint")] string? Endpoint,
-    [property: JsonPropertyName("error")] string? Error)
+    [property: JsonPropertyName("error")] string? Error,
+    [property: JsonPropertyName("layers")] IReadOnlyList<ShardGroupLayers>? Layers = null)
 {
+    /// <summary>Phase 137 D3: the head finishes the requests it has, then stops — and takes no new one meanwhile.</summary>
+    public const string Draining = "draining";
+
     /// <summary>The digest a head gives a group's model in its list — how the hub tells a group from an engine's model.</summary>
     public const string Digest = "shard-group";
 
@@ -136,6 +140,67 @@ public sealed record ShardGroupState(
     public const string Starting = "starting";
     public const string Running = "running";
     public const string Failed = "failed";
+}
+
+/// <summary>Phase 137 D4: which layers one worker of a group holds — <see cref="First"/> counted from 0, and whether the output
+/// layer is among them.</summary>
+public sealed record ShardGroupLayers(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("first")] int First,
+    [property: JsonPropertyName("count")] int Count,
+    [property: JsonPropertyName("output")] bool Output);
+
+/// <summary>
+/// Phase 137 D4: how llama.cpp divides a model's layers over devices given a tensor split, as its loader does with every layer
+/// offloaded (<c>-ngl 999</c>): the split is made cumulative and normalized, and layer <c>il</c> of <c>n</c> (the output layer
+/// is <c>il = n</c>) goes to the first device whose share is greater than <c>il / (n + 1)</c> — <c>std::upper_bound</c> in
+/// <c>llama-model.cpp</c>.
+/// </summary>
+public static class ShardLayers
+{
+    public static IReadOnlyList<(int First, int Count, bool Output)> Split(int layers, IReadOnlyList<long> weights)
+    {
+        if (layers < 1 || weights.Count == 0)
+        {
+            return [];
+        }
+
+        var total = (double)weights.Sum(w => Math.Max(1, w));
+        var cumulative = new double[weights.Count];
+        var running = 0d;
+
+        for (var i = 0; i < weights.Count; i++)
+        {
+            running += Math.Max(1, weights[i]);
+            cumulative[i] = running / total;
+        }
+
+        var first = Enumerable.Repeat(-1, weights.Count).ToArray();
+        var count = new int[weights.Count];
+        var output = -1;
+
+        for (var il = 0; il <= layers; il++)
+        {
+            var at = (float)il / (layers + 1);
+            var device = Array.FindIndex(cumulative, share => share > at);
+            device = device < 0 ? weights.Count - 1 : device;
+
+            if (il == layers)
+            {
+                output = device;
+                continue;
+            }
+
+            if (first[device] < 0)
+            {
+                first[device] = il;
+            }
+
+            count[device]++;
+        }
+
+        return Enumerable.Range(0, weights.Count).Select(d => (Math.Max(0, first[d]), count[d], d == output)).ToArray();
+    }
 }
 
 /// <summary>What llama.cpp's <c>rpc-server</c> prints when it starts, read line by line (phase 134, D2).</summary>

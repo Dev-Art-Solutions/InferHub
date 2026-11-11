@@ -97,6 +97,11 @@ COPY --from=colibri /opt/colibri/ /opt/colibri/
 RUN mkdir -p /data /models/colibri && chown -R app:app /data /models
 ENV Vector__ReplicaDirectory=/data/vector-replicas
 ENV Node__DataDirectory=/data
+
+# Phase 137, found in the shard lab: node.local.json — the file the control API and the desktop app write when a setting
+# changes live — defaulted to /app beside the binaries, which `app` cannot write, so every live change in a container was a
+# 500 ("could not write /app/node.local.json"). The sixth member of the /app family above.
+ENV INFERHUB_NODE_LOCAL_SETTINGS=/data/node.local.json
 ENV LocalApi__Urls=http://+:8080
 ENV LocalApi__Retrieval__DataDirectory=/data/retrieval
 ENV Tools__ScratchDirectory=/data/tools/scratch

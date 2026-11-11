@@ -1128,6 +1128,27 @@ POST /v1/chat/completions   {"model": "llama-8b-split", "messages": [...]}   ←
   the same text as the whole model. Revoking a member took the group down within seconds, and the
   model left `/v1/models`.
 
+### A group that survives a member leaving (v3.97+)
+
+```jsonc
+"ShardGroups": { "llama-8b-split": { "Head": "shard-a", "Members": ["shard-b", "shard-c"], "Spares": ["shard-d"], "Model": "llama31-8b.gguf" } }
+```
+
+- **Spares stand in.** When a member cannot take part, the first spare that can takes its place,
+  and the head restarts over the new set. The status says who stands in for whom.
+- **"Can take part" includes its owner's word.** A member its owner paused, one outside its sharing
+  hours, or one that is cordoned is not ready, just like one that disconnected.
+- **The gap is a 503, not a 404.** While a group reassembles or waits, a request for it gets
+  `503` with `Retry-After: 15` and the reason, for example *group 'llama-8b-split' is reassembling:
+  shard-d stands in for shard-c*.
+- **A planned stop drains.** The head takes no new request for the group, lets the ones in flight
+  finish (up to 60 s), and only then stops.
+- **Who holds which layers:** the console shows each worker's layer range, by llama.cpp's own rule
+  over the split.
+- **Measured in the lab** (`deploy/lab/shards/survive-lab.sh`): after a revoke, 57 s of 503s with
+  the reason, then the same text as before. A member paused during a 200-token answer: the answer
+  completed, then the group stopped.
+
 ### A sealed node (v3.82+)
 
 One setting for a node that must not reach the internet: `Node:Sealed=true`. It talks to its

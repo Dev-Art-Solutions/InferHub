@@ -362,8 +362,10 @@
     const groups = offering.flatMap(n => (n.shards.groups ?? []).map(g => ({ head: n.name, ...g })));
     body.innerHTML += groups.map(g => {
       const cls = g.state === "running" ? "pill pill-ok" : g.state === "failed" ? "pill pill-err" : "pill pill-warn";
+      // Phase 137: which worker holds which layers, by llama.cpp's own rule over the group's split.
+      const layers = (g.layers ?? []).map(l => `${escapeHtml(l.name)} ${l.count > 0 ? `${l.first}–${l.first + l.count - 1}` : "—"}${l.output ? " + output" : ""}`).join(" · ");
       return `<tr><td colspan="${offering.length + 2}">group <b>${escapeHtml(g.name)}</b> <span class="${cls}" title="${escapeHtml(g.error ?? "")}">${escapeHtml(g.state)}</span>` +
-        ` · <code>${escapeHtml(g.model)}</code> · head ${escapeHtml(g.head)} + ${escapeHtml((g.members ?? []).join(", "))}${g.error ? ` · <span class="matrix-no">${escapeHtml(g.error)}</span>` : ""}</td></tr>`;
+        ` · <code>${escapeHtml(g.model)}</code> · ${layers || `head ${escapeHtml(g.head)} + ${escapeHtml((g.members ?? []).join(", "))}`}${g.error ? ` · <span class="matrix-no">${escapeHtml(g.error)}</span>` : ""}</td></tr>`;
     }).join("");
   };
 

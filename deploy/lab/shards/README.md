@@ -96,3 +96,15 @@ forwards, and the script asks the hub's `/v1/chat/completions` for `llama-8b-spl
   left `/v1/models`, and a request got `model 'llama-8b-split' not found`.
 - **Found here:** shard-a's own engine (an Ollama that is not in the container) is down, so the node reports its backend
   unhealthy — the hub refused the group's model for it until a running group counted as serving on its own.
+
+## A group that survives a member leaving (phase 137)
+
+`tunnel-lab.sh` now starts four nodes — shard-d is the group's spare — with each node's local API on loopback (an owner's
+pause). `survive-lab.sh` then:
+
+- **revokes shard-c:** every request got `503`, `Retry-After: 15`, *group 'llama-8b-split' is reassembling: shard-d stands in
+  for shard-c (member 'shard-c' is not connected)* for 57 s, then `200` with **the same text as before**; the layers moved from
+  shard-c to shard-d (22–31 + output);
+- **pauses shard-b through its own control API during a 200-token request:** the head showed `draining`, the request completed
+  with its 200 tokens, and the next one got a 503 saying why.
+- **Found here:** the pause was first a `500 could not write /app/node.local.json` — the node images now keep that file in `/data`.
