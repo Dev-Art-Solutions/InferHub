@@ -53,6 +53,15 @@ public sealed class ShardGroupDefinition
     public string? Model { get; set; }
 
     public int Context { get; set; } = 4096;
+
+    /// <summary>Phase 138 D3: <c>private</c> (the default — members by name) or <c>community</c> (the coordinator picks <see cref="Workers"/>
+    /// community nodes).</summary>
+    public string Mode { get; set; } = "private";
+
+    /// <summary>How many workers a community group takes besides its head.</summary>
+    public int Workers { get; set; } = 2;
+
+    public bool IsCommunity => string.Equals(Mode?.Trim(), "community", StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>The <c>ShardGroups</c> section, by group name. Empty: no group, and nothing is ever sent (the invariant).</summary>
@@ -169,7 +178,34 @@ public sealed class ShardPeerPublisher(
             var members = new List<(string Slot, Services.NodeSnapshot Node)>();
             var substitutions = new List<string>();
 
-            if (why is null)
+            var community = definition.IsCommunity;
+
+            if (why is null && community)
+            {
+                // Phase 138 D3: the head runs it and sees every prompt, so it opted in too; the members are picked here.
+                if (shards.Of(head!.NodeId)?.Community != true || head.Sealed == true)
+                {
+                    why = $"{head.Name} has not joined community groups (Node:Shards:Community and CommunityAcceptRisk), so it cannot head one";
+                }
+                else
+                {
+                    var picked = nodes
+                        .Where(n => n.NodeId != head.NodeId && shards.Of(n.NodeId)?.Community == true && n.Sealed != true && NotReady(n.Name, n, isHead: false) is null)
+                        .OrderByDescending(n => Weight(shards.Of(n.NodeId)!))
+                        .ThenBy(n => n.Name, StringComparer.OrdinalIgnoreCase)
+                        .Take(Math.Max(1, definition.Workers))
+                        .ToArray();
+
+                    if (picked.Length < Math.Max(1, definition.Workers))
+                    {
+                        why = $"only {picked.Length} community node(s) can take part now; the group wants {Math.Max(1, definition.Workers)}";
+                    }
+
+                    members.AddRange(picked.Select(n => (n.Name, n)));
+                }
+            }
+
+            if (why is null && !community)
             {
                 var slots = definition.Members.Where(m => !string.Equals(Find(m)?.NodeId, head!.NodeId, StringComparison.OrdinalIgnoreCase)).ToArray();
                 var spares = definition.Spares
@@ -219,7 +255,8 @@ public sealed class ShardPeerPublisher(
                     definition.Model!.Trim(),
                     definition.Context,
                     Weight(shards.Of(head.NodeId)!),
-                    members.Select(m => new ShardGroupWorker(m.Node.NodeId, m.Node.Name, Weight(shards.Of(m.Node.NodeId)!))).ToArray()));
+                    members.Select(m => new ShardGroupWorker(m.Node.NodeId, m.Node.Name, Weight(shards.Of(m.Node.NodeId)!))).ToArray(),
+                    community));
             }
 
             status.Add(new ShardGroupStatus(name, head?.Name ?? definition.Head, why is null ? members.Select(m => m.Node.Name).ToArray() : definition.Members,
@@ -279,6 +316,10 @@ public sealed class ShardPeerPublisher(
         });
     }
 
+    /// <summary>Phase 138 D4: whether a model is a community group's — listed as <c>inferhub-community</c>, sent only with the client's acceptance.</summary>
+    public bool IsCommunityGroup(string model) =>
+        !string.IsNullOrWhiteSpace(model) && Definitions.TryGetValue(model.Trim(), out var definition) && definition.IsCommunity;
+
     /// <summary>For <c>GET /api/admin/shards/groups</c>.</summary>
     public IReadOnlyList<ShardGroupStatus> GroupStatus() => ComputeGroups(Compute()).Status;
 
@@ -291,7 +332,7 @@ public sealed class ShardPeerPublisher(
             .GroupBy(c => c.NodeId, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.OrderByDescending(c => c.IssuedUtc).First(), StringComparer.OrdinalIgnoreCase);
 
-        var eligible = new List<(Services.NodeSnapshot Node, ShardPeer Peer, string? Organisation)>();
+        var eligible = new List<(Services.NodeSnapshot Node, ShardPeer Peer, string? Organisation, bool Community)>();
 
         foreach (var node in registry.Snapshot(now))
         {
@@ -302,7 +343,9 @@ public sealed class ShardPeerPublisher(
                 continue;
             }
 
-            eligible.Add((node, new ShardPeer(node.NodeId, node.Name, endpoint, certificate.Thumbprint), certificate.Organisation));
+            // Phase 138 D1: a community node is one whose owner opted in and accepted the risk, and never a sealed one.
+            var community = shards.Of(node.NodeId)?.Community == true && node.Sealed != true;
+            eligible.Add((node, new ShardPeer(node.NodeId, node.Name, endpoint, certificate.Thumbprint), certificate.Organisation, community));
         }
 
         var lists = new Dictionary<string, ShardPeerList>(StringComparer.Ordinal);
@@ -313,7 +356,8 @@ public sealed class ShardPeerPublisher(
             lists[node.ConnectionId] = new ShardPeerList(me.Node is null
                 ? []
                 : eligible
-                    .Where(e => e.Node.ConnectionId != node.ConnectionId && string.Equals(e.Organisation, me.Organisation, StringComparison.Ordinal))
+                    // Phase 138 D2: one organisation, or both opted into community (across organisations).
+                    .Where(e => e.Node.ConnectionId != node.ConnectionId && (string.Equals(e.Organisation, me.Organisation, StringComparison.Ordinal) || (e.Community && me.Community)))
                     .Select(e => e.Peer)
                     .OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
                     .ToArray());

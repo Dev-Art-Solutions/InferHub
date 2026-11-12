@@ -308,7 +308,8 @@ public static class OpenAiEndpoints
             .Select(model => new OpenAiModel(
                 model.Name,
                 created,
-                "inferhub",
+                // Phase 138 D4: a community group says so where a client looks first — it needs X-InferHub-Community: accept.
+                (registry as NodeRegistry)?.IsCommunityGroup?.Invoke(model.Name) == true ? "inferhub-community" : "inferhub",
                 CapabilitiesOf(registry, providers, capabilities, model.Name)))
             .ToList();
 

@@ -119,11 +119,12 @@ public sealed class ShardWorker : IHostedService, IAsyncDisposable
                 $"127.0.0.1:{options.Port}",
                 protocol,
                 devices.ToArray(),
-                state == NodeShardState.Running ? null : problem ?? Said(process?.LastError) ?? (state == NodeShardState.Starting ? null : "not started"),
+                state == NodeShardState.Running ? options.CommunityProblem : problem ?? Said(process?.LastError) ?? (state == NodeShardState.Starting ? null : "not started"),
                 time.GetUtcNow(),
                 tunnel?.State(),
                 tunnel?.Peers(),
-                groups?.Invoke() is { Count: > 0 } heading ? heading : null);
+                groups?.Invoke() is { Count: > 0 } heading ? heading : null,
+                options.JoinsCommunity);
         }
     }
 

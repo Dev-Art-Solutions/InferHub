@@ -39,6 +39,8 @@ public static class NodeSettingsSchema
         new("Node:Shards:TunnelAdvertise", "string", false, "sharing", "host:port other nodes dial for this tunnel. Empty: the address this node connects to the coordinator from."),
         new("Node:Shards:AllowHead", "bool", false, "sharing", "Let the coordinator make this node the head of a group: it holds the model file and runs the llama-server over the members' workers."),
         new("Node:Shards:ModelsDir", "string", false, "sharing", "Where a group's model file is, by the name the coordinator sends. Empty: the llama.cpp engine's models folder."),
+        new("Node:Shards:Community", "bool", false, "sharing", "Join community groups: machines of other owners, put together by the coordinator. Every machine in such a group sees what passes through it. Needs CommunityAcceptRisk too; never on a sealed node."),
+        new("Node:Shards:CommunityAcceptRisk", "bool", false, "sharing", "Your yes to that risk: other machines in a community group see the prompts and answers that pass through this one."),
         new("Node:ResourceLimits:Engines", "json", true, "limits", "Hard limits per runtime: {ollama|llamacpp|colibri|strata|tools: {CpuPercent, Cores, MemoryMiB, VramMiB, Gpus}}."),
         new("Node:Sealed", "bool", false, "network", "Sealed: reach nothing outside this network but the coordinator — no cloud engines, no public API, downloads only through the coordinator."),
         new("Coordinator:Enabled", "bool", false, "network", "Join a network: connect to a coordinator."),

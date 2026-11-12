@@ -1004,3 +1004,34 @@ API during a 200-token request: the head showed `draining`, that request complet
 **Not established:** a request in flight on a worker that *vanished* (llama.cpp aborts the head; the request fails with its error
 — the drain is for planned leaves); choosing a spare by fit; a member coming back while its spare serves (the group stays on the
 spare until the list changes again — no fail-back); GPUs; models above 8B.
+
+### Phase 138 (community: a node opts in with the risk stated, the coordinator picks the members, a client accepts per request)
+
+Files: node `ShardOptions.Community/CommunityAcceptRisk/JoinsCommunity/CommunityProblem`, the worker's `community` in its state,
+`SealedMode` (the door); hub `ShardPeerPublisher.Compute` (peers across organisations), `ShardGroupDefinition.Mode/Workers`, the pick
+in `ComputeGroups`, `IsCommunityGroup` → `NodeRegistry.IsCommunityGroup` → `InferenceCore` (the 403, `CommunityHeader`) and
+`/v1/models` (`owned_by`); Shared `NodeShardState.Community`, `ShardGroupSpec/State.Community`; the console's pills;
+`deploy/lab/shards/community-lab.sh`.
+
+**D1, load-bearing — three separate yeses: the machine's owner, the admin, the client.** The user's terms (2026-11-08): in community
+mode whoever sends a prompt accepts that other nodes may see it; encryption is deferred. A node joins only with `Community` **and**
+`CommunityAcceptRisk` in its own configuration — one without the other is ignored and said in its shard state; `Node:Sealed` with
+`Community` refuses to start (a door in 122's list), and the hub never counts a node that registered sealed. The admin defines a
+`Mode: community` group. The client accepts **per request** with `X-InferHub-Community: accept`, or gets a 403 that says what and how
+— both dialects, one check at the top of the dispatch. *Rejected:* a per-key flag alone — the key's owner is not always the person
+typing the prompt; the header puts the choice in the request that carries it.
+
+**D2 — community nodes are peers across organisations.** 135's rule (same organisation) **or** both community and neither sealed.
+
+**D3 — the coordinator picks the members.** `Workers: N`; the head must have joined too (it sees every prompt). Members: connected
+community nodes, not sealed, ready (137 D1), peers of the head, on its protocol — the largest offers first, ties by name. Fewer than
+N is "only k community node(s) can take part now; the group wants N". A member leaving is just the next pick.
+
+**D4 — a client sees it.** `/v1/models` lists the group with `owned_by: inferhub-community`; the console marks the node and the group.
+
+**The lab (2026-11-12, `community-lab.sh`):** shard-a/b/c opted in, shard-d (same offer) did not, shard-s sealed with `Community` on.
+The hub picked shard-b and shard-c, never shard-d; shard-s exited naming the door; `/v1/models` said `inferhub-community`; a chat
+without the header got the 403 (and `/api/chat` too), with it the answer.
+
+**Not established:** organisations in the lab (cross-organisation peering is covered by `ShardPeersTests`); a client library that
+sends the header (none yet); anything that hides a prompt from the machines in a group — there is nothing, by the user's choice.

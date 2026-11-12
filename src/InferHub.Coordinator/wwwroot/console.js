@@ -101,6 +101,10 @@
       const tip = [`Node:Shards — a llama.cpp RPC worker on ${s.endpoint ?? "127.0.0.1"} (this machine only)`, ...(s.devices ?? []), s.lastError].filter(Boolean).join("\n");
       const cls = s.state === "running" ? "pill" : s.state === "starting" ? "pill pill-warn" : "pill pill-err";
       pills.push(`<span class="${cls}" title="${escapeHtml(tip)}">offers groups ${escapeHtml(what)}${proto} · ${escapeHtml(s.state)}</span>`);
+      // Phase 138: its owner opted it into community groups — machines of other owners see what passes through it.
+      if (s.community === true) {
+        pills.push(`<span class="pill pill-warn" title="Node:Shards:Community — joins groups with machines of other owners, who see what passes through">community</span>`);
+      }
     }
 
     // Phase 69. Beside `online`, not instead of it: the connection genuinely is up, and saying so
@@ -364,7 +368,8 @@
       const cls = g.state === "running" ? "pill pill-ok" : g.state === "failed" ? "pill pill-err" : "pill pill-warn";
       // Phase 137: which worker holds which layers, by llama.cpp's own rule over the group's split.
       const layers = (g.layers ?? []).map(l => `${escapeHtml(l.name)} ${l.count > 0 ? `${l.first}–${l.first + l.count - 1}` : "—"}${l.output ? " + output" : ""}`).join(" · ");
-      return `<tr><td colspan="${offering.length + 2}">group <b>${escapeHtml(g.name)}</b> <span class="${cls}" title="${escapeHtml(g.error ?? "")}">${escapeHtml(g.state)}</span>` +
+      const mode = g.community ? ` <span class="pill pill-warn" title="clients send to it only with X-InferHub-Community: accept">community</span>` : "";
+      return `<tr><td colspan="${offering.length + 2}">group <b>${escapeHtml(g.name)}</b>${mode} <span class="${cls}" title="${escapeHtml(g.error ?? "")}">${escapeHtml(g.state)}</span>` +
         ` · <code>${escapeHtml(g.model)}</code> · ${layers || `head ${escapeHtml(g.head)} + ${escapeHtml((g.members ?? []).join(", "))}`}${g.error ? ` · <span class="matrix-no">${escapeHtml(g.error)}</span>` : ""}</td></tr>`;
     }).join("");
   };

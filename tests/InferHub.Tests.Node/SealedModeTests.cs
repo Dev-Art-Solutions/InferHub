@@ -84,6 +84,15 @@ public class SealedModeTests
     }
 
     [Fact]
+    public void ACommunityOfferIsADoorOnASealedNode()
+    {
+        // Phase 138: the track's invariant — a sealed node never joins a community group.
+        var door = Assert.Single(SealedMode.Violations(Config(("Node:Shards:Community", "true"), ("Node:Shards:CommunityAcceptRisk", "true"))));
+        Assert.Contains("Node:Shards:Community", door);
+        Assert.Empty(SealedMode.Violations(Config(("Node:Shards:Enabled", "true"), ("Node:Shards:RamGiB", "8"))));
+    }
+
+    [Fact]
     public void AnOllamaOnAnotherContinentIsADoor()
     {
         var door = Assert.Single(SealedMode.Violations(Config(("Ollama:Endpoint", "https://ollama.example.com/"))));

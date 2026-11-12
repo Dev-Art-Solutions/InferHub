@@ -24,6 +24,9 @@ public sealed class NodeRegistry : INodeRegistry
     /// <summary>Phase 137 D2: why a configured shard group answers nobody now (the 503's sentence), or null when it is not one.</summary>
     public Func<string, string?>? WhyGroupIsNotServing { get; set; }
 
+    /// <summary>Phase 138 D4: whether a model is a community shard group — a client must accept before it is sent there.</summary>
+    public Func<string, bool>? IsCommunityGroup { get; set; }
+
     private void RaiseChanged() => Changed?.Invoke();
 
     public void Upsert(string connectionId, NodeRegistration registration, DateTimeOffset now)

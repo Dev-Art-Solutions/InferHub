@@ -40,6 +40,9 @@ internal static class InferenceCore
     /// <summary>Phase 137 D2: a group reassembles in seconds to a minute (a head restarts over its members).</summary>
     private const int ShardGroupRetryAfterSeconds = 15;
 
+    /// <summary>Phase 138 D4: the header a client sends to accept a community group's risk, per request.</summary>
+    public const string CommunityHeader = "X-InferHub-Community";
+
     internal readonly record struct DispatchOutcome(
         ChannelReader<InferenceChunk>? Stream,
         string? ResponseJson,
@@ -128,7 +131,8 @@ internal static class InferenceCore
         UsageMeter Usage,
         IRequestQueue Queue,
         PriorityGate? Priority = null,
-        string PriorityClass = PriorityClasses.Normal)
+        string PriorityClass = PriorityClasses.Normal,
+        bool CommunityAccepted = false)
     {
         public static ClientContext From(HttpContext httpContext)
         {
@@ -142,7 +146,9 @@ internal static class InferenceCore
                 services.GetRequiredService<UsageMeter>(),
                 services.GetRequiredService<IRequestQueue>(),
                 gate,
-                gate?.ClassOf(client, httpContext.Request.Headers[PriorityGate.Header].ToString()) ?? PriorityClasses.Normal);
+                gate?.ClassOf(client, httpContext.Request.Headers[PriorityGate.Header].ToString()) ?? PriorityClasses.Normal,
+                // Phase 138 D4: the person sending this prompt accepted that a community group's machines see it.
+                string.Equals(httpContext.Request.Headers[CommunityHeader].ToString().Trim(), "accept", StringComparison.OrdinalIgnoreCase));
         }
     }
 
@@ -165,6 +171,16 @@ internal static class InferenceCore
         if (string.IsNullOrWhiteSpace(model))
         {
             return DispatchOutcome.Failure(StatusCodes.Status400BadRequest, "model is required");
+        }
+
+        // Phase 138 D4: a community group runs on machines of other owners, who can see what passes through them. The
+        // request that carries the prompt says it accepts that, or it is not sent.
+        if (!context.CommunityAccepted && (registry as Services.NodeRegistry)?.IsCommunityGroup?.Invoke(model) == true)
+        {
+            return DispatchOutcome.Failure(
+                StatusCodes.Status403Forbidden,
+                $"model '{model}' is a community group: it runs on machines of other owners, and they can see this prompt and the "
+                + $"answer as they pass through. To send it anyway, add the header {CommunityHeader}: accept");
         }
 
         // What kind of work this surface is asking for (phase 40). Derived from the job kind

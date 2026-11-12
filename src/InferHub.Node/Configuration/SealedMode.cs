@@ -211,6 +211,13 @@ public static class SealedMode
             doors.Add($"Tools:AllowModelDownload lets a tool worker fetch weights from the internet. {why} runs tools on weights already on disk.");
         }
 
+        // Phase 138: a community group passes prompts and activations through machines of other owners. The track's
+        // invariant: a sealed node never joins one.
+        if (configuration.GetValue<bool>("Node:Shards:Community"))
+        {
+            doors.Add($"Node:Shards:Community joins groups with other owners' machines, which see what passes through. {why} shares only within its own private groups.");
+        }
+
         foreach (var provider in configuration.GetSection("CloudMedia:Providers").GetChildren())
         {
             if (provider.GetValue("Enabled", true) && !IsLocal(provider["BaseUrl"]))

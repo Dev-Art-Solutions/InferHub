@@ -1149,6 +1149,36 @@ POST /v1/chat/completions   {"model": "llama-8b-split", "messages": [...]}   ←
   the reason, then the same text as before. A member paused during a 200-token answer: the answer
   completed, then the group stopped.
 
+### Community groups: machines of different owners, by choice (v3.98+)
+
+A community group runs one model across machines whose owners chose to share, possibly in different
+organisations. **Every machine in such a group sees the prompts and answers that pass through it.**
+Nothing hides them. So three people each say yes:
+
+```jsonc
+// each machine's owner — both keys, or the node stays private
+"Node": { "Shards": { "Enabled": true, "RamGiB": 3, "Community": true, "CommunityAcceptRisk": true } }
+// the admin — the coordinator picks the workers
+"ShardGroups": { "llama-8b-community": { "Mode": "community", "Head": "shard-a", "Workers": 2, "Model": "llama31-8b.gguf" } }
+```
+
+```http
+POST /v1/chat/completions   X-InferHub-Community: accept   {"model": "llama-8b-community", ...}
+```
+
+- **The client accepts in each request.** Without `X-InferHub-Community: accept`, a request for a
+  community group gets `403` saying what the risk is and how to accept it. `/v1/models` lists the
+  group as `owned_by: inferhub-community`.
+- **The coordinator picks the workers:** community nodes that are ready, largest offers first. The
+  head must have joined too, since it sees every prompt.
+- **A sealed node never joins.** With `Node:Sealed` on, `Community` stops the node at startup and
+  names why.
+- **Community nodes reach each other across organisations.** Other nodes still reach only their own
+  organisation.
+- **Measured in the lab** (`deploy/lab/shards/community-lab.sh`): the coordinator picked the two
+  community nodes and never the private one with the same memory. The sealed node refused to start.
+  A chat without the header got the 403, and with it the answer.
+
 ### A sealed node (v3.82+)
 
 One setting for a node that must not reach the internet: `Node:Sealed=true`. It talks to its

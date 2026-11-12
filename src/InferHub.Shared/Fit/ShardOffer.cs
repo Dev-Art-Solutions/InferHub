@@ -36,7 +36,9 @@ public sealed record NodeShardState(
     [property: JsonPropertyName("atUtc")] DateTimeOffset AtUtc,
     [property: JsonPropertyName("tunnel")] ShardTunnelState? Tunnel = null,
     [property: JsonPropertyName("peers")] IReadOnlyList<ShardPeerState>? Peers = null,
-    [property: JsonPropertyName("groups")] IReadOnlyList<ShardGroupState>? Groups = null)
+    [property: JsonPropertyName("groups")] IReadOnlyList<ShardGroupState>? Groups = null,
+    /// <summary>Phase 138 D1: this node's owner opted it into community groups and accepted the risk. Null before 3.98.</summary>
+    [property: JsonPropertyName("community")] bool? Community = null)
 {
     /// <summary><c>Node:Shards:Enabled</c> is false: nothing offered, nothing running.</summary>
     public const string Off = "off";
@@ -113,7 +115,8 @@ public sealed record ShardGroupSpec(
     [property: JsonPropertyName("model")] string Model,
     [property: JsonPropertyName("context")] int Context,
     [property: JsonPropertyName("headWeight")] long HeadWeight,
-    [property: JsonPropertyName("members")] IReadOnlyList<ShardGroupWorker> Members);
+    [property: JsonPropertyName("members")] IReadOnlyList<ShardGroupWorker> Members,
+    [property: JsonPropertyName("community")] bool Community = false);
 
 /// <summary>The hub's list for one head (D1). Replaces the previous one whole; a group not in it is stopped.</summary>
 public sealed record ShardGroupList(
@@ -128,7 +131,8 @@ public sealed record ShardGroupState(
     [property: JsonPropertyName("members")] IReadOnlyList<string> Members,
     [property: JsonPropertyName("endpoint")] string? Endpoint,
     [property: JsonPropertyName("error")] string? Error,
-    [property: JsonPropertyName("layers")] IReadOnlyList<ShardGroupLayers>? Layers = null)
+    [property: JsonPropertyName("layers")] IReadOnlyList<ShardGroupLayers>? Layers = null,
+    [property: JsonPropertyName("community")] bool Community = false)
 {
     /// <summary>Phase 137 D3: the head finishes the requests it has, then stops — and takes no new one meanwhile.</summary>
     public const string Draining = "draining";

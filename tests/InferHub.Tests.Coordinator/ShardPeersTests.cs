@@ -117,6 +117,26 @@ public sealed class ShardPeersTests : IDisposable
         Assert.Empty(lists["conn-c"].Peers);
     }
 
+    [Fact]
+    public void CommunityNodesArePeersAcrossOrganisationsAndOthersStayWithinTheirOwn()
+    {
+        // Phase 138 D2.
+        Enroll("a", "alice");
+        Enroll("b", "bob");
+        Enroll("c", "carol");
+        Connect("a");
+        Connect("b");
+        Connect("c");
+        shards.Report(shards.Of("a")! with { Community = true }, IPAddress.Parse("10.0.0.1"));
+        shards.Report(shards.Of("b")! with { Community = true }, IPAddress.Parse("10.0.0.1"));
+
+        var lists = Publisher().Compute();
+
+        Assert.Equal(["b"], lists["conn-a"].Peers.Select(p => p.NodeId));
+        Assert.Equal(["a"], lists["conn-b"].Peers.Select(p => p.NodeId));
+        Assert.Empty(lists["conn-c"].Peers);
+    }
+
     [Theory]
     [InlineData("::ffff:10.1.2.3", "10.1.2.3:50053")]
     [InlineData("fd00::7", "[fd00::7]:50053")]

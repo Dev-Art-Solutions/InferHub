@@ -196,6 +196,51 @@ public sealed class ShardGroupsTests : IDisposable
         Assert.Null(publisher.WhyGroupIsNotServing("llama-8b-split"));
     }
 
+    private void Community(string id, long ramMiB = 3072, string? organisation = null, bool sealedNode = false)
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var (token, _) = authority.CreateToken(id, "admin:test", organisation);
+        authority.Enroll(new NodeEnrollRequest(token, id, id, Convert.ToBase64String(key.ExportSubjectPublicKeyInfo())));
+        registry.Upsert("conn-" + id, new NodeRegistration(id, "shard-" + id, "http://x", "3.98.0", Sealed: sealedNode ? true : null), DateTimeOffset.UtcNow);
+        shards.Report(new NodeShardState(id, NodeShardState.Running, ramMiB, 0, "127.0.0.1:50052", "8.0.1", [], null, DateTimeOffset.UtcNow,
+            new ShardTunnelState(50053, $"shard-{id}:50053", null, null), Community: true), IPAddress.Loopback);
+    }
+
+    [Fact]
+    public void ACommunityGroupPicksTheLargestCommunityOffersAcrossOrganisationsAndNeverAPrivateOrSealedNode()
+    {
+        options.Groups.Clear();
+        options.Groups["llama-8b-community"] = new ShardGroupDefinition { Mode = "community", Head = "shard-a", Workers = 2, Model = "llama31-8b.gguf" };
+        Community("a", organisation: "alice");
+        Community("b", 4096, organisation: "bob");
+        Community("c", 2048, organisation: "carol");
+        Community("d", 8192, organisation: "dave", sealedNode: true);   // sealed: never
+        Node("p", 16384, organisation: "alice");                        // private, the largest offer: never
+
+        var (lists, status) = Compute();
+
+        var spec = Assert.Single(lists["conn-a"].Groups);
+        Assert.True(spec.Community);
+        Assert.Equal(["b", "c"], spec.Members.Select(m => m.NodeId));
+        Assert.True(Assert.Single(status).Ready);
+        Assert.True(Publisher().IsCommunityGroup("llama-8b-community"));
+        Assert.False(Publisher().IsCommunityGroup("qwen2.5:0.5b"));
+    }
+
+    [Fact]
+    public void ACommunityGroupNeedsACommunityHeadAndEnoughCommunityNodes()
+    {
+        options.Groups.Clear();
+        options.Groups["llama-8b-community"] = new ShardGroupDefinition { Mode = "community", Head = "shard-a", Workers = 3, Model = "llama31-8b.gguf" };
+        Node("a");
+        Community("b");
+        Assert.Contains("shard-a has not joined community groups", Assert.Single(Compute().Status).Why);
+
+        Community("a");
+        Community("c");
+        Assert.Equal("only 2 community node(s) can take part now; the group wants 3", Assert.Single(Compute().Status).Why);
+    }
+
     public void Dispose()
     {
         try

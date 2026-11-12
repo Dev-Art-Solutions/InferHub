@@ -30,6 +30,22 @@ public sealed class ShardWorkerTests
             exists ?? (path => path == Path.Combine(Llama, "ggml-rpc-server" + Exe)), null);
 
     [Fact]
+    public void ANodeJoinsTheCommunityOnlyWithTheRiskAcceptedAndHalfSaidIsSaid()
+    {
+        // Phase 138 D1.
+        var both = Worker(new ShardOptions { Enabled = true, RamGiB = 8, Community = true, CommunityAcceptRisk = true });
+        Assert.True(both.State("n1").Community);
+
+        var half = new ShardOptions { Enabled = true, RamGiB = 8, Community = true };
+        Assert.False(Worker(half).State("n1").Community);
+        Assert.False(half.JoinsCommunity);
+        Assert.Contains("CommunityAcceptRisk", half.CommunityProblem);
+
+        Assert.False(Worker(new ShardOptions { Enabled = true, RamGiB = 8 }).State("n1").Community);
+        Assert.False(new ShardOptions { Community = true, CommunityAcceptRisk = true }.JoinsCommunity); // not offering at all
+    }
+
+    [Fact]
     public void OffIsNothingOfferedNothingLaunchedAndAnOffState()
     {
         var worker = Worker(new ShardOptions { RamGiB = 24 });

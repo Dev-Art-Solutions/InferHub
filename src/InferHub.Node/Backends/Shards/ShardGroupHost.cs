@@ -96,7 +96,7 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
                 .Where(spec => running.ContainsKey(spec.Name) || !stopping.ContainsKey(spec.Name))
                 .Select(spec => running.TryGetValue(spec.Name, out var group)
                     ? group.State()
-                    : new ShardGroupState(spec.Name, spec.Model, ShardGroupState.Waiting, spec.Members.Select(m => m.Name).ToArray(), null, Waiting(spec)));
+                    : new ShardGroupState(spec.Name, spec.Model, ShardGroupState.Waiting, spec.Members.Select(m => m.Name).ToArray(), null, Waiting(spec), null, spec.Community));
             return [.. draining, .. wanted];
         }
     }
@@ -636,7 +636,7 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
                 ? ShardGroupState.Draining
                 : Healthy ? ShardGroupState.Running : Process.Failed ? ShardGroupState.Failed : ShardGroupState.Starting;
             var why = Draining ? $"finishing {InFlight} request(s), then stopping" : Healthy ? null : Process.LastError;
-            return new ShardGroupState(Spec.Name, Spec.Model, state, Spec.Members.Select(m => m.Name).ToArray(), $"127.0.0.1:{Port}", why, Layers);
+            return new ShardGroupState(Spec.Name, Spec.Model, state, Spec.Members.Select(m => m.Name).ToArray(), $"127.0.0.1:{Port}", why, Layers, Spec.Community);
         }
 
         public async ValueTask DisposeAsync() => await Process.DisposeAsync();

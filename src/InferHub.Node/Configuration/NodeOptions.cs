@@ -405,6 +405,24 @@ public sealed class ShardOptions
     /// <summary>The <c>llama-server</c> a head runs. Null: the llama.cpp engine's, else the one beside the worker.</summary>
     public string? HeadExecutable { get; set; }
 
+    /// <summary>
+    /// Phase 138 D1: offer this node to community groups — machines of other owners, possibly other organisations, put
+    /// together by the coordinator. Every machine in such a group sees what passes through it. Joins only together with
+    /// <see cref="CommunityAcceptRisk"/>; a sealed node refuses to start with it.
+    /// </summary>
+    public bool Community { get; set; }
+
+    /// <summary>The owner's own "yes" to that risk, in this node's configuration. Without it <see cref="Community"/> is ignored, and said.</summary>
+    public bool CommunityAcceptRisk { get; set; }
+
+    /// <summary>Both said: this node takes part in community groups.</summary>
+    public bool JoinsCommunity => Enabled && Community && CommunityAcceptRisk;
+
+    /// <summary>Half said, in a sentence; null when nothing is wrong.</summary>
+    public string? CommunityProblem => Community && !CommunityAcceptRisk
+        ? "Node:Shards:Community is set without Node:Shards:CommunityAcceptRisk: in a community group the other machines see what passes through this one — set both to join, or neither"
+        : null;
+
     public long RamMiB => Math.Max(0, RamGiB ?? 0) * 1024L;
 
     public long VramMiB => Math.Max(0, VramGiB ?? 0) * 1024L;

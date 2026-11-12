@@ -108,3 +108,14 @@ pause). `survive-lab.sh` then:
 - **pauses shard-b through its own control API during a 200-token request:** the head showed `draining`, the request completed
   with its 200 tokens, and the next one got a 503 saying why.
 - **Found here:** the pause was first a `500 could not write /app/node.local.json` — the node images now keep that file in `/data`.
+
+## A community group (phase 138)
+
+`community-lab.sh`: shard-a (the head), shard-b and shard-c opted into community groups with the risk accepted; shard-d offers
+the same 3 GiB and did not; shard-s is sealed and asks to join anyway. One group, `Mode: community`, `Workers: 2`.
+
+- The coordinator picked **shard-b and shard-c**, never shard-d.
+- **shard-s exited at startup**, naming `Node:Shards:Community` as a door a sealed node does not open.
+- `/v1/models` lists `llama-8b-community` as `owned_by: inferhub-community`.
+- A chat without `X-InferHub-Community: accept` got `403` with the risk in words, on `/v1/chat/completions` and `/api/chat`;
+  with the header, the answer.
