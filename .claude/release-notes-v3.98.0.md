@@ -49,6 +49,12 @@ did not; shard-s was sealed and asked to join anyway.
 - A chat without the header got the `403` above, on `/v1/chat/completions` and on `/api/chat`. With the header, the group
   answered.
 
+## The published images
+
+`inferhub-coordinator:3.98.0` and `inferhub-node:3.98.0`, revision `7ff5314`, through `community-lab.sh`: the coordinator
+picked shard-b and shard-c, the sealed node exited naming the door, `/v1/models` said `inferhub-community`, the chat without
+the header got the 403, and with it the group answered.
+
 ## Not established, said out loud
 
 - **Nothing hides a prompt from the machines in a community group.** That is the deal, by the user's decision. The header
