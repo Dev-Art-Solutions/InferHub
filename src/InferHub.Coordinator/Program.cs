@@ -136,6 +136,10 @@ builder.Services.AddSingleton<NodeLimitsRegistry>();
 builder.Services.AddSingleton<NodeShardRegistry>();
 // Phase 136: groups the admin defined (ShardGroups:<name>); none by default.
 builder.Services.Configure<ShardGroupsOptions>(options => builder.Configuration.GetSection(ShardGroupsOptions.SectionName).Bind(options.Groups));
+// Phase 139: the relay two nodes with no direct path meet at; off by default (ShardRelay:Enabled).
+builder.Services.Configure<ShardRelayOptions>(builder.Configuration.GetSection(ShardRelayOptions.SectionName));
+builder.Services.AddSingleton<ShardRelay>();
+builder.Services.AddHostedService(services => services.GetRequiredService<ShardRelay>());
 builder.Services.AddSingleton<ShardPeerPublisher>();
 builder.Services.AddSingleton<NodeEgressRegistry>(); // phase 128
 builder.Services.AddSingleton<NodeLimitsControl>();

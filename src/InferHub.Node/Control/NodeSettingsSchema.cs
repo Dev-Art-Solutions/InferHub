@@ -37,6 +37,7 @@ public static class NodeSettingsSchema
         new("Node:Shards:Executable", "string", false, "sharing", "The ggml-rpc-server to run. Empty: the one beside this node's llama-server."),
         new("Node:Shards:TunnelPort", "int", false, "sharing", "The TLS port other nodes reach this worker through — only nodes the coordinator lists, by their certificates. 0: no tunnel."),
         new("Node:Shards:TunnelAdvertise", "string", false, "sharing", "host:port other nodes dial for this tunnel. Empty: the address this node connects to the coordinator from."),
+        new("Node:Shards:TunnelRelay", "bool", false, "sharing", "When another node cannot be reached directly (a home router, NAT), meet it at the coordinator's relay, if the coordinator runs one. The relay passes the same encrypted tunnel and cannot read it; it is slower than a direct path."),
         new("Node:Shards:AllowHead", "bool", false, "sharing", "Let the coordinator make this node the head of a group: it holds the model file and runs the llama-server over the members' workers."),
         new("Node:Shards:ModelsDir", "string", false, "sharing", "Where a group's model file is, by the name the coordinator sends. Empty: the llama.cpp engine's models folder."),
         new("Node:Shards:Community", "bool", false, "sharing", "Join community groups: machines of other owners, put together by the coordinator. Every machine in such a group sees what passes through it. Needs CommunityAcceptRisk too; never on a sealed node."),

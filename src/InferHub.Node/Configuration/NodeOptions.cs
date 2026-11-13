@@ -393,6 +393,13 @@ public sealed class ShardOptions
     public string? TunnelAdvertise { get; set; }
 
     /// <summary>
+    /// Phase 139 D1: when no direct path to a peer exists (this node or the peer behind NAT), meet it at the coordinator's
+    /// relay — if that coordinator runs one (<c>ShardRelay:Enabled</c>). The relay copies the same mTLS the direct path
+    /// carries and holds no key to it; the cost is every tensor travelling by way of the coordinator. Off by default.
+    /// </summary>
+    public bool TunnelRelay { get; set; }
+
+    /// <summary>
     /// Phase 136 D2: this node may be a group's head — hold the model file and run the <c>llama-server</c> its coordinator
     /// asks for, over its own worker and its tunnels. Offering memory (134) is not this consent. Off by default.
     /// </summary>

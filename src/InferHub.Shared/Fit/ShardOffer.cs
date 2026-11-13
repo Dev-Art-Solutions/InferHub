@@ -62,21 +62,40 @@ public sealed record ShardTunnelState(
     [property: JsonPropertyName("port")] int Port,
     [property: JsonPropertyName("advertise")] string? Advertise,
     [property: JsonPropertyName("thumbprint")] string? Thumbprint,
-    [property: JsonPropertyName("off")] string? Off);
+    [property: JsonPropertyName("off")] string? Off,
+    /// <summary>Phase 139 D1: this node's owner let it use its coordinator's relay (<c>Node:Shards:TunnelRelay</c>). Null: not set, or before 3.99.</summary>
+    [property: JsonPropertyName("relay")] bool? Relay = null,
+    /// <summary>Why this node is not waiting at the relay it was told of (cannot connect, refused); null when it is, or none was told.</summary>
+    [property: JsonPropertyName("relayError")] string? RelayError = null);
 
 /// <summary>Phase 135 D1: one node this node may connect to and accept, as the hub decided — reached at <see cref="Endpoint"/>,
-/// proved by the SHA-256 of its certificate.</summary>
+/// proved by the SHA-256 of its certificate. <see cref="Relay"/> (139): it also waits at the hub's relay.</summary>
 public sealed record ShardPeer(
     [property: JsonPropertyName("nodeId")] string NodeId,
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("endpoint")] string Endpoint,
-    [property: JsonPropertyName("thumbprint")] string Thumbprint);
+    [property: JsonPropertyName("thumbprint")] string Thumbprint,
+    [property: JsonPropertyName("relay")] bool Relay = false);
 
-/// <summary>The hub's list for one node (D1). Replaces the previous one whole; empty closes every door.</summary>
+/// <summary>The hub's list for one node (D1). Replaces the previous one whole; empty closes every door. <see cref="Relay"/>
+/// (139) is this node's own way to the hub's relay, present only when both said yes.</summary>
 public sealed record ShardPeerList(
-    [property: JsonPropertyName("peers")] IReadOnlyList<ShardPeer> Peers);
+    [property: JsonPropertyName("peers")] IReadOnlyList<ShardPeer> Peers,
+    [property: JsonPropertyName("relay")] ShardRelayInfo? Relay = null);
 
-/// <summary>A peer as this node sees it: its local forward (D3) and the round trip through the tunnel (D4).</summary>
+/// <summary>
+/// Phase 139 D2: where the hub's relay is and how this node proves itself there. <see cref="Host"/> null: the host of the
+/// coordinator URL this node already dials. <see cref="Key"/> is this node's alone, sent over its hub connection, and never
+/// crosses the relay's wire — only an HMAC of the relay's nonce does.
+/// </summary>
+public sealed record ShardRelayInfo(
+    [property: JsonPropertyName("host")] string? Host,
+    [property: JsonPropertyName("port")] int Port,
+    [property: JsonPropertyName("nodeId")] string NodeId,
+    [property: JsonPropertyName("key")] string Key);
+
+/// <summary>A peer as this node sees it: its local forward (D3) and the round trip through the tunnel (D4).
+/// <see cref="Via"/> (139): <c>direct</c> or <c>relay</c> — the path the last round trip took; null until one did.</summary>
 public sealed record ShardPeerState(
     [property: JsonPropertyName("nodeId")] string NodeId,
     [property: JsonPropertyName("name")] string Name,
@@ -84,7 +103,75 @@ public sealed record ShardPeerState(
     [property: JsonPropertyName("local")] string? Local,
     [property: JsonPropertyName("rttMs")] double? RttMs,
     [property: JsonPropertyName("error")] string? Error,
-    [property: JsonPropertyName("atUtc")] DateTimeOffset? AtUtc);
+    [property: JsonPropertyName("atUtc")] DateTimeOffset? AtUtc,
+    [property: JsonPropertyName("via")] string? Via = null)
+{
+    public const string Direct = "direct";
+    public const string Relayed = "relay";
+}
+
+/// <summary>
+/// Phase 139 D2: the relay's wire, before it becomes a pipe. The relay sends <see cref="NonceBytes"/> random bytes; the node
+/// answers one line — <c>IHR1 &lt;L|D&gt; &lt;node id&gt; &lt;target id or -&gt; &lt;hex HMAC-SHA256&gt;</c>, ids in base64 — and the relay one byte:
+/// <see cref="Ok"/>, or <see cref="No"/> and a sentence. A listener (<c>L</c>) then waits: <see cref="Alive"/> now and then,
+/// <see cref="Paired"/> when a dialer (<c>D</c>) was joined to it. After that the relay copies bytes and reads none of them:
+/// the two nodes run 135's mTLS through it.
+/// </summary>
+public static class ShardRelayWire
+{
+    public const string Magic = "IHR1";
+    public const int NonceBytes = 16;
+    public const int MaxLine = 1024;
+    public const char Listen = 'L';
+    public const char Dial = 'D';
+    public const byte Ok = (byte)'+';
+    public const byte No = (byte)'-';
+    public const byte Alive = (byte)'.';
+    public const byte Paired = (byte)'!';
+
+    public static string Proof(string key, ReadOnlySpan<byte> nonce, char role, string nodeId, string? target)
+    {
+        var text = System.Text.Encoding.UTF8.GetBytes($"{role}\n{nodeId}\n{target ?? "-"}");
+        var message = new byte[nonce.Length + text.Length];
+        nonce.CopyTo(message);
+        text.CopyTo(message.AsSpan(nonce.Length));
+        return Convert.ToHexStringLower(System.Security.Cryptography.HMACSHA256.HashData(System.Text.Encoding.UTF8.GetBytes(key), message));
+    }
+
+    public static string Hello(string key, ReadOnlySpan<byte> nonce, char role, string nodeId, string? target) =>
+        $"{Magic} {role} {Encode(nodeId)} {(target is null ? "-" : Encode(target))} {Proof(key, nonce, role, nodeId, target)}\n";
+
+    /// <summary>Reads a hello line (without its newline); false when it is not one.</summary>
+    public static bool TryParseHello(string line, out char role, out string nodeId, out string? target, out string proof)
+    {
+        role = default;
+        nodeId = proof = "";
+        target = null;
+        var parts = line.Trim().Split(' ');
+
+        if (parts.Length != 5 || parts[0] != Magic || parts[1].Length != 1 || parts[1][0] is not (Listen or Dial))
+        {
+            return false;
+        }
+
+        try
+        {
+            role = parts[1][0];
+            nodeId = Decode(parts[2]);
+            target = parts[3] == "-" ? null : Decode(parts[3]);
+            proof = parts[4];
+            return nodeId.Length > 0 && (role == Listen) == (target is null);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    private static string Encode(string value) => Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(value));
+
+    private static string Decode(string value) => System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(value));
+}
 
 /// <summary>
 /// The tunnel's first byte after the TLS handshake (D2): <see cref="Rpc"/> pipes to the worker, <see cref="Ping"/> echoes

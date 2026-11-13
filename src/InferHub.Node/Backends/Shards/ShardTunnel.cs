@@ -20,11 +20,15 @@ namespace InferHub.Node.Backends.Shards;
 public sealed class ShardTunnel : IHostedService, IAsyncDisposable
 {
     private const int Pings = 5;
+    private const int RelayStandby = 3;
     private static readonly TimeSpan Handshake = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan DirectWhenRelayed = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan RelaySilence = TimeSpan.FromSeconds(75);
 
     private readonly ShardOptions options;
     private readonly Func<X509Certificate2?> certificate;
     private readonly Func<string?> thumbprint;
+    private readonly Func<string?> coordinatorHost;
     private readonly ILogger logger;
     private readonly TimeProvider time;
     private readonly TimeSpan interval;
@@ -39,17 +43,22 @@ public sealed class ShardTunnel : IHostedService, IAsyncDisposable
     private Task? accepting;
     private Task? measuring;
     private string? off;
+    private ShardRelayInfo? relay;
+    private CancellationTokenSource? relayLife;
+    private string? relayError;
 
-    public ShardTunnel(IOptions<NodeOptions> node, Identity.NodeCredential credential, ILogger<ShardTunnel> logger, TimeProvider? time = null)
-        : this(node.Value.Shards, credential.TlsCertificate, () => credential.Thumbprint, logger, time, TimeSpan.FromSeconds(30))
+    public ShardTunnel(IOptions<NodeOptions> node, IOptions<CoordinatorOptions> coordinator, Identity.NodeCredential credential, ILogger<ShardTunnel> logger, TimeProvider? time = null)
+        : this(node.Value.Shards, credential.TlsCertificate, () => credential.Thumbprint, logger, time, TimeSpan.FromSeconds(30),
+            () => Uri.TryCreate(coordinator.Value.Url, UriKind.Absolute, out var url) ? url.Host : null)
     {
     }
 
-    internal ShardTunnel(ShardOptions options, Func<X509Certificate2?> certificate, Func<string?> thumbprint, ILogger logger, TimeProvider? time, TimeSpan interval)
+    internal ShardTunnel(ShardOptions options, Func<X509Certificate2?> certificate, Func<string?> thumbprint, ILogger logger, TimeProvider? time, TimeSpan interval, Func<string?>? coordinatorHost = null)
     {
         this.options = options;
         this.certificate = certificate;
         this.thumbprint = thumbprint;
+        this.coordinatorHost = coordinatorHost ?? (() => null);
         this.logger = logger;
         this.time = time ?? TimeProvider.System;
         this.interval = interval;
@@ -68,7 +77,12 @@ public sealed class ShardTunnel : IHostedService, IAsyncDisposable
         !options.Enabled
             ? null
             : new ShardTunnelState(ListeningPort ?? options.TunnelPort, Blank(options.TunnelAdvertise), thumbprint(),
-                options.TunnelPort <= 0 ? "Node:Shards:TunnelPort is 0: the worker is this machine's alone" : off);
+                options.TunnelPort <= 0 ? "Node:Shards:TunnelPort is 0: the worker is this machine's alone" : off,
+                options.TunnelRelay ? true : null,
+                options.TunnelRelay ? relayError : null);
+
+    /// <summary>Phase 139: why this node's connections to the relay are not waiting there, or null (none wanted, or they are).</summary>
+    public string? RelayError => relayError;
 
     public IReadOnlyList<ShardPeerState> Peers()
     {
@@ -170,9 +184,16 @@ public sealed class ShardTunnel : IHostedService, IAsyncDisposable
             held = peers;
         }
 
-        if (held.Count > 0)
+        ShardRelayInfo? heldRelay;
+
+        lock (sync)
         {
-            SetPeers(new ShardPeerList(held));
+            heldRelay = relay;
+        }
+
+        if (held.Count > 0 || heldRelay is not null)
+        {
+            SetPeers(new ShardPeerList(held, heldRelay));
         }
 
         return true;
@@ -232,10 +253,13 @@ public sealed class ShardTunnel : IHostedService, IAsyncDisposable
             lock (sync)
             {
                 peers = list.Peers;
+                relay = list.Relay;
             }
 
             return;
         }
+
+        WaitAtRelay(options.TunnelRelay ? list.Relay : null);
 
         lock (sync)
         {
@@ -301,6 +325,12 @@ public sealed class ShardTunnel : IHostedService, IAsyncDisposable
     {
         using var accepted = client;
         client.NoDelay = true;
+        await ServeAsync(client.GetStream(), client.Client.RemoteEndPoint?.ToString() ?? "?", token);
+    }
+
+    /// <summary>One connection in — accepted on the tunnel port, or handed over by the relay (139): the same TLS, the same list.</summary>
+    private async Task ServeAsync(Stream transport, string remote, CancellationToken token)
+    {
         using var cert = certificate();
 
         if (cert is null)
@@ -309,7 +339,7 @@ public sealed class ShardTunnel : IHostedService, IAsyncDisposable
         }
 
         string? peer = null;
-        await using var tls = new SslStream(client.GetStream(), leaveInnerStreamOpen: false, (_, presented, _, _) =>
+        await using var tls = new SslStream(transport, leaveInnerStreamOpen: false, (_, presented, _, _) =>
         {
             peer = presented is null ? null : ShardTunnelWire.Thumbprint(presented.GetRawCertData());
             return peer is not null && Allowed(peer);
@@ -328,7 +358,7 @@ public sealed class ShardTunnel : IHostedService, IAsyncDisposable
         }
         catch (Exception ex) when (ex is System.Security.Authentication.AuthenticationException or IOException or OperationCanceledException)
         {
-            logger.LogInformation("Shard tunnel: refused {Remote} — {Why}", client.Client.RemoteEndPoint, peer is null ? "no certificate" : Allowed(peer) ? ex.Message : $"certificate {peer[..12]}… is not one the coordinator listed");
+            logger.LogInformation("Shard tunnel: refused {Remote} — {Why}", remote, peer is null ? "no certificate" : Allowed(peer) ? ex.Message : $"certificate {peer[..12]}… is not one the coordinator listed");
             return;
         }
 
@@ -377,21 +407,146 @@ public sealed class ShardTunnel : IHostedService, IAsyncDisposable
         }
     }
 
-    /// <summary>Opens TLS to a peer as a client, checking it is the certificate the hub named, and sends the mode byte.</summary>
-    internal async Task<(TcpClient Client, SslStream Tls)> DialAsync(ShardPeer peer, byte mode, CancellationToken token)
+    /// <summary>
+    /// Opens TLS to a peer as a client, checking it is the certificate the hub named, and sends the mode byte. Phase 139 D1:
+    /// directly first; where both this node and the peer wait at the hub's relay and the direct path fails, through the
+    /// relay — the same handshake, the same thumbprint. <paramref name="relayFirst"/> is for a peer the last attempt reached
+    /// only that way.
+    /// </summary>
+    internal async Task<(TcpClient Client, SslStream Tls, string Via)> DialAsync(ShardPeer peer, byte mode, CancellationToken token, bool relayFirst = false)
+    {
+        ShardRelayInfo? through;
+
+        lock (sync)
+        {
+            through = options.TunnelRelay && peer.Relay ? relay : null;
+        }
+
+        if (through is null)
+        {
+            var (client, tls) = await DialDirectAsync(peer, mode, Handshake, token);
+            return (client, tls, ShardPeerState.Direct);
+        }
+
+        Exception? first = null;
+
+        foreach (var viaRelay in relayFirst ? new[] { true, false } : new[] { false, true })
+        {
+            try
+            {
+                var (client, tls) = viaRelay
+                    ? await DialRelayAsync(through, peer, mode, token)
+                    : await DialDirectAsync(peer, mode, DirectWhenRelayed, token);
+                return (client, tls, viaRelay ? ShardPeerState.Relayed : ShardPeerState.Direct);
+            }
+            catch (Exception ex) when (!token.IsCancellationRequested)
+            {
+                // The sentence a reader needs is the relay's: "no direct path" is why the relay was asked at all.
+                first = viaRelay ? ex : first ?? ex;
+            }
+        }
+
+        token.ThrowIfCancellationRequested();
+        throw first!;
+    }
+
+    private async Task<(TcpClient Client, SslStream Tls)> DialDirectAsync(ShardPeer peer, byte mode, TimeSpan connect, CancellationToken token)
     {
         var (host, port) = Split(peer.Endpoint);
         var client = new TcpClient { NoDelay = true };
 
         try
         {
-            using var handshake = CancellationTokenSource.CreateLinkedTokenSource(token);
-            handshake.CancelAfter(Handshake);
-            await client.ConnectAsync(host, port, handshake.Token);
-            var cert = certificate() ?? throw new IOException("this node has no certificate");
-            var tls = new SslStream(client.GetStream(), leaveInnerStreamOpen: false, (_, presented, _, _) =>
-                presented is not null && string.Equals(ShardTunnelWire.Thumbprint(presented.GetRawCertData()), peer.Thumbprint, StringComparison.OrdinalIgnoreCase));
+            using (var connecting = CancellationTokenSource.CreateLinkedTokenSource(token))
+            {
+                connecting.CancelAfter(connect);
+                await client.ConnectAsync(host, port, connecting.Token);
+            }
 
+            return (client, await AuthenticateAsync(client.GetStream(), peer, mode, token));
+        }
+        catch
+        {
+            client.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>D2: dials the hub's relay, proves this node with an HMAC over the relay's nonce, names the peer; once joined, the pipe is the peer's tunnel.</summary>
+    private async Task<(TcpClient Client, SslStream Tls)> DialRelayAsync(ShardRelayInfo through, ShardPeer peer, byte mode, CancellationToken token)
+    {
+        var client = await ConnectRelayAsync(through, ShardRelayWire.Dial, peer.NodeId, token);
+
+        try
+        {
+            return (client, await AuthenticateAsync(client.GetStream(), peer, mode, token));
+        }
+        catch
+        {
+            client.Dispose();
+            throw;
+        }
+    }
+
+    private async Task<TcpClient> ConnectRelayAsync(ShardRelayInfo through, char role, string? target, CancellationToken token)
+    {
+        var host = string.IsNullOrWhiteSpace(through.Host) ? coordinatorHost() : through.Host.Trim();
+
+        if (string.IsNullOrWhiteSpace(host))
+        {
+            throw new IOException("the coordinator named no relay host and this node has no coordinator URL to take one from");
+        }
+
+        var client = new TcpClient { NoDelay = true };
+
+        try
+        {
+            using var hello = CancellationTokenSource.CreateLinkedTokenSource(token);
+            hello.CancelAfter(Handshake);
+            await client.ConnectAsync(host, through.Port, hello.Token);
+            client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            var stream = client.GetStream();
+            var nonce = new byte[ShardRelayWire.NonceBytes];
+            await stream.ReadExactlyAsync(nonce, hello.Token);
+            await stream.WriteAsync(System.Text.Encoding.ASCII.GetBytes(ShardRelayWire.Hello(through.Key, nonce, role, through.NodeId, target)), hello.Token);
+            var answer = new byte[1];
+            await stream.ReadExactlyAsync(answer, hello.Token);
+
+            if (answer[0] != ShardRelayWire.Ok)
+            {
+                var why = new byte[512];
+                var read = 0;
+
+                try
+                {
+                    read = await stream.ReadAsync(why, hello.Token);
+                }
+                catch (IOException)
+                {
+                }
+
+                throw new IOException($"the relay at {host}:{through.Port} refused: {System.Text.Encoding.UTF8.GetString(why, 0, read).Trim()}");
+            }
+
+            return client;
+        }
+        catch
+        {
+            client.Dispose();
+            throw;
+        }
+    }
+
+    private async Task<SslStream> AuthenticateAsync(Stream transport, ShardPeer peer, byte mode, CancellationToken token)
+    {
+        using var handshake = CancellationTokenSource.CreateLinkedTokenSource(token);
+        handshake.CancelAfter(Handshake);
+        var cert = certificate() ?? throw new IOException("this node has no certificate");
+        var tls = new SslStream(transport, leaveInnerStreamOpen: false, (_, presented, _, _) =>
+            presented is not null && string.Equals(ShardTunnelWire.Thumbprint(presented.GetRawCertData()), peer.Thumbprint, StringComparison.OrdinalIgnoreCase));
+
+        try
+        {
             await tls.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
             {
                 TargetHost = "inferhub-shard",
@@ -402,19 +557,134 @@ public sealed class ShardTunnel : IHostedService, IAsyncDisposable
 
             await tls.WriteAsync(new[] { mode }, token);
             await tls.FlushAsync(token);
-            return (client, tls);
+            return tls;
         }
         catch
         {
-            client.Dispose();
+            await tls.DisposeAsync();
             throw;
         }
     }
 
-    /// <summary>D4: five 8-byte frames through the tunnel; the median round trip in milliseconds.</summary>
-    internal async Task<double> MeasureAsync(ShardPeer peer, CancellationToken token)
+    /// <summary>
+    /// D2: this node's side of being reachable with no way in — <see cref="RelayStandby"/> connections dialled out to the
+    /// relay and left waiting. One that the relay pairs becomes an inbound tunnel connection like any other, and another is
+    /// dialled in its place. Null stops them.
+    /// </summary>
+    private void WaitAtRelay(ShardRelayInfo? through)
     {
-        var (client, tls) = await DialAsync(peer, ShardTunnelWire.Ping, token);
+        CancellationTokenSource? old;
+        CancellationTokenSource? started = null;
+
+        lock (sync)
+        {
+            if (relay == through && (through is null) == (relayLife is null))
+            {
+                return;
+            }
+
+            relay = through;
+            old = relayLife;
+            relayLife = through is null || life is null ? null : started = CancellationTokenSource.CreateLinkedTokenSource(life.Token);
+        }
+
+        old?.Cancel();
+        relayError = null;
+
+        if (through is null || started is null)
+        {
+            return;
+        }
+
+        logger.LogInformation("Shard tunnel: waiting at the coordinator's relay ({Host}:{Port}) for peers with no direct path", through.Host ?? coordinatorHost(), through.Port);
+
+        for (var i = 0; i < RelayStandby; i++)
+        {
+            _ = Task.Run(() => StandbyAsync(through, started.Token));
+        }
+    }
+
+    private async Task StandbyAsync(ShardRelayInfo through, CancellationToken token)
+    {
+        var delay = TimeSpan.FromSeconds(2);
+
+        while (!token.IsCancellationRequested)
+        {
+            TcpClient? client = null;
+
+            try
+            {
+                client = await ConnectRelayAsync(through, ShardRelayWire.Listen, null, token);
+
+                if (relayError is not null)
+                {
+                    relayError = null;
+                    Changed?.Invoke();
+                }
+
+                delay = TimeSpan.FromSeconds(2);
+                var signal = new byte[1];
+
+                while (true)
+                {
+                    // The relay says it is there every 20 s; silence for much longer is a connection a NAT dropped.
+                    using var silence = CancellationTokenSource.CreateLinkedTokenSource(token);
+                    silence.CancelAfter(RelaySilence);
+                    await client.GetStream().ReadExactlyAsync(signal, silence.Token);
+
+                    if (signal[0] == ShardRelayWire.Paired)
+                    {
+                        break;
+                    }
+                }
+
+                var paired = client;
+                client = null;
+                _ = Task.Run(async () =>
+                {
+                    using var _ = paired;
+                    await ServeAsync(paired.GetStream(), "the relay", token);
+                }, token);
+            }
+            catch (Exception ex) when (ex is IOException or SocketException or OperationCanceledException or EndOfStreamException or ObjectDisposedException)
+            {
+                client?.Dispose();
+
+                if (token.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                var why = Reason(ex);
+
+                if (relayError != why)
+                {
+                    relayError = why;
+                    logger.LogWarning("Shard tunnel: not waiting at the relay — {Why}", why);
+                    Changed?.Invoke();
+                }
+
+                try
+                {
+                    await Task.Delay(delay, time, token);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                delay = TimeSpan.FromSeconds(Math.Min(30, delay.TotalSeconds * 2));
+            }
+        }
+    }
+
+    /// <summary>D4: five 8-byte frames through the tunnel; the median round trip in milliseconds.</summary>
+    internal async Task<double> MeasureAsync(ShardPeer peer, CancellationToken token) => (await MeasureViaAsync(peer, token)).Ms;
+
+    /// <summary>The round trip and the path it took (139): a direct path is tried first each time, so one that appears is used.</summary>
+    internal async Task<(double Ms, string Via)> MeasureViaAsync(ShardPeer peer, CancellationToken token)
+    {
+        var (client, tls, via) = await DialAsync(peer, ShardTunnelWire.Ping, token);
         using var _ = client;
         await using var __ = tls;
         var frame = new byte[8];
@@ -432,7 +702,7 @@ public sealed class ShardTunnel : IHostedService, IAsyncDisposable
         }
 
         rounds.Sort();
-        return Math.Round(rounds[rounds.Count / 2], 2);
+        return (Math.Round(rounds[rounds.Count / 2], 2), via);
     }
 
     private async Task MeasureLoopAsync(CancellationToken token)
@@ -452,7 +722,8 @@ public sealed class ShardTunnel : IHostedService, IAsyncDisposable
                 {
                     using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
                     deadline.CancelAfter(Handshake * 2);
-                    forward.Measured(await MeasureAsync(forward.Peer, deadline.Token), null, time.GetUtcNow());
+                    var (ms, via) = await MeasureViaAsync(forward.Peer, deadline.Token);
+                    forward.Measured(ms, null, time.GetUtcNow(), via);
                 }
                 catch (Exception ex)
                 {
@@ -463,7 +734,7 @@ public sealed class ShardTunnel : IHostedService, IAsyncDisposable
                         return;
                     }
 
-                    forward.Measured(null, Reason(ex), time.GetUtcNow());
+                    forward.Measured(null, Reason(ex), time.GetUtcNow(), null);
                 }
             }
 
@@ -551,6 +822,7 @@ public sealed class ShardTunnel : IHostedService, IAsyncDisposable
         private double? rtt;
         private string? error;
         private DateTimeOffset? at;
+        private string? via;
 
         private Forward(ShardTunnel owner, ShardPeer peer, TcpListener local)
         {
@@ -573,14 +845,15 @@ public sealed class ShardTunnel : IHostedService, IAsyncDisposable
         public ShardPeerState State()
         {
             var port = ((IPEndPoint)local.LocalEndpoint).Port;
-            return new ShardPeerState(Peer.NodeId, Peer.Name, Peer.Endpoint, $"127.0.0.1:{port}", rtt, error, at);
+            return new ShardPeerState(Peer.NodeId, Peer.Name, Peer.Endpoint, $"127.0.0.1:{port}", rtt, error, at, via);
         }
 
-        public void Measured(double? ms, string? why, DateTimeOffset when)
+        public void Measured(double? ms, string? why, DateTimeOffset when, string? path)
         {
             rtt = ms;
             error = why;
             at = when;
+            via = path ?? via;
         }
 
         public void Dispose()
@@ -611,7 +884,8 @@ public sealed class ShardTunnel : IHostedService, IAsyncDisposable
 
                     try
                     {
-                        var (client, tls) = await owner.DialAsync(Peer, ShardTunnelWire.Rpc, cts.Token);
+                        var (client, tls, path) = await owner.DialAsync(Peer, ShardTunnelWire.Rpc, cts.Token, relayFirst: via == ShardPeerState.Relayed);
+                        via = path;
                         using var __ = client;
                         await using var ___ = tls;
                         await Pipe(head.GetStream(), tls, cts.Token);

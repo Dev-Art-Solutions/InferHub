@@ -1035,3 +1035,41 @@ without the header got the 403 (and `/api/chat` too), with it the answer.
 
 **Not established:** organisations in the lab (cross-organisation peering is covered by `ShardPeersTests`); a client library that
 sends the header (none yet); anything that hides a prompt from the machines in a group — there is nothing, by the user's choice.
+
+### Phase 139 (community across NAT: two nodes with no direct path meet at the coordinator's relay, under the same mTLS)
+
+Files: hub `Services/ShardRelay.cs` (`ShardRelayOptions`, `ShardRelay`), `ShardPeerPublisher` (`MayReach`, the `relay` on a peer and
+on a list, `Keep`), `GET /api/admin/shards/relay`; node `ShardOptions.TunnelRelay`, `ShardTunnel` (`WaitAtRelay`/`StandbyAsync`,
+`DialAsync` direct-then-relay, `via`); Shared `ShardRelayInfo`, `ShardRelayWire`, `ShardPeer.Relay`, `ShardPeerState.Via`,
+`ShardTunnelState.Relay/RelayError`; the console's *relay* pills; `deploy/lab/shards/relay-lab.sh`.
+
+**D1, load-bearing — the relay carries 135's mTLS and reads none of it; a direct path is tried first, every time.** A node behind
+a home router dials out and cannot be dialled (135 D4's address is the router's). With `ShardRelay:Enabled` the coordinator
+listens on `Port` (50054, plain TCP); a node with `Node:Shards:TunnelRelay` keeps three connections dialled out to it, waiting; a
+peer that cannot connect directly (3 s) dials the relay and names it; the relay joins the two sockets and copies bytes. The TLS
+handshake of 135 then runs *through* the pipe — the same certificates, the same thumbprints — so who may reach a worker is still
+135 D1 and nothing else, and the relay sees ciphertext (rule 7). The measurement tries direct again every round, so a pair that
+can connect never stays on the relay; `peers[].via` says `direct` or `relay`. *Rejected:* a relay that terminates TLS (a second
+place that decides); hole punching (a second protocol, for a speed-up nobody measured the need for); SignalR (the invariant).
+
+**D2 — a node proves itself to the relay with an HMAC over the relay's nonce, keyed by a secret from its hub connection.** The
+hub sends each opted-in node `relay {host, port, nodeId, key}` with its peer list (`host` null = the host of the coordinator URL the
+node already dials); the relay sends 16 random bytes, the node one line (`IHR1 L|D <id> <target> <hmac>`), the relay one byte — or
+`-` and the sentence. A waiting connection gets `.` every 20 s (a NAT forgets silence; 75 s of it and the node redials) and `!`
+when paired. The key never crosses the relay's wire. An unknown node and a wrong proof get the same answer. *Rejected:* the node's
+certificate at the relay — the hub would need a server certificate nodes can verify, to protect bytes already protected.
+
+**D3 — the relay joins only nodes the hub's last lists made peers; a node that left them loses its place at once.** Every publish
+gives the relay the set that may use it (`Keep`): a node not in it loses its key, its waiting connections and each pair it is part
+of — revoke still closes the door in seconds, on this path too. At most `MaxPairs` (64) pairs, 8 waiting per node; a dial waits
+`WaitSeconds` (5) for the node it asked for.
+
+**D4 — off on both sides, and both owners say yes.** The hub's owner gives a port and bandwidth; a node's owner accepts its tensors
+going by way of a third machine. A peer is marked `relay` only if it opted in, and the relay is used only when both ends did. In
+memory (rule 4); sockets and `HMACSHA256` from the framework (rule 5). A relay that is enabled and cannot listen fails startup.
+
+**Not established:** real routers (a Docker network that routes nothing stands in for NAT — no symmetric NAT, no idle timeouts
+shorter than 20 s, no loss); the relay's cost on a real uplink (in the lab the coordinator is on the same host); a cluster (each
+coordinator relays for its own connections only); TLS on the relay port itself (the hello is in the clear — it carries ids and
+an HMAC, never the key).
+

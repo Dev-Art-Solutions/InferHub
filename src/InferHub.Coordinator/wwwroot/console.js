@@ -356,10 +356,13 @@
         if (p.error) return `<td><span class="pill pill-err" title="${escapeHtml(p.error)}">no answer</span></td>`;
         if (p.rttMs == null) return `<td class="matrix-no" title="${escapeHtml(p.local ?? "")}">measuring…</td>`;
         const cls = p.rttMs < 2 ? "pill pill-ok" : p.rttMs < 40 ? "pill pill-warn" : "pill pill-err";
-        return `<td><span class="${cls}" title="${escapeHtml(`${p.endpoint} · local ${p.local ?? "—"}`)}">${p.rttMs.toFixed(p.rttMs < 10 ? 2 : 0)} ms</span></td>`;
+        // Phase 139: a pair with no direct path meets at this hub's relay — the same tunnel, by way of the coordinator.
+        const relayed = p.via === "relay" ? ` <span class="pill pill-warn" title="no direct path: through this coordinator's relay (ShardRelay), which passes the tunnel and cannot read it">relay</span>` : "";
+        return `<td><span class="${cls}" title="${escapeHtml(`${p.endpoint} · local ${p.local ?? "—"}`)}">${p.rttMs.toFixed(p.rttMs < 10 ? 2 : 0)} ms</span>${relayed}</td>`;
       }).join("");
       const t = n.shards.tunnel;
-      const tunnel = !t ? "—" : t.off ? `<span class="pill pill-err" title="${escapeHtml(t.off)}">off</span>` : `<code>${escapeHtml(t.advertise ?? `:${t.port}`)}</code>`;
+      const waits = !t || !t.relay ? "" : t.relayError ? ` <span class="pill pill-err" title="${escapeHtml(t.relayError)}">relay: no</span>` : ` <span class="pill" title="Node:Shards:TunnelRelay — may meet peers at the coordinator's relay when there is no direct path">relay ok</span>`;
+      const tunnel = !t ? "—" : t.off ? `<span class="pill pill-err" title="${escapeHtml(t.off)}">off</span>` : `<code>${escapeHtml(t.advertise ?? `:${t.port}`)}</code>${waits}`;
       return `<tr><td>${escapeHtml(n.name)}</td>${cells}<td>${tunnel}</td></tr>`;
     }).join("");
     // Phase 136. The groups each head runs: the model answers under the group's name while it is "running".

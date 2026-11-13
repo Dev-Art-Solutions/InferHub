@@ -1179,6 +1179,38 @@ POST /v1/chat/completions   X-InferHub-Community: accept   {"model": "llama-8b-c
   community nodes and never the private one with the same memory. The sealed node refused to start.
   A chat without the header got the 403, and with it the answer.
 
+### Nodes behind a home router: the coordinator's relay (v3.99+)
+
+A node at home dials out to its coordinator, and nothing can dial it. Two such nodes cannot open a
+tunnel to each other. With the relay on, they meet at the coordinator instead.
+
+```jsonc
+// the coordinator — open this TCP port beside its own
+"ShardRelay": { "Enabled": true, "Port": 50054 }
+// each node that may use it
+"Node": { "Shards": { "Enabled": true, "RamGiB": 3, "TunnelRelay": true } }
+```
+
+- **The relay cannot read what it carries.** The two nodes run the same mTLS tunnel through it and
+  check each other's certificates exactly as on a direct path. The coordinator copies bytes.
+- **A direct path always wins.** Each node tries the direct path first, every time, and uses the
+  relay only when that fails. A pair that can connect never uses it.
+- **Both owners say yes.** The relay is off on the coordinator and off on every node by default. It
+  is used only between two nodes that both set `TunnelRelay`, and only for a peer the coordinator
+  already listed.
+- **A revoked node is cut at once**, on this path too: it loses its place at the relay and every
+  connection through it.
+- **The cost is speed and the coordinator's bandwidth.** Every tensor of a relayed pair passes
+  through the coordinator's machine.
+- **Where to see it:** the console's **Shard tunnels** table marks a round trip *relay*, and
+  `GET /api/admin/shards/relay` shows the pairs, the bytes carried and which nodes wait.
+- **Measured in the lab** (`deploy/lab/shards/relay-lab.sh`): one node sat on a network
+  only the coordinator shared, with no path to or from the other two. The community group came up
+  with it as a member and answered with the same text as the same group on direct tunnels, 64
+  tokens in 10.5 s. The two nodes that could reach each other stayed direct (0.2 ms); every pair
+  with the third went through the relay (0.4–0.7 ms). Revoking that node cut its connections at
+  the relay. A Docker network stands in for the router: real NAT and a real uplink were not tried.
+
 ### A sealed node (v3.82+)
 
 One setting for a node that must not reach the internet: `Node:Sealed=true`. It talks to its

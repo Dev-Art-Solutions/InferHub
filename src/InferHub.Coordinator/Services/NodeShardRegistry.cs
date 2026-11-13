@@ -98,9 +98,14 @@ public sealed class ShardPeerPublisher(
     IHubContext<NodeHub> hub,
     ILogger<ShardPeerPublisher> logger,
     InferHub.Coordinator.Auth.NodeCertificateAuthority? authority = null,
-    Microsoft.Extensions.Options.IOptions<ShardGroupsOptions>? groupOptions = null)
+    Microsoft.Extensions.Options.IOptions<ShardGroupsOptions>? groupOptions = null,
+    ShardRelay? relay = null)
 {
     private readonly SemaphoreSlim gate = new(1, 1);
+    private volatile IReadOnlyDictionary<string, HashSet<string>> reach = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Phase 139 D3: whether the last lists sent make <paramref name="to"/> one of <paramref name="from"/>'s peers — what the relay asks before it joins two nodes.</summary>
+    public bool MayReach(string from, string to) => reach.TryGetValue(from, out var peers) && peers.Contains(to);
     private readonly Dictionary<string, string> sent = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> sentGroups = new(StringComparer.Ordinal);
 
@@ -345,7 +350,9 @@ public sealed class ShardPeerPublisher(
 
             // Phase 138 D1: a community node is one whose owner opted in and accepted the risk, and never a sealed one.
             var community = shards.Of(node.NodeId)?.Community == true && node.Sealed != true;
-            eligible.Add((node, new ShardPeer(node.NodeId, node.Name, endpoint, certificate.Thumbprint), certificate.Organisation, community));
+            // Phase 139 D1: it waits at this hub's relay only if the relay is on and its owner said so.
+            var relayed = relay is { Enabled: true } && tunnel.Relay == true;
+            eligible.Add((node, new ShardPeer(node.NodeId, node.Name, endpoint, certificate.Thumbprint, relayed), certificate.Organisation, community));
         }
 
         var lists = new Dictionary<string, ShardPeerList>(StringComparer.Ordinal);
@@ -360,7 +367,8 @@ public sealed class ShardPeerPublisher(
                     .Where(e => e.Node.ConnectionId != node.ConnectionId && (string.Equals(e.Organisation, me.Organisation, StringComparison.Ordinal) || (e.Community && me.Community)))
                     .Select(e => e.Peer)
                     .OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
-                    .ToArray());
+                    .ToArray(),
+                me.Node is not null && me.Peer.Relay ? new ShardRelayInfo(relay!.Host, relay.Port, me.Node.NodeId, relay.KeyFor(me.Node.NodeId)) : null);
         }
 
         return lists;
@@ -375,6 +383,18 @@ public sealed class ShardPeerPublisher(
         {
             var lists = Compute();
 
+            if (relay is { Enabled: true })
+            {
+                // Phase 139 D3: the relay joins only nodes these lists make peers; a node that left them loses its place there now.
+                var ids = registry.Snapshot(DateTimeOffset.UtcNow).ToDictionary(n => n.ConnectionId, n => n.NodeId, StringComparer.Ordinal);
+                reach = lists.Where(l => ids.ContainsKey(l.Key)).ToDictionary(
+                    l => ids[l.Key],
+                    l => l.Value.Peers.Select(p => p.NodeId).ToHashSet(StringComparer.OrdinalIgnoreCase),
+                    StringComparer.OrdinalIgnoreCase);
+                relay.Authorize ??= MayReach;
+                relay.Keep(lists.Where(l => l.Value.Relay is not null && ids.ContainsKey(l.Key)).Select(l => ids[l.Key]).ToHashSet(StringComparer.OrdinalIgnoreCase));
+            }
+
             foreach (var gone in sent.Keys.Except(lists.Keys).ToArray())
             {
                 sent.Remove(gone);
@@ -382,9 +402,10 @@ public sealed class ShardPeerPublisher(
 
             foreach (var (connection, list) in lists)
             {
-                var key = string.Join('|', list.Peers.Select(p => $"{p.NodeId}@{p.Endpoint}#{p.Thumbprint}"));
+                var key = string.Join('|', list.Peers.Select(p => $"{p.NodeId}@{p.Endpoint}#{p.Thumbprint}{(p.Relay ? "~" : "")}"))
+                    + (list.Relay is { } r ? $"|relay:{r.Host}:{r.Port}:{r.Key}" : "");
 
-                if (sent.TryGetValue(connection, out var last) ? last == key : list.Peers.Count == 0)
+                if (sent.TryGetValue(connection, out var last) ? last == key : list.Peers.Count == 0 && list.Relay is null)
                 {
                     continue;
                 }
@@ -393,7 +414,7 @@ public sealed class ShardPeerPublisher(
                 {
                     await hub.Clients.Client(connection).SendAsync("ShardPeers", list, cancellationToken);
                     sent[connection] = key;
-                    logger.LogInformation("Shard peers for connection {Connection}: {Peers}", connection, list.Peers.Count == 0 ? "none" : string.Join(", ", list.Peers.Select(p => $"{p.Name} ({p.Endpoint})")));
+                    logger.LogInformation("Shard peers for connection {Connection}: {Peers}", connection, list.Peers.Count == 0 ? "none" : string.Join(", ", list.Peers.Select(p => $"{p.Name} ({p.Endpoint}{(p.Relay ? ", or the relay" : "")})")));
                 }
                 catch (Exception ex)
                 {

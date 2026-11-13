@@ -137,6 +137,86 @@ public sealed class ShardPeersTests : IDisposable
         Assert.Empty(lists["conn-c"].Peers);
     }
 
+    private static ShardRelay Relay(bool enabled = true) =>
+        new(new ShardRelayOptions { Enabled = enabled, Port = 50054, Host = "hub.example" }, NullLogger.Instance);
+
+    private void OptIntoRelay(string nodeId) =>
+        shards.Report(shards.Of(nodeId)! with { Tunnel = shards.Of(nodeId)!.Tunnel! with { Relay = true } }, IPAddress.Parse("10.0.0.1"));
+
+    [Fact]
+    public void ANodeThatOptedInIsListedAsWaitingAtTheRelayAndIsToldWhereItIsAndItsOwnKey()
+    {
+        // Phase 139 D1/D2.
+        Enroll("a");
+        Enroll("b");
+        Enroll("c");
+        Connect("a");
+        Connect("b");
+        Connect("c");
+        OptIntoRelay("a");
+        OptIntoRelay("b");
+        var relay = Relay();
+
+        var lists = new ShardPeerPublisher(registry, shards, null!, NullLogger<ShardPeerPublisher>.Instance, authority, null, relay).Compute();
+
+        Assert.Equal([("b", true), ("c", false)], lists["conn-a"].Peers.Select(p => (p.NodeId, p.Relay)));
+        var forA = lists["conn-a"].Relay!;
+        Assert.Equal(("hub.example", 50054, "a", relay.KeyFor("a")), (forA.Host, forA.Port, forA.NodeId, forA.Key));
+        Assert.NotEqual(forA.Key, lists["conn-b"].Relay!.Key);
+        Assert.Null(lists["conn-c"].Relay);
+    }
+
+    [Fact]
+    public void WithTheRelayOffNobodyIsToldOfOneWhateverTheNodesAsked()
+    {
+        Enroll("a");
+        Enroll("b");
+        Connect("a");
+        Connect("b");
+        OptIntoRelay("a");
+        OptIntoRelay("b");
+
+        foreach (var lists in new[]
+                 {
+                     Publisher().Compute(),
+                     new ShardPeerPublisher(registry, shards, null!, NullLogger<ShardPeerPublisher>.Instance, authority, null, Relay(enabled: false)).Compute()
+                 })
+        {
+            Assert.All(lists.Values, list => Assert.Null(list.Relay));
+            Assert.All(lists.Values.SelectMany(list => list.Peers), peer => Assert.False(peer.Relay));
+        }
+    }
+
+    [Fact]
+    public async Task TheRelayMayJoinOnlyNodesTheLastListsMadePeersAndARevokedNodeLosesItsKey()
+    {
+        // Phase 139 D3.
+        Enroll("a", "org-1");
+        Enroll("b", "org-1");
+        Enroll("c", "org-2");
+        Connect("a");
+        Connect("b");
+        Connect("c");
+        OptIntoRelay("a");
+        OptIntoRelay("b");
+        OptIntoRelay("c");
+        var relay = Relay();
+        var publisher = new ShardPeerPublisher(registry, shards, null!, NullLogger<ShardPeerPublisher>.Instance, authority, null, relay);
+
+        await publisher.PublishAsync();
+
+        Assert.True(relay.Authorize!("a", "b"));
+        Assert.False(relay.Authorize!("a", "c"));
+        Assert.False(relay.Authorize!("c", "a"));
+        var before = relay.KeyFor("b");
+
+        authority.Revoke("b", "admin:test", "lost laptop");
+        await publisher.PublishAsync();
+
+        Assert.False(relay.Authorize!("a", "b"));
+        Assert.NotEqual(before, relay.KeyFor("b"));
+    }
+
     [Theory]
     [InlineData("::ffff:10.1.2.3", "10.1.2.3:50053")]
     [InlineData("fd00::7", "[fd00::7]:50053")]

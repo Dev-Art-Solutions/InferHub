@@ -29,6 +29,22 @@ public static class ManagementEndpoints
                     .ToArray() ?? []
             }));
 
+        // Phase 139: the relay — listening or not, the pairs it carries now, who waits at it. Never a byte of what passes.
+        group.MapGet("/shards/relay", (IServiceProvider services) =>
+            services.GetService(typeof(ShardRelay)) is ShardRelay relay && relay.Status() is var status
+                ? Results.Ok(new
+                {
+                    enabled = status.Enabled,
+                    port = status.Port,
+                    host = status.Host,
+                    pairs = status.Pairs,
+                    pairsTotal = status.PairsTotal,
+                    bytesRelayed = status.BytesRelayed,
+                    refused = status.Refused,
+                    waiting = status.Waiting
+                })
+                : Results.Ok(new { enabled = false }));
+
         group.MapGet("/nodes/{nodeId}/fit/catalog", async (
             string nodeId, string? source, string? sort, string? kind, string? q, int? limit, bool? fitsOnly,
             NodeManagementControl control, CancellationToken cancellationToken) =>

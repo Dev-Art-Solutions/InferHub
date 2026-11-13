@@ -119,3 +119,27 @@ the same 3 GiB and did not; shard-s is sealed and asks to join anyway. One group
 - `/v1/models` lists `llama-8b-community` as `owned_by: inferhub-community`.
 - A chat without `X-InferHub-Community: accept` got `403` with the risk in words, on `/v1/chat/completions` and `/api/chat`;
   with the header, the answer.
+
+## A node behind NAT (phase 139)
+
+`relay-lab.sh` puts shard-c on a second network that only the coordinator is also attached to. Docker routes nothing between
+two bridge networks, so shard-c can dial the coordinator and nobody can dial shard-c — what a home router gives. With the
+coordinator's relay on (`ShardRelay__Enabled`) and `Node__Shards__TunnelRelay` on the three nodes, the community group runs
+with shard-c in it: a↔b direct, every pair with shard-c by way of the relay.
+
+Measured (2026-11-13, source-built 3.99.0, the 8B Q4, 3 GiB offered per node):
+
+| Pair | Path | Round trip |
+|---|---|---:|
+| shard-a ↔ shard-b | direct | 0.13–0.24 ms |
+| shard-a ↔ shard-c | relay | 0.35–0.60 ms |
+| shard-b ↔ shard-c | relay | 0.49–0.72 ms |
+
+- The group answered **the same text** as the same community group on direct tunnels, 64 tokens in 10.5 s end to end.
+- The relay carried 1.73 GB in 29 connections — mostly the layers going to shard-c at load.
+- Revoking shard-c left no pair at the relay and refused its three attempts to wait again; the next request got a 503
+  saying the group has too few members.
+
+**Not established here:** a real router (symmetric NAT, idle timeouts, loss), and the relay's cost on a real uplink — in the
+lab the coordinator shares the host with the nodes, so the extra hop costs almost nothing.
+
