@@ -36,6 +36,11 @@ offered per node, 4 CPUs a node):
 
 The relayed group gave the same text as the same community group on direct tunnels.
 
+## The published images of this release
+
+`inferhub-coordinator:3.100.0` and `inferhub-node:3.100.0`, both carrying revision `fb07a72`, through the same command:
+28 checks of 28 held.
+
 ## What the day found
 
 Nothing in the product. Two things in the checking itself, both fixed here:
