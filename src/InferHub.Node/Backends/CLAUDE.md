@@ -1073,3 +1073,10 @@ shorter than 20 s, no loss); the relay's cost on a real uplink (in the lab the c
 coordinator relays for its own connections only); TLS on the relay port itself (the hello is in the clear — it carries ids and
 an HMAC, never the key).
 
+### Phase 140 (verification day: both modes end to end on the published images, in one command)
+
+`deploy/lab/shards/verify-lab.sh <version>` pulls the published coordinator and node, checks the labels (`VERIFY_REVISION`
+requires the commit), builds the lab node on the published one, runs `tunnel-lab.sh`, `survive-lab.sh`, `community-lab.sh` and
+`relay-lab.sh` and greps their transcripts: PASS or FAIL per claim, exit 0 only when all held. **It is not a second
+implementation** — a check and what a person runs by hand are one file. Not a CI job: it needs an 8B model, five containers and
+ten minutes of CPU. What the run found and the whole track's "not established" list: `.claude/release-notes-v3.100.0.md`.

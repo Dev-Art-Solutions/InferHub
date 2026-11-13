@@ -146,7 +146,8 @@ the lab's README. Its workers bind `0.0.0.0` on the lab network only: llama.cpp 
 node's own shard worker (`Node:Shards`, which always binds loopback) has a `ggml-rpc-server` to run — also local only.
 `lab/shards/tunnel-lab.sh` (phase 135) runs three such nodes enrolled against a source-built coordinator and splits a model
 through their tunnels; it builds on images tagged `:dev` from this tree. `relay-lab.sh` (139) puts one node on a network only
-the coordinator shares — no path either way, as behind a home router.
+the coordinator shares — no path either way, as behind a home router — and `verify-lab.sh <version>` (140) runs every lab on
+the published images of one release and says PASS or FAIL per claim.
 
 ## The Windows setup (phase 101)
 

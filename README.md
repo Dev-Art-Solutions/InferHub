@@ -1211,6 +1211,12 @@ tunnel to each other. With the relay on, they meet at the coordinator instead.
   with the third went through the relay (0.4–0.7 ms). Revoking that node cut its connections at
   the relay. A Docker network stands in for the router: real NAT and a real uplink were not tried.
 
+### Checking a release yourself (v3.100+)
+
+`deploy/lab/shards/verify-lab.sh 3.99.0` runs both modes on the published images of that release,
+in Docker on one PC: a private group, a member leaving, a community group, and a node behind NAT. It
+prints PASS or FAIL for each claim and keeps the transcripts.
+
 ### A sealed node (v3.82+)
 
 One setting for a node that must not reach the internet: `Node:Sealed=true`. It talks to its

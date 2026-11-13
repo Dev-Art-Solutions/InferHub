@@ -143,3 +143,15 @@ Measured (2026-11-13, source-built 3.99.0, the 8B Q4, 3 GiB offered per node):
 **Not established here:** a real router (symmetric NAT, idle timeouts, loss), and the relay's cost on a real uplink — in the
 lab the coordinator shares the host with the nodes, so the extra hop costs almost nothing.
 
+## Verification day (phase 140)
+
+```sh
+LAB_MODEL_DIR=D:/models VERIFY_REVISION=<commit> ./verify-lab.sh 3.99.0
+```
+
+Pulls the published coordinator and node of that version, checks what they say they are, builds the lab node on the published
+one, runs `tunnel-lab.sh`, `survive-lab.sh`, `community-lab.sh` and `relay-lab.sh`, and prints PASS or FAIL per claim (exit 0
+only when all held). Transcripts stay in `$LAB_OUT` (default `C:/tmp`) as `verify-*.txt`.
+
+Run on the published 3.99.0 images (2026-11-13, revision `024da81`): **28 checks, all held** — the private group, a member
+leaving and a drain, the community pick and the client's yes, and the relay.
