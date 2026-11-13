@@ -55,7 +55,15 @@ two bridge networks, so shard-c can dial the coordinator and nobody can dial sha
 
 ## The published images
 
-Checked after the tag: the next commit fills this section in.
+`inferhub-coordinator:3.99.0` and `inferhub-node:3.99.0`, both carrying revision `024da81`, through `relay-lab.sh`: neither
+side could open a connection to the other; the community group ran with shard-c as a member; shard-a ↔ shard-b direct
+(0.18–0.23 ms), every pair with shard-c through the relay (0.43–0.53 ms); the group answered, 64 tokens in 10.4 s; the relay
+carried 1.73 GB in 26 connections; after the revoke no pair was left, shard-c's attempts to wait again were refused, and the
+next request got the 503 with the reason.
+
+The same run also put the rest of the track through these two images — the private group, a member leaving and a drain,
+the community pick and the client's yes — with a script that says pass or fail per claim (it ships in the next release).
+All 28 checks held.
 
 ## Not established, said out loud
 
