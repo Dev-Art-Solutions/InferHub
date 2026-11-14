@@ -1,0 +1,2 @@
+{"config":"rpc-star","cpus_busy_5s_after_cancel":0.00,"after_worker_loss":{"head_running":true,"answer":{"ok":false,"mode":"completion","chunks":0,"text":"","status":200,"error":"terminated","total_ms":2772}}}
+{"config":"prima-ring","cpus_busy_5s_after_cancel":0.00,"after_worker_loss":{"head_running":true,"answer":{"ok":false,"mode":"completion","chunks":0,"text":"","status":200,"error":"This operation was aborted","total_ms":60012}}}

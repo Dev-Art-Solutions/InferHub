@@ -1,0 +1,5 @@
+{"config":"whole","load_s":28.7884,"load_tx_bytes":0,"note":"one container, the file from a read-only mount"}
+{"config":"rpc-star","load_s":62.1381,"load_tx_bytes":4373711024,"note":"the head sends every worker its layers"}
+{"config":"inferhub-group","load_s":85.3897,"load_tx_bytes":3104303806,"note":"includes the hub start, four enrollments and the lab's two warm-up chats"}
+{"config":"prima-whole","load_s":12.4821,"load_tx_bytes":0,"note":"one container, the file from a read-only mount"}
+{"config":"prima-ring","load_s":15.481,"load_tx_bytes":155383,"note":"every rank reads the file itself"}

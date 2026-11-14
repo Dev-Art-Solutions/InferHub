@@ -155,3 +155,30 @@ only when all held). Transcripts stay in `$LAB_OUT` (default `C:/tmp`) as `verif
 
 Run on the published 3.99.0 images (2026-11-13, revision `024da81`): **28 checks, all held** — the private group, a member
 leaving and a drain, the community pick and the client's yes, and the relay.
+
+## The engine beside other engines (phase 141)
+
+```sh
+docker build -f candidates/prima.Dockerfile -t inferhub-lab-prima:288df6a candidates      # once (~10 min)
+LAB_MODEL_DIR=D:/models COMPARE_REVISION=<commit> ./compare-engines.sh
+```
+
+Runs the same GGUF and the same two prompts through the whole model, bare llama.cpp RPC (this compose file), a group on the
+published InferHub images (`tunnel-lab.sh`) and Prima.cpp at a pinned commit, at 0, 10 and 30 ms of round trip, three times
+each, timed by one client. It writes `results.jsonl`, `load.jsonl`, `memory.jsonl`, `faults.jsonl`, `skips.jsonl`, `meta.json`
+and `summary.md` to a new directory under `$LAB_OUT`, prints PASS or FAIL per gate and a decision, and exits 0 only when every
+gate held. A full run takes about 35 minutes. `COMPARE_ONLY`, `COMPARE_RTTS`, `COMPARE_REPS` narrow it.
+
+Measured (2026-11-15, published 3.100.0, Llama 3.1 8B Q4, 4 CPUs a container; share of each engine's own whole-model speed):
+
+| Round trip | llama.cpp RPC, bare | InferHub group | Prima.cpp ring |
+|---|---:|---:|---:|
+| 0 ms | 6.40 tok/s · 96 % | 6.18 · 93 % | 6.55 · 101 % |
+| 10 ms | 5.31 · 80 % | 5.44 · 82 % | 5.79 · 89 % |
+| 30 ms | 2.73 · 41 % | 3.15 · 47 % | 4.17 · 64 % |
+
+- **Every split gave its own whole model's text**, every repetition.
+- The ring sends 80 KB between machines per token where the star sends 600–700 KB, and no weights at load (the star: 3–4 GiB).
+- Decision: **defer** — the engine stays. The argument and what a CPU lab cannot show: `docs/research/distributed-inference-decision.md`.
+- **Found while building it:** `llama-server` keeps earlier prompts, and a coordinator has no switch for that — a repeated long
+  prompt answered its first token in 0.3 s instead of 20 s. The long prompt now starts with each run's own words.

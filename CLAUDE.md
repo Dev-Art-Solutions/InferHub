@@ -106,7 +106,7 @@ longer pays for the Qdrant connector's UUID mapping and the cluster lease's spli
 | `src/InferHub.Node/Tools/` | `src/InferHub.Node/Tools/CLAUDE.md` | the tool runtime, STT/TTS, the image and video catalogues, the VRAM budget and the licence gate · phases 41, 42, 48, 55–58, 70 (split out in phase 67) |
 | `python/` | `python/CLAUDE.md` | the worker protocol, recipes, the diffusion worker · phases 49, 50, 55, 57, 58, 70 |
 | `tests/` | `tests/CLAUDE.md` | the four test projects and the testing discipline |
-| `deploy/`, any Dockerfile | `deploy/CLAUDE.md` | the five images and the permissions trap |
+| `deploy/`, any Dockerfile | `deploy/CLAUDE.md` | the five images and the permissions trap; the shard engine measured against other engines · phase 141 |
 | `plan/`, writing any plan | `plan/CLAUDE.md` | the brief format, the release checklist, the budget · phase 54 |
 
 **A decision lives in exactly one of those files** and is pointed at from the others (52 D2).

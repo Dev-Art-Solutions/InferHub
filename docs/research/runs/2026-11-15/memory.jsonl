@@ -1,0 +1,15 @@
+{"config":"whole","container":"cmp-whole","peak_bytes":9346068480,"anon_bytes":4646637568,"file_bytes":4661215232}
+{"config":"whole-chat","container":"cmp-whole","peak_bytes":9560616960,"anon_bytes":4861255680,"file_bytes":4661215232}
+{"config":"rpc-star","container":"inferhub-shard-lab-head-1","peak_bytes":2684817408,"anon_bytes":67723264,"file_bytes":2523885568}
+{"config":"rpc-star","container":"inferhub-shard-lab-worker1-1","peak_bytes":2685595648,"anon_bytes":1718415360,"file_bytes":926425088}
+{"config":"rpc-star","container":"inferhub-shard-lab-worker2-1","peak_bytes":2684354560,"anon_bytes":1689821184,"file_bytes":953679872}
+{"config":"rpc-star","container":"inferhub-shard-lab-worker3-1","peak_bytes":2698563584,"anon_bytes":1981292544,"file_bytes":672661504}
+{"config":"inferhub-group","container":"shard-a","peak_bytes":4296978432,"anon_bytes":2311839744,"file_bytes":1948258304}
+{"config":"inferhub-group","container":"shard-b","peak_bytes":2829008896,"anon_bytes":1665626112,"file_bytes":1115185152}
+{"config":"inferhub-group","container":"shard-c","peak_bytes":3470135296,"anon_bytes":1969623040,"file_bytes":1446965248}
+{"config":"inferhub-group","container":"shard-d","peak_bytes":79650816,"anon_bytes":43909120,"file_bytes":24694784}
+{"config":"prima-whole","container":"cmp-prima-whole","peak_bytes":5149990912,"anon_bytes":740950016,"file_bytes":4377944064}
+{"config":"prima-ring","container":"prima0","peak_bytes":1805832192,"anon_bytes":352260096,"file_bytes":1432608768}
+{"config":"prima-ring","container":"prima1","peak_bytes":1332379648,"anon_bytes":333369344,"file_bytes":981999616}
+{"config":"prima-ring","container":"prima2","peak_bytes":1332121600,"anon_bytes":333578240,"file_bytes":981999616}
+{"config":"prima-ring","container":"prima3","peak_bytes":1330507776,"anon_bytes":333541376,"file_bytes":981336064}

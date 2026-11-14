@@ -1,0 +1,907 @@
+{
+ "meta": {
+  "date": "2026-11-14T23:55:06Z",
+  "inferhub_commit": "f1622c168bed80b65713a4a22728c3c15373a99a",
+  "inferhub_tag": "3.100.0",
+  "hub_image": "ghcr.io/dev-art-solutions/inferhub-coordinator:3.100.0",
+  "hub_image_id": "sha256:cdfc01772c98fc342d62358d7c6ec75c400cc83763bd6910050c400cdcd097cd",
+  "hub_revision": "fb07a723cccc06ae91339000aa816c27d522c944",
+  "node_image": "ghcr.io/dev-art-solutions/inferhub-node:3.100.0",
+  "node_image_id": "sha256:7c5fd34d6c7a9b7d541a288280430827f6a26902abaf13ca9abefeb17f1a3d4d",
+  "node_revision": "fb07a723cccc06ae91339000aa816c27d522c944",
+  "llama_image": "inferhub-lab-llama:b12182",
+  "llama_image_id": "sha256:478509ff44ae92bd5b993283fa06ab8f7a49d03e0872cecd489dc06e85cce035",
+  "llama_commit": "fd27b2034905f8dadd8bd6d2cc44595f4929d391",
+  "prima_image": "inferhub-lab-prima:288df6a",
+  "prima_image_id": "sha256:9717ccdbd71297ad148fc71f6eb50c5417c1b8b6cda1d1851cedeb2cd61b4e73",
+  "prima_commit": "288df6a2cc2120387e12d6f40798f30cc525c9ea",
+  "prima_layers": "8,8,8,8",
+  "model": "llama31-8b.gguf",
+  "model_sha256": "87048bcd55216712ef14c11c2c303728463207b165bf18440b9b84b07ec00f87",
+  "model_bytes": 4661211808,
+  "rtts_ms": "0 10 30",
+  "reps": 3,
+  "tokens": 48,
+  "cpus_per_container": 4,
+  "worker_memory": "2560m",
+  "node_memory": "4g",
+  "host_cpus": 64,
+  "host_memory_bytes": 134977781760,
+  "docker": "27.3.1",
+  "expect_revision": "fb07a72",
+  "only": "whole rpc-star inferhub-group prima-whole prima-ring"
+ },
+ "rows": [
+  {
+   "config": "whole",
+   "rtt_ms": 0,
+   "ping_ms": null,
+   "ttft_short_ms": {
+    "median": 468,
+    "min": 466,
+    "max": 471,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 14333,
+    "min": 14301,
+    "max": 14344,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 6.65,
+    "min": 6.407,
+    "max": 6.862,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 6.772,
+    "min": 6.738,
+    "max": 6.862,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 6.555,
+    "min": 6.407,
+    "max": 6.562,
+    "n": 3
+   },
+   "prefill_tps": {
+    "median": 30.344812155824105,
+    "min": 30.32381784971711,
+    "max": 30.418491863789356,
+    "n": 3
+   },
+   "bytes_per_token": {
+    "median": 245.02083333333334,
+    "min": 245,
+    "max": 245.27083333333334,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 3.990161825818916,
+    "min": 3.9835711600429646,
+    "max": 3.9946311808118082,
+    "n": 6
+   },
+   "of_own_whole": null
+  },
+  {
+   "config": "whole-chat",
+   "rtt_ms": 0,
+   "ping_ms": null,
+   "ttft_short_ms": {
+    "median": 189,
+    "min": 178,
+    "max": 760,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 15047,
+    "min": 14986,
+    "max": 15054,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 6.647,
+    "min": 6.427,
+    "max": 6.894,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 6.862,
+    "min": 6.856,
+    "max": 6.894,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 6.428,
+    "min": 6.427,
+    "max": 6.438,
+    "n": 3
+   },
+   "prefill_tps": {
+    "median": 30.237199819030696,
+    "min": 30.225175551764927,
+    "max": 30.253231569387392,
+    "n": 3
+   },
+   "bytes_per_token": {
+    "median": 338.9583333333333,
+    "min": 338.9583333333333,
+    "max": 340.0625,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 3.987631046132363,
+    "min": 3.9729975052521005,
+    "max": 3.993890976769217,
+    "n": 6
+   },
+   "of_own_whole": null
+  },
+  {
+   "config": "rpc-star",
+   "rtt_ms": 0,
+   "ping_ms": {
+    "median": 0.072,
+    "min": 0.072,
+    "max": 0.072,
+    "n": 6
+   },
+   "ttft_short_ms": {
+    "median": 545,
+    "min": 531,
+    "max": 557,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 19448,
+    "min": 19393,
+    "max": 19795,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 6.401,
+    "min": 6.223,
+    "max": 6.629,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 6.58,
+    "min": 6.522,
+    "max": 6.629,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 6.272,
+    "min": 6.223,
+    "max": 6.28,
+    "n": 3
+   },
+   "prefill_tps": {
+    "median": 22.350601421724846,
+    "min": 22.169797971841497,
+    "max": 22.417976034873693,
+    "n": 3
+   },
+   "bytes_per_token": {
+    "median": 693832.875,
+    "min": 692160.9791666666,
+    "max": 848921.2916666666,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 4.107093714523544,
+    "min": 4.002368028107158,
+    "max": 4.205953979284122,
+    "n": 6
+   },
+   "of_own_whole": 0.9625563909774435
+  },
+  {
+   "config": "rpc-star",
+   "rtt_ms": 10,
+   "ping_ms": {
+    "median": 10.147,
+    "min": 10.147,
+    "max": 10.147,
+    "n": 6
+   },
+   "ttft_short_ms": {
+    "median": 818,
+    "min": 816,
+    "max": 1752,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 20134,
+    "min": 20114,
+    "max": 20538,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 5.307,
+    "min": 5.194,
+    "max": 5.517,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 5.459,
+    "min": 5.409,
+    "max": 5.517,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 5.196,
+    "min": 5.194,
+    "max": 5.205,
+    "n": 3
+   },
+   "prefill_tps": {
+    "median": 21.62747658277498,
+    "min": 21.596025933144873,
+    "max": 21.66405067431105,
+    "n": 3
+   },
+   "bytes_per_token": {
+    "median": 691234.8541666666,
+    "min": 691186.9583333334,
+    "max": 2007082.0625,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 3.5726060927265086,
+    "min": 3.1394361060591556,
+    "max": 3.746148498884886,
+    "n": 6
+   },
+   "of_own_whole": 0.7980451127819549
+  },
+  {
+   "config": "rpc-star",
+   "rtt_ms": 30,
+   "ping_ms": {
+    "median": 30.16,
+    "min": 30.16,
+    "max": 30.16,
+    "n": 6
+   },
+   "ttft_short_ms": {
+    "median": 1386,
+    "min": 1377,
+    "max": 4172,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 21471,
+    "min": 21380,
+    "max": 22625,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 2.728,
+    "min": 2.458,
+    "max": 3.28,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 3.264,
+    "min": 2.986,
+    "max": 3.28,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 2.464,
+    "min": 2.458,
+    "max": 2.47,
+    "n": 3
+   },
+   "prefill_tps": {
+    "median": 20.358168672962627,
+    "min": 20.271475222512137,
+    "max": 20.418389742741937,
+    "n": 3
+   },
+   "bytes_per_token": {
+    "median": 689474.2916666666,
+    "min": 688795.0416666666,
+    "max": 2005389,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 2.3343801359857026,
+    "min": 1.7352146910977784,
+    "max": 2.70514372589736,
+    "n": 6
+   },
+   "of_own_whole": 0.41022556390977444
+  },
+  {
+   "config": "inferhub-group",
+   "rtt_ms": 0,
+   "ping_ms": null,
+   "ttft_short_ms": {
+    "median": 245,
+    "min": 205,
+    "max": 793,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 20756,
+    "min": 20637,
+    "max": 20819,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 6.1825,
+    "min": 5.955,
+    "max": 6.323,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 6.283,
+    "min": 6.266,
+    "max": 6.323,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 6.027,
+    "min": 5.955,
+    "max": 6.099,
+    "n": 3
+   },
+   "prefill_tps": null,
+   "bytes_per_token": {
+    "median": 601154.7916666666,
+    "min": 575509.9583333334,
+    "max": 695510.5833333334,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 4.172696078575621,
+    "min": 4.0433467727859815,
+    "max": 4.268749641973701,
+    "n": 6
+   },
+   "of_own_whole": 0.9301188506092974
+  },
+  {
+   "config": "inferhub-group",
+   "rtt_ms": 10,
+   "ping_ms": null,
+   "ttft_short_ms": {
+    "median": 815,
+    "min": 304,
+    "max": 1389,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 21703,
+    "min": 20870,
+    "max": 23424,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 5.4365000000000006,
+    "min": 5.348,
+    "max": 5.559,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 5.514,
+    "min": 5.495,
+    "max": 5.559,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 5.367,
+    "min": 5.348,
+    "max": 5.378,
+    "n": 3
+   },
+   "prefill_tps": null,
+   "bytes_per_token": {
+    "median": 694169.1666666666,
+    "min": 575511.3541666666,
+    "max": 1603124.7708333333,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 3.6698404743599697,
+    "min": 3.4493517248335688,
+    "max": 3.8976309395248383,
+    "n": 6
+   },
+   "of_own_whole": 0.817887768918309
+  },
+  {
+   "config": "inferhub-group",
+   "rtt_ms": 30,
+   "ping_ms": null,
+   "ttft_short_ms": {
+    "median": 1885,
+    "min": 513,
+    "max": 22625,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 23675,
+    "min": 21798,
+    "max": 24296,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 3.1494999999999997,
+    "min": 2.977,
+    "max": 4.301,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 3.262,
+    "min": 2.977,
+    "max": 4.301,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 3.131,
+    "min": 3.082,
+    "max": 3.168,
+    "n": 3
+   },
+   "prefill_tps": null,
+   "bytes_per_token": {
+    "median": 694852.4166666666,
+    "min": 574192,
+    "max": 1605122.0833333333,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 2.4770505254070416,
+    "min": 1.0005735701725629,
+    "max": 3.1189348665209056,
+    "n": 6
+   },
+   "of_own_whole": 0.4738227771927185
+  },
+  {
+   "config": "prima-whole",
+   "rtt_ms": 0,
+   "ping_ms": null,
+   "ttft_short_ms": {
+    "median": 533,
+    "min": 531,
+    "max": 540,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 20379,
+    "min": 20365,
+    "max": 20450,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 6.4755,
+    "min": 6.278,
+    "max": 6.644,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 6.642,
+    "min": 6.618,
+    "max": 6.644,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 6.287,
+    "min": 6.278,
+    "max": 6.333,
+    "n": 3
+   },
+   "prefill_tps": {
+    "median": 21.329364957475192,
+    "min": 21.25300988406973,
+    "max": 21.34573340103636,
+    "n": 3
+   },
+   "bytes_per_token": {
+    "median": 188.77083333333334,
+    "min": 188.58333333333334,
+    "max": 188.77083333333334,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 3.9846185921716195,
+    "min": 3.977536300380727,
+    "max": 3.993751623900951,
+    "n": 6
+   },
+   "of_own_whole": null
+  },
+  {
+   "config": "prima-ring",
+   "rtt_ms": 0,
+   "ping_ms": {
+    "median": 0.078,
+    "min": 0.078,
+    "max": 0.078,
+    "n": 6
+   },
+   "ttft_short_ms": {
+    "median": 538,
+    "min": 533,
+    "max": 543,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 20375,
+    "min": 20366,
+    "max": 20557,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 6.549,
+    "min": 6.453,
+    "max": 6.615,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 6.607,
+    "min": 6.573,
+    "max": 6.615,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 6.481,
+    "min": 6.453,
+    "max": 6.525,
+    "n": 3
+   },
+   "prefill_tps": {
+    "median": 21.330901807125496,
+    "min": 21.142855110693322,
+    "max": 21.340719385816065,
+    "n": 3
+   },
+   "bytes_per_token": {
+    "median": 80687.8125,
+    "min": 80448.20833333333,
+    "max": 80694,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 4.237660206522614,
+    "min": 4.085755028735632,
+    "max": 4.38569955567172,
+    "n": 6
+   },
+   "of_own_whole": 1.0113504748668056
+  },
+  {
+   "config": "prima-ring",
+   "rtt_ms": 10,
+   "ping_ms": {
+    "median": 10.13,
+    "min": 10.13,
+    "max": 10.13,
+    "n": 6
+   },
+   "ttft_short_ms": {
+    "median": 680,
+    "min": 676,
+    "max": 684,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 20723,
+    "min": 20713,
+    "max": 20724,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 5.7905,
+    "min": 5.477,
+    "max": 5.916,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 5.879,
+    "min": 5.862,
+    "max": 5.916,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 5.684,
+    "min": 5.477,
+    "max": 5.719,
+    "n": 3
+   },
+   "prefill_tps": {
+    "median": 20.980233236382745,
+    "min": 20.977822719513703,
+    "max": 20.98967172733778,
+    "n": 3
+   },
+   "bytes_per_token": {
+    "median": 80375.52083333333,
+    "min": 80373.64583333333,
+    "max": 80399.6875,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 3.87142092849584,
+    "min": 3.8375331797235024,
+    "max": 3.9054066744011466,
+    "n": 6
+   },
+   "of_own_whole": 0.8942166628059609
+  },
+  {
+   "config": "prima-ring",
+   "rtt_ms": 30,
+   "ping_ms": {
+    "median": 30.171,
+    "min": 30.171,
+    "max": 30.171,
+    "n": 6
+   },
+   "ttft_short_ms": {
+    "median": 980,
+    "min": 979,
+    "max": 985,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 21540,
+    "min": 21520,
+    "max": 21580,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 4.1655,
+    "min": 3.581,
+    "max": 4.748,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 4.734,
+    "min": 4.728,
+    "max": 4.748,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 3.587,
+    "min": 3.581,
+    "max": 3.603,
+    "n": 3
+   },
+   "prefill_tps": {
+    "median": 20.200756420582355,
+    "min": 20.164264416694063,
+    "max": 20.22184387804644,
+    "n": 3
+   },
+   "bytes_per_token": {
+    "median": 80497.27083333333,
+    "min": 80492.16666666667,
+    "max": 80510.27083333333,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 3.173723673963753,
+    "min": 3.070095579450418,
+    "max": 3.2745957164299733,
+    "n": 6
+   },
+   "of_own_whole": 0.6432707899003938
+  }
+ ],
+ "loads": [
+  {
+   "config": "whole",
+   "load_s": 28.7884,
+   "load_tx_bytes": 0,
+   "note": "one container, the file from a read-only mount"
+  },
+  {
+   "config": "rpc-star",
+   "load_s": 62.1381,
+   "load_tx_bytes": 4373711024,
+   "note": "the head sends every worker its layers"
+  },
+  {
+   "config": "inferhub-group",
+   "load_s": 85.3897,
+   "load_tx_bytes": 3104303806,
+   "note": "includes the hub start, four enrollments and the lab's two warm-up chats"
+  },
+  {
+   "config": "prima-whole",
+   "load_s": 12.4821,
+   "load_tx_bytes": 0,
+   "note": "one container, the file from a read-only mount"
+  },
+  {
+   "config": "prima-ring",
+   "load_s": 15.481,
+   "load_tx_bytes": 155383,
+   "note": "every rank reads the file itself"
+  }
+ ],
+ "memory": [
+  {
+   "config": "whole",
+   "container": "cmp-whole",
+   "peak_bytes": 9346068480,
+   "anon_bytes": 4646637568,
+   "file_bytes": 4661215232
+  },
+  {
+   "config": "whole-chat",
+   "container": "cmp-whole",
+   "peak_bytes": 9560616960,
+   "anon_bytes": 4861255680,
+   "file_bytes": 4661215232
+  },
+  {
+   "config": "rpc-star",
+   "container": "inferhub-shard-lab-head-1",
+   "peak_bytes": 2684817408,
+   "anon_bytes": 67723264,
+   "file_bytes": 2523885568
+  },
+  {
+   "config": "rpc-star",
+   "container": "inferhub-shard-lab-worker1-1",
+   "peak_bytes": 2685595648,
+   "anon_bytes": 1718415360,
+   "file_bytes": 926425088
+  },
+  {
+   "config": "rpc-star",
+   "container": "inferhub-shard-lab-worker2-1",
+   "peak_bytes": 2684354560,
+   "anon_bytes": 1689821184,
+   "file_bytes": 953679872
+  },
+  {
+   "config": "rpc-star",
+   "container": "inferhub-shard-lab-worker3-1",
+   "peak_bytes": 2698563584,
+   "anon_bytes": 1981292544,
+   "file_bytes": 672661504
+  },
+  {
+   "config": "inferhub-group",
+   "container": "shard-a",
+   "peak_bytes": 4296978432,
+   "anon_bytes": 2311839744,
+   "file_bytes": 1948258304
+  },
+  {
+   "config": "inferhub-group",
+   "container": "shard-b",
+   "peak_bytes": 2829008896,
+   "anon_bytes": 1665626112,
+   "file_bytes": 1115185152
+  },
+  {
+   "config": "inferhub-group",
+   "container": "shard-c",
+   "peak_bytes": 3470135296,
+   "anon_bytes": 1969623040,
+   "file_bytes": 1446965248
+  },
+  {
+   "config": "inferhub-group",
+   "container": "shard-d",
+   "peak_bytes": 79650816,
+   "anon_bytes": 43909120,
+   "file_bytes": 24694784
+  },
+  {
+   "config": "prima-whole",
+   "container": "cmp-prima-whole",
+   "peak_bytes": 5149990912,
+   "anon_bytes": 740950016,
+   "file_bytes": 4377944064
+  },
+  {
+   "config": "prima-ring",
+   "container": "prima0",
+   "peak_bytes": 1805832192,
+   "anon_bytes": 352260096,
+   "file_bytes": 1432608768
+  },
+  {
+   "config": "prima-ring",
+   "container": "prima1",
+   "peak_bytes": 1332379648,
+   "anon_bytes": 333369344,
+   "file_bytes": 981999616
+  },
+  {
+   "config": "prima-ring",
+   "container": "prima2",
+   "peak_bytes": 1332121600,
+   "anon_bytes": 333578240,
+   "file_bytes": 981999616
+  },
+  {
+   "config": "prima-ring",
+   "container": "prima3",
+   "peak_bytes": 1330507776,
+   "anon_bytes": 333541376,
+   "file_bytes": 981336064
+  }
+ ],
+ "faults": [
+  {
+   "config": "rpc-star",
+   "cpus_busy_5s_after_cancel": 0,
+   "after_worker_loss": {
+    "head_running": true,
+    "answer": {
+     "ok": false,
+     "mode": "completion",
+     "chunks": 0,
+     "text": "",
+     "status": 200,
+     "error": "terminated",
+     "total_ms": 2772
+    }
+   }
+  },
+  {
+   "config": "prima-ring",
+   "cpus_busy_5s_after_cancel": 0,
+   "after_worker_loss": {
+    "head_running": true,
+    "answer": {
+     "ok": false,
+     "mode": "completion",
+     "chunks": 0,
+     "text": "",
+     "status": 200,
+     "error": "This operation was aborted",
+     "total_ms": 60012
+    }
+   }
+  }
+ ],
+ "skips": [
+  {
+   "config": "exo",
+   "reason": "a60b956: the only engine is MLX and it loads MLX safetensors, not GGUF - no run on the same weights and quantization exists"
+  },
+  {
+   "config": "nakshatra",
+   "reason": "373a17d: a patched llama.cpp b9992 and per-worker sub-GGUFs cut from the model - GGUF-compatible, not built in this run (the mechanism it shares with Prima.cpp is the one measured)"
+  }
+ ],
+ "gates": [
+  "  PASS  baseline and candidate configurations recorded (whole, whole-chat, rpc-star, inferhub-group, prima-whole, prima-ring; skipped: exo, nakshatra)",
+  "  PASS  same test prompts, model 87048bcd5521…, quantization and output settings (72 runs of 48 tokens at temperature 0); images built from fb07a72",
+  "  PASS  correctness / compatibility thresholds held: every split answers its own whole model's text, every repetition the same · the candidate too",
+  "  PASS  latency, throughput, memory and network results written to artifacts"
+ ],
+ "edge": [
+  {
+   "rtt": 0,
+   "short": 1.0863983305155702,
+   "long": 1.099444314380949
+  },
+  {
+   "rtt": 10,
+   "short": 1.1015102451431555,
+   "long": 1.0828165417982856
+  },
+  {
+   "rtt": 30,
+   "short": 1.499326231766303,
+   "long": 1.1713339114841925
+  }
+ ],
+ "decision": "defer — do not adopt Prima.cpp (its ranks talk over plain ZeroMQ push/pull sockets with no authentication or encryption, it is a 2024 fork of llama.cpp (not the build a node runs) and it has no Windows build); against inferhub-group its ring keeps 1.09–1.10× at 0 ms, 1.08–1.10× at 10 ms, 1.17–1.50× at 30 ms of the share of whole-model speed, past 1.25× on one prompt and not the other: a gain on a wide network only, and not yet one that pays for a second engine",
+ "failed": 0
+}

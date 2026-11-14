@@ -149,6 +149,24 @@ through their tunnels; it builds on images tagged `:dev` from this tree. `relay-
 the coordinator shares — no path either way, as behind a home router — and `verify-lab.sh <version>` (140) runs every lab on
 the published images of one release and says PASS or FAIL per claim.
 
+### Phase 141 (the shard engine, measured before anyone changes it — and it stays)
+
+`lab/shards/compare-engines.sh` runs one GGUF and two prompts through the whole model, bare llama.cpp RPC, a group on the
+**published** InferHub images and Prima.cpp (`candidates/prima.Dockerfile`, a pinned commit) at 0, 10 and 30 ms of round trip,
+timed by one client (`compare/ask.mjs`), and `compare/report.mjs` turns the files into gates and a decision.
+
+**D1 — the engine stays llama.cpp RPC; the decision is *defer*, not a change** (2026-11-15, `docs/research/`). On a local
+network a ring (one hidden state per boundary per token) is 8–10 % ahead of a group, which is noise; at 30 ms it keeps 1.17–1.50×
+the group's share of whole-model speed and sends 8× fewer bytes. That is real only across the internet and costs a patched
+llama.cpp per model family plus 137's survival rules again. *Rejected:* adopting Prima.cpp (no Windows, no authentication on its
+sockets, a 2024 fork), EXO (MLX weights, not GGUF), Nakshatra (not built; the design to read if a ring is ever wanted).
+
+**D2 — an engine is read against its own whole-model run, never against another engine's tokens per second.** Two builds of
+llama.cpp differ by a third in prefill before any network exists. The decision rule is in the script (1.25× on every prompt),
+so two runs cannot be read two ways. A candidate that cannot run on the same weights is a `SKIP` with its reason.
+
+**D3 — nothing from a candidate enters the product.** Prima.cpp is an image the lab builds, like `inferhub-lab-llama`.
+
 ## The Windows setup (phase 101)
 
 `windows/installer/InferHubNode.iss` + `build-installer.ps1` (publish self-contained win-x64 → ISCC → a

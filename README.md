@@ -1217,6 +1217,25 @@ tunnel to each other. With the relay on, they meet at the coordinator instead.
 in Docker on one PC: a private group, a member leaving, a community group, and a node behind NAT. It
 prints PASS or FAIL for each claim and keeps the transcripts.
 
+### Why the engine under a split model stays (v3.101+)
+
+A group runs on llama.cpp's RPC backend. Before changing that, we measured it against other
+distributed-inference engines, read at pinned commits: Prima.cpp, Nakshatra and EXO.
+`deploy/lab/shards/compare-engines.sh` runs the same model file and the same prompts through each
+engine that can load it, at 0, 10 and 30 ms of round trip, and prints PASS or FAIL per gate and a
+decision.
+
+- **On a local network nothing was faster.** A ring of machines (Prima.cpp's way: each passes its
+  result to the next) was 8–10 % ahead of an InferHub group, inside the noise.
+- **At 30 ms the ring loses less**: it kept 64 % of its whole-model speed where the group kept 47 %,
+  and sent 80 KB between machines per token where the group sent 600–700 KB.
+- **The decision is to keep the engine.** The gain appears only across the internet, and it costs a
+  patched llama.cpp per model family. Prima.cpp has no Windows build and no authentication on its
+  sockets; EXO loads MLX weights, not GGUF, so it could not run the same file; Nakshatra was read
+  and not built.
+- **What the lab cannot show:** GPUs, models above 8B, real networks with loss and bandwidth
+  limits, several requests at once. The full argument: `docs/research/distributed-inference-decision.md`.
+
 ### A sealed node (v3.82+)
 
 One setting for a node that must not reach the internet: `Node:Sealed=true`. It talks to its

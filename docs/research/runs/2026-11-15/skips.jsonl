@@ -1,0 +1,2 @@
+{"config":"exo","reason":"a60b956: the only engine is MLX and it loads MLX safetensors, not GGUF - no run on the same weights and quantization exists"}
+{"config":"nakshatra","reason":"373a17d: a patched llama.cpp b9992 and per-worker sub-GGUFs cut from the model - GGUF-compatible, not built in this run (the mechanism it shares with Prima.cpp is the one measured)"}
