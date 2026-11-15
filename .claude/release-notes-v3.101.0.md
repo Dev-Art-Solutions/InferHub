@@ -96,7 +96,15 @@ prompt of two, which is *defer*.
 
 ## The published images of this release
 
-PUBLISHED-CHECK-PLACEHOLDER
+`inferhub-coordinator:3.101.0` and `inferhub-node:3.101.0`, both carrying revision `e2ed297`:
+
+- **`verify-lab.sh 3.101.0`: 28 checks of 28 held** — the private group, a member leaving and a drain, the community pick
+  and the client's yes, and the relay. The same command on 3.100.0, run before the tag: 28 of 28.
+- **`compare-engines.sh` with `INFERHUB_TAG=3.101.0`** (the whole model and the group; the engines beside it do not depend on
+  the release): 4 gates of 4. The group gave the whole model's text and kept 94 %, 83 % and 48 % of whole-model speed at 0, 10
+  and 30 ms — the same as on 3.100.0 (93 %, 82 %, 47 %), as it should be for a release with no product change.
+
+All three workflows finished green (build-and-test, docker-publish, windows-installer).
 
 ## Tests
 
