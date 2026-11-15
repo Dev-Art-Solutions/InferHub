@@ -77,4 +77,4 @@ what was sent since it started, not since the node did. Whole suite: 2895 passed
 - All three workflows finished green; the Windows setup and its checksum are attached to the release.
 
 Not rerun on the published images: the 30 ms profile and the cached reload (measured from source, on the same commit).
-The blog post is not published yet: the blog connector needed authorization on the day. The draft is `.claude/blog-v3.102.0.md`.
+The blog post: `blog.devart.solutions/blog/inferhub-3-102-a-70b-model-across-three-machines`.
