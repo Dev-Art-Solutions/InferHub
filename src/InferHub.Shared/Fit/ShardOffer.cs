@@ -104,7 +104,8 @@ public sealed record ShardPeerState(
     [property: JsonPropertyName("rttMs")] double? RttMs,
     [property: JsonPropertyName("error")] string? Error,
     [property: JsonPropertyName("atUtc")] DateTimeOffset? AtUtc,
-    [property: JsonPropertyName("via")] string? Via = null)
+    [property: JsonPropertyName("via")] string? Via = null,
+    [property: JsonPropertyName("sentBytes"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? SentBytes = null)
 {
     public const string Direct = "direct";
     public const string Relayed = "relay";
@@ -234,12 +235,16 @@ public sealed record ShardGroupState(
 }
 
 /// <summary>Phase 137 D4: which layers one worker of a group holds — <see cref="First"/> counted from 0, and whether the output
-/// layer is among them.</summary>
+/// layer is among them. Phase 142 D2: <see cref="ExpectMiB"/> is that share of the model file and <see cref="SentMiB"/> what the
+/// head has sent that member through its tunnel since the group started; both null for the head's own worker, which is not
+/// behind a tunnel, and from a head before 3.102.</summary>
 public sealed record ShardGroupLayers(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("first")] int First,
     [property: JsonPropertyName("count")] int Count,
-    [property: JsonPropertyName("output")] bool Output);
+    [property: JsonPropertyName("output")] bool Output,
+    [property: JsonPropertyName("expectMiB"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? ExpectMiB = null,
+    [property: JsonPropertyName("sentMiB"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? SentMiB = null);
 
 /// <summary>
 /// Phase 137 D4: how llama.cpp divides a model's layers over devices given a tensor split, as its loader does with every layer

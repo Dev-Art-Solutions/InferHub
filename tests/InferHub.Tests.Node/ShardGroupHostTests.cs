@@ -25,7 +25,7 @@ public sealed class ShardGroupHostTests : IDisposable
     private static ShardGroupSpec Spec(int context = 4096) => new("llama-8b-split", "llama31-8b.gguf", context, 3072,
         [new ShardGroupWorker("b", "shard-b", 3072), new ShardGroupWorker("c", "shard-c", 6144)]);
 
-    private static ShardPeerState Door(string id, string local) => new(id, "shard-" + id, id + ":50053", local, 0.3, null, DateTimeOffset.UtcNow);
+    private static ShardPeerState Door(string id, string local, long? sent = null) => new(id, "shard-" + id, id + ":50053", local, 0.3, null, DateTimeOffset.UtcNow, null, sent);
 
     [Fact]
     public void TheHeadRunsEveryLayerOnAWorkerInProportionToTheOffersOnLoopbackUnderTheGroupsName()
@@ -249,9 +249,56 @@ public sealed class ShardGroupHostTests : IDisposable
         var layers = await host.LayersAsync(Spec(), Path.Combine(models, "llama31-8b.gguf"));
 
         Assert.Equal(
-            [new ShardGroupLayers("shard-a", 0, 9, false), new ShardGroupLayers("shard-b", 9, 8, false), new ShardGroupLayers("shard-c", 17, 15, true)],
+            [new ShardGroupLayers("shard-a", 0, 9, false), new ShardGroupLayers("shard-b", 9, 8, false, 0), new ShardGroupLayers("shard-c", 17, 15, true, 0)],
             layers);
         Assert.Null(await host.LayersAsync(Spec(), Path.Combine(models, "missing.gguf")));
+    }
+
+    [Fact]
+    public async Task AMembersShareOfTheFileIsItsLayersAndTheHeadsOwnWorkerExpectsNothing()
+    {
+        // 142 D2: 32 layers in a 64 MiB file — a member with 8 of them is to be sent 16 MiB, one with 15 of them 30.
+        var path = Path.Combine(models, "llama31-8b.gguf");
+        File.WriteAllBytes(path, GgufWriter.Llama(layers: 32));
+
+        await using (var file = new FileStream(path, FileMode.Open, FileAccess.Write))
+        {
+            file.SetLength(64L * 1024 * 1024);
+        }
+
+        var host = new ShardGroupHost(new ShardOptions { Enabled = true, RamGiB = 3, AllowHead = true }, models, () => "dotnet",
+            () => [], (_, _) => new NamedBackend("x"), _ => Task.FromResult(true), NullLogger.Instance, null) { HeadName = "shard-a" };
+
+        var layers = await host.LayersAsync(Spec(), path);
+
+        Assert.Equal([null, 16L, 30L], layers!.Select(l => l.ExpectMiB));
+    }
+
+    [Fact]
+    public async Task WhileAGroupLoadsItsStateSaysWhatTheHeadHasSentEachMemberSinceItStarted()
+    {
+        // 142 D2: the forwards count from the node's start; a group counts from its own.
+        File.WriteAllBytes(Path.Combine(models, "llama31-8b.gguf"), GgufWriter.Llama(layers: 32));
+        long b = 100L * 1024 * 1024, c = 0;
+        await using var host = new ShardGroupHost(new ShardOptions { Enabled = true, RamGiB = 3, AllowHead = true }, models, () => "dotnet",
+            () => [Door("b", "127.0.0.1:41001", b), Door("c", "127.0.0.1:41002", c)], (_, _) => new NamedBackend("group"), _ => Task.FromResult(false),
+            NullLogger.Instance, null) { HeadName = "shard-a" };
+        await host.StartAsync(CancellationToken.None);
+        host.SetGroups(new ShardGroupList([Spec()]));
+
+        for (var i = 0; i < 50 && host.State().Single().Layers is null; i++)
+        {
+            await Task.Delay(100);
+        }
+
+        Assert.Equal([null, 0L, 0L], host.State().Single().Layers!.Select(l => l.SentMiB));
+
+        b += 5L * 1024 * 1024;
+        c += 2L * 1024 * 1024;
+
+        var state = host.State().Single();
+        Assert.Equal(ShardGroupState.Starting, state.State);
+        Assert.Equal([null, 5L, 2L], state.Layers!.Select(l => l.SentMiB));
     }
 
     public void Dispose()

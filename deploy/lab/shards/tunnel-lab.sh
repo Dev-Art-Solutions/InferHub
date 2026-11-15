@@ -26,7 +26,7 @@ docker run -d --name lab-hub --network lab135 -p 15080:8080 \
   -e Auth__NodeEnrollmentSecret=lab135 -e Auth__AdminApiKeys__0=adm135 -e Auth__ApiKeys__0=cli135 \
   -e Identity__Enabled=true -e Identity__DataDirectory=/data/identity \
   -e "ShardGroups__${GROUP}__Head=shard-a" -e "ShardGroups__${GROUP}__Members__0=shard-b" -e "ShardGroups__${GROUP}__Members__1=shard-c" \
-  -e "ShardGroups__${GROUP}__Spares__0=shard-d" -e "ShardGroups__${GROUP}__Model=$MODEL" -e "ShardGroups__${GROUP}__Context=2048" \
+  -e "ShardGroups__${GROUP}__Spares__0=shard-d" -e "ShardGroups__${GROUP}__Model=$MODEL" -e "ShardGroups__${GROUP}__Context=${LAB_CONTEXT:-2048}" \
   "${HUB_IMAGE:-inferhub-coordinator:dev}" >/dev/null
 for _ in $(seq 1 30); do curl -s -o /dev/null -w "%{http_code}" -H "$H" localhost:15080/api/admin/nodes | grep -q 200 && break; sleep 1; done
 
@@ -35,21 +35,21 @@ for n in a b c d; do
     localhost:15080/api/admin/identity/tokens | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
   extra=(); [ "$n" = a ] && extra=(-v "$LAB_MODEL_DIR:/models:ro" -e Node__Shards__AllowHead=true -e Node__Shards__ModelsDir=/models)
   adv=(-e "Node__Shards__TunnelAdvertise=shard-$n:50053"); [ "$n" = c ] && adv=()
-  docker run -d --name "shard-$n" --network lab135 --cap-add NET_ADMIN --memory 4g --cpus 4 \
+  docker run -d --name "shard-$n" --network lab135 --cap-add NET_ADMIN --memory "${LAB_NODE_MEMORY:-4g}" --cpus "${LAB_CPUS:-4}" \
     -e Coordinator__Url=http://lab-hub:8080/ -e Coordinator__EnrollmentSecret=lab135 -e "Coordinator__EnrollmentToken=$token" \
-    -e "Node__Name=shard-$n" -e Node__Shards__Enabled=true -e Node__Shards__RamGiB=3 -e Node__Shards__Threads=4 -e LocalApi__Enabled=true -e LocalApi__Urls=http://127.0.0.1:8080 \
+    -e "Node__Name=shard-$n" -e Node__Shards__Enabled=true -e "Node__Shards__RamGiB=${LAB_OFFER_GIB:-3}" -e "Node__Shards__Threads=${LAB_CPUS:-4}" -e LocalApi__Enabled=true -e LocalApi__Urls=http://127.0.0.1:8080 \
     "${adv[@]}" "${extra[@]}" "${NODE_IMAGE:-inferhub-lab-node:dev}" >/dev/null
 done
 
 # The group runs once its head answers /health; GET /api/admin/shards/groups says why not until then.
-for _ in $(seq 1 150); do
+for _ in $(seq 1 $(( ${LAB_WAIT:-300} / 2 ))); do
   curl -s -H "$H" localhost:15080/api/admin/shards/groups | grep -q '"state":"running"' && break; sleep 2
 done
 curl -s -H "$H" localhost:15080/api/admin/shards/groups; echo
 
 # And the hub routes the group's name like any other model (a model report follows the group starting).
 for _ in $(seq 1 30); do curl -s -H "Authorization: Bearer cli135" localhost:15080/v1/models | grep -q "\"$GROUP\"" && break; sleep 2; done
-Q="{\"model\":\"$GROUP\",\"messages\":[{\"role\":\"user\",\"content\":\"Name the three most important ideas in distributed computing.\"}],\"max_tokens\":64,\"temperature\":0,\"seed\":1}"
+Q="{\"model\":\"$GROUP\",\"messages\":[{\"role\":\"user\",\"content\":\"Name the three most important ideas in distributed computing.\"}],\"max_tokens\":${LAB_MAX_TOKENS:-64},\"temperature\":0,\"seed\":1}"
 for _ in 1 2; do
   out=$(curl -s -H "Authorization: Bearer cli135" -H "Content-Type: application/json" localhost:15080/v1/chat/completions -d "$Q")
 done

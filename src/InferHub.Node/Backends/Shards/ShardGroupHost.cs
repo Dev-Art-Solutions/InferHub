@@ -448,7 +448,7 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
 
         logger.LogInformation("Heading group {Group}: {Model} over {Endpoints}", spec.Name, spec.Model, string.Join(", ", endpoints));
         process.Start();
-        var group = new Running(spec, endpoints, port, process, backendFor(spec.Name, port));
+        var group = new Running(spec, endpoints, port, process, backendFor(spec.Name, port), SentByNode);
 
         if (path is not null)
         {
@@ -482,7 +482,12 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
 
             var names = new[] { HeadName }.Concat(spec.Members.Select(m => m.Name)).ToArray();
             var split = ShardLayers.Split(layers, new[] { spec.HeadWeight }.Concat(spec.Members.Select(m => m.Weight)).ToArray());
-            return split.Select((s, i) => new ShardGroupLayers(names[i], s.First, s.Count, s.Output)).ToArray();
+
+            // 142 D2: a member's share of the file, by its layers — what the head will have sent it when the load is done.
+            // The head's own worker is beside it, not behind a tunnel: nothing to expect or count there.
+            var bytes = file.Length;
+            return split.Select((s, i) => new ShardGroupLayers(names[i], s.First, s.Count, s.Output,
+                i == 0 || layers <= 0 ? null : bytes / layers * s.Count / (1024 * 1024))).ToArray();
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or FormatException or EndOfStreamException or UnauthorizedAccessException)
         {
@@ -490,6 +495,10 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
             return null;
         }
     }
+
+    /// <summary>142 D2: what this node has sent each peer's worker through its forward, by node id — a load's progress.</summary>
+    private IReadOnlyDictionary<string, long> SentByNode() =>
+        peers().Where(p => p.SentBytes is not null).ToDictionary(p => p.NodeId, p => p.SentBytes!.Value, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>How the head names itself among a group's layers: its node name.</summary>
     internal string HeadName { get; init; } = "head";
@@ -516,6 +525,11 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
                     group.Healthy = ok;
                     changed = true;
                     logger.LogInformation("Group {Group} {State}", group.Spec.Name, ok ? "answers" : "stopped answering");
+                }
+                else if (!ok && group.SentMoved(time.GetUtcNow()))
+                {
+                    // 142 D2: a load of tens of gigabytes is minutes of "starting"; the hub hears how far it is, at most every five seconds.
+                    changed = true;
                 }
             }
 
@@ -612,8 +626,13 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
         }
     }
 
-    private sealed class Running(ShardGroupSpec spec, IReadOnlyList<string> endpoints, int port, EngineProcess process, IInferenceBackend backend) : IAsyncDisposable
+    private sealed class Running(ShardGroupSpec spec, IReadOnlyList<string> endpoints, int port, EngineProcess process, IInferenceBackend backend, Func<IReadOnlyDictionary<string, long>> sent) : IAsyncDisposable
     {
+        private static readonly TimeSpan SayEvery = TimeSpan.FromSeconds(5);
+        private readonly IReadOnlyDictionary<string, long> sentAtStart = sent();
+        private long said = -1;
+        private DateTimeOffset saidAt;
+
         public ShardGroupSpec Spec { get; } = spec;
         public IReadOnlyList<string> Endpoints { get; } = endpoints;
         public int Port { get; } = port;
@@ -636,7 +655,36 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
                 ? ShardGroupState.Draining
                 : Healthy ? ShardGroupState.Running : Process.Failed ? ShardGroupState.Failed : ShardGroupState.Starting;
             var why = Draining ? $"finishing {InFlight} request(s), then stopping" : Healthy ? null : Process.LastError;
-            return new ShardGroupState(Spec.Name, Spec.Model, state, Spec.Members.Select(m => m.Name).ToArray(), $"127.0.0.1:{Port}", why, Layers, Spec.Community);
+            return new ShardGroupState(Spec.Name, Spec.Model, state, Spec.Members.Select(m => m.Name).ToArray(), $"127.0.0.1:{Port}", why, WithSent(Layers), Spec.Community);
+        }
+
+        /// <summary>142 D2: each member's layers with what the head has sent it since this group started.</summary>
+        private IReadOnlyList<ShardGroupLayers>? WithSent(IReadOnlyList<ShardGroupLayers>? layers)
+        {
+            if (layers is null)
+            {
+                return null;
+            }
+
+            var now = sent();
+            return layers.Select(l => Spec.Members.FirstOrDefault(m => string.Equals(m.Name, l.Name, StringComparison.OrdinalIgnoreCase)) is { } member && now.TryGetValue(member.NodeId, out var total)
+                ? l with { SentMiB = Math.Max(0, total - sentAtStart.GetValueOrDefault(member.NodeId)) / (1024 * 1024) }
+                : l).ToArray();
+        }
+
+        /// <summary>Whether what was sent has moved since the hub last heard, and long enough ago to say so again.</summary>
+        public bool SentMoved(DateTimeOffset at)
+        {
+            var total = Spec.Members.Sum(m => sent().GetValueOrDefault(m.NodeId));
+
+            if (total == said || at - saidAt < SayEvery)
+            {
+                return false;
+            }
+
+            said = total;
+            saidAt = at;
+            return true;
         }
 
         public async ValueTask DisposeAsync() => await Process.DisposeAsync();

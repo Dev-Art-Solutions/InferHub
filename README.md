@@ -1236,6 +1236,37 @@ decision.
 - **What the lab cannot show:** GPUs, models above 8B, real networks with loss and bandwidth
   limits, several requests at once. The full argument: `docs/research/distributed-inference-decision.md`.
 
+### A 70B model across three nodes, and a load you can watch (v3.102+)
+
+Until 3.102 every split-model run used an 8B model, which fits one machine. This release ran a
+70B model (36 GiB) across three nodes of 18 GiB each, in Docker on one PC, on CPUs:
+
+- **It answers, with the same text as the whole model**, at 1.75 tokens a second against 1.87 for
+  the whole model in one container (94 %).
+- **Across a 30 ms network it keeps 65 %** of the whole model's speed. The 8B model kept 47 %. A
+  bigger model spends more of each token computing, so the network costs it less.
+- **A reload sends about 270 MiB, not 12 GiB a member**, because each member keeps the layers it
+  received.
+
+Loading a model of this size takes minutes on a local network and much longer across the internet.
+A group now says how far its load is: `GET /api/admin/shards/groups` and the console show, for each
+member, how much of its share the head has sent it.
+
+```json
+"layers": [
+  { "name": "shard-a", "first": 0,  "count": 27, "output": false },
+  { "name": "shard-b", "first": 27, "count": 27, "output": false, "expectMiB": 12511, "sentMiB": 7235 },
+  { "name": "shard-c", "first": 54, "count": 26, "output": true,  "expectMiB": 12048, "sentMiB": 0 }
+]
+```
+
+The head's own layers have no numbers: they never cross the network. Nothing needs configuring, and
+a head older than 3.102 simply sends neither field.
+
+**What this does not show:** GPUs, a real home uplink (the first load ran on an unshaped network;
+24.5 GiB at 50 Mbit/s would take about 70 minutes), a member leaving a group of this size, and
+several requests at once. To repeat the run: `deploy/lab/shards/README.md`.
+
 ### A sealed node (v3.82+)
 
 One setting for a node that must not reach the internet: `Node:Sealed=true`. It talks to its

@@ -182,3 +182,38 @@ Measured (2026-11-15, published 3.100.0, Llama 3.1 8B Q4, 4 CPUs a container; sh
 - Decision: **defer** — the engine stays. The argument and what a CPU lab cannot show: `docs/research/distributed-inference-decision.md`.
 - **Found while building it:** `llama-server` keeps earlier prompts, and a coordinator has no switch for that — a repeated long
   prompt answered its first token in 0.3 s instead of 20 s. The long prompt now starts with each run's own words.
+
+## A model no node holds (phase 142)
+
+The lab's 8B fits one machine; the containers are only limited so that none holds it. `tunnel-lab.sh` takes a model of any
+size:
+
+```sh
+docker volume create lab-models                                   # a big model belongs in a volume, not a bind mount
+docker run --rm -v D:/models:/src:ro -v lab-models:/models inferhub-lab-llama:b12182 cp /src/wizardlm-70b.gguf /models/
+LAB_MODEL_DIR=lab-models LAB_MODEL=wizardlm-70b.gguf LAB_GROUP=wizardlm-70b-split \
+  LAB_NODE_MEMORY=18g LAB_OFFER_GIB=14 LAB_CPUS=16 LAB_WAIT=3000 LAB_MAX_TOKENS=32 ./tunnel-lab.sh
+```
+
+Knobs: `LAB_NODE_MEMORY` (4g), `LAB_OFFER_GIB` (3), `LAB_CPUS` (4, also the worker's threads), `LAB_CONTEXT` (2048), `LAB_WAIT`
+(300 s for the group to run), `LAB_MAX_TOKENS` (64). `LAB_MODEL_DIR` is a directory or a volume's name.
+
+Measured (2026-11-16, built from source at 3.102.0, WizardLM 70B Q4 — 80 layers, 36.2 GiB — three nodes of 18 GiB offering 14 GiB,
+16 CPUs each, a 64-core host):
+
+| | Whole model, one container | The group, unshaped | The group, 30 ms and 50 Mbit/s on every node |
+|---|---:|---:|---:|
+| Generate | 1.87 tok/s | 1.75 tok/s (94 %) | 1.21 tok/s (65 %) |
+| Text | — | the same, 72 tokens | the same |
+
+- **Layers 0–26, 27–53, 54–79 + output**; each node held 12.4–12.7 GiB.
+- **Until it answers: 200 s**, 24.5 GiB through the tunnels. While it loads, `GET /api/admin/shards/groups` shows each member's
+  `sentMiB` of its `expectMiB`. llama.cpp loads the members first and the head's own worker last.
+- **A reload with the members' caches, on the shaped network: 247 s and about 270 MiB sent** instead of 12 GiB a member. The
+  cache is 12 GiB a member inside the container (`~/.cache`).
+- **The 8B kept 47 % at 30 ms (phase 141); the 70B keeps 65 %.** The round trips per token are the same; the computing is not.
+- **Why a volume:** with the file bind-mounted from Windows, the head on the published 3.101.0 images paged 13.9 GiB in twelve
+  minutes (about 20 MB/s through the mount) and had sent no member a byte.
+
+**Not established:** GPUs; a first load at a home uplink's speed (computed: about 70 minutes at 50 Mbit/s); a member leaving a
+group of this size; more than three members; several requests at once.

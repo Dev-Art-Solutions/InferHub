@@ -140,7 +140,7 @@ hours; the honest question is whether the manifest is on GHCR.
 
 `lab/shards/` builds `inferhub-lab-llama` locally — llama.cpp with `GGML_RPC=ON`, because the official images are built
 without it — and runs a head and three workers in compose to measure a model split across machines. Nothing publishes it
-and no workflow builds it; the measurements and the reasoning are in `src/InferHub.Node/Backends/CLAUDE.md`'s Phase 133 and
+and no workflow builds it; the measurements and the reasoning are in `src/InferHub.Node/Backends/Shards/CLAUDE.md`'s Phase 133 and
 the lab's README. Its workers bind `0.0.0.0` on the lab network only: llama.cpp RPC has no authentication.
 `lab/shards/node.Dockerfile` (phase 134) is the published node image with that llama.cpp copied to `/opt/llama`, so a
 node's own shard worker (`Node:Shards`, which always binds loopback) has a `ggml-rpc-server` to run — also local only.

@@ -367,10 +367,14 @@
     }).join("");
     // Phase 136. The groups each head runs: the model answers under the group's name while it is "running".
     const groups = offering.flatMap(n => (n.shards.groups ?? []).map(g => ({ head: n.name, ...g })));
+    // Phase 142: while a group loads, how much of each member's share the head has sent it (the head's own worker has none).
+    const gib = mib => (mib / 1024).toFixed(1);
+    const sentOf = (g, l) => g.state === "running" || l.sentMiB == null || !l.expectMiB ? ""
+      : ` <span style="color: var(--muted)" title="sent to this member through its tunnel, of its share of the file">(${gib(Math.min(l.sentMiB, l.expectMiB))} of ${gib(l.expectMiB)} GiB sent)</span>`;
     body.innerHTML += groups.map(g => {
       const cls = g.state === "running" ? "pill pill-ok" : g.state === "failed" ? "pill pill-err" : "pill pill-warn";
       // Phase 137: which worker holds which layers, by llama.cpp's own rule over the group's split.
-      const layers = (g.layers ?? []).map(l => `${escapeHtml(l.name)} ${l.count > 0 ? `${l.first}–${l.first + l.count - 1}` : "—"}${l.output ? " + output" : ""}`).join(" · ");
+      const layers = (g.layers ?? []).map(l => `${escapeHtml(l.name)} ${l.count > 0 ? `${l.first}–${l.first + l.count - 1}` : "—"}${l.output ? " + output" : ""}${sentOf(g, l)}`).join(" · ");
       const mode = g.community ? ` <span class="pill pill-warn" title="clients send to it only with X-InferHub-Community: accept">community</span>` : "";
       return `<tr><td colspan="${offering.length + 2}">group <b>${escapeHtml(g.name)}</b>${mode} <span class="${cls}" title="${escapeHtml(g.error ?? "")}">${escapeHtml(g.state)}</span>` +
         ` · <code>${escapeHtml(g.model)}</code> · ${layers || `head ${escapeHtml(g.head)} + ${escapeHtml((g.members ?? []).join(", "))}`}${g.error ? ` · <span class="matrix-no">${escapeHtml(g.error)}</span>` : ""}</td></tr>`;

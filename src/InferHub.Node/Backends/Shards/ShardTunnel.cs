@@ -762,10 +762,23 @@ public sealed class ShardTunnel : IHostedService, IAsyncDisposable
         _ => ex.Message
     };
 
-    private static async Task Pipe(Stream a, Stream b, CancellationToken token)
+    /// <summary>142 D2: a copy that says how much it carried — what a head has sent a member is how far a load has come.</summary>
+    private static async Task CopyCounting(Stream from, Stream to, Action<int> carried, CancellationToken token)
+    {
+        var buffer = new byte[81920];
+        int read;
+
+        while ((read = await from.ReadAsync(buffer, token)) > 0)
+        {
+            await to.WriteAsync(buffer.AsMemory(0, read), token);
+            carried(read);
+        }
+    }
+
+    private static async Task Pipe(Stream a, Stream b, CancellationToken token, Action<int>? sent = null)
     {
         using var both = CancellationTokenSource.CreateLinkedTokenSource(token);
-        var one = a.CopyToAsync(b, 81920, both.Token);
+        var one = sent is null ? a.CopyToAsync(b, 81920, both.Token) : CopyCounting(a, b, sent, both.Token);
         var two = b.CopyToAsync(a, 81920, both.Token);
         await Task.WhenAny(one, two);
         await both.CancelAsync();
@@ -823,6 +836,7 @@ public sealed class ShardTunnel : IHostedService, IAsyncDisposable
         private string? error;
         private DateTimeOffset? at;
         private string? via;
+        private long sent;
 
         private Forward(ShardTunnel owner, ShardPeer peer, TcpListener local)
         {
@@ -845,7 +859,7 @@ public sealed class ShardTunnel : IHostedService, IAsyncDisposable
         public ShardPeerState State()
         {
             var port = ((IPEndPoint)local.LocalEndpoint).Port;
-            return new ShardPeerState(Peer.NodeId, Peer.Name, Peer.Endpoint, $"127.0.0.1:{port}", rtt, error, at, via);
+            return new ShardPeerState(Peer.NodeId, Peer.Name, Peer.Endpoint, $"127.0.0.1:{port}", rtt, error, at, via, Interlocked.Read(ref sent));
         }
 
         public void Measured(double? ms, string? why, DateTimeOffset when, string? path)
@@ -888,7 +902,7 @@ public sealed class ShardTunnel : IHostedService, IAsyncDisposable
                         via = path;
                         using var __ = client;
                         await using var ___ = tls;
-                        await Pipe(head.GetStream(), tls, cts.Token);
+                        await Pipe(head.GetStream(), tls, cts.Token, n => Interlocked.Add(ref sent, n));
                     }
                     catch (Exception ex) when (!cts.IsCancellationRequested)
                     {
