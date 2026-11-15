@@ -64,3 +64,17 @@ what was sent since it started, not since the node did. Whole suite: 2895 passed
 - **A restarted `llama-server` inside one group** keeps the first load's count, so after a cached reload `sentMiB` is above
   `expectMiB`. The console caps the figure it shows.
 - **The console in a browser.** The JSON was read.
+
+## The published images, checked (2026-11-16)
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.102.0` and `inferhub-node:3.102.0`, both labelled revision `2a3b88f`.
+
+- **The 70B group on the published images:** `starting` showed 5.4 of 12.2 GiB sent to the first member after 45 s, 12.1 and
+  4.4 GiB after 105 s, both members complete after 165 s; then `running`. Through the coordinator: the same 72 tokens as the
+  whole model, 1.68 tok/s (64 tokens in 38.2 s).
+- **`deploy/lab/shards/verify-lab.sh 3.102.0`** with `VERIFY_REVISION=2a3b88f…` (the 8B lab of 3.100.0, unchanged defaults):
+  28 checks of 28 held — the private group, a member leaving, the community group, the relay.
+- All three workflows finished green; the Windows setup and its checksum are attached to the release.
+
+Not rerun on the published images: the 30 ms profile and the cached reload (measured from source, on the same commit).
+The blog post is not published yet: the blog connector needed authorization on the day. The draft is `.claude/blog-v3.102.0.md`.
