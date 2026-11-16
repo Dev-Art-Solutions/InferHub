@@ -62,7 +62,7 @@ them with the fourth as the spare.
 - **A job on a split model.** `POST /api/jobs` for the group's name: `202`; `running`/`generating` with the head as its
   node, the head's own report every two seconds (`node.reportedAt`, `node.pieces`), `tokensPerSecond` 6.6–7.0, and the
   `group` block naming the three members with their layers and `sentMiB` of `expectMiB`; `succeeded` after 10 s with
-  `tokens: 64`; the answer on `/result` with `X-InferHub-Served-By: node`. The same text as the blocking route gives.
+  `tokens: 64`; the answer on `/result` with `X-InferHub-Served-By: node`.
 - **A member killed, and a job submitted in the same second.** The blocking route answers this moment with a `503`.
   The job stayed `queued`/`waiting` for 40 s with `detail` "group 'llama-8b-split' is starting on shard-a: starting",
   its `group.members[].sentMiB` climbing from 0 as the head loaded the reassembled group, then went `preparing`,
@@ -73,3 +73,7 @@ them with the fourth as the spare.
 group shows more sent than expected (seen: 1585 of 1389) — the clients clamp it when they work out a loaded fraction.
 A node's own `/api/control/jobs` was read from source only (the node image has no `curl` to ask it from inside).
 A 70B was not run for this release; the lab used the 8B.
+
+## Published
+
+Blog: https://blog.devart.solutions/blog/inferhub-3-103-a-long-answer-is-a-job-you-can-follow (ID 6afaf3596bbffea5b2464f6b). Docs: https://inferhub.devart.solutions/#idocs_jobs. Clients: python 1.1.1, js 1.1.1 and go 1.1.1 installed from their registries and run against these images; dotnet 1.8.1 is tagged and not on NuGet (the publishing key expired).
