@@ -76,4 +76,4 @@ A 70B was not run for this release; the lab used the 8B.
 
 ## Published
 
-Blog: https://blog.devart.solutions/blog/inferhub-3-103-a-long-answer-is-a-job-you-can-follow (ID 6afaf3596bbffea5b2464f6b). Docs: https://inferhub.devart.solutions/#idocs_jobs. Clients: python 1.1.1, js 1.1.1 and go 1.1.1 installed from their registries and run against these images; dotnet 1.8.1 is tagged and not on NuGet (the publishing key expired).
+Blog: https://blog.devart.solutions/blog/inferhub-3-103-a-long-answer-is-a-job-you-can-follow (ID 6afaf3596bbffea5b2464f6b). Docs: https://inferhub.devart.solutions/#idocs_jobs. Clients: python 1.1.1, js 1.1.1 and go 1.1.1 installed from their registries and run against these images; dotnet 1.8.1 reached NuGet later the same day (the repository's API key had expired; the workflow now uses Trusted Publishing) and was installed from there and run against a coordinator and node built from this release's source.

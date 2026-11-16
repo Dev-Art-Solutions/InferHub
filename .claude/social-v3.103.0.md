@@ -12,7 +12,7 @@ InferHub 3.103 lets you send such a request as a job. You get an id at once. The
 
 We tested it on the published images with a model split across three machines. We stopped one machine and sent a job in the same second. A normal chat gets "try again later" at that moment. The job waited 40 seconds, showed why, and then answered.
 
-The Python, TypeScript and Go clients can use jobs today. The C# client follows when our NuGet key is renewed.
+The Python, TypeScript, Go and C# clients can all use jobs today.
 
 Limits we know: jobs live in memory, so a restart of the coordinator loses them. We tested with containers on one PC and an 8B model.
 
