@@ -52,3 +52,24 @@ coordinator older than 3.103 never asks a newer node to. Zero new packages.
   for it is a `404`. Not run.
 - **A solo node** has no `/api/jobs`; `/v1` has no job routes; a retrieval header on a submit is refused, not applied.
 - No `/metrics` series for jobs.
+
+## Checked on the published images
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.103.0` (revision `88ca3d8`) and `inferhub-node:3.103.0`, in the shard
+lab (`deploy/lab/shards/tunnel-lab.sh`): one coordinator, four node containers of 4 GiB, an 8B model split over three of
+them with the fourth as the spare.
+
+- **A job on a split model.** `POST /api/jobs` for the group's name: `202`; `running`/`generating` with the head as its
+  node, the head's own report every two seconds (`node.reportedAt`, `node.pieces`), `tokensPerSecond` 6.6–7.0, and the
+  `group` block naming the three members with their layers and `sentMiB` of `expectMiB`; `succeeded` after 10 s with
+  `tokens: 64`; the answer on `/result` with `X-InferHub-Served-By: node`. The same text as the blocking route gives.
+- **A member killed, and a job submitted in the same second.** The blocking route answers this moment with a `503`.
+  The job stayed `queued`/`waiting` for 40 s with `detail` "group 'llama-8b-split' is starting on shard-a: starting",
+  its `group.members[].sentMiB` climbing from 0 as the head loaded the reassembled group, then went `preparing`,
+  `generating`, `succeeded` — and its answer was read from `/result`.
+- `/api/admin/jobs` listed both with their client and no content.
+
+**Not established there:** `sentMiB` goes on counting what the head sends a member after the load, so a long-running
+group shows more sent than expected (seen: 1585 of 1389) — the clients clamp it when they work out a loaded fraction.
+A node's own `/api/control/jobs` was read from source only (the node image has no `curl` to ask it from inside).
+A 70B was not run for this release; the lab used the 8B.
