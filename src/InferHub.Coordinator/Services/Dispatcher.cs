@@ -141,6 +141,12 @@ public sealed class Dispatcher(
     {
         var pending = CreatePendingStream(node, job.JobId, pendingStreams, cancellationToken, ModelOf(job));
 
+        // Phase 150: a followed job carries its watch from the flow that submitted it, a failover included,
+        // so the node's reports and the node itself reach the job's status without any endpoint passing them.
+        var watch = JobWatch.Current;
+        pending.Watch = watch;
+        watch?.Dispatched(node);
+
         registry.IncrementInFlight(node.ConnectionId, pending.Model);
         metrics.RecordRequestStart(node.NodeId);
         AuditScope.Dispatched(node.NodeId, pending.Model, CapabilityKinds.ForJobKind(job.Kind));
@@ -154,7 +160,7 @@ public sealed class Dispatcher(
                 node.NodeId,
                 node.Name);
 
-            WatchStreamTimeout(job.JobId, node, options.Value.DeadlineFor(job), pendingStreams);
+            WatchStreamTimeout(job.JobId, node, watch?.Deadline ?? options.Value.DeadlineFor(job), pendingStreams);
             await hubContext.Clients.Client(node.ConnectionId).SendAsync("RunStreamingJob", job, cancellationToken);
 
             // Wait until either the first chunk arrives (stream is "live") or we get a
@@ -381,6 +387,23 @@ public sealed class Dispatcher(
         }
 
         return written;
+    }
+
+    /// <summary>
+    /// Phase 150: a node's word on a followed job. Taken only from the connection the job was sent to, and only
+    /// while the job is pending — a late report for a finished job is nobody's.
+    /// </summary>
+    public bool ReportProgress(string connectionId, InferenceJobProgress progress)
+    {
+        if (pendingStreams.TryGetValue(progress.JobId, out var pending)
+            && pending.ConnectionId == connectionId
+            && pending.Watch is { } watch)
+        {
+            watch.NodeReported(progress);
+            return true;
+        }
+
+        return false;
     }
 
     public bool WriteToolChunk(ToolChunk chunk)
@@ -640,6 +663,8 @@ public sealed class Dispatcher(
         public Channel<T> Channel { get; } = channel;
 
         public CancellationTokenRegistration CancellationRegistration { get; set; }
+
+        public JobWatch? Watch { get; set; }
 
         public TaskCompletionSource<bool> StreamReady { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);

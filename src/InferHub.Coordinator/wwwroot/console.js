@@ -1095,6 +1095,71 @@
   document.getElementById("quota-refresh")?.addEventListener("click", () =>
     loadQuota(true).catch(err => toast("Provider limits", err.message, "err")));
 
+  // ------------------------------------------------------------------ text jobs (phase 150)
+
+  const jobPill = (status) => {
+    const cls = status === "succeeded" ? "pill-ok"
+      : status === "running" ? "pill-warn"
+        : status === "queued" ? "pill-muted"
+          : status === "cancelled" ? "pill-muted" : "pill-err";
+    return `<span class="pill ${cls}">${escapeHtml(status)}</span>`;
+  };
+
+  const jobSeconds = (job) => {
+    const end = job.completedAt ? new Date(job.completedAt) : new Date();
+    const s = Math.max(0, Math.round((end - new Date(job.createdAt)) / 1000));
+    return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+  };
+
+  // A group that is still loading says how far each member is; a running answer says pieces and speed.
+  const jobProgress = (job) => {
+    const members = job.group?.members ?? [];
+    const expect = members.reduce((sum, m) => sum + (m.expectMiB ?? 0), 0);
+    if (job.stage !== "generating" && job.stage !== "done" && expect > 0) {
+      const sent = members.reduce((sum, m) => sum + Math.min(m.sentMiB ?? 0, m.expectMiB ?? 0), 0);
+      return `group ${escapeHtml(job.group.state ?? "")}: ${Math.round(100 * sent / expect)}% loaded`;
+    }
+    const count = job.tokens ?? job.pieces ?? 0;
+    const speed = job.tokensPerSecond ? ` · ${job.tokensPerSecond}/s` : "";
+    return count > 0 ? `${count} ${job.tokens ? "tokens" : "pieces"}${speed}` : "—";
+  };
+
+  const renderJobs = (data) => {
+    const tbody = document.getElementById("jobs");
+    if (!tbody) return;
+    const jobs = data.jobs ?? [];
+    if (jobs.length === 0) {
+      emptyRow("jobs", 8, data.enabled === false
+        ? "Jobs are off on this hub (Jobs:Enabled)."
+        : "No jobs. A client submits one with POST /api/jobs and follows it by id.");
+    } else {
+      tbody.innerHTML = jobs.map(job => `
+        <tr class="${job.status === "failed" ? "row-error" : ""}">
+          <td><code>${escapeHtml(String(job.id).slice(0, 8))}</code></td>
+          <td>${escapeHtml(job.client ?? "")}</td>
+          <td><code>${escapeHtml(job.model)}</code></td>
+          <td>${jobPill(job.status)}</td>
+          <td>${escapeHtml(job.stage)}${job.detail ? `<div class="why">${escapeHtml(job.detail)}</div>` : ""}${job.error ? `<div class="why">${escapeHtml(job.error.message ?? "")}</div>` : ""}</td>
+          <td>${escapeHtml(job.node?.name ?? job.servedBy ?? "—")}</td>
+          <td>${jobProgress(job)}</td>
+          <td>${jobSeconds(job)}</td>
+        </tr>`).join("");
+    }
+    const meta = document.getElementById("jobs-meta");
+    if (meta) {
+      meta.textContent = `${data.queued ?? 0} waiting · ${data.running ?? 0} running · ${data.finished ?? 0} finished, kept ${data.retentionSeconds ?? 0}s in memory`;
+    }
+  };
+
+  // Admin-only, like every /api/admin read; a page with no key yet simply shows nothing here.
+  const loadJobs = async () => {
+    const res = await fetch("/api/admin/jobs", { headers: adminHeaders() });
+    if (res.ok) renderJobs(await res.json());
+  };
+
+  setInterval(() => loadJobs().catch(() => {}), 3000);
+  loadJobs().catch(() => {});
+
   // ------------------------------------------------------------------ engines (phase 95)
 
   const engineStatePill = (engine) => {

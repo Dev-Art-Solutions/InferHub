@@ -407,7 +407,8 @@ internal static class InferenceCore
                     node.Name);
             }
 
-            var job = new InferenceJob(Guid.NewGuid(), kind, rawJson);
+            // Phase 150: a job somebody follows asks its node to report while it runs.
+            var job = new InferenceJob(Guid.NewGuid(), kind, rawJson, Services.JobWatch.Current?.JobId);
 
             try
             {

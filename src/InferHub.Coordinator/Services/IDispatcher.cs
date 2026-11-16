@@ -17,4 +17,7 @@ public interface IDispatcher
     bool WriteChunk(InferenceChunk chunk);
 
     void FailForConnection(string connectionId, Exception? exception);
+
+    /// <summary>Phase 150: a node reports on a followed job. False when nobody follows that job on that connection.</summary>
+    bool ReportProgress(string connectionId, InferenceJobProgress progress) => false;
 }

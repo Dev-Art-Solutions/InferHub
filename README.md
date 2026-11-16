@@ -1267,6 +1267,65 @@ a head older than 3.102 simply sends neither field.
 24.5 GiB at 50 Mbit/s would take about 70 minutes), a member leaving a group of this size, and
 several requests at once. To repeat the run: `deploy/lab/shards/README.md`.
 
+### A long answer as a job you can follow (v3.103+)
+
+A chat that takes minutes — a big model, a model split across several nodes, a fleet that is full —
+does not have to be one HTTP connection held open. Submit it as a **job**: the hub answers at once
+with an id, runs the request the way `/api/chat` would, and keeps a status that the caller, the node
+running it and the hub itself all read and update.
+
+```http
+POST /api/jobs
+{ "kind": "chat", "request": { "model": "wizardlm-70b-split", "messages": [ { "role": "user", "content": "…" } ] } }
+
+202 Accepted
+Location: /api/jobs/8755d357-7f7a-493b-984b-09eeb1c3797e
+{ "id": "8755d357-…", "status": "queued", "stage": "waiting", … }
+```
+
+| Route | Answers |
+|---|---|
+| `POST /api/jobs` | `202` with the status. `request` is the body `/api/chat` or `/api/generate` takes; `kind` is `chat` or `generate`. |
+| `GET /api/jobs/{id}` | The status: `queued` · `running` · `succeeded` · `failed` · `cancelled`, the stage, the node, pieces so far, tokens and tokens per second. |
+| `GET /api/jobs/{id}/events` | The same status as server-sent events, each time it changes, ending with the last one. |
+| `GET /api/jobs/{id}/result` | `200` with the answer `/api/chat` would have given. While it runs: `202` with the text so far and `done: false`. A failed job answers its own error status. |
+| `DELETE /api/jobs/{id}` | Cancels a running job (the node is told to stop), or drops a finished one now. |
+| `GET /api/jobs` | This client's jobs. |
+| `GET /api/admin/jobs` | Every client's jobs, for an operator — also the console's **Jobs** panel. |
+
+The stages of a running job are `sent` (dispatched), `preparing` (the node has it and its engine has
+produced nothing yet — it is loading the model or reading the prompt) and `generating`. **`preparing`
+is the node's own word**: a node reports on a followed job when it gets it, when the first piece
+arrives and every two seconds, so `node.reportedAt` going stale means the node went quiet, not the
+model. The node's owner sees the same jobs at `GET /api/control/jobs`.
+
+**For a model split across nodes** the status carries the group: whether it is ready, why not, and
+for each member its layers and how much of its share the head has sent it.
+
+```json
+"stage": "preparing",
+"detail": "group starting: 18420 of 25022 MiB sent to its members",
+"group": { "name": "wizardlm-70b-split", "ready": false, "state": "starting",
+           "members": [ { "node": "shard-b", "layers": 27, "expectMiB": 12511, "sentMiB": 9210 } ] }
+```
+
+What a job does differently from the blocking route:
+
+- **It waits out a `503`.** A full fleet, a group coming back together after a member left, owners
+  not sharing right now: `/api/chat` answers these with `Retry-After`; a job stays `queued` with the
+  reason as `detail` and goes when it can, for up to `Jobs:QueueSeconds`.
+- **It has its own deadline**, `Jobs:DeadlineSeconds` (an hour), instead of `Dispatcher:TimeoutSeconds`.
+- **It is not sent twice.** A node that disappears after producing part of the answer fails the job
+  (`node_lost`); the caller decides whether to submit again.
+
+A job is its submitter's: another client's id is a `404`. The status holds names, counts and times —
+never the request or the answer. **Everything is in memory**: a finished job and its answer stay for
+`Jobs:RetentionSeconds` (ten minutes) or until deleted, nothing is written to disk, and a hub restart
+loses every job. `Jobs:Enabled=false` turns the routes off.
+
+Not there yet: a solo node has no `/api/jobs`; `/v1` has no job routes; a retrieval header on a
+submit is refused rather than applied; in a cluster a job lives on the hub that accepted it.
+
 ### A sealed node (v3.82+)
 
 One setting for a node that must not reach the internet: `Node:Sealed=true`. It talks to its

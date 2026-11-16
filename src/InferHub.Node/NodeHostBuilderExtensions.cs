@@ -427,6 +427,7 @@ public static class NodeHostBuilderExtensions
             .Bind(builder.Configuration.GetSection(Control.ControlOptions.SectionName));
 
         builder.Services.AddSingleton(services => new Control.NodeActivity(services.GetService<TimeProvider>()));
+        builder.Services.AddSingleton(services => new Control.NodeJobBoard(services.GetService<TimeProvider>()));
         var lines = builder.Configuration.GetValue<int?>($"{Control.ControlOptions.SectionName}:LogLines") ?? 2000;
         var ring = new Control.NodeLogRing(lines);
         builder.Services.AddSingleton(ring);

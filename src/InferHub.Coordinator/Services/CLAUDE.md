@@ -233,3 +233,55 @@ Tests: `PriorityTests` (Coordinator — the real `Router` and `RequestQueue` thr
 held and released; a node removed makes background wait while essential and normal run; the 503; an unbounded node; the
 header table; essential first in the capacity wait — red with D4's condition removed; essential past the slot wait; the
 validators; the scrape).
+
+### Phase 150 (a long answer is a job: submitted, followed by id by the caller, the node and the hub, read when done)
+
+`TextJobs.cs` (`Jobs:` options + validator, `JobWatch`, `TextJob`, `TextJobRegistry`, the sweeper), `Endpoints/JobEndpoints.cs`
+(`/api/jobs`, `/api/admin/jobs`), `Dispatcher.ReportProgress` + `NodeHub.ReportJobProgress`; on the node `CoordinatorConnection.FollowAsync`
+and `Control/NodeJobBoard.cs` (`/api/control/jobs`); contracts `InferenceJob.Watch`, `InferenceJobProgress`. User-requested: a
+long-running job the node and the coordinator both follow and update, for split models too, that the caller can follow.
+
+**D1, load-bearing — a job is the streamed request `InferenceCore` already runs, held by the hub instead of by a connection.**
+`TextJobRegistry.RunAsync` calls `InferenceCore.DispatchAsync` with `stream: true` and reads the pieces itself, so admission, the
+client's lease, routing, the queues, priority, pre-stream failover, organisations, providers and metering are the blocking
+route's, once (21 D3). A group of 133–142 is a model like any other to that path, which is why a job on a split model needed
+nothing of its own. **Considered and rejected: a second queue with its own pump, as image jobs have (47 D5)** — a card renders
+one picture at a time and needed one; chat already has 25 D5's queue and 110's slot wait, and a second would disagree with them.
+
+**D2 — the status reaches the dispatcher on an `AsyncLocal`, and the node is asked by a field on the job.** `JobWatch` rides the
+flow as `AuditScope` does (125 D2): `Dispatcher.DispatchStreamAsync` keeps it on the pending stream (so a failover's second
+dispatch carries it too), tells it the node, and takes the job's deadline from it. `InferenceJob.Watch` is the id the caller
+holds — a dispatch's own id changes on failover — and a node reports only on a job that has it: `ReportJobProgress` at once
+(`preparing`), when its engine's first piece arrives (`generating`), and every 2 s, with a count and never the text. A node
+before 3.103 ignores the field and the status simply has no `node.reportedAt`; a hub before 3.103 never sets it (40 D1).
+`ReportProgress` takes a report only from the connection the job was sent to. **Rejected: every node reporting on every stream**
+— an old hub has no such method, and nobody reads it.
+
+**D3 — what a status holds is names, counts and times; the request and the answer are held apart, in memory only.** Rule 7:
+`Describe` has no field either could occupy and nothing logs them. Rule 4: nothing is written; a restart loses every job, a
+finished one goes after `Jobs:RetentionSeconds` (600) or on `DELETE`, a failed or cancelled one keeps no part of an answer, and
+the hub holds `Jobs:MaxJobs` (256) at most — the oldest finished goes first, and with none finished a submit is a 503.
+`GET …/result` while the job runs is a 202 with the text so far (`done: false`), so a caller that reconnects reads it.
+A job is its submitter's: another client's id is the 404 of an id that never existed (25 D4); `/api/admin/jobs` lists all, with
+the client id and no content. **Rejected: `Persistence=file` as image jobs have (56)** — a text answer on disk is a prompt's
+other half, and the retention question 56 answered for pictures has not been asked for text.
+
+**D4 — a job waits out a 503.** Full fleet, a group reassembling (137 D2), every holder paused by its owner (116): the blocking
+route answers these with `Retry-After`; a job goes back to `queued`/`waiting` with the sentence as `detail` and tries again
+(1–10 s) until `Jobs:QueueSeconds` (600) from its submission, then fails with that 503. Anything else (404, 402, 429, 403) fails
+at once. **A job that has produced a piece is never sent again** (47 D7): a node lost mid-answer is `failed`/`node_lost`.
+
+**D5 — its own deadline.** `Jobs:DeadlineSeconds` (3600) replaces `Dispatcher:TimeoutSeconds` for a job's dispatch and the expiry
+names that key (89 D3) — a caller submits a job because the answer takes long, and a 70B across three machines passes 300 s.
+
+**D6 — for a split model the status shows the group.** `group` is `ShardPeerPublisher.GroupStatus()` for the job's model, read
+when the status is asked: ready or why not, and per member its layers and `sentMiB` of `expectMiB` (142 D2); the head adds the
+same as the `detail` of its `preparing` reports. Nothing new is measured.
+
+**Not done, named:** solo mode has no `/api/jobs` (404); `/v1` has no job dialect; retrieval headers on a submit are a 400, not
+applied; in a cluster (132) a job lives on the hub that accepted it; no `/metrics` series and no `/api/status` block (the
+console's Jobs panel reads `/api/admin/jobs`).
+
+Tests: `TextJobTests` (Coordinator — the real `InferenceCore` and queue: the 503 wait, pieces to answer, the node's error piece,
+node lost, whose report counts, the cap, retention, the privacy of `Describe`), `TextJobMeshTests` (Mesh — HTTP to a real node:
+`preparing` exists only because the node said so, the events stream, a cancel reaching the backend, a node leaving).

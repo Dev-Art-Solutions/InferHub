@@ -45,6 +45,7 @@ public sealed class CoordinatorConnection(
     Configuration.EgressCheck? egress = null,
     Configuration.SealedEgress? sealedEgress = null,
     Backends.Shards.ShardWorker? shards = null,
+    Control.NodeJobBoard? jobBoard = null,
     Backends.Shards.ShardTunnel? shardTunnel = null,
     Backends.Shards.ShardGroupHost? shardGroups = null) : IAsyncDisposable
 {
@@ -1483,9 +1484,11 @@ public sealed class CoordinatorConnection(
         {
             logger.LogInformation("Running streaming {JobKind} job {JobId}", job.Kind, job.JobId);
 
+            var chunks = inferenceExecutor.StreamAsync(job, jobCts.Token);
+
             await activeConnection.InvokeAsync(
                 "StreamChunks",
-                inferenceExecutor.StreamAsync(job, jobCts.Token),
+                job.Watch is { } followedId ? FollowAsync(job, followedId, chunks, activeConnection, jobCts.Token) : chunks,
                 jobCts.Token);
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested || jobCts.IsCancellationRequested)
@@ -1499,6 +1502,111 @@ public sealed class CoordinatorConnection(
         finally
         {
             Interlocked.Decrement(ref inFlight);
+        }
+    }
+
+    private readonly Control.NodeJobBoard followed = jobBoard ?? new Control.NodeJobBoard();
+
+    /// <summary>How often a followed job is reported on while nothing about it changes.</summary>
+    internal static TimeSpan JobReportInterval { get; set; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Phase 150: a job the hub says somebody follows. The pieces pass through untouched and are counted; beside
+    /// them the node reports — at once, when the first piece arrives, and every <see cref="JobReportInterval"/> —
+    /// so the hub can tell a model still loading from a node gone quiet.
+    /// </summary>
+    private async IAsyncEnumerable<InferenceChunk> FollowAsync(
+        InferenceJob job,
+        Guid followedId,
+        IAsyncEnumerable<InferenceChunk> chunks,
+        HubConnection hub,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var entry = followed.Begin(job.JobId, followedId, job.Kind, Control.NodeActivity.ModelOf(job.RequestJson));
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var reporting = ReportJobAsync(entry, hub, stop.Token);
+
+        try
+        {
+            await foreach (var chunk in chunks.WithCancellation(cancellationToken))
+            {
+                entry.Took();
+                yield return chunk;
+            }
+        }
+        finally
+        {
+            stop.Cancel();
+            followed.End(job.JobId);
+            await reporting;
+        }
+    }
+
+    private async Task ReportJobAsync(Control.FollowedJob entry, HubConnection hub, CancellationToken cancellationToken)
+    {
+        string? saidStage = null;
+        var saidAt = DateTimeOffset.MinValue;
+
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                var now = DateTimeOffset.UtcNow;
+
+                if (entry.Stage != saidStage || now - saidAt >= JobReportInterval)
+                {
+                    saidStage = entry.Stage;
+                    saidAt = now;
+
+                    // Not awaited for an answer: a hub before 3.103 has no such method, and a report is never
+                    // worth failing a job for.
+                    await hub.SendAsync(
+                        "ReportJobProgress",
+                        new InferenceJobProgress(
+                            entry.JobId, nodeId, entry.Stage, entry.Pieces, (long)(now - entry.StartedAt).TotalMilliseconds,
+                            entry.Pieces == 0 ? WhatAGroupIsDoing(entry.Model) : null),
+                        cancellationToken);
+                }
+
+                await Task.Delay(100, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Could not report on job {JobId}", entry.JobId);
+        }
+    }
+
+    /// <summary>For a job whose model is a shard group this node heads and that is not running yet: where its load is (142 D2).</summary>
+    private string? WhatAGroupIsDoing(string? model)
+    {
+        if (model is null || shards is not { Enabled: true })
+        {
+            return null;
+        }
+
+        try
+        {
+            var group = shards.State(nodeId).Groups?.FirstOrDefault(g => string.Equals(g.Name, model, StringComparison.OrdinalIgnoreCase));
+
+            if (group is null || group.State == InferHub.Shared.Fit.ShardGroupState.Running)
+            {
+                return null;
+            }
+
+            var expect = group.Layers?.Sum(l => l.ExpectMiB ?? 0) ?? 0;
+            var sent = group.Layers?.Sum(l => Math.Min(l.SentMiB ?? 0, l.ExpectMiB ?? 0)) ?? 0;
+
+            return expect > 0
+                ? $"group {group.State}: {sent} of {expect} MiB sent to its members"
+                : $"group {group.State}";
+        }
+        catch (Exception)
+        {
+            return null;
         }
     }
 

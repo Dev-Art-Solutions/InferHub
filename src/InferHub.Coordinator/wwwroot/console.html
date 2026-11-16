@@ -308,6 +308,33 @@
   </section>
 
   <!--
+    Phase 150. Text jobs: a chat or a generate submitted to /api/jobs and followed by id. Every client's jobs,
+    for an operator: who, which model, how far, on which node - never the request and never the answer.
+    Read from /api/admin/jobs every 3 seconds.
+  -->
+  <section id="jobs-section">
+    <h2>Jobs</h2>
+    <div class="actions" style="margin-bottom:8px"><span id="jobs-meta" class="meta"></span></div>
+    <div class="table-wrap">
+      <table id="jobs-table">
+        <thead>
+          <tr>
+            <th>Job</th>
+            <th>Client</th>
+            <th>Model</th>
+            <th>Status</th>
+            <th>Stage</th>
+            <th>Node</th>
+            <th>Progress</th>
+            <th>Running for</th>
+          </tr>
+        </thead>
+        <tbody id="jobs"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!--
     Phase 103. The coordinator's own ChatGPT sign-in, shown only when a `Type: chatgpt` provider exists.
     The browser that opens this page is usually NOT on the coordinator, so the sign-in runs in a small
     helper on this computer and reaches the hub through a one-time pairing code. No token ever comes to

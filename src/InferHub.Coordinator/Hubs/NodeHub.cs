@@ -442,6 +442,13 @@ public sealed class NodeHub(
         return Task.CompletedTask;
     }
 
+    /// <summary>Phase 150: a node reports on a job somebody follows — a stage and a count, never the text.</summary>
+    public Task ReportJobProgress(InferenceJobProgress progress)
+    {
+        dispatcher.ReportProgress(Context.ConnectionId, progress);
+        return Task.CompletedTask;
+    }
+
     public Task JobResult(InferenceResult result)
     {
         if (!dispatcher.Complete(result))

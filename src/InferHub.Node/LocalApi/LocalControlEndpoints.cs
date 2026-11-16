@@ -47,6 +47,9 @@ internal static partial class LocalControlEndpoints
 
         group.MapGet("/status", StatusAsync);
         group.MapGet("/activity", (NodeActivity activity) => Results.Json(new { running = activity.Running, recent = activity.Recent }, Json));
+        // Phase 150: the hub's jobs somebody follows that this node is running now — a stage and a count each.
+        group.MapGet("/jobs", (IServiceProvider services) => Results.Json(
+            new { running = services.GetService<NodeJobBoard>()?.Running ?? [] }, Json));
         group.MapGet("/events", EventsAsync);
         group.MapGet("/logs", (NodeLogRing ring, long? after, int? max) => Results.Json(new { lines = ring.After(after ?? 0, max ?? 500) }, Json));
         group.MapGet("/logs/stream", LogStreamAsync);

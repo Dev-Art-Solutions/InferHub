@@ -163,6 +163,12 @@ builder.Services.AddSingleton<InferHub.Shared.Images.IImageJobArchive>(sp =>
             .LogWarning(ex, "{Message}", message)));
 builder.Services.AddSingleton<ImageJobRegistry>();
 builder.Services.AddHostedService<ImageJobSweeper>();
+
+// Phase 150: text jobs — a chat or a generate followed by id. In memory only.
+builder.Services.AddOptions<JobsOptions>().Bind(builder.Configuration.GetSection(JobsOptions.SectionName)).ValidateOnStart();
+builder.Services.AddSingleton<Microsoft.Extensions.Options.IValidateOptions<JobsOptions>, JobsOptionsValidator>();
+builder.Services.AddSingleton<TextJobRegistry>(sp => ActivatorUtilities.CreateInstance<TextJobRegistry>(sp, sp.GetRequiredService<ShardPeerPublisher>()));
+builder.Services.AddHostedService<TextJobSweeper>();
 builder.Services.AddSingleton<ThroughputTracker>();
 builder.Services.AddHostedService<NodeReaper>();
 
@@ -430,6 +436,7 @@ app.MapGet("/api/nodes", (INodeRegistry registry) =>
 app.MapStatusEndpoint(version);
 app.MapMetricsEndpoint(version);
 app.MapInferenceEndpoints();
+app.MapJobEndpoints();
 app.MapOpenAiEndpoints();
 app.MapToolEndpoints();
 
