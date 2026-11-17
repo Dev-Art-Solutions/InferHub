@@ -83,6 +83,10 @@ public sealed class SiteTests : IDisposable
         Assert.StartsWith("InferHub-Node-Setup-3.89.0-win-x64.exe /VERYSILENT", windows);
         Assert.Contains("/CoordinatorUrl=https://hub.lan:5080/ /EnrollmentToken=ihn_abc /NodeName=gpu-3 /Sealed=yes", windows);
 
+        // Phase 151: before it the setup's silent default (GitHub, automatic) went in, which a sealed node refuses to boot with.
+        Assert.Contains("/Updates=request /UpdateSource=coordinator", windows);
+        Assert.Equal("coordinator", plan.GetProperty("settings").GetProperty("Update:Source").GetString());
+
         var docker = plan.GetProperty("docker").GetString()!;
         Assert.Contains("-e Coordinator__EnrollmentToken=ihn_abc", docker);
         Assert.Contains("-e Node__Sealed=true", docker);

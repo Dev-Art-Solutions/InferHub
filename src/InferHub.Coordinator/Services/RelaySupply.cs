@@ -50,11 +50,18 @@ public sealed record SuppliedModel(
     long Bytes,
     string Source,
     string From,
-    DateTimeOffset SuppliedUtc)
+    DateTimeOffset SuppliedUtc,
+    string? Page = null)
 {
     public const string Ollama = "ollama";
 
     public const string HuggingFace = "hf";
+
+    /// <summary>
+    /// Phase 151: a node release — <see cref="Name"/> is its tag, the files its Windows setup and the SHA-256 beside
+    /// it, <see cref="Page"/> the release page it was fetched from (null when imported).
+    /// </summary>
+    public const string Release = "release";
 
     /// <summary>Every blob this record needs: its files, and the manifest and the model info it replays.</summary>
     public IEnumerable<string> Blobs()
@@ -71,7 +78,8 @@ public sealed record RelaySupplySnapshot(
     long Served,
     long ServedBytes,
     long Refused,
-    int Running);
+    int Running,
+    int Releases = 0);
 
 /// <summary>An answer the relay gives from the supply: a blob on disk (ranges honoured), or a small JSON body.</summary>
 public sealed record SupplyAnswer(string? Sha256, byte[]? Body, string ContentType, IReadOnlyList<KeyValuePair<string, string>> Headers);
@@ -142,14 +150,16 @@ public sealed class RelaySupply
         }
 
         var all = Models();
+        var releases = all.Count(model => model.Kind == SuppliedModel.Release);
         return new RelaySupplySnapshot(
-            all.Count,
+            all.Count - releases,
             BytesOf(all),
             Only,
             Interlocked.Read(ref served),
             Interlocked.Read(ref servedBytes),
             Interlocked.Read(ref refused),
-            running);
+            running,
+            releases);
     }
 
     public bool HasBlob(string sha256) => File.Exists(BlobPath(sha256));
@@ -297,7 +307,62 @@ public sealed class RelaySupply
             return FindHuggingFace(all.Where(model => model.Kind == SuppliedModel.HuggingFace), segments);
         }
 
+        // Phase 151: download/{tag}/{file} — one of the two files a supplied release holds, nothing else.
+        if (upstream == NodeRelay.Releases && segments is ["download", var tag, var name]
+            && Release(Uri.UnescapeDataString(tag)) is { } release
+            && release.Files.FirstOrDefault(file => file.Path.Equals(Uri.UnescapeDataString(name), StringComparison.OrdinalIgnoreCase)) is { } found)
+        {
+            return new SupplyAnswer(found.Sha256, null, found.MediaType ?? "application/octet-stream", []);
+        }
+
         return null;
+    }
+
+    /// <summary>A supplied release by its tag (<c>v3.104.0</c>; <c>3.104.0</c> finds it too).</summary>
+    public SuppliedModel? Release(string tag)
+    {
+        var wanted = tag.Trim().TrimStart('v', 'V');
+        return Models().FirstOrDefault(model => model.Kind == SuppliedModel.Release
+            && model.Name.TrimStart('v', 'V').Equals(wanted, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Phase 151 D2: the supplied releases as GitHub's release list answers it, so a node's 101 feed reads it unchanged —
+    /// each file's <c>browser_download_url</c> on this hub (<paramref name="downloadBase"/> is the relay's
+    /// <c>…/releases/download/</c> as the node addressed it). Newest first; never a draft or a pre-release.
+    /// </summary>
+    public byte[] ReleaseList(Uri downloadBase)
+    {
+        var list = new JsonArray();
+
+        foreach (var release in Models().Where(model => model.Kind == SuppliedModel.Release).OrderByDescending(model => model.SuppliedUtc))
+        {
+            var assets = new JsonArray();
+
+            foreach (var file in release.Files)
+            {
+                assets.Add(new JsonObject
+                {
+                    ["name"] = file.Path,
+                    ["size"] = file.Size,
+                    ["digest"] = "sha256:" + file.Sha256,
+                    ["browser_download_url"] = new Uri(downloadBase, $"{Uri.EscapeDataString(release.Name)}/{Uri.EscapeDataString(file.Path)}").AbsoluteUri
+                });
+            }
+
+            list.Add(new JsonObject
+            {
+                ["tag_name"] = release.Name,
+                ["name"] = release.Name,
+                ["draft"] = false,
+                ["prerelease"] = false,
+                ["html_url"] = release.Page,
+                ["published_at"] = release.SuppliedUtc,
+                ["assets"] = assets
+            });
+        }
+
+        return Encoding.UTF8.GetBytes(list.ToJsonString());
     }
 
     private SupplyAnswer? FindOllama(IEnumerable<SuppliedModel> candidates, string[] segments)

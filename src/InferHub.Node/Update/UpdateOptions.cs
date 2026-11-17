@@ -14,6 +14,14 @@ public sealed class UpdateOptions
     /// <summary>The repository's release list. A mirror serving the same JSON shape is one line.</summary>
     public const string DefaultSource = "https://api.github.com/repos/Dev-Art-Solutions/InferHub/releases";
 
+    /// <summary>
+    /// Phase 151: <c>Update:Source=coordinator</c> — the releases the connected hub supplied (<c>Relay:Supply</c>), at
+    /// <c>{hub}/node/relay/releases</c>. A sealed node's way to update; the hub's admin decides which release exists.
+    /// </summary>
+    public const string CoordinatorSource = "coordinator";
+
+    public bool FromCoordinator => string.Equals(Source?.Trim(), CoordinatorSource, StringComparison.OrdinalIgnoreCase);
+
     /// <summary>Look for a newer release every <see cref="Interval"/> and report it to the hub.</summary>
     public bool Check { get; set; }
 
@@ -37,7 +45,11 @@ public sealed class UpdateOptions
     public TimeSpan DrainTimeout { get; set; } = TimeSpan.FromMinutes(30);
 }
 
-public sealed class UpdateOptionsValidator : IValidateOptions<UpdateOptions>
+/// <summary>
+/// <paramref name="sealedWithHub"/>: this node is sealed and has a coordinator to fetch through — the only node
+/// <c>Update:Source=coordinator</c> means something on (151 D3).
+/// </summary>
+public sealed class UpdateOptionsValidator(bool sealedWithHub = false) : IValidateOptions<UpdateOptions>
 {
     public ValidateOptionsResult Validate(string? name, UpdateOptions options)
     {
@@ -49,10 +61,18 @@ public sealed class UpdateOptionsValidator : IValidateOptions<UpdateOptions>
             failures.Add($"{prefix}{nameof(UpdateOptions.Auto)}=true needs {prefix}{nameof(UpdateOptions.Check)}=true: a node cannot apply a release it never looks for.");
         }
 
-        if ((options.Check || options.AllowFromHub)
+        if (options.FromCoordinator)
+        {
+            if (!sealedWithHub)
+            {
+                failures.Add($"{prefix}{nameof(UpdateOptions.Source)}=coordinator is a sealed node's way to update (Node:Sealed=true with a coordinator): "
+                    + "the hub answers it only to its own nodes, through the relay. Any other node reads GitHub or a mirror by URL.");
+            }
+        }
+        else if ((options.Check || options.AllowFromHub)
             && (!Uri.TryCreate(options.Source, UriKind.Absolute, out var source) || source.Scheme is not ("https" or "http")))
         {
-            failures.Add($"{prefix}{nameof(UpdateOptions.Source)} must be an absolute http(s) URL (got '{options.Source}').");
+            failures.Add($"{prefix}{nameof(UpdateOptions.Source)} must be an absolute http(s) URL or 'coordinator' (got '{options.Source}').");
         }
 
         if (options.Interval < TimeSpan.FromMinutes(5))

@@ -127,6 +127,85 @@ public class SealedModeTests
     }
 
     [Fact]
+    public void UpdatesFromTheCoordinatorAreNotADoorButGitHubIsAndSaysWhereToGo()
+    {
+        // Phase 151: the coordinator's supplied releases are the sealed way to stay current, even on a hub with a public name.
+        Assert.Empty(SealedMode.Violations(Config(
+            ("Coordinator:Url", "https://hub.example.com"), ("Update:Check", "true"), ("Update:Auto", "true"), ("Update:Source", "Coordinator"))));
+
+        var github = Assert.Single(SealedMode.Violations(Config(("Update:Check", "true"))));
+        Assert.Contains("Update:Source=coordinator", github);
+
+        var solo = Config(("Coordinator:Enabled", "false"), ("LocalApi:Enabled", "true"), ("Update:Check", "true"), ("Update:Source", "coordinator"));
+        Assert.Contains("needs a coordinator", Assert.Single(SealedMode.Violations(solo)));
+    }
+
+    [Fact]
+    public void ASitePlansSealedNodeSettingsPassTheSealedBootCheck()
+    {
+        // 129's plan is what an admin hands an installer; the node it describes must boot. Before 151 it did not, once
+        // the Windows setup added its default updates (Check from GitHub).
+        var plan = JsonSerializer.SerializeToElement(
+            InferHub.Coordinator.Endpoints.SiteEndpoints.Plan("gpu-1", "https://hub.example.com/", "ihn_x", DateTimeOffset.UnixEpoch, sealedNode: true, "3.104.0"),
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var settings = plan.GetProperty("settings").EnumerateObject()
+            .Where(p => p.Name != "Node:Sealed")
+            .Select(p => (p.Name, p.Value.GetString()!))
+            .ToArray();
+        Assert.Empty(SealedMode.Violations(Config(settings)));
+
+        // The Windows line, as the setup writes it: /Updates=request is Check + AllowFromHub, /UpdateSource is the source.
+        var windows = plan.GetProperty("windows").GetString()!;
+        var source = windows.Split(' ').Single(part => part.StartsWith("/UpdateSource=", StringComparison.Ordinal))["/UpdateSource=".Length..];
+        Assert.Contains("/Updates=request", windows);
+        Assert.Empty(SealedMode.Violations(Config(
+            ("Coordinator:Url", "https://hub.example.com/"), ("Update:Check", "true"), ("Update:AllowFromHub", "true"), ("Update:Source", source))));
+
+        // What the line wrote before (the setup's default: automatic, from GitHub) is a door.
+        Assert.Single(SealedMode.Violations(Config(
+            ("Coordinator:Url", "https://hub.example.com/"), ("Update:Check", "true"), ("Update:Auto", "true"), ("Update:AllowFromHub", "true"))));
+        Assert.True(new InferHub.Node.Update.UpdateOptionsValidator(sealedWithHub: true)
+            .Validate(null, new InferHub.Node.Update.UpdateOptions { Check = true, AllowFromHub = true, Source = "coordinator" }).Succeeded);
+    }
+
+    [Fact]
+    public void UpdateSourceCoordinatorIsOnlyASealedNodesWay()
+    {
+        var options = new InferHub.Node.Update.UpdateOptions { Check = true, Source = "coordinator" };
+
+        Assert.True(options.FromCoordinator);
+        Assert.True(new InferHub.Node.Update.UpdateOptionsValidator(sealedWithHub: true).Validate(null, options).Succeeded);
+
+        var open = new InferHub.Node.Update.UpdateOptionsValidator().Validate(null, options);
+        Assert.True(open.Failed);
+        Assert.Contains("sealed node's way", open.FailureMessage);
+
+        // A URL is unchanged by it, sealed or not.
+        Assert.True(new InferHub.Node.Update.UpdateOptionsValidator(sealedWithHub: true)
+            .Validate(null, new InferHub.Node.Update.UpdateOptions { Check = true }).Succeeded);
+    }
+
+    [Fact]
+    public async Task TheReleaseFeedAsksTheRelayOfTheHubTheNodeIsConnectedToWithItsSecret()
+    {
+        var egress = new SealedEgress(Config(
+            ("Coordinator:Endpoints:0", "https://hub-a.example.com"),
+            ("Coordinator:Endpoints:1", "https://hub-b.example.com"),
+            ("Coordinator:EnrollmentSecret", "s3cret")));
+        var seen = new List<HttpRequestMessage>();
+        using var client = new HttpClient(new SealedEgressHandler(egress) { InnerHandler = new Recording(seen, "[]") });
+        var feed = new InferHub.Node.Update.GitHubReleaseFeed(client, () => new Uri(egress.RelayBase(NodeRelay.Releases)!.AbsoluteUri.TrimEnd('/')));
+
+        Assert.Null(await feed.NewestAboveAsync(new Version(3, 0, 0), CancellationToken.None));
+        egress.UseCoordinator("https://hub-b.example.com");
+        Assert.Null(await feed.NewestAboveAsync(new Version(3, 0, 0), CancellationToken.None));
+
+        Assert.Equal("https://hub-a.example.com/node/relay/releases", seen[0].RequestUri!.ToString());
+        Assert.Equal("https://hub-b.example.com/node/relay/releases", seen[1].RequestUri!.ToString());
+        Assert.All(seen, request => Assert.Equal("s3cret", Assert.Single(request.Headers.GetValues(NodeRelay.SecretHeader))));
+    }
+
+    [Fact]
     public void ARemoteCorpusIsADoor()
     {
         var doors = SealedMode.Violations(Config(
@@ -251,12 +330,19 @@ public class SealedModeTests
         Assert.Contains("no coordinator to pull 'qwen3:8b' through", refused.Message);
     }
 
-    private sealed class Recording(List<HttpRequestMessage> seen) : HttpMessageHandler
+    private sealed class Recording(List<HttpRequestMessage> seen, string? body = null) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             seen.Add(request);
-            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+            var response = new HttpResponseMessage(System.Net.HttpStatusCode.OK);
+
+            if (body is not null)
+            {
+                response.Content = new StringContent(body);
+            }
+
+            return Task.FromResult(response);
         }
     }
 

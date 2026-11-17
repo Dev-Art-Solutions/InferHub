@@ -24,6 +24,12 @@ public sealed class RelayOptions
     /// <summary>Ollama's library pages, which the node's catalogue reads (119 D3).</summary>
     public string OllamaLibrary { get; set; } = "https://ollama.com";
 
+    /// <summary>
+    /// Phase 151: the node's release list the supply fetches a release from (GitHub's API shape). Only the admin's fetch
+    /// reads it; a node is answered from the supply alone.
+    /// </summary>
+    public string Releases { get; set; } = "https://api.github.com/repos/Dev-Art-Solutions/InferHub/releases";
+
     /// <summary>Phase 123: the blobs this hub relayed, kept by sha256. Off by default.</summary>
     public RelayCacheOptions Cache { get; set; } = new();
 
@@ -85,6 +91,14 @@ public static class NodeRelayEndpoints
         {
             await Refuse(context, StatusCodes.Status403Forbidden,
                 "this coordinator does not fetch for its nodes (Relay:Enabled=false); a sealed node downloads nothing until it does");
+            return;
+        }
+
+        // Phase 151 D1: node releases come only from the supply — never relayed live, Only or not. What a sealed fleet
+        // can move to is what an admin put there.
+        if (upstream == NodeRelay.Releases)
+        {
+            await ReleasesAsync(context, path, logger, cancellationToken);
             return;
         }
 
@@ -236,6 +250,46 @@ public static class NodeRelayEndpoints
                 "Relayed {Method} {Upstream}/{Path} for {RemoteIp}: {Status}, {Bytes} bytes",
                 context.Request.Method, upstream, path, context.Connection.RemoteIpAddress, (int)response.StatusCode, sent);
         }
+    }
+
+    /// <summary>
+    /// Phase 151. <c>releases</c> (the list, in GitHub's shape) and <c>releases/download/{tag}/{file}</c>, from the supply
+    /// alone. Download URLs are built from the address the node used, so they pass its sealed handler as this hub's.
+    /// </summary>
+    private static async Task ReleasesAsync(HttpContext context, string? path, ILogger logger, CancellationToken cancellationToken)
+    {
+        if (context.RequestServices.GetService<RelaySupply>() is not { Enabled: true } supply)
+        {
+            await Refuse(context, StatusCodes.Status404NotFound,
+                "this coordinator supplies no node releases (Relay:Supply:Enabled=false); its sealed nodes update by hand until it does");
+            return;
+        }
+
+        var relative = (path ?? string.Empty).Trim('/');
+
+        if (relative.Length == 0)
+        {
+            var request = context.Request;
+            var downloadBase = new Uri($"{request.Scheme}://{request.Host}{request.PathBase}{NodeRelay.PathPrefix}/{NodeRelay.Releases}/download/");
+            var body = supply.ReleaseList(downloadBase);
+            await ServeSuppliedAsync(context, supply, new SupplyAnswer(null, body, "application/json", []), cancellationToken);
+            logger.LogInformation("Relayed the release list for {RemoteIp} from the supply", context.Connection.RemoteIpAddress);
+            return;
+        }
+
+        if (supply.Find(NodeRelay.Releases, relative) is { } answer
+            && await ServeSuppliedAsync(context, supply, answer, cancellationToken) is { } bytes)
+        {
+            logger.LogInformation(
+                "Relayed {Method} releases/{Path} for {RemoteIp} from the supply: {Status}, {Bytes} bytes",
+                context.Request.Method, relative, context.Connection.RemoteIpAddress, context.Response.StatusCode, bytes);
+            return;
+        }
+
+        supply.Refused();
+        context.Response.Headers[NodeRelay.SupplyHeader] = NodeRelay.NotSupplied;
+        await Refuse(context, StatusCodes.Status404NotFound,
+            $"'releases/{relative}' is not supplied by this coordinator; an admin supplies a release with POST /api/admin/supply {{\"release\": \"vX.Y.Z\"}}");
     }
 
     /// <summary>

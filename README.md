@@ -1343,7 +1343,7 @@ Relay__Enabled=true
   `anthropic` or `gemini` engine, or any engine at a public `BaseUrl`. An Ollama outside this
   network. `LocalApi:Urls` on a wildcard or a public address (loopback or one private address is
   fine). A corpus kept elsewhere. `HuggingFace:Enabled` with no coordinator and no local mirror.
-  `Ollama:Supervisor:AutoInstall`, `Update:Check`/`Auto`/`AllowFromHub` from GitHub,
+  `Ollama:Supervisor:AutoInstall`, `Update:Check`/`Auto`/`AllowFromHub` from GitHub (3.104+: use `Update:Source=coordinator`),
   `Tools:AllowModelDownload`, and any `CloudMedia` provider. You get the whole list in one error,
   so you fix it in one edit.
 - **"Local"** means loopback, private and link-local addresses, `100.64.0.0/10` (a Tailscale
@@ -1465,6 +1465,45 @@ The console has a **Supplied models** panel for the same calls.
   `Relay:Supply:DataDirectory` (`/data/supply` in the image). Nothing is evicted; a fetch or an
   import that would leave less than `KeepFreeGiB` (20) free is refused before it starts. A gated
   Hugging Face repo needs the hub's own token in `Relay__Supply__HuggingFaceToken`.
+
+### A sealed node updates through its coordinator (v3.104+)
+
+Until 3.104 a sealed node could not use the [self-update](#a-windows-node-from-one-setup-kept-current-v366):
+GitHub is outside its network, so the boot check refused `Update:Check` unless the site ran a
+mirror of GitHub's release list. Now the hub's supply holds node releases too, and a sealed node
+reads them through the relay it already uses for models.
+
+```bash
+# on the coordinator (with Relay:Enabled and Relay:Supply:Enabled)
+POST /api/admin/supply         {"release": "latest"}      # or "v3.104.0"
+POST /api/admin/supply/import  {"path": "releases"}       # a disk holding the setup and its .sha256
+
+# on each sealed node
+Update__Source=coordinator
+Update__Check=true
+Update__AllowFromHub=true      # press Update in the console's Versions & updates panel
+```
+
+- **Only what an admin supplied.** The hub never relays GitHub's release list to a node. A node
+  sees the releases in the supply and nothing else, with or without `Only`. A new tag on GitHub
+  does not reach a sealed fleet, including nodes with `Update:Auto`, until an admin supplies it.
+- **Checked twice.** The hub keeps a setup only if it matches the SHA-256 published beside it,
+  and the node checks it again when it downloads it. As before, that checksum comes from the same
+  release: it catches a broken download, not a hostile release.
+- **Nothing new on the node's side.** `/node/relay/releases` answers in GitHub's shape, so the
+  node's own update check reads it unchanged. It asks the hub it is connected to now, so after a
+  failover it asks the new one. `Update:Source=coordinator` is refused on a node that is not
+  sealed. An older sealed node can use the supply too, with
+  `Update:Source=http://<hub>/node/relay/releases` when the hub has a local name.
+- **The site plan now installs a node that boots.** In 3.89–3.103, the Windows command in
+  `POST /api/admin/site/nodes` installed a sealed node with the setup's default updates (automatic,
+  from GitHub), and the sealed boot check refused that. The plan now passes
+  `/Updates=request /UpdateSource=coordinator`, and `/Sealed=yes` on its own also sets
+  `Update:Source=coordinator`.
+- **You can see it.** The **Supplied models** panel has a *Supply a node release* box, `/api/status`
+  has `relay.supply.releases`, and the site checklist has a recommended line, `updates-supplied`.
+- **Only Windows nodes can apply an update.** A node installed by the setup applies one. A Docker
+  node reports what is available, and you update it with `docker pull` from your own registry.
 
 ### An audit trail (v3.85+)
 
@@ -5052,6 +5091,7 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Relay:Enabled` | `false` | **v3.82+** — fetch for this hub's [sealed nodes](#a-sealed-node-v382): `/node/relay/{hf\|ollama-registry\|ollama-library}/…`, behind the node enrollment secret. `Relay:HuggingFace`, `Relay:OllamaRegistry`, `Relay:OllamaLibrary` point at the upstreams (or your mirrors). |
 | `Relay:Cache:Enabled` | `false` | **v3.83+** — keep each blob the relay passed on, by its sha256, under `Relay:Cache:DataDirectory` (`./data/relay`; `/data/relay` in the image), within `Relay:Cache:MaxGiB` (200) and `Relay:Cache:KeepFreeGiB` (20). See [The hub keeps what it relayed](#the-hub-keeps-what-it-relayed-v383). |
 | `Relay:Supply:Enabled` | `false` | **v3.84+** — answer this hub's sealed nodes from models an admin fetched (`POST /api/admin/supply`) or imported from under `Relay:Supply:ImportDirectory` (`./data/import`; `/import` in the image), kept under `Relay:Supply:DataDirectory` (`./data/supply`; `/data/supply` in the image), without asking the upstream. `Relay:Supply:Only` refuses everything else; `Relay:Supply:HuggingFaceToken` is the hub's own; `Relay:Supply:KeepFreeGiB` (20). See [Models supplied through the coordinator](#models-supplied-through-the-coordinator-v384). |
+| `Relay:Releases` | GitHub's release list | **v3.104+** — where `POST /api/admin/supply {"release": "latest"}` fetches a node release from (GitHub's API shape, or a mirror). A node is answered only from the supply, never from here. See [A sealed node updates through its coordinator](#a-sealed-node-updates-through-its-coordinator-v3104). |
 | `Audit:Enabled` | `false` | **v3.85+** — append one JSON line per audited request and node event to `Audit:DataDirectory` (`./data/audit`; `/data/audit` in the image), one file per UTC day, kept `Audit:RetentionDays` (90). Never a body, a query string or a key. Read with `GET /api/admin/audit`. See [An audit trail](#an-audit-trail-v385). |
 | `Priority:Enabled` | `false` | **v3.86+** — read `Auth:Clients[].Priority` (`essential`, `normal`, `background`). Background work never takes a model's last `Priority:ReserveSlots` (1) free places and waits up to `Priority:BackgroundMaxWaitSeconds` (600). See [Priority classes](#priority-classes-v386). |
 | `Identity:Enabled` | `false` | **v3.87+** — the coordinator issues node certificates (CA under `Identity:DataDirectory`, `./data/identity`; `/data/identity` in the image). `Identity:Require` refuses a node without one; `Identity:CertificateDays` (90), `Identity:TokenMinutes` (60), `Identity:ClockSkewSeconds` (300). On the node: `Coordinator:EnrollmentToken`. See [A certificate per node](#a-certificate-per-node-v387). |
@@ -5092,6 +5132,7 @@ usual (`Coordinator__EnrollmentSecret`, `Node__Name`, etc.).
 | `Node:MaxConcurrency` | `null` | Advisory in-flight cap reported to the coordinator (null = unbounded). |
 | `Node:Labels` | `{}` | Free-form key/value pairs surfaced on `GET /api/nodes`. |
 | `Node:Sealed` | `false` | **v3.82+** — reach nothing outside this network but the coordinator: refuses to start with a door open, and downloads through the hub's `Relay`. See [A sealed node](#a-sealed-node-v382). |
+| `Update:Source` | GitHub's release list | **v3.66+** — the release list a node checks. **v3.104+:** `coordinator` = the releases the connected hub supplied, at `/node/relay/releases` (a sealed node only). See [A sealed node updates through its coordinator](#a-sealed-node-updates-through-its-coordinator-v3104). |
 | `Node:Models:Include` | `[]` | Whitelist of model names to advertise (empty = all). |
 | `Node:Models:Exclude` | `[]` | Names dropped before reporting. |
 | `Node:Capabilities:Disabled` | `[]` | v3.8. What this node is **not** routed for — `["chat"]` makes it an embeddings-only box. Subtractive only; disabling both `chat` and `embed` fails startup. See [What a node is for](#what-a-node-is-for-v38). |

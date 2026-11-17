@@ -37,4 +37,52 @@ public static class NodeRelay
     public const string OllamaLibrary = "ollama-library";
 
     public static readonly string[] Upstreams = [HuggingFace, OllamaRegistry, OllamaLibrary];
+
+    /// <summary>
+    /// Phase 151: node releases this coordinator supplied. Not an upstream — never relayed live, only answered from the
+    /// supply: <c>{hub}/node/relay/releases</c> is a list in GitHub's shape, <c>…/releases/download/{tag}/{file}</c> a file.
+    /// </summary>
+    public const string Releases = "releases";
+}
+
+/// <summary>
+/// Phase 151. What a node release is made of, read the same way by the node that installs it (101) and the hub that
+/// supplies it: the Windows setup and the SHA-256 published beside it.
+/// </summary>
+public static class NodeReleaseAssets
+{
+    /// <summary>The setup's file name for a version (<c>3.104.0</c>) — what the release workflow attaches.</summary>
+    public static string SetupName(string version) => $"InferHub-Node-Setup-{version}-win-x64.exe";
+
+    public const string SetupPrefix = "InferHub-Node-Setup-";
+
+    public const string SetupSuffix = "-win-x64.exe";
+
+    /// <summary>
+    /// <c>sha256sum</c>'s shape (<c>&lt;hex&gt;  &lt;name&gt;</c>), PowerShell's <c>Get-FileHash</c> hex alone, or either in
+    /// upper case. A file listing several names is matched by the setup's. Null when it holds no SHA-256.
+    /// </summary>
+    public static string? ParseChecksum(string text, string setupName)
+    {
+        string? first = null;
+
+        foreach (var raw in text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var parts = raw.Split([' ', '\t', '*'], StringSplitOptions.RemoveEmptyEntries);
+
+            if (parts.Length == 0 || parts[0].Length != 64 || !parts[0].All(Uri.IsHexDigit))
+            {
+                continue;
+            }
+
+            if (parts.Length > 1 && string.Equals(parts[^1], setupName, StringComparison.OrdinalIgnoreCase))
+            {
+                return parts[0].ToLowerInvariant();
+            }
+
+            first ??= parts[0].ToLowerInvariant();
+        }
+
+        return first;
+    }
 }

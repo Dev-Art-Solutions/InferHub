@@ -92,6 +92,7 @@ public static class SiteEndpoints
         var egress = services.GetService<NodeEgressRegistry>();
         var registry = services.GetService<INodeRegistry>();
         var organisations = services.GetService<OrganisationPolicy>();
+        var supplied = services.GetService<RelaySupply>()?.Snapshot(0);
 
         var certified = authority is { Enabled: true }
             ? authority.Certificates().Where(c => c.State(now) == "active").Select(c => c.NodeId).ToHashSet(StringComparer.Ordinal)
@@ -139,6 +140,11 @@ public static class SiteEndpoints
                 "apply the rules from `InferHub.Node firewall` on each node (3.88)"),
             new("supply", relay.Supply.Enabled && relay.Supply.Only, SiteCheck.Recommended,
                 "models come only from what an admin supplied, never fetched when a node asks (3.84)", "Relay__Supply__Enabled=true, Relay__Supply__Only=true"),
+            new("updates-supplied", relay.Supply.Enabled && supplied?.Releases > 0, SiteCheck.Recommended,
+                relay.Supply.Enabled && supplied?.Releases > 0
+                    ? $"{supplied.Releases} node release(s) supplied: sealed nodes with Update__Source=coordinator update from this hub (3.104)"
+                    : "no node release is supplied, so a sealed node is updated only by hand (3.104)",
+                "Relay__Supply__Enabled=true, then POST /api/admin/supply {\"release\":\"latest\"}"),
             new("audit", audit.Enabled, SiteCheck.Recommended,
                 "who asked, which model, which node answered — on disk (3.85)", "Audit__Enabled=true"),
             new("priority", priority.Enabled, SiteCheck.Recommended,
@@ -177,11 +183,19 @@ public static class SiteEndpoints
         if (sealedNode)
         {
             settings["Node:Sealed"] = "true";
+
+            // Phase 151: a sealed node updates from what this hub supplied, when an admin presses Update. Before it the
+            // Windows line wrote the setup's default (GitHub, automatic), which the sealed boot check refuses.
+            settings["Update:Source"] = "coordinator";
+            settings["Update:Check"] = "true";
+            settings["Update:Auto"] = "false";
+            settings["Update:AllowFromHub"] = "true";
         }
 
         var env = settings.Select(pair => $"{pair.Key.Replace(":", "__")}={pair.Value}").ToArray();
         var windows = $"InferHub-Node-Setup-{version}-win-x64.exe /VERYSILENT /SUPPRESSMSGBOXES /Mode=mesh "
-            + $"/CoordinatorUrl={coordinatorUrl} /EnrollmentToken={token} /NodeName={name}" + (sealedNode ? " /Sealed=yes" : "");
+            + $"/CoordinatorUrl={coordinatorUrl} /EnrollmentToken={token} /NodeName={name}"
+            + (sealedNode ? " /Sealed=yes /Updates=request /UpdateSource=coordinator" : "");
         var docker = $"docker run -d --name inferhub-node-{name} --restart unless-stopped -v inferhub-node-{name}:/data "
             + string.Join(" ", env.Select(line => $"-e {line}"))
             + $" ghcr.io/dev-art-solutions/inferhub-node:{version}";

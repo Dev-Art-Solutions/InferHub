@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using InferHub.Shared.Contracts;
 
 namespace InferHub.Node.Update;
 
@@ -24,12 +25,20 @@ public interface IReleaseFeed
 /// <c>vX.Y.Z</c> above the running version <b>with its setup and checksum attached</b>. The setup is built
 /// by a workflow minutes after the tag, so a release without one is "not yet", never an error.
 /// </summary>
-public sealed class GitHubReleaseFeed(HttpClient http, Uri source) : IReleaseFeed
+public sealed class GitHubReleaseFeed(HttpClient http, Func<Uri> sourceNow) : IReleaseFeed
 {
     public const string HttpClientName = "InferHub.Node.Update";
 
+    public GitHubReleaseFeed(HttpClient http, Uri source)
+        : this(http, () => source)
+    {
+    }
+
     public async Task<UpdateRelease?> NewestAboveAsync(Version current, CancellationToken cancellationToken)
     {
+        // Phase 151: asked per check — with Update:Source=coordinator it is the relay of the hub this node is
+        // connected to now, which after a failover is not the one it booted with (131).
+        var source = sourceNow();
         using var request = new HttpRequestMessage(HttpMethod.Get, source);
         // GitHub refuses a request without one, with a 403 that reads like a rate limit.
         request.Headers.UserAgent.ParseAdd($"InferHub-Node/{NodeVersion.Current}");
@@ -109,7 +118,7 @@ public sealed class GitHubReleaseFeed(HttpClient http, Uri source) : IReleaseFee
     }
 
     /// <summary>The setup's file name for a version — what the workflow attaches and what the feed looks for.</summary>
-    public static string SetupName(Version version) => $"InferHub-Node-Setup-{NodeVersion.Format(version)}-win-x64.exe";
+    public static string SetupName(Version version) => NodeReleaseAssets.SetupName(NodeVersion.Format(version));
 
     private static bool Bool(JsonElement element, string name)
         => element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;

@@ -40,7 +40,7 @@ public sealed class SupplyJob
 }
 
 /// <summary>What <c>POST /api/admin/supply</c> asks for: one Ollama model, or one Hugging Face repo at a revision.</summary>
-public sealed record SupplyFetchRequest(string? Ollama, string? HuggingFace, string? Revision, string[]? Include);
+public sealed record SupplyFetchRequest(string? Ollama, string? HuggingFace, string? Revision, string[]? Include, string? Release = null);
 
 /// <summary>What <c>POST /api/admin/supply/import</c> asks for: a path under <c>Relay:Supply:ImportDirectory</c>.</summary>
 public sealed record SupplyImportRequest(string? Path, string? Name, string? Revision);
@@ -87,9 +87,23 @@ public sealed class SupplyJobs : IDisposable
     /// <summary>Starts a fetch; throws <see cref="ArgumentException"/> for a request that names nothing fetchable.</summary>
     public SupplyJob Fetch(SupplyFetchRequest request)
     {
-        if (!string.IsNullOrWhiteSpace(request.Ollama) == !string.IsNullOrWhiteSpace(request.HuggingFace))
+        var named = new[] { request.Ollama, request.HuggingFace, request.Release }.Count(value => !string.IsNullOrWhiteSpace(value));
+
+        if (named != 1)
         {
-            throw new ArgumentException("name one model: \"ollama\": \"qwen3:8b\", or \"huggingFace\": \"owner/repo\" (with \"revision\" and \"include\")");
+            throw new ArgumentException("name one thing: \"ollama\": \"qwen3:8b\", \"huggingFace\": \"owner/repo\" (with \"revision\" and \"include\"), or \"release\": \"v3.104.0\" (or \"latest\")");
+        }
+
+        if (request.Release is { } release)
+        {
+            var tag = release.Trim();
+
+            if (!tag.Equals("latest", StringComparison.OrdinalIgnoreCase) && !IsReleaseTag(tag))
+            {
+                throw new ArgumentException($"'{release}' is not a node release; name it vX.Y.Z, or \"latest\"");
+            }
+
+            return Start("fetch", "release " + tag, (job, token) => FetchReleaseAsync(tag, job, token));
         }
 
         if (request.Ollama is { } ollama)
@@ -434,6 +448,10 @@ public sealed class SupplyJobs : IDisposable
         {
             await ImportOllamaAsync(source, from, name, job, cancellationToken);
         }
+        else if (Directory.EnumerateFiles(source, NodeReleaseAssets.SetupPrefix + "*" + NodeReleaseAssets.SetupSuffix).Any())
+        {
+            await ImportReleasesAsync(source, from, name, job, cancellationToken);
+        }
         else if (HuggingFaceRepos(source) is { Count: > 0 } repos)
         {
             await ImportHuggingFaceAsync(repos, from, name, revision, job, cancellationToken);
@@ -441,7 +459,8 @@ public sealed class SupplyJobs : IDisposable
         else
         {
             throw new InvalidOperationException(
-                $"found nothing to import in '{from}': it holds no Ollama models directory (manifests/ or manifests-v2/, and blobs/), no Hugging Face cache (models--owner--repo/) and no supply directory (models/*.json and blobs/)");
+                $"found nothing to import in '{from}': it holds no Ollama models directory (manifests/ or manifests-v2/, and blobs/), no Hugging Face cache (models--owner--repo/), "
+                + $"no supply directory (models/*.json and blobs/) and no node release ({NodeReleaseAssets.SetupPrefix}X.Y.Z{NodeReleaseAssets.SetupSuffix} with its .sha256)");
         }
 
         if (job.Supplied.Count == 0)
@@ -673,6 +692,181 @@ public sealed class SupplyJobs : IDisposable
             supply.Save(model with { Source = "imported", From = from, SuppliedUtc = DateTimeOffset.UtcNow });
             job.Supplied.Add(model.Name);
         }
+    }
+
+    /// <summary><c>v3.104.0</c> or <c>3.104.0</c>: a node release, never a pre-release or a desktop tag.</summary>
+    internal static bool IsReleaseTag(string tag)
+        => System.Text.RegularExpressions.Regex.IsMatch(tag.Trim(), @"^[vV]?\d+\.\d+\.\d+$");
+
+    private static string Tag(string tag) => "v" + tag.Trim().TrimStart('v', 'V');
+
+    private static Version? VersionOf(string tag)
+        => IsReleaseTag(tag) && Version.TryParse(tag.Trim().TrimStart('v', 'V'), out var version) ? version : null;
+
+    /// <summary>
+    /// Phase 151 D2. One node release from <c>Relay:Releases</c> (GitHub's list, or a mirror of its shape): its Windows
+    /// setup checked against the SHA-256 published beside it, both kept, or nothing supplied. <c>latest</c> is the highest
+    /// non-draft, non-pre-release tag with both files — what a node's own 101 check would have picked.
+    /// </summary>
+    private async Task FetchReleaseAsync(string wanted, SupplyJob job, CancellationToken cancellationToken)
+    {
+        var relay = options.CurrentValue;
+        var client = factory.CreateClient(NodeRelayEndpoints.HttpClientName);
+        (string, string[])[] headers =
+        [
+            ("User-Agent", [$"InferHub-Coordinator/{typeof(SupplyJobs).Assembly.GetName().Version?.ToString(3) ?? "0.0.0"}"]),
+            ("Accept", ["application/vnd.github+json"])
+        ];
+        var listUrl = new Uri(relay.Releases.TrimEnd('/') + (relay.Releases.Contains('?') ? "&" : "?") + "per_page=100");
+
+        using var response = await GetAsync(client, listUrl, headers, cancellationToken);
+        await EnsureAsync(response, relay.Releases);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(cancellationToken));
+
+        if (document.RootElement.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException($"{relay.Releases} did not answer with a list of releases");
+        }
+
+        var latest = wanted.Equals("latest", StringComparison.OrdinalIgnoreCase);
+        (Version Version, string Tag, string Setup, Uri SetupUrl, long? Size, Uri ChecksumUrl, string? Page)? pick = null;
+
+        foreach (var release in document.RootElement.EnumerateArray())
+        {
+            if (release.TryGetProperty("draft", out var draft) && draft.ValueKind == JsonValueKind.True
+                || release.TryGetProperty("prerelease", out var pre) && pre.ValueKind == JsonValueKind.True
+                || !release.TryGetProperty("tag_name", out var tagElement)
+                || tagElement.GetString() is not { } tag
+                || VersionOf(tag) is not { } version
+                || (!latest && VersionOf(wanted) != version)
+                || (pick is { } best && best.Version >= version))
+            {
+                continue;
+            }
+
+            var setupName = NodeReleaseAssets.SetupName(version.ToString(3));
+            Uri? setupUrl = null, checksumUrl = null;
+            long? size = null;
+
+            if (release.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var asset in assets.EnumerateArray())
+                {
+                    var name = asset.TryGetProperty("name", out var n) ? n.GetString() : null;
+
+                    if (name is null || !asset.TryGetProperty("browser_download_url", out var u) || !Uri.TryCreate(u.GetString(), UriKind.Absolute, out var url))
+                    {
+                        continue;
+                    }
+
+                    if (name.Equals(setupName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        setupUrl = url;
+                        size = asset.TryGetProperty("size", out var s) && s.TryGetInt64(out var bytes) ? bytes : null;
+                    }
+                    else if (name.Equals(setupName + ".sha256", StringComparison.OrdinalIgnoreCase))
+                    {
+                        checksumUrl = url;
+                    }
+                }
+            }
+
+            if (setupUrl is null || checksumUrl is null)
+            {
+                if (!latest)
+                {
+                    throw new InvalidOperationException($"{tag} has no {setupName} with its .sha256 attached (yet — the setup is built minutes after the tag)");
+                }
+
+                continue;
+            }
+
+            var page = release.TryGetProperty("html_url", out var html) ? html.GetString() : null;
+            pick = (version, Tag(tag), setupName, setupUrl, size, checksumUrl, page);
+        }
+
+        if (pick is not { } chosen)
+        {
+            throw new InvalidOperationException(latest
+                ? $"{relay.Releases} lists no release with a Windows setup and its checksum"
+                : $"{relay.Releases} lists no release {Tag(wanted)}");
+        }
+
+        // The files are plain downloads (a redirect to GitHub's object store): the API's Accept stays on the list.
+        (string, string[])[] download = [headers[0]];
+        using var checksumResponse = await GetAsync(client, chosen.ChecksumUrl, download, cancellationToken);
+        await EnsureAsync(checksumResponse, relay.Releases);
+        var checksumBytes = await checksumResponse.Content.ReadAsByteArrayAsync(cancellationToken);
+        var expected = NodeReleaseAssets.ParseChecksum(Encoding.UTF8.GetString(checksumBytes), chosen.Setup)
+            ?? throw new InvalidOperationException($"the checksum published for {chosen.Setup} holds no SHA-256");
+
+        using var setup = await GetAsync(client, chosen.SetupUrl, download, cancellationToken);
+        await EnsureAsync(setup, relay.Releases);
+        var setupSize = chosen.Size ?? setup.Content.Headers.ContentLength
+            ?? throw new InvalidOperationException($"{chosen.Setup} has no size in the list and no Content-Length; nothing was supplied");
+        job.TotalBytes = setupSize;
+        supply.EnsureRoomFor(setupSize);
+
+        await KeepCheckedAsync(setup.Content, chosen.Setup, expected, null, setupSize, job, cancellationToken);
+        SaveRelease(chosen.Tag, chosen.Setup, setupSize, expected, checksumBytes, "fetched", relay.Releases, chosen.Page);
+        job.Supplied.Add(chosen.Tag);
+    }
+
+    /// <summary>
+    /// Phase 151 D2. Setups carried in on a disk, each with its <c>.sha256</c> beside it — the two files a release page
+    /// offers, downloaded on the internet side. A setup without its checksum is skipped and said so.
+    /// </summary>
+    private async Task ImportReleasesAsync(string source, string from, string? filter, SupplyJob job, CancellationToken cancellationToken)
+    {
+        var setups = Directory.EnumerateFiles(source, NodeReleaseAssets.SetupPrefix + "*" + NodeReleaseAssets.SetupSuffix)
+            .Select(path => (Path: path, Name: Path.GetFileName(path)))
+            .Select(file => (file.Path, file.Name, Tag: file.Name[NodeReleaseAssets.SetupPrefix.Length..^NodeReleaseAssets.SetupSuffix.Length]))
+            .Where(file => IsReleaseTag(file.Tag))
+            .Where(file => filter is null || Tag(file.Tag).Equals(Tag(filter), StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        job.TotalBytes = setups.Sum(file => Length(file.Path));
+        supply.EnsureRoomFor(job.TotalBytes);
+
+        foreach (var (path, name, tag) in setups)
+        {
+            var checksumPath = path + ".sha256";
+
+            if (!File.Exists(checksumPath))
+            {
+                job.Notes.Add($"skipped {name} — no {name}.sha256 beside it");
+                continue;
+            }
+
+            var checksumBytes = await File.ReadAllBytesAsync(checksumPath, cancellationToken);
+
+            if (NodeReleaseAssets.ParseChecksum(Encoding.UTF8.GetString(checksumBytes), name) is not { } expected)
+            {
+                job.Notes.Add($"skipped {name} — its .sha256 holds no SHA-256");
+                continue;
+            }
+
+            var size = Length(path);
+            await using (var stream = File.OpenRead(path))
+            {
+                await KeepCheckedAsync(stream, name, expected, null, size, job, cancellationToken);
+            }
+
+            SaveRelease(Tag(tag), name, size, expected, checksumBytes, "imported", from, null);
+            job.Supplied.Add(Tag(tag));
+        }
+    }
+
+    private void SaveRelease(string tag, string setupName, long setupSize, string setupSha, byte[] checksumBytes, string source, string from, string? page)
+    {
+        var checksumSha = supply.KeepBytes(checksumBytes);
+        supply.Save(new SuppliedModel(
+            RelaySupply.IdFor(SuppliedModel.Release, tag), SuppliedModel.Release, tag, tag, null, null, null, null,
+            [
+                new SuppliedFile(setupName, setupSize, setupSha, "application/octet-stream"),
+                new SuppliedFile(setupName + ".sha256", checksumBytes.Length, checksumSha, "text/plain")
+            ],
+            setupSize + checksumBytes.Length, source, from, DateTimeOffset.UtcNow, page));
     }
 
     private static List<string> HuggingFaceRepos(string source)

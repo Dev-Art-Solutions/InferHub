@@ -475,3 +475,52 @@ Tests: `OrganisationTests` (Coordinator — the grant table; the registry filter
 sees all — red with the filter removed; through the real guards the key decides and admins see everything; the audit line
 carries the organisation through the real middleware order; off; names), `OrganisationMeshTests` (real SignalR: a node that
 enrolled with a `lab-b` token is `lab-b`, source `certificate`).
+
+## Phase 151 (a sealed node updates through its coordinator) — `Update:Source=coordinator`, a release in `Relay:Supply`
+
+The hub's half is the supply (124): `POST /api/admin/supply {"release": "v3.104.0" | "latest"}` reads `Relay:Releases`
+(GitHub's list, or a mirror of its shape), and an import of a directory holding `InferHub-Node-Setup-X.Y.Z-win-x64.exe`
+with its `.sha256` takes one carried in on a disk. A release is a `SuppliedModel` of kind `release` (name = tag, the two
+files, `Page` = the release page), so listing, removal, the console panel and the blob store are 124's. The node's half
+is three lines: the 101 feed asks `{hub}/node/relay/releases`, and the sealed handler signs the request as it signs a model.
+Before it, a sealed node's only update was by hand or from a mirror the site had to run itself (122 D2).
+
+**D1, load-bearing — a node release reaches a sealed node only from the supply.** `releases` is not an upstream: the relay
+never fetches it live, `Only` or not, and what is not supplied is a 404 with `X-InferHub-Relay-Supply: not-supplied`
+naming the call that supplies it. So what a sealed fleet can move to — and, with `Update:Auto`, *will* move to once idle —
+is exactly what an admin put there. *Rejected:* relaying GitHub's list as 122 relays Hugging Face — every new tag would
+become every auto-updating sealed node's next install the moment it was published, which is the decision a closed site
+exists to keep. *Rejected:* a new route outside `/node/relay` — the relay is the door the sealed handler already
+authenticates (secret, certificate proof) and the one `firewall` rules already open.
+
+**D2 — answered in GitHub's shape, so the 101 feed and downloader read it unchanged.** `GET …/releases` is a list
+(`tag_name`, `draft`/`prerelease` false, `html_url`, `assets[].browser_download_url`, newest first); a file is
+`…/releases/download/{tag}/{file}`, Range honoured, and only the two files the record names. The URLs are absolute on the
+address the node used (scheme, host, path base of the request), so they pass its sealed handler as the coordinator's.
+Checked twice: the hub keeps a setup only if it matches the `.sha256` published beside it (size too), and the node checks
+it again on download (101 D4). As in 101, that checksum comes from the same release: it catches a broken download, not a
+hostile release — the README says so.
+
+**D3 — `Update:Source=coordinator` is a sealed node's way, resolved per check.** `UpdateOptionsValidator(sealedWithHub)`
+refuses it on a node that is not sealed or has no coordinator (the relay answers only its own nodes, and only the sealed
+handler signs for it); the sealed boot check accepts it, even for a hub with a public name, and its GitHub sentence now
+names it. The feed takes a `Func<Uri>`: each check asks `SealedEgress.RelayBase("releases")`, so after a failover it is the
+hub the node is connected to (131 D5). An old node needs no change to use a supply: `Update:Source=http://hub.lan:5080/node/relay/releases` works on 3.82+ for a hub on a local name.
+
+**D4 — the site plan stops describing a node that cannot boot.** Found while designing this: 129's Windows line passed
+`/Sealed=yes` and no update answer, so the silent setup wrote its default — automatic, from GitHub — and the sealed boot
+check refused the node it had just installed. The plan now says `/Updates=request /UpdateSource=coordinator` and its
+settings carry `Update:Source=coordinator`, `Check`, `AllowFromHub`; the setup writes `Update:Source=coordinator` for any
+`/Sealed=yes` run without its own `/UpdateSource`. `SealedModeTests` checks the plan against the boot check both ways.
+**Not established by running the setup**: the plan line was checked by test and the `.iss` by compiling it.
+
+**D5 — visible where the supply already is.** `relay.supply.releases` on `/api/status` (`models` no longer counts
+releases; `bytes` counts both), the console's *Supply a node release* box, and a recommended checklist line
+`updates-supplied` (a supply holding a release). No new `/metrics` series: `inferhub_relay_supply_*` already counts what
+the relay served.
+
+Tests: `ReleaseSupplyMeshTests` (Mesh — a fake GitHub list with a pre-release, a draft and a tag with no setup; `latest`
+supplied once, then GitHub stopped and the node's own `GitHubReleaseFeed` and `UpdateDownloader` behind the real
+`SealedEgressHandler` find and fetch it; a named and an imported release newest first; corrupt bytes never supplied; not
+supplied, no secret, another file name refused; off), `SealedModeTests` (the coordinator source on a sealed node, solo,
+not sealed; the feed following a failover with the secret; the site plan through the boot check), `SiteTests` (the plan).

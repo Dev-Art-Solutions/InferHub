@@ -15,7 +15,7 @@
 ;     /LocalApiUrls=http://localhost:5081 /LocalApiKey=...
 ;     /NodeName=gpu-01 /Labels=gpu=3090,room=lab /MaxConcurrency=4 /VramBudgetMiB=24000
 ;     /OllamaEndpoint=http://localhost:11434/ /Account=system|virtual /Updates=auto|request|report|off
-;     /UpdateSource=<a mirror of GitHub's release list>   (not in the wizard; written only when given)
+;     /UpdateSource=<a mirror of GitHub's release list, or coordinator>   (not in the wizard; written only when given; /Sealed=yes alone means coordinator, phase 151)
 ;     /HubModels=yes|no /HubMaxModelGiB=<empty = no cap> /HubKeepFreeGiB=20   (phase 120; a mesh node only)
 ;     /EnrollmentToken=ihn_... /Sealed=yes|no   (phase 129, from POST /api/admin/site/nodes; not in the wizard)
 
@@ -562,7 +562,10 @@ begin
     begin AddLine(Lines, 'Update:Check=false'); AddLine(Lines, 'Update:Auto=false'); AddLine(Lines, 'Update:AllowFromHub=false'); end;
   end;
   if ParamGiven('UpdateSource') then
-    AddLine(Lines, 'Update:Source=' + ExpandConstant('{param:UpdateSource|}'));
+    AddLine(Lines, 'Update:Source=' + ExpandConstant('{param:UpdateSource|}'))
+  { Phase 151: a sealed node reads releases from its coordinator's supply; GitHub would fail its boot check. }
+  else if ParamGiven('Sealed') and (LowerCase(Trim(ExpandConstant('{param:Sealed|no}'))) = 'yes') then
+    AddLine(Lines, 'Update:Source=coordinator');
 
   { Phase 120: the owner's answer, and the limits it comes with. An empty largest model removes the cap. }
   if HubManages then AddLine(Lines, 'Node:Management:AllowFromHub=true') else AddLine(Lines, 'Node:Management:AllowFromHub=false');

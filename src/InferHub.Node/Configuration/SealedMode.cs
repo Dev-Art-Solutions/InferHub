@@ -200,10 +200,15 @@ public static class SealedMode
 
         var update = configuration.GetSection("Update");
 
+        // Phase 151: `coordinator` is the hub's supplied releases through the relay — the sealed way to stay current.
+        var fromHub = string.Equals(update["Source"]?.Trim(), "coordinator", StringComparison.OrdinalIgnoreCase);
+
         if ((update.GetValue<bool>("Check") || update.GetValue<bool>("Auto") || update.GetValue<bool>("AllowFromHub"))
-            && !IsLocal(update["Source"]))
+            && !IsLocal(update["Source"]) && !(fromHub && coordinator))
         {
-            doors.Add($"Update:Check/Auto/AllowFromHub download releases from GitHub. {why} updates from a feed on this network (Update:Source) or by hand.");
+            doors.Add(fromHub
+                ? $"Update:Source=coordinator needs a coordinator, and this node has none. {why} updates from a feed on this network (Update:Source) or by hand."
+                : $"Update:Check/Auto/AllowFromHub download releases from GitHub. {why} updates from its coordinator's supplied releases (Update:Source=coordinator), from a feed on this network, or by hand.");
         }
 
         if (configuration.GetValue<bool>("Tools:AllowModelDownload"))

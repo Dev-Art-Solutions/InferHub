@@ -56,28 +56,8 @@ public sealed class UpdateDownloader(HttpClient http)
     /// either in upper case. A file listing several names is matched by the setup's.
     /// </summary>
     public static string ParseChecksum(string text, string setupName)
-    {
-        string? first = null;
-
-        foreach (var raw in text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            var parts = raw.Split([' ', '\t', '*'], StringSplitOptions.RemoveEmptyEntries);
-
-            if (parts.Length == 0 || !IsHex(parts[0]))
-            {
-                continue;
-            }
-
-            if (parts.Length > 1 && string.Equals(parts[^1], setupName, StringComparison.OrdinalIgnoreCase))
-            {
-                return parts[0].ToLowerInvariant();
-            }
-
-            first ??= parts[0].ToLowerInvariant();
-        }
-
-        return first ?? throw new UpdateException($"the checksum published for {setupName} holds no SHA-256");
-    }
+        => Shared.Contracts.NodeReleaseAssets.ParseChecksum(text, setupName)
+            ?? throw new UpdateException($"the checksum published for {setupName} holds no SHA-256");
 
     private async Task<string> GetStringAsync(Uri uri, CancellationToken cancellationToken)
     {
@@ -98,6 +78,4 @@ public sealed class UpdateDownloader(HttpClient http)
         await using var file = File.OpenRead(path);
         return Convert.ToHexStringLower(await SHA256.HashDataAsync(file, cancellationToken));
     }
-
-    private static bool IsHex(string text) => text.Length == 64 && text.All(Uri.IsHexDigit);
 }

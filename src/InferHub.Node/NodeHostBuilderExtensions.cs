@@ -829,7 +829,8 @@ public static class NodeHostBuilderExtensions
             .AddOptions<Update.UpdateOptions>()
             .Bind(builder.Configuration.GetSection(Update.UpdateOptions.SectionName))
             .ValidateOnStart();
-        builder.Services.AddSingleton<IValidateOptions<Update.UpdateOptions>, Update.UpdateOptionsValidator>();
+        builder.Services.AddSingleton<IValidateOptions<Update.UpdateOptions>>(services =>
+            new Update.UpdateOptionsValidator(services.GetService<SealedEgress>() is { CanRelay: true }));
         builder.Services.TryAddSingleton<Update.IUpdateApplier, Update.NoUpdateApplier>();
 
         // A setup is ~70 MB: no overall timeout on the download client, a short one on the feed's.
@@ -837,9 +838,26 @@ public static class NodeHostBuilderExtensions
         builder.Services.AddHttpClient(Update.GitHubReleaseFeed.HttpClientName + ".Download", http => http.Timeout = Timeout.InfiniteTimeSpan)
             .RemoveAllLoggers();
 
-        builder.Services.TryAddSingleton<Update.IReleaseFeed>(services => new Update.GitHubReleaseFeed(
-            services.GetRequiredService<IHttpClientFactory>().CreateClient(Update.GitHubReleaseFeed.HttpClientName),
-            new Uri(services.GetRequiredService<IOptions<Update.UpdateOptions>>().Value.Source)));
+        builder.Services.TryAddSingleton<Update.IReleaseFeed>(services =>
+        {
+            var http = services.GetRequiredService<IHttpClientFactory>().CreateClient(Update.GitHubReleaseFeed.HttpClientName);
+            var options = services.GetRequiredService<IOptions<Update.UpdateOptions>>().Value;
+
+            // Phase 151: the hub's supplied releases, through the relay of whichever hub this node is connected to.
+            // The sealed handler on the client adds the secret and the certificate's proof, as for a model.
+            if (options.FromCoordinator)
+            {
+                var egress = services.GetService<SealedEgress>();
+                return new Update.GitHubReleaseFeed(http, () =>
+                {
+                    var relay = egress?.RelayBase(InferHub.Shared.Contracts.NodeRelay.Releases)
+                        ?? throw new Update.UpdateException("Update:Source=coordinator needs a sealed node with a coordinator to ask");
+                    return new Uri(relay.AbsoluteUri.TrimEnd('/'));
+                });
+            }
+
+            return new Update.GitHubReleaseFeed(http, new Uri(options.Source));
+        });
         builder.Services.AddSingleton(services => new Update.UpdateDownloader(
             services.GetRequiredService<IHttpClientFactory>().CreateClient(Update.GitHubReleaseFeed.HttpClientName + ".Download")));
 

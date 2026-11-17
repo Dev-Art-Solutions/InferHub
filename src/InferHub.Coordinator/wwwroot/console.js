@@ -884,6 +884,10 @@
     const include = supplyValue("sp-hf-include").split(",").map(p => p.trim()).filter(Boolean);
     supplyStart("", { huggingFace: supplyValue("sp-hf"), revision: supplyValue("sp-hf-rev") || null, include });
   });
+  // Phase 151: a node release, which sealed nodes with Update:Source=coordinator update from.
+  document.getElementById("sp-release-go")?.addEventListener("click", () => {
+    if (supplyValue("sp-release")) supplyStart("", { release: supplyValue("sp-release") });
+  });
   document.getElementById("sp-import-go")?.addEventListener("click", () =>
     supplyStart("/import", { path: supplyValue("sp-import"), name: supplyValue("sp-import-name") || null }));
   document.getElementById("sp-models")?.addEventListener("click", (e) => {
