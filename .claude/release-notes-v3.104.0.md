@@ -66,3 +66,24 @@ download, not a hostile release. Zero new packages.
 - **The setup run with the new line.** The script was compiled, not run.
 - **A hub behind a reverse proxy that rewrites the host.** The download URLs in the list come from the address of the
   node's request.
+
+## Checked on the published images
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.104.0` and `inferhub-node:3.104.0` (revision `3fe760a`), plus
+`inferhub-node:3.103.0`, on one Docker network, with the hub's supply on and `Only` set:
+
+- **The published hub supplied this release from the real GitHub list.** `{"release": "latest"}` → `v3.104.0`, the
+  setup the release workflow had attached minutes before (35 627 692 bytes). The setup served through the relay hashed
+  to `0bde610f…`, the value in the release's own `.sha256`.
+- **A 3.103.0 sealed node, unchanged**, with `Update:Source=http://hub:8080/node/relay/releases`: after a check from the
+  hub it reported `available: 3.104.0`, with the release page from the supply record.
+- **A 3.104.0 sealed node** with `Update:Source=coordinator`: `up-to-date`, from the same list.
+- The site checklist read `updates-supplied` ok and `nodes-sealed` ok. Both containers reported `canApply: false`,
+  because a container is updated by `docker pull`.
+
+**Not established there:** the same as above. No update was applied, because that needs a Windows service installed by
+the setup.
+
+## Published
+
+Blog: https://blog.devart.solutions/blog/inferhub-3-104-a-sealed-node-updates-through-its-coordinator (ID 6afc3678faff475a7f9bfe33). Docs: https://inferhub.devart.solutions/#idocs_sealed_updates (site commit bd23aaa). Social copy in `.claude/social-v3.104.0.md`, not posted.
