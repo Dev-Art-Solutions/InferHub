@@ -118,6 +118,21 @@ public sealed class FleetTests : IDisposable
     [Fact]
     public void TheReportGroupsByALabelAndSaysWhatNeedsAHand()
     {
+        // CI runs invariant and this box runs bg-BG; P0 printed "40 %" on one and "40%" on the other. Pin a third culture.
+        var culture = System.Globalization.CultureInfo.CurrentCulture;
+        System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("fr-FR");
+        try
+        {
+            ReportByLabel();
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = culture;
+        }
+    }
+
+    private void ReportByLabel()
+    {
         var (services, registry, metrics) = Services();
         Connect(registry, "a", maxConcurrency: 2, labels: Labels(("site", "sofia")));
         Connect(registry, "b", maxConcurrency: 2, labels: Labels(("site", "sofia")));

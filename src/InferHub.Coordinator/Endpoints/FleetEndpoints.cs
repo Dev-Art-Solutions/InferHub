@@ -359,7 +359,7 @@ public static class FleetEndpoints
 
         if (node.AgeSeconds > SilentSeconds)
         {
-            list.Add(new(FleetAttention.Warn, $"no heartbeat for {node.AgeSeconds:F0} s"));
+            list.Add(new(FleetAttention.Warn, FormattableString.Invariant($"no heartbeat for {node.AgeSeconds:F0} s")));
         }
 
         if (node.BackendHealth is BackendHealth.Unreachable or BackendHealth.Wedged)
@@ -374,7 +374,7 @@ public static class FleetEndpoints
 
         if (traffic.FailureRate is >= FailureRateWarn && traffic.Completed + traffic.Failed >= FailureRateMinimum)
         {
-            list.Add(new(FleetAttention.Warn, $"{traffic.FailureRate:P0} of {traffic.Completed + traffic.Failed} requests failed in the last {minutes} min"));
+            list.Add(new(FleetAttention.Warn, FormattableString.Invariant($"{Math.Round(traffic.FailureRate!.Value * 100):0}% of {traffic.Completed + traffic.Failed} requests failed in the last {minutes} min")));
         }
 
         if (assignment?.Conflicts is { Count: > 0 } conflicts)
