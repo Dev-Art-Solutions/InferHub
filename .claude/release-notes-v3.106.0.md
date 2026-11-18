@@ -67,6 +67,23 @@ pays that again. 3.106 keeps a long context the way a CPU keeps memory, in three
   | A and B after the node process restarted | 3.1 s / 2.2 s | disk |
   | A and B after only the engine restarted | 3.0 s / 2.1 s | disk |
 
+## The published image
+
+`ghcr.io/dev-art-solutions/inferhub-node:3.106.0` (revision label `c3d42df`, the tag). Its `/app` was copied out with
+`docker create` + `docker cp` and run natively, because the card and the CUDA llama-server are on the host. It ran as a solo
+node with ornith as its one engine and an empty data directory:
+
+| | time | served from |
+|---|---|---|
+| A, first question | 37.3 s | computed, then written |
+| A, follow-up | 1.3 s | slot |
+| B, first question | 21.4 s | computed, then written |
+| A, new question | 2.5 s | disk |
+| A and B after the engine restarted | 2.8 s / 2.2 s | disk |
+
+The two files were 438 MB and 282 MB. This exercises the image's code, not its OS layer: a Linux container with a GPU and
+llama-server was not run.
+
 ## The suite
 
 The whole solution on this machine: Shared 457, Coordinator 1090 (50 skipped), Node 797 (17 skipped), Mesh 559 (3 skipped), Desktop 36.
@@ -78,6 +95,6 @@ The whole solution on this machine: Shared 457, Coordinator 1090 (50 skipped), N
   tests cover the RAM path.
 - A coordinator routing a conversation back to the node that holds its files: conversation affinity does that, and it was not
   measured here.
-- A Linux node and the published image. The phase changes the node; the published-image check below says what was run.
+- A Linux node, and the image's own OS layer (see above).
 - Disk use under a long chat: each growth of `SaveEveryTokens` writes a new file (6.8 GB at 620k), and the budget evicts by use.
   A delta format does not exist in llama.cpp.
