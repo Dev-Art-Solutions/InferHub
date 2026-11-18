@@ -50,6 +50,15 @@ appears on the page.
   ran. The group cordon cordoned both nodes and reported `old-laptop` absent. After a hub restart the group came back from
   `groups.json` and the nodes rejoined it. Screenshot: `.claude/verification-v3.105.0-fleet.png`.
 
+## The published image
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.105.0` (revision label `fb9583a`, the tag) run as a container with a named
+volume on `/data`, an admin key and `Fleet__Groups__Persistence=file`; two nodes from source dialled it. `/fleet.html` 200, the
+admin routes 401 without the key. The group `office` (a label, one id and the absent `old-laptop`) was written to
+`/data/groups/groups.json` owned by `app`, so the image's directory is writable, which is the permissions trap (21 D7) this
+phase had to avoid. 16 generations, a group cordon of both nodes with `old-laptop` reported absent, then `docker restart`: the
+group came back from the volume and both nodes rejoined it.
+
 ## The suite
 
 On this machine, the whole solution: Shared 457, Coordinator 1090 (50 skipped), Mesh 559 (3 skipped), Desktop 36, Node 785
@@ -57,7 +66,11 @@ On this machine, the whole solution: Shared 457, Coordinator 1090 (50 skipped), 
 `ASignedOutNodeRefusesWithA401RatherThanA502`. They fail on their own too: the node resolves its ChatGPT directory to a path under
 the repository instead of the test's temp directory. This phase changed no node code, and CI was green on 3.104, so it is state on
 this box; CI on this tag is the check. `TextJobTests.WithNoQueueTimeA503IsTheJobsFailure` failed once under the full parallel run and
-passed 9 of 9 on its own.
+passed 9 of 9 on its own. CI on main (`663032b`) is green, ChatGPT tests included.
+
+The tag's own `build-and-test` was red: the failure-rate sentence used `P0`, which prints `40 %` under the invariant culture
+and `40%` here. `663032b` formats it invariantly and the test pins fr-FR. The published 3.105.0 image prints `40 %` in that
+sentence; nothing else differs.
 
 ## Not established
 
