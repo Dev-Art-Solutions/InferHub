@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>InferHub — fleet</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #161a22;
+      --panel-2: #1b2029;
+      --panel-border: #232936;
+      --text: #e4e7ee;
+      --muted: #8b94a7;
+      --accent: #4ea1ff;
+      --ok: #4ade80;
+      --warn: #facc15;
+      --err: #f87171;
+      --info: #a5b4fc;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { background: var(--bg); color: var(--text); margin: 0; padding: 24px 32px 48px; line-height: 1.4; }
+    main { max-width: 1400px; margin: 0 auto; }
+    h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: 0.4px; }
+    h1 a { color: var(--accent); text-decoration: none; font-size: 13px; margin-left: 12px; font-weight: 400; }
+    h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); margin: 28px 0 10px; display: flex; align-items: center; gap: 10px; }
+    h2 .spacer { flex: 1; }
+    .meta { color: var(--muted); font-size: 12px; }
+    .bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px; padding: 10px 12px; margin-top: 14px; }
+    .bar .spacer { flex: 1; }
+    input, select, textarea { background: #0b0d11; color: var(--text); border: 1px solid var(--panel-border); border-radius: 6px; padding: 6px 8px; font-size: 13px; font-family: inherit; }
+    textarea { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; width: 100%; min-height: 64px; }
+    button { background: transparent; color: var(--accent); border: 1px solid rgba(78, 161, 255, 0.35); border-radius: 6px; padding: 5px 11px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+    button:hover:not(:disabled) { background: rgba(78, 161, 255, 0.08); }
+    button:disabled { opacity: 0.45; cursor: default; }
+    button.primary { background: var(--accent); color: #0b0d11; border-color: var(--accent); }
+    button.danger { color: var(--err); border-color: rgba(248, 113, 113, 0.35); }
+    button.small { padding: 2px 8px; font-size: 12px; }
+    label { font-size: 12px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+    #error { color: var(--err); font-size: 13px; }
+
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-top: 14px; }
+    .tile { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px; padding: 12px 14px; }
+    .tile .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; }
+    .tile .value { font-size: 24px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+    .tile .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .tile.warn .value { color: var(--warn); }
+    .tile.err .value { color: var(--err); }
+
+    .chart-card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px; padding: 12px 14px; }
+    .chart-wrap { position: relative; }
+    #chart { width: 100%; height: 240px; display: block; }
+    #chart text { fill: var(--muted); font-size: 11px; }
+    .readout { position: absolute; top: 4px; pointer-events: none; background: #0b0d11ee; border: 1px solid var(--panel-border); border-radius: 6px; padding: 6px 8px; font-size: 12px; display: none; min-width: 150px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; font-size: 12px; }
+    .legend span { cursor: pointer; display: inline-flex; align-items: center; gap: 6px; user-select: none; }
+    .legend span.off { opacity: 0.35; }
+    .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+    .seg { display: inline-flex; border: 1px solid var(--panel-border); border-radius: 6px; overflow: hidden; }
+    .seg button { border: 0; border-radius: 0; color: var(--muted); }
+    .seg button.on { background: rgba(78, 161, 255, 0.15); color: var(--accent); }
+
+    .groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+    .group { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+    .group.selected { border-color: var(--accent); }
+    .group .head { display: flex; align-items: center; gap: 8px; }
+    .group .name { font-weight: 600; font-size: 14px; cursor: pointer; }
+    .group .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; font-size: 12px; }
+    .group .stats b { display: block; font-size: 15px; font-variant-numeric: tabular-nums; }
+    .group .stats span { color: var(--muted); }
+    .group .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .meter { height: 6px; background: #0b0d11; border-radius: 3px; overflow: hidden; }
+    .meter > div { height: 100%; background: var(--accent); }
+    .meter.hot > div { background: var(--warn); }
+    .meter.full > div { background: var(--err); }
+    svg.spark { width: 100%; height: 34px; display: block; }
+
+    table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px; overflow: hidden; }
+    th, td { padding: 8px 10px; text-align: left; font-size: 13px; border-bottom: 1px solid var(--panel-border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 500; text-transform: uppercase; font-size: 11px; letter-spacing: 0.6px; cursor: pointer; user-select: none; white-space: nowrap; }
+    th.nosort { cursor: default; }
+    tr:last-child td { border-bottom: 0; }
+    td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .table-wrap { overflow-x: auto; }
+    .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; white-space: nowrap; margin: 1px 2px 1px 0; }
+    .ok { background: rgba(74, 222, 128, 0.12); color: var(--ok); }
+    .warn { background: rgba(250, 204, 21, 0.12); color: var(--warn); }
+    .err { background: rgba(248, 113, 113, 0.12); color: var(--err); }
+    .neutral { background: rgba(139, 148, 167, 0.14); color: var(--muted); }
+    .accent { background: rgba(78, 161, 255, 0.14); color: var(--accent); }
+    .att { font-size: 12px; margin: 1px 0; }
+    .att.warn { background: none; color: var(--warn); }
+    .att.info { background: none; color: var(--muted); }
+    code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; color: var(--muted); }
+
+    .editor { background: var(--panel-2); border: 1px solid var(--accent); border-radius: 8px; padding: 14px; margin-top: 10px; display: none; }
+    .editor.open { display: block; }
+    .editor .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .editor .members { max-height: 220px; overflow: auto; border: 1px solid var(--panel-border); border-radius: 6px; padding: 6px 8px; background: #0b0d11; }
+    .editor .members label { display: flex; color: var(--text); padding: 2px 0; }
+    .empty { color: var(--muted); font-size: 13px; padding: 14px; }
+    .toast { position: fixed; right: 20px; bottom: 20px; background: var(--panel-2); border: 1px solid var(--panel-border); border-radius: 8px; padding: 10px 14px; font-size: 13px; max-width: 420px; display: none; }
+    .toast.show { display: block; }
+    .toast.bad { border-color: var(--err); color: var(--err); }
+
+    @media (max-width: 760px) {
+      body { padding: 16px; }
+      .editor .grid { grid-template-columns: 1fr; }
+      .group .stats { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>InferHub fleet <a href="console.html">console</a><a href="status.html">status</a><a href="site.html">site</a></h1>
+  <div class="meta">Nodes grouped, their traffic over the last hour, and what needs a hand. Groups are kept on this coordinator and change no routing.
+    The admin key stays in this tab's memory only.</div>
+
+  <div class="bar">
+    <input id="key" type="password" placeholder="admin key (empty on an unguarded loopback hub)" size="34" autocomplete="off">
+    <button id="connect" class="primary">Connect</button>
+    <label>Group by <select id="group-by"></select></label>
+    <label>Window
+      <span class="seg" id="window">
+        <button data-min="5">5 min</button><button data-min="15" class="on">15 min</button><button data-min="60">1 h</button>
+      </span>
+    </label>
+    <label><input id="auto" type="checkbox" checked> refresh every 5 s</label>
+    <span class="spacer"></span>
+    <span class="meta" id="refreshed">not connected</span>
+    <span id="error"></span>
+  </div>
+
+  <div class="tiles" id="tiles"></div>
+
+  <h2>Traffic <span class="meta" id="chart-note"></span><span class="spacer"></span>
+    <span class="seg" id="metric">
+      <button data-metric="rate" class="on">requests / min</button><button data-metric="failed">failed / min</button><button data-metric="inflight">in flight</button>
+    </span>
+  </h2>
+  <div class="chart-card">
+    <div class="chart-wrap">
+      <svg id="chart" viewBox="0 0 1000 240" preserveAspectRatio="none" role="img" aria-label="Traffic over time"></svg>
+      <div class="readout" id="readout"></div>
+    </div>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <h2><span id="groups-title">Groups</span> <span class="meta" id="groups-note"></span><span class="spacer"></span>
+    <button id="new-group">New group</button></h2>
+  <div class="editor" id="editor">
+    <div class="grid">
+      <div>
+        <label style="display:block">Name</label>
+        <input id="ed-name" placeholder="rack-a" style="width:100%">
+        <label style="display:block;margin-top:10px">Description</label>
+        <input id="ed-desc" placeholder="the three GPUs in the server room" style="width:100%">
+        <label style="display:block;margin-top:10px">Labels — every pair must match (one <code>key=value</code> per line)</label>
+        <textarea id="ed-labels" placeholder="site=sofia"></textarea>
+        <label style="display:block;margin-top:10px">Other node ids (not connected now), one per line</label>
+        <textarea id="ed-extra"></textarea>
+      </div>
+      <div>
+        <label style="display:block">Members by node id</label>
+        <div class="members" id="ed-members"></div>
+        <div class="meta" style="margin-top:8px">A node is in the group when its id is ticked here <b>or</b> its labels match. The group is how this page sums traffic and what a group cordon acts on; it changes nothing about where requests go.</div>
+      </div>
+    </div>
+    <div class="bar" style="background:none;border:0;padding:10px 0 0">
+      <button id="ed-save" class="primary">Save group</button>
+      <button id="ed-cancel">Cancel</button>
+      <span class="spacer"></span>
+      <span class="meta" id="ed-error" style="color:var(--err)"></span>
+    </div>
+  </div>
+  <div class="groups" id="groups"></div>
+
+  <h2>Nodes <span class="meta" id="nodes-note"></span><span class="spacer"></span>
+    <input id="filter" placeholder="filter: name, id, label, group, version" size="30">
+    <label><input id="only-attention" type="checkbox"> needs attention</label>
+    <button id="group-selected" disabled>Group selected…</button>
+  </h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th class="nosort"><input type="checkbox" id="select-all"></th>
+        <th data-sort="name">Node</th>
+        <th data-sort="state">State</th>
+        <th data-sort="groups">Groups · labels</th>
+        <th data-sort="inFlight">In flight</th>
+        <th data-sort="rate">Req / min</th>
+        <th data-sort="failure">Failed</th>
+        <th data-sort="total">Since start</th>
+        <th data-sort="version">Version</th>
+        <th class="nosort">Attention</th>
+        <th class="nosort"></th>
+      </tr></thead>
+      <tbody id="nodes"></tbody>
+    </table>
+  </div>
+</main>
+<div class="toast" id="toast"></div>
+<script src="fleet.js"></script>
+</body>
+</html>

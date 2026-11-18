@@ -113,6 +113,12 @@ else
 builder.Services.AddSingleton<IProfileRegistry, ProfileRegistry>();
 builder.Services.AddSingleton<NodeProfileCoordinator>();
 
+// Phase 152. Node groups the admin keeps, and the last hour of traffic the fleet page draws.
+builder.Services.AddSingleton<NodeGroupRegistry>();
+builder.Services.TryAddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<TrafficHistory>();
+builder.Services.AddHostedService(services => services.GetRequiredService<TrafficHistory>());
+
 // Phase 44. Who is the authority for a collection name (D1), what each node says about the corpus it
 // hosts (D6), and how work for a node-owned collection reaches its owner (D5). All three are
 // registered unconditionally and are inert for a fleet that assigns no corpus: ownership is empty, so
@@ -484,6 +490,7 @@ app.MapRelaySupply();
 app.MapAuditEndpoints();
 app.MapNodeIdentity();
 app.MapSiteEndpoints(); // phase 129
+app.MapFleetEndpoints(); // phase 152
 app.MapHub<NodeHub>("/hubs/node");
 
 app.Run();

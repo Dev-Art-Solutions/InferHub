@@ -5045,6 +5045,8 @@ secrets). Defaults are listed below — sensible for a single-host deployment.
 | `Affinity:DataDirectory` | `./data/affinity` | Where the `file` store writes (append-log + periodic snapshot). Container image overrides to `/data/affinity`. |
 | `Affinity:SnapshotEveryOps` | `256` | Ops appended before the log is compacted to a snapshot. |
 | `Fleet:Profiles:Persistence` | `none` | Node-profile persistence (v3.11): `none` (profiles live as long as this coordinator), `file`, or `postgres` (what an HA pair wants — both hubs read one fleet configuration). A lost profile reverts every node to its own config. See [Configure the fleet](#configure-the-fleet-not-the-boxes-v311). |
+| `Fleet:Groups:Persistence` | `none` | **v3.105+** — node groups: `none` (they live as long as this coordinator) or `file` (one `groups.json` under `Fleet:Groups:DataDirectory`, `/data/groups` in the image). See [The fleet page](#the-fleet-page-groups-traffic-and-what-needs-a-hand-v3105). |
+| `Fleet:Traffic:SampleSeconds` / `Minutes` | `10` / `60` | **v3.105+** — how often the fleet page's traffic history samples the hub's counters, and how long it keeps them (in memory). |
 | `Fleet:Profiles:DataDirectory` | `./data/profiles` | Where the `file` store writes. Container image overrides to `/data/profiles`. |
 | `Fleet:Profiles:Postgres:ConnectionString` | — | Required when `Persistence=postgres`. Set via env or user-secrets, never `appsettings.json`. Its own connection string, deliberately not coupled to the vector store's. |
 | `Auth:ApiKeys` | `[]` | Accepted client Bearer tokens (constant-time compared). Anonymous, unlimited. |
@@ -6051,6 +6053,31 @@ curl -X POST http://your-coordinator:5080/api/admin/nodes/<nodeId>/cordon \
 tab, keeps it in a JS variable for the session only — **never** in `localStorage` or
 `sessionStorage` — and sends it as `Authorization: Bearer …` on admin calls. A 401
 re-prompts; read-only stats keep rendering either way.
+
+### The fleet page: groups, traffic and what needs a hand (v3.105+)
+
+`/fleet.html` (linked from the console) is one page for the whole fleet:
+
+- **Groups.** Name a set of nodes — by node id, by labels (`site=sofia`; every pair must match), or both — and the page sums
+  them: how many take work, requests per minute, the failure rate, in flight against the declared caps. A group can be
+  **cordoned or uncordoned as one**; each node still gets its own audit entry. A node may be in several groups. **A group
+  changes no routing** — where requests go is still the router's, the labels' and the profiles' business.
+- **Group by anything the nodes already say**: a label key, organisation, version, or the whole fleet.
+- **Traffic over the last hour.** The coordinator samples its own per-node counters every 10 s and keeps an hour in memory,
+  so the page draws requests/min, failed/min and in-flight per group without a Prometheus beside it. Time before the hub was
+  sampling is drawn as a gap, not as zero.
+- **Needs attention.** A sentence per node: no heartbeat, backend down, throttled, ≥ 20 % failed, conflicting profiles, a sealed
+  node whose machine reaches the internet — and a group member named by id that is not connected.
+
+```http
+PUT  /api/admin/groups/office        {"description":"the office", "labels":{"site":"sofia"}, "nodes":["old-laptop"]}
+POST /api/admin/groups/office/cordon → {"group":"office","nodes":["…","…"],"absent":["old-laptop"]}
+GET  /api/admin/fleet?groupBy=label:site&minutes=15
+GET  /api/admin/traffic?groupBy=group&minutes=60
+```
+
+Groups live as long as the coordinator unless `Fleet:Groups:Persistence=file` (one `groups.json`; the image keeps it under
+`/data/groups`). The traffic history is in memory only, like every other counter.
 
 ## Resilience & failover
 

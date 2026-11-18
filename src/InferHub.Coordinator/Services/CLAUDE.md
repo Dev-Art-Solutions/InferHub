@@ -285,3 +285,54 @@ console's Jobs panel reads `/api/admin/jobs`).
 Tests: `TextJobTests` (Coordinator — the real `InferenceCore` and queue: the 503 wait, pieces to answer, the node's error piece,
 node lost, whose report counts, the cap, retention, the privacy of `Describe`), `TextJobMeshTests` (Mesh — HTTP to a real node:
 `preparing` exists only because the node said so, the events stream, a cancel reaching the backend, a node leaving).
+
+### Phase 152 (the fleet page: nodes grouped, the last hour of traffic, and what needs a hand)
+
+`NodeGroups.cs` (`Fleet:Groups`, `NodeGroup`, `NodeGroupRegistry`), `TrafficHistory.cs` (`Fleet:Traffic`, the sampler),
+`Endpoints/FleetEndpoints.cs` (`/api/admin/fleet`, `/api/admin/traffic`, `/api/admin/groups[/{name}[/cordon|/uncordon]]`) and
+`wwwroot/fleet.html` + `fleet.js`. User-requested: work on the coordinator's UI for managing the nodes, grouping them, following
+the traffic and monitoring.
+
+**D1, load-bearing — a group changes no routing.** It is a name over node ids and/or an exact match on every label pair given
+(a node is a member when either holds — the profile selector's no-pattern rule, 43 D2, and an empty group matches nothing). The
+page sums traffic by it and a group cordon acts on it; the router, the queues and admission never read it. **Considered and
+rejected: groups as placement** ("serve this model only from rack-a") — that is a policy with refusals, failover and a 503
+wording of its own, and the label-and-profile machinery (43) already narrows what a node does; a second, looser mechanism over
+the same nodes would disagree with it. **Rejected: profiles as groups** — two profiles matching one node is a conflict that
+applies neither (43 D4), and a node in two groups is the normal case.
+
+**D2 — rule 4's tenth exception, when `Fleet:Groups:Persistence=file`.** One `groups.json`, written whole to a `.tmp` and moved
+over; a file that does not parse stops the hub rather than starting empty and overwriting it on the next save. `none` (default)
+holds them as long as the hub. Membership is never stored: it is computed on each read from what the nodes report, so a node
+back under a new connection, or with new labels, is in the right groups with nothing to heal. Losing the file costs regrouping,
+never a wrong answer. The image sets `Fleet__Groups__DataDirectory=/data/groups`. No `postgres`: in a cluster (32/132) each hub
+keeps its own book — named, not solved.
+
+**D3 — the traffic history is the hub's own counters, sampled; it measures nothing new.** `TrafficHistory` reads
+`Metrics`' per-node completed/failed (the numbers `/metrics` exposes, 28 D2) and the registry's in-flight every
+`Fleet:Traffic:SampleSeconds` (10) and keeps `Minutes` (60) of differences in memory. **The first sample is a baseline only** —
+a difference against nothing would put every request since boot into the first ten seconds. A node that left with nothing
+done leaves no point (28 D5), but the history remembers its labels so its past still sums into its group. `/api/admin/traffic`
+buckets to about sixty points; in-flight is a gauge, so a bucket shows its busiest sample, not a sum; **a bucket no sample fell
+in is `covered: false` and the page draws a gap**, never a quiet zero. **Rejected: reading Prometheus** — the page must work on a
+hub with nothing beside it; **rejected: per-request timings** — no field on the dispatch path carries a duration today, and
+adding one is a dispatcher change for a chart (named as not done).
+
+**D4 — "needs attention" is a sentence per node, and two levels.** `warn` (no heartbeat for 20 s, backend unreachable/wedged,
+throttled, ≥ 20% of ≥ 5 requests failed in the window, conflicting profiles, sealed with egress open) is what the tile counts,
+together with a defined group's members named by id that are not connected (`absent`); `info` (cordoned, paused by its owner, at
+its cap, no model, an update available) is shown and not counted — a strip that cries about every cordon is a strip people learn
+to ignore (45 D1). A group's capacity is a number only when every member declared one (126 D3's reasoning).
+
+**D5 — a group cordon is the per-node cordon, once per connected member.** Each node gets its own `IAuditLog` entry, by
+`"<actor> (group <name>)"`, so its row in the console says why; members not connected are listed as `absent` and untouched.
+Bulk update and bulk model actions are not offered: those can fail per node, and a page that half-applied them would need the
+per-node results the console's panels already show.
+
+**Not done, named:** no `/metrics` series for groups (a label set an admin edits is a cardinality nobody bounded); no latency or
+tokens per node in the history; the history is lost on restart; the console's SSE stream does not carry the page (it polls every
+5 s, only while open).
+
+Tests: `FleetTests` (Coordinator — membership, the file surviving a restart, the validator, the baseline sample, the window, the
+report by label with attention, absent members, buckets and coverage, the HTTP cordon with its audit line, and that every field
+`fleet.js` reads is on the payload).

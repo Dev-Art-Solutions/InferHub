@@ -66,6 +66,7 @@ ENV Affinity__DataDirectory=/data/affinity
 # instance of the same trap, and the reason the default stays relative in ProfileOptions. Inert
 # unless persistence is on.
 ENV Fleet__Profiles__DataDirectory=/data/profiles
+ENV Fleet__Groups__DataDirectory=/data/groups
 
 # Durable image jobs (phase 56) write under /data when Images:Jobs:Persistence=file — the SEVENTH
 # instance of the same trap. Inert unless persistence is on, and unlike its six predecessors this

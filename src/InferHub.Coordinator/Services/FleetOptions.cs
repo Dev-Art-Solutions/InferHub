@@ -11,6 +11,12 @@ public sealed class FleetOptions
     public const string SectionName = "Fleet";
 
     public ProfileOptions Profiles { get; set; } = new();
+
+    /// <summary>Phase 152: node groups the admin keeps on the hub.</summary>
+    public NodeGroupOptions Groups { get; set; } = new();
+
+    /// <summary>Phase 152: the in-memory traffic history the fleet page draws.</summary>
+    public TrafficHistoryOptions Traffic { get; set; } = new();
 }
 
 /// <summary>
@@ -81,6 +87,18 @@ public sealed class FleetOptionsValidator : IValidateOptions<FleetOptions>
 
     public ValidateOptionsResult Validate(string? name, FleetOptions options)
     {
+        if (!options.Groups.IsValid)
+        {
+            // The same reasoning as the profiles' check below: falling back to `none` drops every group on restart.
+            return ValidateOptionsResult.Fail(
+                $"Fleet:Groups:Persistence '{options.Groups.Persistence}' is not recognised; use 'none' or 'file'.");
+        }
+
+        if (options.Traffic.SampleSeconds is < 1 or > 300 || options.Traffic.Minutes is < 1 or > 1440)
+        {
+            return ValidateOptionsResult.Fail("Fleet:Traffic:SampleSeconds must be 1-300 and Fleet:Traffic:Minutes 1-1440.");
+        }
+
         var raw = (options.Profiles.Persistence ?? string.Empty).Trim();
 
         if (raw.Length > 0
