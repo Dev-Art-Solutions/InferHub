@@ -1326,6 +1326,57 @@ loses every job. `Jobs:Enabled=false` turns the routes off.
 Not there yet: a solo node has no `/api/jobs`; `/v1` has no job routes; a retrieval header on a
 submit is refused rather than applied; in a cluster a job lives on the hub that accepted it.
 
+### A long context kept on the card, in RAM and on disk (v3.106+)
+
+A model with a big context can hold a whole book, a codebase or months of notes. The cost is time: the first time a model reads
+600k tokens it takes half an hour, and if another conversation takes the slot, the next question about the book pays that
+again. `Serve:Context` keeps a long context the way a CPU keeps memory, in three tiers:
+
+| tier | where | what it costs to come back |
+|---|---|---|
+| slot | the engine's KV (on the card, or in RAM with `--no-kv-offload`) | nothing — it is already there |
+| RAM | llama.cpp's own prompt cache (`--cache-ram`) | a copy |
+| disk | slot files the node writes, restores and deletes | a read |
+
+```json
+"Backend": { "Engines": { "ornith": {
+  "Type": "llamacpp",
+  "Serve": {
+    "Executable": "C:/llama/llama-server.exe",
+    "Model": "D:/models/ornith-35b-q4_k_m.gguf",
+    "Arguments": ["-c", "655360", "-ngl", "99", "--n-cpu-moe", "20", "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0",
+                  "--rope-scaling", "yarn", "--rope-scale", "4", "--yarn-orig-ctx", "262144"],
+    "Context": { "Enabled": true, "DiskMaxGiB": 64, "RamMiB": 16384 }
+  } } } }
+```
+
+- **What goes to disk is a clean prefix.** Before a turn that grew enough, the node takes the part of the conversation every
+  later turn starts with (everything before the last question), has the engine compute exactly that, and writes it. The next
+  question only adds to it. A file holding the last answer would be useless to a model that keeps state in recurrent layers,
+  as ornith does: it would compute everything again.
+- **What stays is decided by use.** When `DiskMaxGiB` is full, the file restored least often and least recently goes first.
+  `POST /api/control/context/{engine}/{id}/pin` keeps one forever, for a book you want as memory. `DELETE` removes one.
+- **Visible:** `GET /api/control/context` on the node, and the coordinator's Engines panel. Each shows how many requests came
+  from the slot, RAM and disk and how many were computed, plus the files and their sizes. Counts and sizes only, never text.
+
+Measured with ornith (35B MoE, Q4_K_M) on a 24 GB card, through the node:
+
+| | time |
+|---|---|
+| a 34k-token document, first question | 37.6 s |
+| the same conversation, next question (slot) | 1.6 s |
+| the document again after another one (disk) | 2.5 s |
+| after restarting the node or the engine (disk) | 2.1–3.1 s |
+| 620k tokens (two novels), computed / restored from disk | 34 min / 5.5 s (6.8 GB file) |
+
+The active context itself is never on disk: every new token reads all of it, so a tier on disk would be a disk read per token.
+To make a bigger active context fit, use `-ctk/-ctv q8_0` (half the KV), `--n-cpu-moe N` (a MoE's experts in RAM, more card for
+context) or `--no-kv-offload` (all of the KV in RAM, slower). One model behind `Serve:Model`, chat, text only. Ollama has no
+slot files; there, `OLLAMA_KV_CACHE_TYPE=q8_0` and `num_ctx` are what you have.
+
+A context this long is good for finding and quoting: three facts hidden at 10 %, 50 % and 90 % of the 620k tokens came back
+exactly. It is not a substitute for reading, though: asked about the plot of the epilogue, the model answered wrong.
+
 ### A sealed node (v3.82+)
 
 One setting for a node that must not reach the internet: `Node:Sealed=true`. It talks to its

@@ -266,14 +266,21 @@ public sealed class LlamaCppBackend : IInferenceBackend, IModelKinds, IBackendTo
     public Task<string> GenerateAsync(string requestJson, CancellationToken cancellationToken)
         => inner.GenerateAsync(requestJson, cancellationToken);
 
+    /// <summary>Phase 153: this engine's context tiers, when <c>Serve:Context</c> is on. Chat only passes through them.</summary>
+    public ContextTiers? Tiers { get; init; }
+
     public Task<string> ChatAsync(string requestJson, CancellationToken cancellationToken)
-        => inner.ChatAsync(requestJson, cancellationToken);
+        => Tiers is { } tiers
+            ? tiers.RunAsync(requestJson, () => inner.ChatAsync(requestJson, cancellationToken), cancellationToken)
+            : inner.ChatAsync(requestJson, cancellationToken);
 
     public Task<string> EmbedAsync(string requestJson, CancellationToken cancellationToken)
         => inner.EmbedAsync(requestJson, cancellationToken);
 
     public IAsyncEnumerable<string> StreamAsync(string kind, string requestJson, CancellationToken cancellationToken)
-        => inner.StreamAsync(kind, requestJson, cancellationToken);
+        => Tiers is { } tiers && string.Equals(kind, "chat", StringComparison.OrdinalIgnoreCase)
+            ? tiers.StreamAsync(requestJson, () => inner.StreamAsync(kind, requestJson, cancellationToken), cancellationToken)
+            : inner.StreamAsync(kind, requestJson, cancellationToken);
 
     /// <summary>A router manages its models; one <c>llama-server -m</c> has its model fixed at launch.</summary>
     public bool SupportsModelManagement => router;

@@ -188,6 +188,9 @@ public sealed partial class BackendOptionsValidator(IConfiguration configuration
                             + "that process's output. No prompt reaches a log on this node (design rule 7).");
                     }
 
+                    // Phase 153: context tiers keep one model's one slot.
+                    failures.AddRange(engine.Serve.Context.Problems(key, engine.Serve));
+
                     break;
             }
         }

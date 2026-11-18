@@ -40,6 +40,11 @@ public sealed class EngineProcess(
     /// <summary>The precondition failed: there is nothing to relaunch until somebody fixes the box.</summary>
     public bool Failed { get; private set; }
 
+    /// <summary>Phase 153: how many times the process was started; a new one holds no slot and no RAM cache.</summary>
+    public int Launches => launches;
+
+    private int launches;
+
     public bool IsRunning
     {
         get
@@ -189,6 +194,7 @@ public sealed class EngineProcess(
             ?? throw new InvalidOperationException("Process.Start returned no process.");
 
         child = process;
+        Interlocked.Increment(ref launches);
 
         try
         {

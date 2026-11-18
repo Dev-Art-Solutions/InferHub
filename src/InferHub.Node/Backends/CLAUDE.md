@@ -799,3 +799,54 @@ change (the snapshot shows what the node connected with until it reconnects — 
 
 > **Phases 133–140 and 142 (one model split across nodes: the group estimate, the shard worker, the tunnel, groups, community, the relay,
 > verification, and the track that follows) live in `src/InferHub.Node/Backends/Shards/CLAUDE.md`** since phase 142 — this file was at 1082 of 1100.
+
+### Phase 153 (a long context kept on three tiers: the slot, llama.cpp's RAM cache, slot files on disk)
+
+Files: `Backends/Context/` (`ContextTierOptions` — `Serve:Context`; `ContextTierIndex` + `ContextPrefix` — the disk book;
+`ContextTiers` — the manager), `LlamaCppServe.StartInfo` (the three flags), `LlamaCppBackend.Tiers` (chat and chat streams
+pass through it), `EngineProcess.Launches`, `MultiBackend.State` (`NodeEngineInfo.context`), `/api/control/context`; contract
+`ContextTierState` in Shared. User-requested (Bulgarian): a local model with a big context as working memory on a card with
+little memory — fast, slower and slowest memory, chosen by use, like a CPU's caches. Measured groundwork, ornith (`qwen35moe`
+35B, the Ollama blob) on the CUDA b11417 build: 34k tokens cold 36 s, slot 0.06 s, RAM 0.06 s, disk 0.35 s; 620k tokens (YaRN ×4,
+`--n-cpu-moe 20`, q8_0 KV, 21.2 GB VRAM) prefill 34 min, save 10.4 s / 6.8 GB, restore 5.5 s, three needles at 10/50/90 % exact,
+a whole-book plot question wrong.
+
+**D1 — the slot and the RAM cache are llama.cpp's; the node adds only the disk, and its decisions.** `Serve:Context:Enabled`
+launches `-np 1 --slot-save-path <dir> --cache-ram <RamMiB>` (flags the node owns, so they are refused in `Serve:Arguments`);
+one model behind `Serve:Model` only — a router spreads a model's slots over children the node cannot address. Context size, KV
+type, YaRN and where experts sit stay the operator's `Serve:Arguments`. Off: byte-identical. *Rejected:* the node holding KV
+itself (a native library in the node's process — rule 5, 96 D1); *rejected:* tiering the active window to disk — every token
+reads the whole KV, so a page on disk is a disk read per token.
+
+**D2, load-bearing — a file holds a clean prefix, never a slot as a request left it.** Found by measuring: a slot after an
+answer holds the answer's tokens, the next turn re-renders them differently (a thinking model's reasoning is stripped), and
+on a hybrid model (three of four ornith layers are recurrent) that cannot be rolled back — the 0.35 s restore was followed by
+35 s of prompt. So before a turn that grew by `SaveEveryTokens` past `MinPrefixTokens`, the node renders the chat twice through
+the engine's own `/apply-template` (as sent, and with the last user message replaced), tokenizes both with `/tokenize`, takes
+the tokens they share, prefills exactly those (`/completion`, token array, `n_predict: 0`), saves (`/slots/0?action=save`), and
+then sends the turn, which only extends it. Measured after: 34k-token restore + question 0.45 s. The prefix is found later by
+its characters (`/detokenize`, checked to round-trip) and two SHA-256 hashes — the index holds no text.
+
+**D3 — what stays on disk is decided by use.** Score = (restores + 1) / (1 + hours since last use); the lowest unpinned file
+goes first when `DiskMaxGiB` is full, a shorter file of the same conversation never read back is replaced by the longer one,
+and `POST /api/control/context/{engine}/{id}/pin` keeps a file forever (a book you want as memory). The real file size
+decides (the per-token guess only skips a prefill once a real file has taught it): a file that does not fit beside the pinned
+ones is deleted and the reason is `lastError`. Files are the truth: `index.json` beside them, an entry without its file is
+dropped and a `ctx-*.bin` no entry names is deleted on load.
+
+**D4 — L1 and L2 are the node's reckoning, and a new engine process resets it.** The node remembers what the slot holds and,
+by size, what llama.cpp's LRU RAM cache holds; a prompt that starts with either is left to the engine, otherwise the longest
+file is restored. **Found live:** after an engine restart the node still believed its slot and RAM, so the second document
+was "in RAM" and computed again (23 s). `EngineProcess.Launches` now resets both. A RAM entry is matched only as a whole
+prefix: a new question on a document whose earlier thread is in RAM goes to the disk file (2.5 s live) rather than to a
+partial match a hybrid model may have to recompute.
+
+**D5 — chat only, text only, one at a time.** A chat with pictures is sent untouched (the projector is outside the template);
+`generate` and the native routes are not tiered. Requests to a tiered engine run one at a time (`-np 1` already queues them,
+and a restore must not land inside a request). Rule 7: the state reports counts, sizes, token numbers and times; the files are
+the engine's own KV — the conversation itself, on the owner's disk, in the directory the owner named — and deleting one is
+`DELETE /api/control/context/{engine}/{id}`. Ollama has no slot files: only `OLLAMA_KV_CACHE_TYPE` and `num_ctx` (not tiers).
+
+Tests: `ContextTierTests` (Node — a llama-server stand-in over a socket: the clean prefix before the answer, the slot, RAM,
+disk after a restart, a restarted engine, a full disk with a pinned file, a picture untouched, the index sweep, the launch flags,
+the refusals). Live on the 3090 Ti: `.claude/release-notes-v3.106.0.md`.

@@ -43,7 +43,9 @@ public sealed record NodeEngineInfo(
     /// <summary>What it answered with on its last listing. Empty for a stopped engine.</summary>
     [property: JsonPropertyName("models")] IReadOnlyList<string> Models,
     [property: JsonPropertyName("inFlight")] int InFlight,
-    [property: JsonPropertyName("lastError")] string? LastError = null)
+    [property: JsonPropertyName("lastError")] string? LastError = null,
+    /// <summary>Phase 153: the engine's context tiers. Null — and left out — for every engine without <c>Serve:Context</c>.</summary>
+    [property: JsonPropertyName("context"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ContextTierState? Context = null)
 {
     /// <summary>Running and answering.</summary>
     public const string Running = "running";

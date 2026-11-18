@@ -118,6 +118,9 @@ public sealed class EngineServeOptions
     /// </summary>
     public List<string> Arguments { get; set; } = [];
 
+    /// <summary>Phase 153: a long context kept on the slot, in RAM and on disk. Off unless <c>Enabled</c>.</summary>
+    public ContextTierOptions Context { get; set; } = new();
+
     /// <summary>The node launches a <c>llama-server</c> — one model or a router.</summary>
     public bool IsEnabled => IsSingle || IsRouter;
 

@@ -465,7 +465,8 @@ public sealed class MultiBackend : IInferenceBackend, IClosedSetScorer, IModelKi
             e.Backend.Kinds,
             e.Running ? e.LastModels.Select(m => m.Name).ToArray() : [],
             e.InFlight,
-            e.Process?.LastError ?? e.LastError)).ToArray(),
+            e.Process?.LastError ?? e.LastError,
+            (e.Backend as LlamaCppBackend)?.Tiers?.State())).ToArray(),
         time.GetUtcNow());
 
     internal static string StateOf(Engine engine) => engine switch

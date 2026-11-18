@@ -1201,12 +1201,24 @@
           <td>${escapeHtml(engine.type)}${source}</td>
           <td>${engineStatePill(engine)}</td>
           <td>${kinds || `<span class="matrix-no">—</span>`}</td>
-          <td>${models}</td>
+          <td>${models}${contextTiers(engine.context)}</td>
           <td>${engine.inFlight ?? 0}</td>
           <td>${engine.lastError ? `<span class="why">${escapeHtml(engine.lastError)}</span>` : `<span class="matrix-no">—</span>`}</td>
           <td><button type="button" data-eaction="${action}" data-node="${encodeURIComponent(node.nodeId)}" data-engine="${encodeURIComponent(engine.name)}">${running ? "Stop" : "Start"}</button></td>
         </tr>`;
     }).join("");
+  };
+
+  // Phase 153: a llama.cpp engine's long context on the slot, in RAM and on disk — counts and sizes, never text.
+  const contextTiers = (context) => {
+    if (!context) return "";
+    const gib = (bytes) => `${(bytes / 1073741824).toFixed(1)} GiB`;
+    const c = context.counts ?? {};
+    const restore = c.lastRestoreMs != null ? ` · last restore ${(c.lastRestoreMs / 1000).toFixed(1)} s` : "";
+    const why = context.lastError ? `<div class="why">${escapeHtml(context.lastError)}</div>` : "";
+    return `<div class="meta" title="slot = still loaded · RAM = llama.cpp's prompt cache · disk = slot files the node wrote">
+      context: slot ${c.slot ?? 0} · RAM ${c.ram ?? 0} · disk ${c.disk ?? 0} · computed ${c.miss ?? 0}<br>
+      disk ${gib(context.diskHeldBytes ?? 0)} of ${gib(context.diskBudgetBytes ?? 0)} in ${(context.entries ?? []).length} file(s)${restore}</div>${why}`;
   };
 
   // ------------------------------------------------------------------ versions & updates (phase 101)

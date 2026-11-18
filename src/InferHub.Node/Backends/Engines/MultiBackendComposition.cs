@@ -75,6 +75,7 @@ public static class MultiBackendComposition
 
         string? baseUrl;
         EngineProcess? process = null;
+        string? contextDirectory = null;
 
         switch (type)
         {
@@ -93,10 +94,13 @@ public static class MultiBackendComposition
 
             case BackendOptions.LlamaCpp when engine.Serve.IsEnabled:
                 baseUrl = engine.Serve.LaunchedBaseUrl();
+                contextDirectory = engine.Serve.IsSingle && engine.Serve.Context.Enabled
+                    ? engine.Serve.Context.ResolvedDirectory(name, DataDirectoryOf(services))
+                    : null;
                 process = new EngineProcess(
                     name,
                     // The preset INI is written at each launch, so the process reads this config (96 D1).
-                    () => LlamaCppServe.StartInfo(engine, LlamaCppServe.WritePresets(name, engine)),
+                    () => LlamaCppServe.StartInfo(engine, LlamaCppServe.WritePresets(name, engine), contextDirectory),
                     () => LlamaCppServe.Precondition(engine),
                     time,
                     logger,
@@ -148,10 +152,35 @@ public static class MultiBackendComposition
                 return http;
             },
             time,
-            logger);
+            logger)
+        {
+            // Phase 153: the slot, the engine's RAM cache and the node's slot files on disk.
+            Tiers = contextDirectory is null
+                ? null
+                : new ContextTiers(
+                    name,
+                    engine.Serve.Context,
+                    contextDirectory,
+                    () =>
+                    {
+                        var client = factory.CreateClient(UpstreamBackend.HttpClientName);
+                        client.BaseAddress = root;
+                        return client;
+                    },
+                    time,
+                    logger)
+                {
+                    Launches = process is null ? null : () => process.Launches
+                }
+        };
 
         return new Engine(name, type, llamaCpp, engine.Autostart, engine.Models, process);
     }
+
+    private static string DataDirectoryOf(IServiceProvider services) =>
+        services.GetRequiredService<IOptions<NodeOptions>>().Value.DataDirectory is { Length: > 0 } data
+            ? data
+            : services.GetRequiredService<IHostEnvironment>().ContentRootPath;
 
     /// <summary><c>http://127.0.0.1:8080/v1</c> → <c>http://127.0.0.1:8080/</c>: llama.cpp's own routes live at the root.</summary>
     internal static Uri? RootOf(string? baseUrl)

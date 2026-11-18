@@ -98,6 +98,35 @@ internal static partial class LocalControlEndpoints
         group.MapPost("/fit/install", FitInstallAsync);
         group.MapGet("/fit/catalog", CatalogListAsync);
 
+        // Phase 153: each llama.cpp engine's context tiers, and its files on disk kept or let go by hand.
+        group.MapGet("/context", (IServiceProvider services) => Results.Json(
+            TiersOf(services).Select(t => new { engine = t.Engine, context = t.State() }), Json));
+        group.MapPost("/context/{engine}/{id}/{action}", (IServiceProvider services, string engine, string id, string action) =>
+        {
+            if (TiersOf(services).FirstOrDefault(t => string.Equals(t.Engine, engine, StringComparison.OrdinalIgnoreCase)) is not { } tiers)
+            {
+                return Error(404, $"no engine '{engine}' here keeps context tiers (Serve:Context)");
+            }
+
+            var pinned = action.ToLowerInvariant() switch
+            {
+                "pin" => true,
+                "unpin" => false,
+                _ => (bool?)null
+            };
+
+            return pinned is null
+                ? Error(400, "pin or unpin")
+                : tiers.Index.SetPinned(id, pinned.Value)
+                    ? Results.Json(new { engine, id, pinned }, Json)
+                    : Error(404, $"no context file '{id}' on engine '{engine}'");
+        });
+        group.MapDelete("/context/{engine}/{id}", (IServiceProvider services, string engine, string id) =>
+            TiersOf(services).FirstOrDefault(t => string.Equals(t.Engine, engine, StringComparison.OrdinalIgnoreCase)) is { } tiers
+            && tiers.Index.Remove(id)
+                ? Results.NoContent()
+                : Error(404, $"no context file '{id}' on engine '{engine}'"));
+
         return app;
     }
 
@@ -799,6 +828,11 @@ internal static partial class LocalControlEndpoints
             .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
             .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
             .FirstOrDefault()?.InformationalVersion.Split('+')[0] ?? "unknown";
+
+    private static IEnumerable<Backends.ContextTiers> TiersOf(IServiceProvider services) =>
+        services.GetService<IEngineControl>() is Backends.MultiBackend multi
+            ? multi.Engines.Select(e => (e.Backend as Backends.LlamaCppBackend)?.Tiers).OfType<Backends.ContextTiers>()
+            : [];
 
     private static IResult Error(int status, string message) =>
         Results.Json(new { error = new { message } }, Json, statusCode: status);

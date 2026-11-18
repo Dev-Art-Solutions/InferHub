@@ -39,7 +39,8 @@ public static partial class LlamaCppServe
     public static partial Regex HfRepo();
 
     /// <param name="presetPath">The INI <see cref="WritePresets"/> wrote; null when there are no presets.</param>
-    public static ProcessStartInfo StartInfo(EngineOptions engine, string? presetPath = null)
+    /// <param name="contextDirectory">Phase 153: the disk tier, when <c>Serve:Context</c> is on.</param>
+    public static ProcessStartInfo StartInfo(EngineOptions engine, string? presetPath = null, string? contextDirectory = null)
     {
         var serve = engine.Serve;
 
@@ -101,6 +102,17 @@ public static partial class LlamaCppServe
         foreach (var argument in serve.Arguments.Where(a => !string.IsNullOrWhiteSpace(a)))
         {
             info.ArgumentList.Add(argument.Trim());
+        }
+
+        if (serve.IsSingle && serve.Context.Enabled && contextDirectory is not null)
+        {
+            // llama-server refuses a --slot-save-path that is not a directory yet (measured, b11417).
+            Directory.CreateDirectory(contextDirectory);
+
+            foreach (var argument in serve.Context.LaunchArguments(contextDirectory))
+            {
+                info.ArgumentList.Add(argument);
+            }
         }
 
         return info;
