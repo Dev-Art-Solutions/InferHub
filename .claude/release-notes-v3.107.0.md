@@ -68,11 +68,17 @@ package.
 
 ## The published image
 
-Filled in after the tag.
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.107.0` was run in Docker, with revision label `92547d4` (the tag's commit), a
+volume at `/data`, `Users:Enabled` and `Mcp:Enabled`:
+- a user made through the admin API was written to `/data/users/users.json`, owned by `app` (no permissions trap);
+- after `docker restart`, the same key opened `/mcp` and listed `list_models`, `chat` and `embed`;
+- the protected-resource metadata named `Mcp:PublicUrl`, and `/users.html` was served;
+- a native node on the host's Ollama connected, and MCP `chat` through the published coordinator answered "Paris."
+  (`served_by: node`).
 
 ## The suite
 
-Filled in after the tag.
+2946 passed, 70 skipped: Shared 457, Coordinator 1097, Node 797, Mesh 559 and Desktop 36. CI was green on the tag.
 
 ## Not established
 
