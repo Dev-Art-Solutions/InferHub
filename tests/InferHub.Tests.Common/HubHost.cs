@@ -30,6 +30,9 @@ internal sealed class HubHost : IAsyncDisposable
 
     public HttpClient Client { get; private set; } = null!;
 
+    /// <summary>Phase 154: the hub's services, for a test that reaches a registry its feature added.</summary>
+    public IServiceProvider Services => app.Services;
+
     /// <summary>The Ollama-shaped job body the hub handed the node, for cross-checking translation.</summary>
     public string? LastJobJson => Dispatcher.LastJobJson;
 

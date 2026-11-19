@@ -67,6 +67,8 @@ ENV Affinity__DataDirectory=/data/affinity
 # unless persistence is on.
 ENV Fleet__Profiles__DataDirectory=/data/profiles
 ENV Fleet__Groups__DataDirectory=/data/groups
+# Users (phase 154): users.json and the OAuth clients and grants beside it, when Users:Enabled. The permissions trap again.
+ENV Users__DataDirectory=/data/users
 
 # Durable image jobs (phase 56) write under /data when Images:Jobs:Persistence=file — the SEVENTH
 # instance of the same trap. Inert unless persistence is on, and unlike its six predecessors this

@@ -50,7 +50,7 @@ public sealed class BearerApiKeyMiddleware(
         {
             // Loopback is exempt from *rejection*, not from identity: a valid named key still
             // resolves (so quotas can be exercised locally), anything else stays anonymous.
-            context.Items[ClientItemKey] = (token is not null ? clients.Resolve(token) : null)
+            context.Items[ClientItemKey] = (token is not null ? clients.Resolve(token) ?? UserOf(context, token)?.Client : null)
                 ?? ResolvedClient.Anonymous;
             await next(context);
             return;
@@ -88,6 +88,22 @@ public sealed class BearerApiKeyMiddleware(
             return;
         }
 
+        // Phase 154: a user's key, when Users:Enabled. It runs as a client with the user's limits and organisation, and only
+        // as far as the user's role goes: a role without `inference` sees the catalogue and nothing else (154 D2).
+        if (client is null && UserOf(context, token) is { } user)
+        {
+            if (!user.Can(Users.Permissions.Inference) && !(user.Can(Users.Permissions.Models) && IsDiscovery(context.Request)))
+            {
+                await WriteForbiddenAsync(context, $"role '{user.Role}' may not run models");
+                return;
+            }
+
+            context.Items[ClientItemKey] = user.Client;
+            context.Items[Services.AuditMiddleware.WhoItemKey] = user.Who;
+            await next(context);
+            return;
+        }
+
         if (client is null)
         {
             await WriteUnauthorizedAsync(context, "invalid bearer token");
@@ -107,6 +123,29 @@ public sealed class BearerApiKeyMiddleware(
         => context.Items.TryGetValue(ClientItemKey, out var value) && value is ResolvedClient client
             ? client
             : ResolvedClient.Anonymous;
+
+    private static Users.AuthenticatedUser? UserOf(HttpContext context, string token)
+        => context.RequestServices?.GetService<Users.UserDirectory>()?.Resolve(token);
+
+    /// <summary>What the <c>models</c> permission reads: the two catalogues and the fleet view.</summary>
+    internal static bool IsDiscovery(HttpRequest request)
+        => (HttpMethods.IsGet(request.Method) || HttpMethods.IsHead(request.Method))
+           && (request.Path.StartsWithSegments("/api/tags")
+               || request.Path.StartsWithSegments(StatusPath)
+               || request.Path.StartsWithSegments("/api/version")
+               || request.Path.StartsWithSegments("/v1/models"));
+
+    private static async Task WriteForbiddenAsync(HttpContext context, string message)
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        if (context.Request.Path.StartsWithSegments(OpenAiPathPrefix))
+        {
+            await context.Response.WriteAsJsonAsync(new { error = new { message, type = "permission_error", param = (string?)null, code = "forbidden" } });
+            return;
+        }
+
+        await context.Response.WriteAsJsonAsync(new { error = message });
+    }
 
     private static bool IsGuardedPath(PathString path)
     {

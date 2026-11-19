@@ -38,6 +38,8 @@ internal sealed class ClusterRoleMiddleware(RequestDelegate next, IClusterMember
         "/api/collections",
         "/api/vector",
         "/v1",
+        // Phase 154: MCP tools run models and read the fleet, which a standby has none of.
+        "/mcp",
         // The node hub, and this is where node failover is actually enforced. An exception thrown
         // from NodeHub.OnConnectedAsync does *not* fail the client's StartAsync — by then the
         // handshake has completed and the node believes it is connected, only to be dropped a beat

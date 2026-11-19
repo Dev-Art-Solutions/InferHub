@@ -76,7 +76,10 @@ public sealed class AuditMiddleware(RequestDelegate next, AuditTrail trail)
             || path.StartsWithSegments(BearerApiKeyMiddleware.OpenAiPathPrefix)
             || path.StartsWithSegments(NodeRelay.PathPrefix)
             || path.StartsWithSegments("/node/identity")
-            || path.StartsWithSegments("/chatgpt-pairing");
+            || path.StartsWithSegments("/chatgpt-pairing")
+            // Phase 154: MCP and its sign-in. The path only — a form's key and a query's state are never on the line.
+            || path.StartsWithSegments(Mcp.McpEndpoints.Path)
+            || path.StartsWithSegments("/oauth");
 
     /// <summary>
     /// Reads are not actions (125 D1): the fleet view the console polls every five seconds, and every admin GET, would

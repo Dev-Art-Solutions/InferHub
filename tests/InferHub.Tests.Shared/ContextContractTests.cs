@@ -64,6 +64,8 @@ public class ContextContractTests
         ("src/InferHub.Coordinator/Vector/CLAUDE.md", ScopedBudget),
         // Phase 110. The coordinator's file hit 1099 and routing (86, 89) was the subtree the slot wait joins.
         ("src/InferHub.Coordinator/Services/CLAUDE.md", ScopedBudget),
+        // Phase 154. People with roles and the MCP server: a new area, not a corner of Services.
+        ("src/InferHub.Coordinator/Mcp/CLAUDE.md", ScopedBudget),
         ("src/InferHub.Node/CLAUDE.md", ScopedBudget),
         // Phase 67. The node's file hit 1099 and the tool runtime with its media phases was the
         // largest coherent subtree the provider track had nothing to do with (67 D6).

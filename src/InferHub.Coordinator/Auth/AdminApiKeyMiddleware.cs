@@ -54,6 +54,23 @@ public sealed class AdminApiKeyMiddleware(
             return;
         }
 
+        if (!IsTokenAccepted(token, settings.AdminApiKeys)
+            && context.RequestServices?.GetService<Users.UserDirectory>()?.Resolve(token) is { } user)
+        {
+            // Phase 154: a user whose role reads or writes the admin API. People are their own permission (154 D2).
+            if (WhyRefused(context.Request, user) is { } refusal)
+            {
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                await context.Response.WriteAsJsonAsync(new { error = refusal });
+                logger.LogWarning("Refused admin request to {Path} by {User}: {Reason}", context.Request.Path, user.Who, refusal);
+                return;
+            }
+
+            context.Items[Services.AuditMiddleware.WhoItemKey] = user.Who;
+            await next(context);
+            return;
+        }
+
         if (!IsTokenAccepted(token, settings.AdminApiKeys))
         {
             await WriteUnauthorizedAsync(context, "invalid admin bearer token");
@@ -74,6 +91,23 @@ public sealed class AdminApiKeyMiddleware(
     /// </summary>
     internal static string Fingerprint(string token)
         => "admin:" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(token)))[..8];
+
+    internal static string? WhyRefused(HttpRequest request, Users.AuthenticatedUser user)
+    {
+        var reading = HttpMethods.IsGet(request.Method) || HttpMethods.IsHead(request.Method);
+
+        if (request.Path.StartsWithSegments("/api/admin/users") || request.Path.StartsWithSegments("/api/admin/roles"))
+        {
+            return user.Can(Users.Permissions.Users) ? null : $"role '{user.Role}' may not manage users";
+        }
+
+        if (reading)
+        {
+            return user.Can(Users.Permissions.AdminRead) || user.Can(Users.Permissions.AdminWrite) ? null : $"role '{user.Role}' may not read the admin API";
+        }
+
+        return user.Can(Users.Permissions.AdminWrite) ? null : $"role '{user.Role}' may not change anything through the admin API";
+    }
 
     private bool Guards(PathString path)
     {

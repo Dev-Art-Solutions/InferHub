@@ -197,6 +197,30 @@ builder.Services.AddOptions<OrganisationOptions>()
 builder.Services.AddSingleton<IValidateOptions<OrganisationOptions>, OrganisationOptionsValidator>();
 builder.Services.AddSingleton<OrganisationPolicy>();
 
+// Phase 154. Users with roles, and the hub as an MCP server — both off by default; off, neither adds a route or a file.
+builder.Services.AddOptions<InferHub.Coordinator.Users.UserOptions>()
+    .Bind(builder.Configuration.GetSection(InferHub.Coordinator.Users.UserOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<InferHub.Coordinator.Users.UserOptions>, InferHub.Coordinator.Users.UserOptionsValidator>();
+builder.Services.Configure<InferHub.Coordinator.Mcp.McpOptions>(builder.Configuration.GetSection(InferHub.Coordinator.Mcp.McpOptions.SectionName));
+var usersEnabled = builder.Configuration.GetValue<bool>("Users:Enabled");
+var mcpEnabled = builder.Configuration.GetValue<bool>("Mcp:Enabled");
+if (usersEnabled)
+{
+    builder.Services.AddSingleton<InferHub.Coordinator.Users.UserDirectory>();
+}
+
+if (usersEnabled || mcpEnabled)
+{
+    builder.Services.AddSingleton<InferHub.Coordinator.Mcp.OAuthStore>();
+}
+
+if (mcpEnabled)
+{
+    builder.Services.AddSingleton<InferHub.Coordinator.Mcp.McpSessions>();
+    builder.Services.AddSingleton<InferHub.Coordinator.Mcp.McpTools>();
+}
+
 // Phase 126. Priority classes — off by default; when off every request is normal and the queue behaves as before.
 builder.Services.AddOptions<PriorityOptions>()
     .Bind(builder.Configuration.GetSection(PriorityOptions.SectionName))
@@ -491,6 +515,21 @@ app.MapAuditEndpoints();
 app.MapNodeIdentity();
 app.MapSiteEndpoints(); // phase 129
 app.MapFleetEndpoints(); // phase 152
+
+// Phase 154.
+if (usersEnabled)
+{
+    InferHub.Coordinator.Users.UserEndpoints.MapUserEndpoints(app);
+}
+
+if (mcpEnabled)
+{
+    InferHub.Coordinator.Mcp.McpEndpoints.MapMcpEndpoints(app);
+    if (usersEnabled && app.Services.GetRequiredService<IOptions<InferHub.Coordinator.Mcp.McpOptions>>().Value.OAuth.Enabled)
+    {
+        InferHub.Coordinator.Mcp.OAuthEndpoints.MapOAuthEndpoints(app);
+    }
+}
 app.MapHub<NodeHub>("/hubs/node");
 
 app.Run();

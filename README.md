@@ -6130,6 +6130,86 @@ GET  /api/admin/traffic?groupBy=group&minutes=60
 Groups live as long as the coordinator unless `Fleet:Groups:Persistence=file` (one `groups.json`; the image keeps it under
 `/data/groups`). The traffic history is in memory only, like every other counter.
 
+## Users, roles and MCP (v3.107+)
+
+Two switches, both off by default. Off, nothing below exists: no route, no file, and `Auth:Clients` / `Auth:AdminApiKeys`
+work exactly as before.
+
+### People with roles
+
+```jsonc
+"Users": { "Enabled": true, "Persistence": "file", "DataDirectory": "./data/users",
+           "Roles": { "auditor": ["models", "admin.read"] } }
+```
+
+People are made at runtime — on `/users.html` or through the admin API — each with a role and their own keys:
+
+```bash
+curl -X POST https://hub/api/admin/users -H "Authorization: Bearer $ADMIN" \
+     -d '{"id":"alice","displayName":"Alice","role":"user","organisation":"lab-a"}'
+# → 201 {"user":{…},"key":"ihu_…","keyId":"…"}   the key is in this answer once; the hub keeps its SHA-256
+```
+
+| Role | Permissions | Can |
+|---|---|---|
+| `viewer` | `models` | list models (`/api/tags`, `/v1/models`, `/api/status`) |
+| `user` | + `inference` | run any model the hub serves, on both dialects, jobs and media |
+| `operator` | + `admin.read` | read the admin API and `/metrics` |
+| `admin` | + `admin.write`, `users` | everything, including people |
+
+Roles of your own go in `Users:Roles`; the four built-in ones cannot be redefined. A user's key works on `/api`, `/v1` and
+`/api/admin` as far as the role goes and answers **403** beyond it. It runs with the user's `limits`, `collections`, `priority` and
+`organisation`, exactly like an `Auth:Clients` entry, and the audit line says `user:alice`. More: `POST /api/admin/users/{id}/keys`
+(another key), `DELETE …/keys/{keyId}`, `PATCH /api/admin/users/{id}` (`role`, `disabled`, `limits`, …), `DELETE …/sessions`
+(signs the user out of every MCP connector), `GET /api/admin/roles`. An admin *user* may run models; an admin *key* still may not.
+
+### The coordinator as an MCP server
+
+```jsonc
+"Mcp": { "Enabled": true, "PublicUrl": "https://hub.example.com", "AllowedOrigins": [],
+         "OAuth": { "Enabled": true, "AccessTokenMinutes": 60, "RefreshTokenDays": 30 } }
+```
+
+`/mcp` speaks the Model Context Protocol (Streamable HTTP, protocol 2025-11-25, 2025-06-18 and 2025-03-26). Tools, each shown only
+to a caller whose role holds its permission:
+
+| Tool | Permission | Does |
+|---|---|---|
+| `list_models` | `models` | every model the caller may use — on the nodes, node groups that split a model, other coordinators of the cluster, and connected cloud providers — with capabilities and where it runs |
+| `chat` | `inference` | a conversation (`messages` or `prompt`, `system`, `temperature`, `max_tokens`) through the same dispatch as `/api/chat`: limits, organisation, failover, providers, usage, audit |
+| `embed` | `inference` | vectors from an embedding model |
+| `fleet_status` | `admin.read` | the nodes: health, models, work in flight, cordons, owners' pauses |
+
+Attach it:
+
+```bash
+# Claude Code
+claude mcp add --transport http inferhub https://hub.example.com/mcp --header "Authorization: Bearer ihu_…"
+```
+
+```jsonc
+// Claude API (anthropic-beta: mcp-client-2025-11-20)
+{ "model": "claude-opus-5-5", "max_tokens": 4096,
+  "mcp_servers": [{ "type": "url", "url": "https://hub.example.com/mcp", "name": "inferhub", "authorization_token": "ihu_…" }],
+  "tools": [{ "type": "mcp_toolset", "mcp_server_name": "inferhub" }],
+  "messages": [{ "role": "user", "content": "Which models can I use on InferHub?" }] }
+
+// OpenAI Responses API
+{ "tools": [{ "type": "mcp", "server_label": "inferhub", "server_url": "https://hub.example.com/mcp",
+              "authorization": "ihu_…", "require_approval": "never" }], "input": "…" }
+```
+
+**claude.ai and ChatGPT connectors** sign in with OAuth, which the hub runs itself when `Users:Enabled` and `Mcp:OAuth:Enabled`:
+add a custom connector with the URL `https://hub.example.com/mcp`, no client id or secret; the app registers itself, opens the hub's
+sign-in page, and the person pastes **their own** `ihu_…` key. Discovery at `/.well-known/oauth-protected-resource/mcp` and
+`/.well-known/oauth-authorization-server`, registration at `/oauth/register`, PKCE S256 only, refresh tokens rotated. The hub must
+be reachable from the internet over https, and `Mcp:PublicUrl` set to that address — behind a TLS proxy the request says `http`, and
+both vendors refuse an issuer that does. An OAuth token is good for `/mcp` only.
+
+Any key the hub already accepts works on `/mcp` too: an `Auth:Clients` key lists and runs models; an admin key sees
+`list_models` and `fleet_status` and never runs a model. A browser page on another origin is refused unless listed in
+`Mcp:AllowedOrigins`. A standby coordinator refuses `/mcp` like the other work paths.
+
 ## Resilience & failover
 
 InferHub is built to keep running while nodes come and go.
