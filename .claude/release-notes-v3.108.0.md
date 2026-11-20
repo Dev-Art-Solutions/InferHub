@@ -81,3 +81,10 @@ counting. Slice: Shared 473, Coordinator 1 101, Node 805, Mesh (console contract
 - **Other llama.cpp builds.** The threshold, the hash and the file name are b12182's code, not a promise of its protocol. A
   build that changes them makes members miss, which is slower but never wrong.
 - **Real networks.** One PC: `tc netem` stands in for a link, as in the rest of the track.
+
+## Published-image check
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.108.0` and `inferhub-node:3.108.0` were pulled; both carry revision
+`50a61a4` (the tag's commit). The lab node was built on the published node, and `tunnel-lab.sh` ran with `LAB_MEMBER_DISK=1` on
+the published coordinator. Result: shard-b sent 248 MiB and shard-c 225 MiB, `loads` = *from its own disk* for both, and the
+whole model's text. This is the same result as the build from source.
