@@ -25,7 +25,7 @@ public static class ManagementEndpoints
             Results.Ok(new
             {
                 groups = (services.GetService(typeof(ShardPeerPublisher)) as ShardPeerPublisher)?.GroupStatus()
-                    .Select(s => new { name = s.Name, head = s.Head, members = s.Members, model = s.Model, ready = s.Ready, why = s.Why, reported = s.Reported })
+                    .Select(s => new { name = s.Name, head = s.Head, members = s.Members, model = s.Model, ready = s.Ready, why = s.Why, reported = s.Reported, loads = s.Loads })
                     .ToArray() ?? []
             }));
 

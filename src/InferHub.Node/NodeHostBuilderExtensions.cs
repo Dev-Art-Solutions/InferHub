@@ -262,6 +262,9 @@ public static class NodeHostBuilderExtensions
         // Phase 136: the groups this node heads — inert unless Node:Shards:AllowHead.
         builder.Services.AddSingleton<Backends.Shards.ShardGroupHost>();
         builder.Services.AddHostedService(services => services.GetRequiredService<Backends.Shards.ShardGroupHost>());
+        // Phase 143: a member fills its worker's cache from its own copy of a group's file — inert without the worker's cache.
+        builder.Services.AddSingleton<Backends.Shards.ShardSeeder>();
+        builder.Services.AddHostedService(services => services.GetRequiredService<Backends.Shards.ShardSeeder>());
         AddUpdates(builder);
         AddEngines(builder);
         AddOllamaSupervision(builder, ollamaOptions);

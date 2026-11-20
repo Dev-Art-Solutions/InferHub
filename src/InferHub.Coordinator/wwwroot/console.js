@@ -379,6 +379,15 @@
       return `<tr><td colspan="${offering.length + 2}">group <b>${escapeHtml(g.name)}</b>${mode} <span class="${cls}" title="${escapeHtml(g.error ?? "")}">${escapeHtml(g.state)}</span>` +
         ` · <code>${escapeHtml(g.model)}</code> · ${layers || `head ${escapeHtml(g.head)} + ${escapeHtml((g.members ?? []).join(", "))}`}${g.error ? ` · <span class="matrix-no">${escapeHtml(g.error)}</span>` : ""}</td></tr>`;
     }).join("");
+    // Phase 143: a member filling its worker's cache from its own copy of a group's file — the head waits for it, then sends hashes.
+    const seeds = offering.flatMap(n => (n.shards.seeds ?? []).map(s => ({ node: n.name, ...s })));
+    body.innerHTML += seeds.map(s => {
+      const cls = s.state === "ready" ? "pill pill-ok" : s.state === "seeding" ? "pill pill-warn" : "pill";
+      const label = s.state === "ready" ? "from its own disk" : s.state === "seeding" ? "filling its cache" : "over the network";
+      const amount = s.totalMiB ? ` <span style="color: var(--muted)">(${gib(s.doneMiB)} of ${gib(s.totalMiB)} GiB)</span>` : "";
+      return `<tr><td colspan="${offering.length + 2}">${escapeHtml(s.node)} for group <b>${escapeHtml(s.group)}</b> <span class="${cls}" title="${escapeHtml(s.error ?? "")}">${label}</span>` +
+        ` · <code>${escapeHtml(s.model)}</code>${amount}${s.error ? ` · <span class="matrix-no">${escapeHtml(s.error)}</span>` : ""}</td></tr>`;
+    }).join("");
   };
 
   const renderNodes = (nodes) => {

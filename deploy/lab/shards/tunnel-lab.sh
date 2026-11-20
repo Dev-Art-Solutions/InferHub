@@ -8,6 +8,8 @@
 #
 #   LAB_MODEL_DIR=D:/models ./tunnel-lab.sh            # the directory holding $LAB_MODEL (default llama31-8b.gguf)
 #   HUB_IMAGE=… NODE_IMAGE=… to use other images (default: built from source, see node.Dockerfile)
+#   LAB_SHAPE="delay 15ms rate 50mbit" …                # every node's link shaped from its start (a first load over it)
+#   LAB_MEMBER_DISK=1 …                                 # 143: the members hold the file too and load their layers from it
 #   docker exec -u root shard-c tc qdisc add dev eth0 root netem delay 15ms rate 50mbit   # shape one node's link
 #
 # Lessons from running it: set Node:Shards:Threads to the container's CPUs — llama.cpp's default is every core on the
@@ -34,11 +36,15 @@ for n in a b c d; do
   token=$(curl -s -X POST -H "$H" -H "Content-Type: application/json" -d "{\"label\":\"shard-$n\"}" \
     localhost:15080/api/admin/identity/tokens | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
   extra=(); [ "$n" = a ] && extra=(-v "$LAB_MODEL_DIR:/models:ro" -e Node__Shards__AllowHead=true -e Node__Shards__ModelsDir=/models)
+  # Phase 143: LAB_MEMBER_DISK=1 gives every member its own copy of the file, so it fills its cache before the head loads.
+  [ "$n" != a ] && [ "${LAB_MEMBER_DISK:-0}" = 1 ] && extra=(-v "$LAB_MODEL_DIR:/models:ro" -e Node__Shards__ModelsDir=/models)
   adv=(-e "Node__Shards__TunnelAdvertise=shard-$n:50053"); [ "$n" = c ] && adv=()
   docker run -d --name "shard-$n" --network lab135 --cap-add NET_ADMIN --memory "${LAB_NODE_MEMORY:-4g}" --cpus "${LAB_CPUS:-4}" \
     -e Coordinator__Url=http://lab-hub:8080/ -e Coordinator__EnrollmentSecret=lab135 -e "Coordinator__EnrollmentToken=$token" \
     -e "Node__Name=shard-$n" -e Node__Shards__Enabled=true -e "Node__Shards__RamGiB=${LAB_OFFER_GIB:-3}" -e "Node__Shards__Threads=${LAB_CPUS:-4}" -e LocalApi__Enabled=true -e LocalApi__Urls=http://127.0.0.1:8080 \
     "${adv[@]}" "${extra[@]}" "${NODE_IMAGE:-inferhub-lab-node:dev}" >/dev/null
+  # Phase 143: LAB_SHAPE="delay 15ms rate 50mbit" shapes every node from its start, so a first load crosses that link.
+  [ -n "${LAB_SHAPE:-}" ] && docker exec -u root "shard-$n" tc qdisc add dev eth0 root netem $LAB_SHAPE
 done
 
 # The group runs once its head answers /health; GET /api/admin/shards/groups says why not until then.

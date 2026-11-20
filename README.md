@@ -1267,6 +1267,35 @@ a head older than 3.102 simply sends neither field.
 24.5 GiB at 50 Mbit/s would take about 70 minutes), a member leaving a group of this size, and
 several requests at once. To repeat the run: `deploy/lab/shards/README.md`.
 
+### A member loads its layers from its own disk (v3.108+)
+
+Until 3.108 the head of a group sent every member its share of the model over the network on each
+first load: 12 GiB a member for a 70B. Now a member that already holds the model file — because the
+hub had it downloaded there (`POST /api/admin/nodes/{id}/huggingface`, through the relay and the
+supply on a sealed node), or because its owner put it in the models directory — reads its own
+layers from that file into its worker's cache first. The head then sends it only what llama.cpp
+always sends, the tensors of 10 MiB or less, and asks for the rest by hash.
+
+- **On the 8B in the lab, a first load sent 473 MiB instead of 2 868**, and the group wrote the same
+  text as the whole model in one container.
+- **Across 50 Mbit/s and 30 ms it answered after 165 s instead of 582 s.**
+- **The coordinator waits for it.** A member that can fill its cache is told which layers it will
+  hold; the group starts once it has said whether it holds the file and has finished. While it
+  fills, `GET /api/admin/shards/groups` says how far, and `loads` says per member where its layers
+  came from:
+
+```json
+"loads": ["shard-b: from its own disk (1039 MiB in its cache)", "shard-c: over the network ('llama31-8b.gguf' is not in /models)"]
+```
+
+A member without the file, or without room for its share, is loaded over the network exactly as
+before. Nothing needs configuring: the file is looked for in `Node:Shards:ModelsDir` (or the llama.cpp
+engine's), and one directory down where a download from the hub lands it. `Node:Shards:CacheDir`
+moves the cache, which keeps that member's share of the model on its disk.
+
+**What this does not show:** the file delivered through the hub in the lab (the lab mounts it), a
+70B filled this way, a GPU worker, and a llama.cpp other than b12182, whose cache this relies on.
+
 ### A long answer as a job you can follow (v3.103+)
 
 A chat that takes minutes — a big model, a model split across several nodes, a fleet that is full —

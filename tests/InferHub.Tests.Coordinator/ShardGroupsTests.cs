@@ -40,7 +40,7 @@ public sealed class ShardGroupsTests : IDisposable
         return publisher.ComputeGroups(publisher.Compute());
     }
 
-    private void Node(string id, long ramMiB = 3072, string protocol = "8.0.1", string? organisation = null, bool enroll = true, string state = NodeShardState.Running)
+    private void Node(string id, long ramMiB = 3072, string protocol = "8.0.1", string? organisation = null, bool enroll = true, string state = NodeShardState.Running, IReadOnlyList<ShardSeedState>? seeds = null)
     {
         if (enroll)
         {
@@ -51,7 +51,85 @@ public sealed class ShardGroupsTests : IDisposable
 
         registry.Upsert("conn-" + id, new NodeRegistration(id, "shard-" + id, "http://x", "3.96.0"), DateTimeOffset.UtcNow);
         shards.Report(new NodeShardState(id, state, ramMiB, 0, "127.0.0.1:50052", protocol, [], null, DateTimeOffset.UtcNow,
-            new ShardTunnelState(50053, $"shard-{id}:50053", null, null)), IPAddress.Loopback);
+            new ShardTunnelState(50053, $"shard-{id}:50053", null, null), Seeds: seeds), IPAddress.Loopback);
+    }
+
+    private (IReadOnlyDictionary<string, ShardGroupList> Lists, IReadOnlyList<ShardGroupStatus> Status, IReadOnlyDictionary<string, ShardSeedList> Seeds) ComputeAll()
+    {
+        var publisher = Publisher();
+        return publisher.ComputeAll(publisher.Compute());
+    }
+
+    private const string KeyB = "llama-8b-split|llama31-8b.gguf|1|3072,3072,6144";
+    private const string KeyC = "llama-8b-split|llama31-8b.gguf|2|3072,3072,6144";
+
+    private static ShardSeedState Seed(string key, string state, long done = 0, long total = 0, string? error = null) =>
+        new(key, "llama-8b-split", "llama31-8b.gguf", state, done, total, error);
+
+    [Fact]
+    public void AMemberThatCanFillItsCacheIsToldItsPlaceAndHoldsTheGroupBackUntilItHasSaid()
+    {
+        // Phase 143 D1: shard-b reports seeds (it can fill a cache) and has not answered this assignment yet.
+        Node("a", 3072);
+        Node("b", 3072, seeds: []);
+        Node("c", 6144);
+
+        var (lists, status, seeds) = ComputeAll();
+
+        Assert.Empty(lists["conn-a"].Groups);
+        var group = Assert.Single(status);
+        Assert.Equal("waiting for shard-b to say whether it holds llama31-8b.gguf", group.Why);
+        var spec = Assert.Single(seeds["conn-b"].Seeds);
+        Assert.Equal((KeyB, "llama31-8b.gguf", 1), (spec.Key, spec.Model, spec.Index));
+        Assert.Equal([3072L, 3072L, 6144L], spec.Weights);
+        Assert.Empty(seeds["conn-c"].Seeds);
+        Assert.Contains("shard-c: over the network (its worker keeps no cache, or it is older than 3.108)", group.Loads);
+    }
+
+    [Fact]
+    public void AMemberFillingItsCacheHoldsTheGroupBackWithItsProgressThenTheHeadLoads()
+    {
+        Node("a", 3072);
+        Node("b", 3072, seeds: [Seed(KeyB, ShardSeedState.Seeding, 512, 1039)]);
+        Node("c", 6144, seeds: [Seed(KeyC, ShardSeedState.Ready, 1355, 1355)]);
+
+        var (lists, status, _) = ComputeAll();
+
+        Assert.Empty(lists["conn-a"].Groups);
+        Assert.Equal("shard-b is filling its cache from its own copy of llama31-8b.gguf (512 of 1039 MiB)", Assert.Single(status).Why);
+
+        Node("b", 3072, enroll: false, seeds: [Seed(KeyB, ShardSeedState.Ready, 1039, 1039)]);
+        (lists, status, _) = ComputeAll();
+
+        Assert.Single(lists["conn-a"].Groups);
+        Assert.Equal(["shard-b: from its own disk (1039 MiB in its cache)", "shard-c: from its own disk (1355 MiB in its cache)"], Assert.Single(status).Loads);
+    }
+
+    [Fact]
+    public void AMemberWithoutTheFileDoesNotHoldTheGroupBackItsLayersGoOverTheNetwork()
+    {
+        Node("a", 3072);
+        Node("b", 3072, seeds: [Seed(KeyB, ShardSeedState.Absent, error: "'llama31-8b.gguf' is not in /models")]);
+        Node("c", 6144, seeds: [Seed(KeyC, ShardSeedState.Failed, error: "no disk")]);
+
+        var (lists, status, _) = ComputeAll();
+
+        Assert.Single(lists["conn-a"].Groups);
+        Assert.Equal(["shard-b: over the network ('llama31-8b.gguf' is not in /models)", "shard-c: over the network (no disk)"], Assert.Single(status).Loads);
+    }
+
+    [Fact]
+    public void AnAnswerForAnotherSplitIsNotAnAnswerForThisOne()
+    {
+        // A substitution or a new offer changes the weights, so the member is asked again under the new key.
+        Node("a", 3072);
+        Node("b", 3072, seeds: [Seed("llama-8b-split|llama31-8b.gguf|1|3072,3072,3072", ShardSeedState.Ready)]);
+        Node("c", 6144);
+
+        var (lists, status, _) = ComputeAll();
+
+        Assert.Empty(lists["conn-a"].Groups);
+        Assert.StartsWith("waiting for shard-b", Assert.Single(status).Why);
     }
 
     [Fact]

@@ -1,9 +1,10 @@
 # InferHub.Node/Backends/Shards — agent context
 
-**Scope: `src/InferHub.Node/Backends/Shards/`, the shard contracts in `src/InferHub.Shared/Fit/` (`GroupFit`, `ShardOffer`), the hub's
+**Scope: `src/InferHub.Node/Backends/Shards/`, the shard contracts in `src/InferHub.Shared/Fit/` (`GroupFit`, `ShardOffer`, `ShardSeed`), the hub's
 `Services/NodeShardRegistry.cs` and `Services/ShardRelay.cs`, and the lab in `deploy/lab/shards/`.** One model split by layers across
 several nodes: the group estimate, a node's shard worker, the mTLS tunnel between nodes, the groups a coordinator assembles
-(private cloud and community), the relay for nodes with no direct path — and since 142 the track that takes it past the 8B lab.
+(private cloud and community), the relay for nodes with no direct path — and since 142 the track that takes it past the 8B lab:
+a 70B no node holds, and (143) a member that loads its layers from its own copy of the file.
 
 > **Read the root `CLAUDE.md` first, then `src/InferHub.Node/Backends/CLAUDE.md`** (118's estimate, 95's `EngineProcess`, 120's
 > management jobs — all used here). The invariants that bind hardest: **the RPC port is never reachable off the node**
@@ -339,3 +340,54 @@ volume the same load is 200 s. `LAB_MODEL_DIR` takes a volume's name as it takes
 **Not established:** GPUs (CPU only, one host's cores and memory bandwidth shared by every node); a load at a real uplink's speed
 (24.5 GiB at 50 Mbit/s is about 70 minutes — computed; the lab's first load ran unshaped); a member leaving a 70B group (137's
 lab was not rerun at this size); more than three members; models above 70B; several requests at once.
+
+### Phase 143 (a member loads its layers from its own disk: it fills its worker's cache from its copy of the file, and the head sends hashes)
+
+Files: Shared `Fit/ShardSeed.cs` (`ShardSeedSpec/List/State`, `ShardSeedPlan`), `GgufTensor.Type/Dims/Bytes` + `GgmlTypes` in
+`Fit/GgufHeader.cs`, `NodeShardState.Seeds`; node `Backends/Shards/ShardSeeder.cs`, `ShardWorker.CacheRoot` (+ `LLAMA_CACHE` on the
+worker), `ShardOptions.CacheDir`, `ShardGroupHost.ModelFile` one directory down, the `ShardSeeds` handler; hub `ShardPeerPublisher.
+ComputeAll` (the assignments, the hold, `ShardGroupStatus.Loads`), `loads` on `GET /api/admin/shards/groups`; the console's cache rows;
+`tunnel-lab.sh` `LAB_MEMBER_DISK`, `LAB_SHAPE`.
+
+**D1, load-bearing — the hub tells each member its place in the split before the head loads, and waits for it.** Once a group is
+otherwise ready, every member is sent `ShardSeeds`: the model's name, the group's weights in the head's order and its index — what
+`ShardLayers.Split` (137 D4) needs to name its layers from its *own* file's block count. Its answer is keyed by the hub's
+`group|model|index|weights`, so a substitution or a new offer is a new question. A member that reports `seeds` (≥3.108, worker with
+`-c`) holds the group back while it has not answered (*waiting for shard-b to say whether it holds …*) and while it fills (*…filling
+its cache from its own copy of … (x of y MiB)*); `absent` or `failed` never holds it — that member is loaded over the network, as
+before, and `loads[]` says which and why. A member that reports no `seeds` is never waited for. **The cache is content-addressed, so
+the worst a wrong file can do is miss** — no answer can change. *Rejected:* the member asking the head which tensors it will get — a
+head holds a worker's one connection (134 D2), and the split is the hub's arithmetic already. *Rejected:* the hub sending the file
+itself — 122–124 already deliver it (98's download through the relay and supply); this phase only stops the head re-sending it.
+
+**D2 — the gate of the track, read from source and then measured: `rpc-server -c` is filled without a patch.** b12182: the client
+asks `SET_TENSOR_HASH` for a weight tensor above `HASH_THRESHOLD` (10 MiB) with the FNV-1a 64 of its bytes; the server answers from
+`<cache>/<hash as %016x>`, a file of exactly those bytes. An RPC device reports no host buffer, so the loader sets each tensor whole
+(no chunked async upload) and the bytes are the GGUF's own. So the size must be `ggml_nbytes` — a row of `ne[0] / block` blocks of
+the type's size (`GgmlTypes`, from `ggml-common.h`'s `static_assert`s) — **not** the gap to the next offset, which carries the
+alignment padding (118's `TensorBytes` stays gap-based; its estimate does not care). A type the table does not know is left out:
+sent, never wrong. **What stays on the wire is llama.cpp's**: every tensor at or under 10 MiB — for an 8B's 4096-wide layers that
+includes `attn_q`/`attn_output` (9 MiB each) and `attn_k`/`attn_v`; for a 70B mostly `attn_k`/`attn_v`.
+
+**D3 — the worker is told its cache directory, and a reader never sees half a tensor.** `CacheRoot` is `Node:Shards:CacheDir`, else
+what `rpc-server` picks itself (`LLAMA_CACHE`, `%LOCALAPPDATA%`, `~/Library/Caches`, `$XDG_CACHE_HOME`/`~/.cache`, then
+`llama.cpp`), and the worker gets it as `LLAMA_CACHE` — so the two cannot disagree and a cache made before 3.108 is where it was.
+`rpc-server` answers a hash from any file of that name (it does not check the size against anything but its buffer), so each tensor
+is hashed while it is copied into `.inferhub-<guid>.part` and renamed only when whole. One assignment at a time (one disk).
+
+**D4 — an assignment filled before is not read again.** `<cache>/inferhub-seeds/<model>.<first>-<count>[-out].json` records the file's
+length and write time and the hashes; while they match and every hash's file is there with its size, the answer is `ready` at once.
+Outside `rpc/`, so llama.cpp never reads it. Free disk is checked first (the share + 1 GiB, the deepest mount holding the cache);
+too little is `failed` with the numbers, and the head sends. **Disk cost: that member's share of the model, kept** — `rpc-server`
+never evicts its cache, and nothing here does either.
+
+**The lab (2026-11-20, `tunnel-lab.sh`, b12182, CPU, the 8B over three nodes, members holding the file with `LAB_MEMBER_DISK=1`):**
+a first load sent shard-b **248 MiB of its 1 528** and shard-c **225 of 1 389** (without the file: 1 287 and 1 581 — 2 868 MiB in
+all against 473, −84 %), and the group wrote **the same text as the whole model in one container**, character for character. With
+every node shaped from its start to 15 ms and 50 Mbit/s (`LAB_SHAPE`), the first load to an answer took **165 s instead of 582 s**.
+Filling the caches (1 039 and 1 355 MiB) is read and written on the member's own disk before the head starts.
+
+**Not established:** the file reaching a member through the hub in the lab — the lab mounts it; delivery is 98 and 122–124
+unchanged, and their own tests stand; a 70B filled this way (the arithmetic is the 8B's, and 142's cached reload already sent ~270 MiB
+a member); a GPU worker (`-d Vulkan0`) — whether a card's buffer takes the same `SET_TENSOR_HASH` path was not run; a llama.cpp
+build other than b12182 (the threshold, the hash and the file name are its code, not a protocol promise).

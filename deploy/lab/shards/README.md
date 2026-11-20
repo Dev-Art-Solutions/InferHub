@@ -217,3 +217,30 @@ Measured (2026-11-16, built from source at 3.102.0, WizardLM 70B Q4 — 80 layer
 
 **Not established:** GPUs; a first load at a home uplink's speed (computed: about 70 minutes at 50 Mbit/s); a member leaving a
 group of this size; more than three members; several requests at once.
+
+## A member that loads its layers from its own disk (phase 143)
+
+`LAB_MEMBER_DISK=1` mounts the model on every member too (`Node:Shards:ModelsDir=/models`), so each fills its worker's cache from
+its own copy before the head loads; `LAB_SHAPE` shapes every node's link from its start, so a first load crosses it.
+
+```sh
+LAB_MODEL_DIR=lab-models LAB_MEMBER_DISK=1 LAB_WAIT=900 ./tunnel-lab.sh
+LAB_MODEL_DIR=lab-models LAB_MEMBER_DISK=1 LAB_SHAPE="delay 15ms rate 50mbit" LAB_WAIT=1500 ./tunnel-lab.sh
+```
+
+Measured (2026-11-20, built from source at 3.108.0, the 8B — `llama31-8b.gguf` copied into the `lab-models` volume — three nodes,
+4 CPUs each, a first load every time):
+
+| | Members without the file | Members with the file |
+|---|---:|---:|
+| Sent to shard-b / shard-c | 1 287 / 1 581 MiB | 248 / 225 MiB |
+| Until it answers, unshaped | 52 s | 45 s |
+| Until it answers, 15 ms and 50 Mbit/s on every node | 582 s | 165 s |
+| Text | the whole model's | the whole model's |
+
+- `GET /api/admin/shards/groups` says per member where its layers came from: `"loads": ["shard-b: from its own disk (1039 MiB in
+  its cache)", …]`. While a member fills, the group waits and `why` says how far.
+- **What still crosses is llama.cpp's choice**: a tensor at or under 10 MiB is always sent. An 8B's `attn_q` and `attn_output`
+  are 9 MiB; a 70B's are 38 MiB, so there it is mostly `attn_k` and `attn_v` (142's cached reload: ~270 MiB a member).
+- The text was compared with the whole model in one container (`llama-server` on the same file, the same request).
+

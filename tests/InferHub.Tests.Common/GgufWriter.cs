@@ -66,6 +66,51 @@ internal static class GgufWriter
         return stream.ToArray();
     }
 
+    /// <summary>
+    /// Phase 143: a GGUF whose tensors carry real bytes and their true shape — F32, <c>ne[0]</c> = bytes / 4 — so a test can
+    /// check what was read out of the file, byte for byte. <paramref name="alignment"/> pads between tensors as llama.cpp does.
+    /// </summary>
+    public static byte[] WithData(IEnumerable<(string Key, object Value)> values, IEnumerable<(string Name, byte[] Data)> tensors, int alignment = 32)
+    {
+        var list = tensors.ToArray();
+        // Build() with no tensors and no padding is magic, version, a tensor count of 0, then the pairs: take it with the count.
+        var pairs = Build(values, alignment: 1);
+        using var stream = new MemoryStream();
+        using var w = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
+        w.Write(pairs.AsSpan(0, 8));
+        w.Write((ulong)list.Length);
+        w.Write(pairs.AsSpan(16, pairs.Length - 16));
+
+        long offset = 0;
+
+        foreach (var (name, data) in list)
+        {
+            if (data.Length % 4 != 0)
+            {
+                throw new ArgumentException("F32 data is a multiple of 4 bytes", nameof(tensors));
+            }
+
+            String(w, name);
+            w.Write(1u);
+            w.Write((ulong)(data.Length / 4));
+            w.Write(0u);
+            w.Write((ulong)offset);
+            offset += (data.Length + alignment - 1) / alignment * alignment;
+        }
+
+        w.Flush();
+        w.Write(new byte[(alignment - stream.Length % alignment) % alignment]);
+
+        foreach (var (_, data) in list)
+        {
+            w.Write(data);
+            w.Write(new byte[(alignment - data.Length % alignment) % alignment]);
+        }
+
+        w.Flush();
+        return stream.ToArray();
+    }
+
     private static void String(BinaryWriter w, string s)
     {
         var bytes = Encoding.UTF8.GetBytes(s);

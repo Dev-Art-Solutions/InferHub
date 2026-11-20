@@ -45,7 +45,7 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
         TimeProvider? time = null)
         : this(
             node.Value.Shards,
-            Blank(node.Value.Shards.ModelsDir) ?? LlamaEngine(backend.Value)?.Serve.ModelsDir,
+            ModelsDirectory(node.Value.Shards, backend.Value),
             () => HeadExecutable(node.Value.Shards, backend.Value, worker.Executable),
             tunnel.Peers,
             (name, port) => Compose(services, name, port),
@@ -290,7 +290,34 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
         }
 
         var path = System.IO.Path.Combine(directory, model);
-        return (exists ?? File.Exists)(path) ? (path, null) : (null, $"'{model}' is not in {directory}");
+
+        if ((exists ?? File.Exists)(path))
+        {
+            return (path, null);
+        }
+
+        // Phase 143: a file the hub had downloaded to this node (98) sits one directory down — <ModelsDir>/<name>/<file>, a
+        // directory being one model in llama.cpp's convention. Only one level, and only a file of exactly that name.
+        if (exists is null && Directory.Exists(directory))
+        {
+            try
+            {
+                foreach (var sub in Directory.EnumerateDirectories(directory).Order(StringComparer.Ordinal))
+                {
+                    var inside = System.IO.Path.Combine(sub, model);
+
+                    if (File.Exists(inside))
+                    {
+                        return (inside, null);
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
+
+        return (null, $"'{model}' is not in {directory}");
     }
 
     private void Converge()
@@ -557,6 +584,10 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
         probe.Stop();
         return port;
     }
+
+    /// <summary>D2: <c>Node:Shards:ModelsDir</c>, else the llama.cpp engine's <c>Serve:ModelsDir</c>.</summary>
+    public static string? ModelsDirectory(ShardOptions options, BackendOptions backend) =>
+        Blank(options.ModelsDir) ?? LlamaEngine(backend)?.Serve.ModelsDir;
 
     private static EngineOptions? LlamaEngine(BackendOptions backend) =>
         backend.Engines.Values.FirstOrDefault(e => e.NormalizedType() == BackendOptions.LlamaCpp);

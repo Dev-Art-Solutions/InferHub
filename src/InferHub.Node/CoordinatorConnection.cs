@@ -47,7 +47,8 @@ public sealed class CoordinatorConnection(
     Backends.Shards.ShardWorker? shards = null,
     Control.NodeJobBoard? jobBoard = null,
     Backends.Shards.ShardTunnel? shardTunnel = null,
-    Backends.Shards.ShardGroupHost? shardGroups = null) : IAsyncDisposable
+    Backends.Shards.ShardGroupHost? shardGroups = null,
+    Backends.Shards.ShardSeeder? shardSeeds = null) : IAsyncDisposable
 {
     /// <summary>
     /// Phase 97's catalogue report, one per engine that has a catalogue (99): each has its own hub
@@ -1006,6 +1007,8 @@ public sealed class CoordinatorConnection(
         hubConnection.On<InferHub.Shared.Fit.ShardPeerList>("ShardPeers", list => Offload(() => { shardTunnel?.SetPeers(list); return Task.CompletedTask; }));
         // Phase 136 D1: the groups this node heads, whole, as the coordinator decided.
         hubConnection.On<InferHub.Shared.Fit.ShardGroupList>("ShardGroups", list => Offload(() => { shardGroups?.SetGroups(list); return Task.CompletedTask; }));
+        // Phase 143 D1: the layers this node will hold in a group, so it can fill its cache from its own copy of the file first.
+        hubConnection.On<InferHub.Shared.Fit.ShardSeedList>("ShardSeeds", list => Offload(() => { shardSeeds?.SetSeeds(list); return Task.CompletedTask; }));
         hubConnection.On<VectorReplicaAssignment>("AssignVectorReplica", OnAssignVectorReplica);
         hubConnection.On<VectorReplicaOp>("ApplyVectorOp", OnApplyVectorOp);
         hubConnection.On<string>("DropVectorReplica", OnDropVectorReplica);

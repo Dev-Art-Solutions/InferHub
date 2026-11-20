@@ -126,14 +126,21 @@ public sealed class GgufHeader
                 var name = await reader.StringAsync(4096, cancellationToken) ?? string.Empty;
                 var dims = await reader.U32Async(cancellationToken);
 
-                for (var d = 0; d < dims; d++)
+                if (dims > 8)
                 {
-                    await reader.U64Async(cancellationToken);
+                    throw new InvalidDataException($"tensor '{name}' has {dims} dimensions");
                 }
 
-                await reader.U32Async(cancellationToken); // type
+                var shape = new long[dims];
+
+                for (var d = 0; d < dims; d++)
+                {
+                    shape[d] = (long)await reader.U64Async(cancellationToken);
+                }
+
+                var type = await reader.U32Async(cancellationToken);
                 var offset = (long)await reader.U64Async(cancellationToken);
-                tensors.Add(new GgufTensor(name, offset));
+                tensors.Add(new GgufTensor(name, offset) { Type = type, Dims = shape });
             }
 
             var alignment = values.TryGetValue("general.alignment", out var a) && a is long al && al > 0 ? al : 32;
@@ -270,4 +277,52 @@ public sealed class GgufHeader
     }
 }
 
-public sealed record GgufTensor(string Name, long Offset);
+/// <summary>One tensor of a GGUF file: its name and data offset; since phase 143 its ggml type and shape, which give its exact size.</summary>
+public sealed record GgufTensor(string Name, long Offset)
+{
+    /// <summary>The ggml type id (<c>GGML_TYPE_*</c>).</summary>
+    public uint Type { get; init; }
+
+    /// <summary>Elements per dimension, innermost first (<c>ne[0]</c>).</summary>
+    public long[] Dims { get; init; } = [];
+
+    /// <summary>
+    /// Phase 143: the tensor's bytes exactly as llama.cpp counts them (<c>ggml_nbytes</c> of a contiguous tensor) — a row of
+    /// <c>ne[0]</c> elements is <c>ne[0] / block</c> blocks of the type's size — or null for a type this table does not know. The
+    /// gap to the next offset is not it: that includes the file's alignment padding.
+    /// </summary>
+    public long? Bytes => GgmlTypes.Bytes(Type, Dims);
+}
+
+/// <summary>
+/// Phase 143: block size and bytes per block of each ggml type (<c>type_traits</c> in <c>ggml.c</c>, the sizes the
+/// <c>static_assert</c>s in <c>ggml-common.h</c> fix), as of llama.cpp b12182.
+/// </summary>
+public static class GgmlTypes
+{
+    private static readonly Dictionary<uint, (int Block, int Size)> Traits = new()
+    {
+        [0] = (1, 4), [1] = (1, 2), [2] = (32, 18), [3] = (32, 20), [6] = (32, 22), [7] = (32, 24), [8] = (32, 34), [9] = (32, 36),
+        [10] = (256, 84), [11] = (256, 110), [12] = (256, 144), [13] = (256, 176), [14] = (256, 210), [15] = (256, 292),
+        [16] = (256, 66), [17] = (256, 74), [18] = (256, 98), [19] = (256, 50), [20] = (32, 18), [21] = (256, 110), [22] = (256, 82),
+        [23] = (256, 136), [24] = (1, 1), [25] = (1, 2), [26] = (1, 4), [27] = (1, 8), [28] = (1, 8), [29] = (256, 56), [30] = (1, 2),
+        [34] = (256, 54), [35] = (256, 66), [39] = (32, 17), [40] = (64, 36), [41] = (128, 18), [42] = (64, 18), [43] = (1, 1)
+    };
+
+    public static long? Bytes(uint type, IReadOnlyList<long> dims)
+    {
+        if (!Traits.TryGetValue(type, out var t) || dims.Count == 0 || dims[0] % t.Block != 0)
+        {
+            return null;
+        }
+
+        var bytes = dims[0] / t.Block * t.Size;
+
+        for (var i = 1; i < dims.Count; i++)
+        {
+            bytes *= dims[i];
+        }
+
+        return bytes;
+    }
+}

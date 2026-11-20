@@ -38,7 +38,10 @@ public sealed record NodeShardState(
     [property: JsonPropertyName("peers")] IReadOnlyList<ShardPeerState>? Peers = null,
     [property: JsonPropertyName("groups")] IReadOnlyList<ShardGroupState>? Groups = null,
     /// <summary>Phase 138 D1: this node's owner opted it into community groups and accepted the risk. Null before 3.98.</summary>
-    [property: JsonPropertyName("community")] bool? Community = null)
+    [property: JsonPropertyName("community")] bool? Community = null,
+    /// <summary>Phase 143: the assignments this node fills its cache for from its own disk. Null: it cannot (before 3.108, or
+    /// its worker keeps no cache) — the hub never waits for it.</summary>
+    [property: JsonPropertyName("seeds"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<ShardSeedState>? Seeds = null)
 {
     /// <summary><c>Node:Shards:Enabled</c> is false: nothing offered, nothing running.</summary>
     public const string Off = "off";

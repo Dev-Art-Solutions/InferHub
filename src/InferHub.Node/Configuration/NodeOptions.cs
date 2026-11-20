@@ -377,6 +377,13 @@ public sealed class ShardOptions
     /// <summary><c>-c</c>: keep the tensors a head sent in a local cache, so a reload does not cross the network again.</summary>
     public bool Cache { get; set; } = true;
 
+    /// <summary>
+    /// Phase 143: the directory the worker's cache lives under (given to it as <c>LLAMA_CACHE</c>; the tensors go in its
+    /// <c>rpc/</c>). Null: where llama.cpp puts it by itself. A member that holds a group's model file fills it from that file,
+    /// so the head sends hashes instead of tensors — the disk it takes is that member's share of the model.
+    /// </summary>
+    public string? CacheDir { get; set; }
+
     /// <summary>The <c>ggml-rpc-server</c> to run. Null: the one beside this node's llama.cpp engine's executable.</summary>
     public string? Executable { get; set; }
 

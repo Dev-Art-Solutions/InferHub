@@ -74,6 +74,48 @@ public sealed class ShardWorker : IHostedService, IAsyncDisposable
     public string? Executable => executable;
 
     private Func<IReadOnlyList<ShardGroupState>>? groups;
+    private Func<IReadOnlyList<ShardSeedState>?>? seeds;
+
+    /// <summary>Phase 143: what this node fills its cache with goes out with its state, and its changes with its changes.</summary>
+    public void AttachSeeds(ShardSeeder seeder)
+    {
+        seeds = seeder.State;
+        seeder.Changed += () => Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// Phase 143 D3: the directory the worker's <c>-c</c> cache lives under, as <c>LLAMA_CACHE</c> — <c>Node:Shards:CacheDir</c>,
+    /// else what <c>rpc-server</c> itself would pick (<c>fs_get_cache_directory</c>, b12182): <c>LLAMA_CACHE</c>, else
+    /// <c>%LOCALAPPDATA%</c>, <c>~/Library/Caches</c> or <c>$XDG_CACHE_HOME</c> / <c>~/.cache</c>, then <c>llama.cpp</c>. The
+    /// worker is given it explicitly, so the node and the worker cannot disagree; a cache made before 3.108 is where it was.
+    /// Null without a cache.
+    /// </summary>
+    public static string? CacheRoot(ShardOptions options, Func<string, string?>? environment = null)
+    {
+        if (!options.Cache)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.CacheDir))
+        {
+            return options.CacheDir.Trim();
+        }
+
+        var env = environment ?? Environment.GetEnvironmentVariable;
+
+        if (env("LLAMA_CACHE") is { Length: > 0 } set)
+        {
+            return set;
+        }
+
+        var home = env("HOME") is { Length: > 0 } h ? h : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var basis = OperatingSystem.IsWindows() ? env("LOCALAPPDATA")
+            : OperatingSystem.IsMacOS() ? Path.Combine(home, "Library", "Caches")
+            : env("XDG_CACHE_HOME") is { Length: > 0 } xdg ? xdg : Path.Combine(home, ".cache");
+
+        return string.IsNullOrEmpty(basis) ? null : Path.Combine(basis, "llama.cpp");
+    }
 
     /// <summary>Phase 136: the groups this node heads go out with its state, and their changes with its changes.</summary>
     public void AttachGroups(ShardGroupHost host)
@@ -124,7 +166,8 @@ public sealed class ShardWorker : IHostedService, IAsyncDisposable
                 tunnel?.State(),
                 tunnel?.Peers(),
                 groups?.Invoke() is { Count: > 0 } heading ? heading : null,
-                options.JoinsCommunity);
+                options.JoinsCommunity,
+                seeds?.Invoke());
         }
     }
 
@@ -408,6 +451,11 @@ public sealed class ShardWorker : IHostedService, IAsyncDisposable
         foreach (var argument in Arguments(options))
         {
             info.ArgumentList.Add(argument);
+        }
+
+        if (CacheRoot(options) is { } cache)
+        {
+            info.Environment["LLAMA_CACHE"] = cache;
         }
 
         return info;

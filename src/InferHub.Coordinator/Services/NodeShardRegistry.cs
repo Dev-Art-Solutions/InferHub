@@ -84,6 +84,9 @@ public sealed record ShardGroupStatus(
     IReadOnlyList<string>? Substitutions = null)
 {
     public IReadOnlyList<string> Substitutions { get; init; } = Substitutions ?? [];
+
+    /// <summary>Phase 143 D1: where each member's layers come from on a load — its own disk, or the head over the network, and why.</summary>
+    public IReadOnlyList<string> Loads { get; init; } = [];
 }
 
 /// <summary>
@@ -108,6 +111,7 @@ public sealed class ShardPeerPublisher(
     public bool MayReach(string from, string to) => reach.TryGetValue(from, out var peers) && peers.Contains(to);
     private readonly Dictionary<string, string> sent = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> sentGroups = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> sentSeeds = new(StringComparer.Ordinal);
 
     private IReadOnlyDictionary<string, ShardGroupDefinition> Definitions =>
         groupOptions?.Value.Groups ?? new Dictionary<string, ShardGroupDefinition>();
@@ -119,6 +123,17 @@ public sealed class ShardPeerPublisher(
     /// </summary>
     public (IReadOnlyDictionary<string, ShardGroupList> Lists, IReadOnlyList<ShardGroupStatus> Status) ComputeGroups(IReadOnlyDictionary<string, ShardPeerList> peerLists)
     {
+        var all = ComputeAll(peerLists);
+        return (all.Lists, all.Status);
+    }
+
+    /// <summary>
+    /// <see cref="ComputeGroups"/>, and since 143 each member's assignment — the layers it will hold, so it can fill its cache
+    /// from its own copy of the file before the head loads (D1).
+    /// </summary>
+    internal (IReadOnlyDictionary<string, ShardGroupList> Lists, IReadOnlyList<ShardGroupStatus> Status, IReadOnlyDictionary<string, ShardSeedList> Seeds) ComputeAll(IReadOnlyDictionary<string, ShardPeerList> peerLists)
+    {
+        var seeds = new Dictionary<string, List<ShardSeedSpec>>(StringComparer.Ordinal);
         var now = DateTimeOffset.UtcNow;
         var nodes = registry.Snapshot(now);
         var lists = new Dictionary<string, List<ShardGroupSpec>>(StringComparer.Ordinal);
@@ -248,6 +263,56 @@ public sealed class ShardPeerPublisher(
                 }
             }
 
+            var loads = new List<string>();
+
+            if (why is null)
+            {
+                // Phase 143 D1: every member is told its place in the split first. One that can fill its cache (it reports
+                // seeds) holds the group back until it has said whether it holds the file and, if so, until it is done; one
+                // that cannot is loaded over the network, as before.
+                var weights = new[] { Weight(shards.Of(head!.NodeId)!) }.Concat(members.Select(m => Weight(shards.Of(m.Node.NodeId)!))).ToArray();
+                var model = definition.Model!.Trim();
+
+                for (var i = 0; i < members.Count; i++)
+                {
+                    var member = members[i].Node;
+                    var key = $"{name}|{model}|{i + 1}|{string.Join(',', weights)}";
+
+                    if (shards.Of(member.NodeId)?.Seeds is not { } said)
+                    {
+                        loads.Add($"{member.Name}: over the network (its worker keeps no cache, or it is older than 3.108)");
+                        continue;
+                    }
+
+                    if (!seeds.TryGetValue(member.ConnectionId, out var mine))
+                    {
+                        seeds[member.ConnectionId] = mine = [];
+                    }
+
+                    mine.Add(new ShardSeedSpec(key, name, model, weights, i + 1));
+                    var seed = said.FirstOrDefault(r => r.Key == key);
+
+                    switch (seed?.State)
+                    {
+                        case null:
+                            why ??= $"waiting for {member.Name} to say whether it holds {model}";
+                            loads.Add($"{member.Name}: asked whether it holds {model}");
+                            break;
+                        case ShardSeedState.Seeding:
+                            var progress = seed.TotalMiB > 0 ? $" ({seed.DoneMiB} of {seed.TotalMiB} MiB)" : "";
+                            why ??= $"{member.Name} is filling its cache from its own copy of {model}{progress}";
+                            loads.Add($"{member.Name}: from its own disk, filling{progress}");
+                            break;
+                        case ShardSeedState.Ready:
+                            loads.Add($"{member.Name}: from its own disk ({seed.TotalMiB} MiB in its cache)");
+                            break;
+                        default:
+                            loads.Add($"{member.Name}: over the network ({seed.Error ?? seed.State})");
+                            break;
+                    }
+                }
+            }
+
             if (why is null)
             {
                 if (!lists.TryGetValue(head!.ConnectionId, out var specs))
@@ -265,11 +330,12 @@ public sealed class ShardPeerPublisher(
             }
 
             status.Add(new ShardGroupStatus(name, head?.Name ?? definition.Head, why is null ? members.Select(m => m.Node.Name).ToArray() : definition.Members,
-                definition.Model, why is null, why, reported, substitutions));
+                definition.Model, why is null, why, reported, substitutions) { Loads = loads });
         }
 
         var result = nodes.ToDictionary(n => n.ConnectionId, n => new ShardGroupList(lists.TryGetValue(n.ConnectionId, out var s) ? s : []), StringComparer.Ordinal);
-        return (result, status);
+        var seedLists = nodes.ToDictionary(n => n.ConnectionId, n => new ShardSeedList(seeds.TryGetValue(n.ConnectionId, out var s) ? s : []), StringComparer.Ordinal);
+        return (result, status, seedLists);
     }
 
     /// <summary>
@@ -428,7 +494,33 @@ public sealed class ShardPeerPublisher(
                 return;
             }
 
-            var (groupLists, status) = ComputeGroups(lists);
+            var (groupLists, status, seedLists) = ComputeAll(lists);
+
+            // Phase 143 D1: each member's assignments, before the head's groups — sent the same way, on change.
+            foreach (var gone in sentSeeds.Keys.Except(seedLists.Keys).ToArray())
+            {
+                sentSeeds.Remove(gone);
+            }
+
+            foreach (var (connection, list) in seedLists)
+            {
+                var key = string.Join('|', list.Seeds.Select(s => s.Key));
+
+                if (sentSeeds.TryGetValue(connection, out var last) ? last == key : list.Seeds.Count == 0)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    await hub.Clients.Client(connection).SendAsync("ShardSeeds", list, cancellationToken);
+                    sentSeeds[connection] = key;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogDebug(ex, "Could not send shard seeds to connection {Connection}", connection);
+                }
+            }
 
             foreach (var gone in sentGroups.Keys.Except(groupLists.Keys).ToArray())
             {
