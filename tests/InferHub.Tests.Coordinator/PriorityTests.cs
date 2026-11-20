@@ -150,12 +150,16 @@ public class PriorityTests
         var normal = queue.WaitForCapacityAsync("llama3", PriorityClasses.Normal, CancellationToken.None);
         await Task.Delay(100);
         var essential = queue.WaitForCapacityAsync("llama3", PriorityClasses.Essential, CancellationToken.None);
+        // The admitted request takes the place the moment it is admitted, as its dispatch would. Taken in the test's own
+        // continuation after the await, the place stayed free for as long as the runner took to schedule it, and on a slow
+        // CI runner the normal request's 200 ms poll found it free there (the queue admits on the counters, it reserves nothing).
+        var taken = essential.ContinueWith(_ => registry.IncrementInFlight("connection-a", "llama3"), TaskContinuationOptions.ExecuteSynchronously);
         await Task.Delay(100);
 
         // One place frees: the essential request, though it came second.
         registry.DecrementInFlight("connection-a", "llama3");
         Assert.Equal(QueueOutcome.Admitted, await essential.WaitAsync(TimeSpan.FromSeconds(5)));
-        registry.IncrementInFlight("connection-a", "llama3");
+        await taken;
         await Task.Delay(400);
         Assert.False(normal.IsCompleted);
 
