@@ -10,6 +10,7 @@
 #   HUB_IMAGE=… NODE_IMAGE=… to use other images (default: built from source, see node.Dockerfile)
 #   LAB_SHAPE="delay 15ms rate 50mbit" …                # every node's link shaped from its start (a first load over it)
 #   LAB_MEMBER_DISK=1 …                                 # 143: the members hold the file too and load their layers from it
+#   LAB_AUTO=1 LAB_SLOW="b c" …                         # 144: Mode=auto, the hub places the group; b and c 20 ms away
 #   docker exec -u root shard-c tc qdisc add dev eth0 root netem delay 15ms rate 50mbit   # shape one node's link
 #
 # Lessons from running it: set Node:Shards:Threads to the container's CPUs — llama.cpp's default is every core on the
@@ -21,14 +22,21 @@ MODEL=${LAB_MODEL:-llama31-8b.gguf}
 GROUP=${LAB_GROUP:-llama-8b-split}
 H="Authorization: Bearer adm135"
 
+# Phase 144: LAB_AUTO=1 names only the model and Mode=auto — the hub picks the head and the members itself.
+if [ "${LAB_AUTO:-0}" = 1 ]; then
+  members=(-e "ShardGroups__${GROUP}__Mode=auto")
+else
+  members=(-e "ShardGroups__${GROUP}__Head=shard-a" -e "ShardGroups__${GROUP}__Members__0=shard-b" -e "ShardGroups__${GROUP}__Members__1=shard-c"
+    -e "ShardGroups__${GROUP}__Spares__0=shard-d")
+fi
+
 docker rm -f lab-hub shard-a shard-b shard-c shard-d >/dev/null 2>&1
 docker network rm lab135 >/dev/null 2>&1
 docker network create lab135 >/dev/null
 docker run -d --name lab-hub --network lab135 -p 15080:8080 \
   -e Auth__NodeEnrollmentSecret=lab135 -e Auth__AdminApiKeys__0=adm135 -e Auth__ApiKeys__0=cli135 \
   -e Identity__Enabled=true -e Identity__DataDirectory=/data/identity \
-  -e "ShardGroups__${GROUP}__Head=shard-a" -e "ShardGroups__${GROUP}__Members__0=shard-b" -e "ShardGroups__${GROUP}__Members__1=shard-c" \
-  -e "ShardGroups__${GROUP}__Spares__0=shard-d" -e "ShardGroups__${GROUP}__Model=$MODEL" -e "ShardGroups__${GROUP}__Context=${LAB_CONTEXT:-2048}" \
+  "${members[@]}" -e "ShardGroups__${GROUP}__Model=$MODEL" -e "ShardGroups__${GROUP}__Context=${LAB_CONTEXT:-2048}" \
   "${HUB_IMAGE:-inferhub-coordinator:dev}" >/dev/null
 for _ in $(seq 1 30); do curl -s -o /dev/null -w "%{http_code}" -H "$H" localhost:15080/api/admin/nodes | grep -q 200 && break; sleep 1; done
 
@@ -45,6 +53,8 @@ for n in a b c d; do
     "${adv[@]}" "${extra[@]}" "${NODE_IMAGE:-inferhub-lab-node:dev}" >/dev/null
   # Phase 143: LAB_SHAPE="delay 15ms rate 50mbit" shapes every node from its start, so a first load crosses that link.
   [ -n "${LAB_SHAPE:-}" ] && docker exec -u root "shard-$n" tc qdisc add dev eth0 root netem $LAB_SHAPE
+  # Phase 144: LAB_SLOW="b c" puts those nodes 20 ms away (LAB_SLOW_SHAPE), so an auto group's placement has a matrix to read.
+  case " ${LAB_SLOW:-} " in *" $n "*) docker exec -u root "shard-$n" tc qdisc add dev eth0 root netem ${LAB_SLOW_SHAPE:-delay 20ms} ;; esac
 done
 
 # The group runs once its head answers /health; GET /api/admin/shards/groups says why not until then.

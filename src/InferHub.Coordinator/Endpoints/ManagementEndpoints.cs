@@ -25,9 +25,30 @@ public static class ManagementEndpoints
             Results.Ok(new
             {
                 groups = (services.GetService(typeof(ShardPeerPublisher)) as ShardPeerPublisher)?.GroupStatus()
-                    .Select(s => new { name = s.Name, head = s.Head, members = s.Members, model = s.Model, ready = s.Ready, why = s.Why, reported = s.Reported, loads = s.Loads })
+                    .Select(s => new { name = s.Name, mode = s.Mode, head = s.Head, members = s.Members, model = s.Model, ready = s.Ready, why = s.Why, reported = s.Reported, loads = s.Loads, placement = s.Placement })
                     .ToArray() ?? []
             }));
+
+        // Phase 144 D3: an auto group keeps its placement while it can run; this drops it, so it is placed again on today's
+        // matrix — at the price of a reload. 404 for a group that is not auto, 409 when none was held.
+        group.MapPost("/shards/groups/{name}/replace", async (string name, HttpContext http, IServiceProvider services, ILoggerFactory loggers) =>
+        {
+            if (services.GetService(typeof(ShardPeerPublisher)) is not ShardPeerPublisher publisher
+                || publisher.GroupStatus().FirstOrDefault(s => string.Equals(s.Name, name.Trim(), StringComparison.OrdinalIgnoreCase)) is not { Mode: "auto" } group)
+            {
+                return Results.NotFound(new { error = $"no auto group '{name}' (ShardGroups:{name}:Mode = auto)" });
+            }
+
+            if (!publisher.Replace(group.Name))
+            {
+                return Results.Conflict(new { error = $"group '{group.Name}' holds no placement now", why = group.Why });
+            }
+
+            loggers.CreateLogger("InferHub.Coordinator.Shards").LogInformation("Group {Group} placed again on request by {Actor}", group.Name, actorOf(http));
+            await publisher.PublishAsync(http.RequestAborted);
+            var now = publisher.GroupStatus().First(s => s.Name == group.Name);
+            return Results.Ok(new { name = now.Name, head = now.Head, members = now.Members, ready = now.Ready, why = now.Why, placement = now.Placement });
+        });
 
         // Phase 139: the relay — listening or not, the pairs it carries now, who waits at it. Never a byte of what passes.
         group.MapGet("/shards/relay", (IServiceProvider services) =>

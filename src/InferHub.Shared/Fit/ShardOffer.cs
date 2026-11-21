@@ -41,7 +41,12 @@ public sealed record NodeShardState(
     [property: JsonPropertyName("community")] bool? Community = null,
     /// <summary>Phase 143: the assignments this node fills its cache for from its own disk. Null: it cannot (before 3.108, or
     /// its worker keeps no cache) — the hub never waits for it.</summary>
-    [property: JsonPropertyName("seeds"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<ShardSeedState>? Seeds = null)
+    [property: JsonPropertyName("seeds"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<ShardSeedState>? Seeds = null,
+    /// <summary>Phase 144 D2: the GGUF files in this node's group models directory, read from their headers. Null: it does not
+    /// say (before 3.109) — the hub never places a group's head on it.</summary>
+    [property: JsonPropertyName("models"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<ShardModelFile>? Models = null,
+    /// <summary>Phase 144 D2: <c>Node:Shards:AllowHead</c> — its owner lets the hub make it a group's head. Null before 3.109.</summary>
+    [property: JsonPropertyName("mayHead"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? MayHead = null)
 {
     /// <summary><c>Node:Shards:Enabled</c> is false: nothing offered, nothing running.</summary>
     public const string Off = "off";

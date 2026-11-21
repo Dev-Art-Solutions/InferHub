@@ -466,7 +466,11 @@ public sealed class NodeCertificateAuthority
         serial[0] &= 0x7F;
         var notAfter = now.AddDays(options.CertificateDays);
 
-        using var certificate = request.Create(issuer, now.AddMinutes(-5), notAfter, serial);
+        // A CA made on this very call read the clock after `now` did: across a second boundary its NotBefore is the later one,
+        // and Create refuses a certificate that starts before its issuer (seen as a rare test failure, 3.109).
+        var notBefore = now.AddMinutes(-5);
+        notBefore = notBefore < issuer.NotBefore.ToUniversalTime() ? issuer.NotBefore.ToUniversalTime() : notBefore;
+        using var certificate = request.Create(issuer, notBefore, notAfter, serial);
         var der = certificate.RawData;
         var issued = new IssuedCertificate(
             nodeId,

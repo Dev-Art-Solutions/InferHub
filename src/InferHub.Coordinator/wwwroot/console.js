@@ -20,6 +20,7 @@
   let statusPollHandle = null;
 
   let latestNodes = [];
+  let latestShardGroups = []; // phase 144: /api/admin/shards/groups, for the auto groups
   let latestStatus = null;
   let collectionsPollHandle = null;
 
@@ -346,7 +347,7 @@
       body.innerHTML = `<tr><td class="empty">No node offers memory to groups (Node:Shards).</td></tr>`;
       return;
     }
-    head.innerHTML = `<tr><th>From \\ to</th>${offering.map(n => `<th>${escapeHtml(n.name)}</th>`).join("")}<th>Tunnel</th></tr>`;
+    head.innerHTML = `<tr><th>From \\ to</th>${offering.map(n => `<th>${escapeHtml(n.name)}</th>`).join("")}<th title="GGUF files in Node:Shards:ModelsDir — what an auto group can be headed with (phase 144)">Group files</th><th>Tunnel</th></tr>`;
     body.innerHTML = offering.map(n => {
       const peers = new Map((n.shards.peers ?? []).map(p => [p.nodeId, p]));
       const cells = offering.map(to => {
@@ -363,7 +364,21 @@
       const t = n.shards.tunnel;
       const waits = !t || !t.relay ? "" : t.relayError ? ` <span class="pill pill-err" title="${escapeHtml(t.relayError)}">relay: no</span>` : ` <span class="pill" title="Node:Shards:TunnelRelay — may meet peers at the coordinator's relay when there is no direct path">relay ok</span>`;
       const tunnel = !t ? "—" : t.off ? `<span class="pill pill-err" title="${escapeHtml(t.off)}">off</span>` : `<code>${escapeHtml(t.advertise ?? `:${t.port}`)}</code>${waits}`;
-      return `<tr><td>${escapeHtml(n.name)}</td>${cells}<td>${tunnel}</td></tr>`;
+      // Phase 144: the files this node could head a group with, and whether its owner lets it (Node:Shards:AllowHead).
+      const files = (n.shards.models ?? []).map(f => `<code title="${f.layers ?? "?"} layers">${escapeHtml(f.name)}</code> ${(f.mib / 1024).toFixed(1)} GiB`).join("<br>");
+      const mayHead = n.shards.mayHead ? ` <span class="pill" title="Node:Shards:AllowHead — the coordinator may make it a group's head">may head</span>` : "";
+      return `<tr><td>${escapeHtml(n.name)}</td>${cells}<td>${files || `<span class="matrix-no">—</span>`}${mayHead}</td><td>${tunnel}</td></tr>`;
+    }).join("");
+    const span = offering.length + 3;
+    // Phase 144: auto groups — the coordinator chose the head and the members from the files, the offers and this matrix.
+    body.innerHTML += (latestShardGroups ?? []).filter(g => g.mode === "auto").map(g => {
+      const cls = g.ready ? "pill pill-ok" : "pill pill-warn";
+      const who = g.head ? `head <b>${escapeHtml(g.head)}</b> + ${escapeHtml((g.members ?? []).join(", "))}` : "not placed";
+      const notes = (g.placement ?? []).map(p => `<li>${escapeHtml(p)}</li>`).join("");
+      return `<tr><td colspan="${span}">auto group <b>${escapeHtml(g.name)}</b> <span class="${cls}">${g.ready ? "placed" : "waiting"}</span> · <code>${escapeHtml(g.model ?? "")}</code> · ${who}` +
+        `${g.why ? ` · <span class="matrix-no">${escapeHtml(g.why)}</span>` : ""}` +
+        ` <button class="secondary" data-replace-group="${escapeHtml(g.name)}" title="Forget this placement and place the group again on the matrix of now — a reload">Place again</button>` +
+        `${notes ? `<ul style="margin: 4px 0 0 16px; color: var(--muted)">${notes}</ul>` : ""}</td></tr>`;
     }).join("");
     // Phase 136. The groups each head runs: the model answers under the group's name while it is "running".
     const groups = offering.flatMap(n => (n.shards.groups ?? []).map(g => ({ head: n.name, ...g })));
@@ -376,7 +391,7 @@
       // Phase 137: which worker holds which layers, by llama.cpp's own rule over the group's split.
       const layers = (g.layers ?? []).map(l => `${escapeHtml(l.name)} ${l.count > 0 ? `${l.first}–${l.first + l.count - 1}` : "—"}${l.output ? " + output" : ""}${sentOf(g, l)}`).join(" · ");
       const mode = g.community ? ` <span class="pill pill-warn" title="clients send to it only with X-InferHub-Community: accept">community</span>` : "";
-      return `<tr><td colspan="${offering.length + 2}">group <b>${escapeHtml(g.name)}</b>${mode} <span class="${cls}" title="${escapeHtml(g.error ?? "")}">${escapeHtml(g.state)}</span>` +
+      return `<tr><td colspan="${span}">group <b>${escapeHtml(g.name)}</b>${mode} <span class="${cls}" title="${escapeHtml(g.error ?? "")}">${escapeHtml(g.state)}</span>` +
         ` · <code>${escapeHtml(g.model)}</code> · ${layers || `head ${escapeHtml(g.head)} + ${escapeHtml((g.members ?? []).join(", "))}`}${g.error ? ` · <span class="matrix-no">${escapeHtml(g.error)}</span>` : ""}</td></tr>`;
     }).join("");
     // Phase 143: a member filling its worker's cache from its own copy of a group's file — the head waits for it, then sends hashes.
@@ -385,7 +400,7 @@
       const cls = s.state === "ready" ? "pill pill-ok" : s.state === "seeding" ? "pill pill-warn" : "pill";
       const label = s.state === "ready" ? "from its own disk" : s.state === "seeding" ? "filling its cache" : "over the network";
       const amount = s.totalMiB ? ` <span style="color: var(--muted)">(${gib(s.doneMiB)} of ${gib(s.totalMiB)} GiB)</span>` : "";
-      return `<tr><td colspan="${offering.length + 2}">${escapeHtml(s.node)} for group <b>${escapeHtml(s.group)}</b> <span class="${cls}" title="${escapeHtml(s.error ?? "")}">${label}</span>` +
+      return `<tr><td colspan="${span}">${escapeHtml(s.node)} for group <b>${escapeHtml(s.group)}</b> <span class="${cls}" title="${escapeHtml(s.error ?? "")}">${label}</span>` +
         ` · <code>${escapeHtml(s.model)}</code>${amount}${s.error ? ` · <span class="matrix-no">${escapeHtml(s.error)}</span>` : ""}</td></tr>`;
     }).join("");
   };
@@ -1165,6 +1180,23 @@
   };
 
   // Admin-only, like every /api/admin read; a page with no key yet simply shows nothing here.
+  // Phase 144: the groups as the coordinator sees them — an auto group's placement lives here, not on any node.
+  const loadShardGroups = async () => {
+    const res = await fetch("/api/admin/shards/groups", { headers: adminHeaders() });
+    if (!res.ok) return;
+    latestShardGroups = (await res.json()).groups ?? [];
+    renderShardTunnels(latestNodes ?? []);
+  };
+  setInterval(() => loadShardGroups().catch(() => {}), 5000);
+  loadShardGroups().catch(() => {});
+  document.addEventListener("click", async (e) => {
+    const name = e.target?.dataset?.replaceGroup;
+    if (!name) return;
+    e.target.disabled = true;
+    await fetch(`/api/admin/shards/groups/${encodeURIComponent(name)}/replace`, { method: "POST", headers: adminHeaders() }).catch(() => {});
+    await loadShardGroups().catch(() => {});
+  });
+
   const loadJobs = async () => {
     const res = await fetch("/api/admin/jobs", { headers: adminHeaders() });
     if (res.ok) renderJobs(await res.json());

@@ -40,7 +40,8 @@ public sealed class ShardGroupsTests : IDisposable
         return publisher.ComputeGroups(publisher.Compute());
     }
 
-    private void Node(string id, long ramMiB = 3072, string protocol = "8.0.1", string? organisation = null, bool enroll = true, string state = NodeShardState.Running, IReadOnlyList<ShardSeedState>? seeds = null)
+    private void Node(string id, long ramMiB = 3072, string protocol = "8.0.1", string? organisation = null, bool enroll = true, string state = NodeShardState.Running, IReadOnlyList<ShardSeedState>? seeds = null,
+        IReadOnlyList<ShardPeerState>? peers = null, IReadOnlyList<ShardModelFile>? models = null, bool? mayHead = null)
     {
         if (enroll)
         {
@@ -51,7 +52,135 @@ public sealed class ShardGroupsTests : IDisposable
 
         registry.Upsert("conn-" + id, new NodeRegistration(id, "shard-" + id, "http://x", "3.96.0"), DateTimeOffset.UtcNow);
         shards.Report(new NodeShardState(id, state, ramMiB, 0, "127.0.0.1:50052", protocol, [], null, DateTimeOffset.UtcNow,
-            new ShardTunnelState(50053, $"shard-{id}:50053", null, null), Seeds: seeds), IPAddress.Loopback);
+            new ShardTunnelState(50053, $"shard-{id}:50053", null, null), peers, Seeds: seeds, Models: models, MayHead: mayHead), IPAddress.Loopback);
+    }
+
+    // Phase 144: the auto group's lab — shard-a holds the 8B and may head; b, c and d offer memory at different round trips.
+    private static readonly ShardModelFile Eight = new("llama31-8b.gguf", 4685, 32, 131072);
+
+    private static ShardPeerState Trip(string id, double? rtt) => new(id, "shard-" + id, $"shard-{id}:50053", "127.0.0.1:1", rtt, null, DateTimeOffset.UtcNow);
+
+    private void AutoLab(double toB = 0.4, double toC = 0.3, double toD = 12)
+    {
+        options.Groups.Clear();
+        options.Groups["llama-8b-auto"] = new ShardGroupDefinition { Mode = "auto", Model = "llama31-8b.gguf", Context = 4096, SettleSeconds = 0 };
+        Node("a", 3072, peers: [Trip("b", toB), Trip("c", toC), Trip("d", toD)], models: [Eight], mayHead: true, seeds: null);
+        Node("b", 3072, peers: [], models: [], mayHead: false);
+        Node("c", 3072, peers: [], models: [], mayHead: false);
+        Node("d", 8192, peers: [], models: [], mayHead: false);
+    }
+
+    [Fact]
+    public void AnAutoGroupIsPlacedByTheHubOnTheHeadThatHoldsTheFileAndItsNearestPeersAndSentLikeAnyOther()
+    {
+        AutoLab();
+        var publisher = Publisher();
+
+        var (lists, status, _) = publisher.ComputeAll(publisher.Compute());
+
+        var group = Assert.Single(status);
+        Assert.True(group.Ready, group.Why);
+        Assert.Equal(("auto", "shard-a"), (group.Mode, group.Head));
+        Assert.Equal(["shard-c", "shard-b"], group.Members);
+        Assert.StartsWith("head shard-a: holds llama31-8b.gguf", group.Placement[0]);
+        Assert.Contains("left out: shard-d: 12 ms from shard-a, not needed", group.Placement);
+        var spec = Assert.Single(lists["conn-a"].Groups);
+        Assert.Equal(["c", "b"], spec.Members.Select(m => m.NodeId));
+    }
+
+    [Fact]
+    public void APlacementIsKeptWhenTheMatrixMovesAndMadeAgainWhenAMemberCannotTakePart()
+    {
+        AutoLab();
+        var publisher = Publisher();
+        Assert.Equal(["shard-c", "shard-b"], Assert.Single(publisher.GroupStatus()).Members);
+
+        // d becomes the nearest: no reload for a better number — the group keeps running as placed (D3).
+        Node("a", 3072, enroll: false, peers: [Trip("b", 0.4), Trip("c", 0.3), Trip("d", 0.1)], models: [Eight], mayHead: true);
+        Assert.Equal(["shard-c", "shard-b"], Assert.Single(publisher.GroupStatus()).Members);
+
+        // c is cordoned: placed again on the matrix of now, and the notes say why.
+        registry.Cordon("c");
+        var again = Assert.Single(publisher.GroupStatus());
+        Assert.True(again.Ready, again.Why);
+        Assert.Equal(["shard-d"], again.Members);
+        Assert.Equal("placed again: shard-c is cordoned", again.Placement[0]);
+    }
+
+    [Fact]
+    public void ReplaceForgetsAPlacementSoTheNextLookUsesTheMatrixOfNow()
+    {
+        AutoLab();
+        var publisher = Publisher();
+        Assert.Equal(["shard-c", "shard-b"], Assert.Single(publisher.GroupStatus()).Members);
+        Node("a", 3072, enroll: false, peers: [Trip("b", 0.4), Trip("c", 0.3), Trip("d", 0.1)], models: [Eight], mayHead: true);
+
+        Assert.True(publisher.Replace("llama-8b-auto"));
+
+        var again = Assert.Single(publisher.GroupStatus());
+        Assert.Equal(["shard-d"], again.Members);
+        Assert.StartsWith("placed again: an admin asked", again.Placement[0]);
+        Assert.False(publisher.Replace("llama-8b-split"));
+    }
+
+    [Fact]
+    public void TheReasonAGroupWasPlacedAgainOutlivesTheSettlingInBetween()
+    {
+        // Found in the lab: shard-d stopped, the group settled for 30 s, and the new placement no longer said why it moved.
+        AutoLab(toD: 0.1);
+        var publisher = Publisher();
+        Assert.Equal(["shard-d"], Assert.Single(publisher.GroupStatus()).Members);
+
+        options.Groups["llama-8b-auto"].SettleSeconds = 30;
+        registry.Cordon("d");
+        Assert.StartsWith("settling:", Assert.Single(publisher.GroupStatus()).Why);
+        Assert.Equal(["placed again: shard-d is cordoned"], Assert.Single(publisher.GroupStatus()).Placement);
+
+        options.Groups["llama-8b-auto"].SettleSeconds = 0;
+        var placed = Assert.Single(publisher.GroupStatus());
+        Assert.Equal(["shard-c", "shard-b"], placed.Members);
+        Assert.Equal("placed again: shard-d is cordoned", placed.Placement[0]);
+    }
+
+    [Fact]
+    public void AnAutoGroupWaitsForTheMatrixAndForAHeadAndSaysWhich()
+    {
+        AutoLab();
+        Node("a", 3072, enroll: false, peers: [Trip("b", 0.4), Trip("c", null), Trip("d", 12)], models: [Eight], mayHead: true);
+        Assert.Equal("waiting for the latency matrix: shard-a has not measured its round trip to shard-c yet", Assert.Single(Compute().Status).Why);
+
+        Node("a", 3072, enroll: false, peers: [Trip("b", 0.4), Trip("c", 0.3), Trip("d", 12)], models: [Eight], mayHead: false);
+        var status = Assert.Single(Compute().Status);
+        Assert.False(status.Ready);
+        Assert.Null(status.Head);
+        Assert.Equal("shard-a holds llama31-8b.gguf, and its owner has not set Node:Shards:AllowHead", status.Why);
+    }
+
+    [Fact]
+    public void AnAutoGroupsPoolIsItsMembersWhenTheAdminNamesThem()
+    {
+        AutoLab();
+        options.Groups["llama-8b-auto"].Members = ["shard-a", "shard-d"];
+
+        var group = Assert.Single(Compute().Status);
+
+        Assert.True(group.Ready, group.Why);
+        Assert.Equal(["shard-d"], group.Members);
+    }
+
+    [Fact]
+    public void AFleetStillConnectingIsNotPlacedOnItsFirstTwoNodes()
+    {
+        // Found in the lab: shard-a and shard-b connected first, the group was placed on them (20 ms apart) and kept, before
+        // shard-d — 0.1 ms away — had even enrolled. Now the fleet must hold still for SettleSeconds first.
+        AutoLab();
+        options.Groups["llama-8b-auto"].SettleSeconds = 30;
+
+        var group = Assert.Single(Compute().Status);
+
+        Assert.False(group.Ready);
+        Assert.StartsWith("settling: the nodes it could use changed 0 s ago; it is placed after 30 s without a change", group.Why);
+        Assert.Empty(group.Members);
     }
 
     private (IReadOnlyDictionary<string, ShardGroupList> Lists, IReadOnlyList<ShardGroupStatus> Status, IReadOnlyDictionary<string, ShardSeedList> Seeds) ComputeAll()

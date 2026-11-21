@@ -244,3 +244,26 @@ Measured (2026-11-20, built from source at 3.108.0, the 8B — `llama31-8b.gguf`
   are 9 MiB; a 70B's are 38 MiB, so there it is mostly `attn_k` and `attn_v` (142's cached reload: ~270 MiB a member).
 - The text was compared with the whole model in one container (`llama-server` on the same file, the same request).
 
+
+## A group the coordinator places itself (phase 144)
+
+`LAB_AUTO=1` defines the group with only `Mode=auto`, the model and the context; `LAB_SLOW="b c"` puts those nodes 20 ms away
+(`LAB_SLOW_SHAPE`), so the matrix has something to choose by. Only shard-a may head (it is the one with `AllowHead`).
+
+```sh
+LAB_MODEL_DIR=lab-models LAB_AUTO=1 LAB_SLOW="b c" LAB_MEMBER_DISK=1 LAB_GROUP=llama-8b-auto LAB_WAIT=600 ./tunnel-lab.sh
+docker stop shard-d      # the chosen member leaves: after SettleSeconds (30) the group is placed again, and says why
+curl -s -X POST -H "Authorization: Bearer adm135" localhost:15080/api/admin/shards/groups/llama-8b-auto/replace   # on purpose
+```
+
+Measured (2026-11-21, built from source at 3.109.0, the 8B, four nodes offering 3 GiB, 4 CPUs each):
+
+| | Placed on | Round trip from shard-a | 64 tokens |
+|---|---|---:|---:|
+| All four up | shard-d (b, c left out) | 0.30 ms | 9.9 s |
+| shard-d stopped | shard-c (52 s after the stop, from its own disk) | 20 ms | 11.8–12.3 s |
+| Text | | | the same every time |
+
+- Containers started to the first answer: 80 s, 30 of them settling.
+- **Found here:** without the settling, the first run placed the group on shard-a and shard-b — the first two nodes to connect —
+  and kept it there. That is why a placement now waits for the fleet to hold still.

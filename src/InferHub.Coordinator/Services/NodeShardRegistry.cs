@@ -62,6 +62,15 @@ public sealed class ShardGroupDefinition
     public int Workers { get; set; } = 2;
 
     public bool IsCommunity => string.Equals(Mode?.Trim(), "community", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Phase 144: <c>auto</c> — the coordinator picks the head (a node that holds <see cref="Model"/> and may head) and the
+    /// members (its peers, by their offers and its round trips to them). <see cref="Head"/> pins the head; <see cref="Members"/>,
+    /// when given, is the pool it picks from.</summary>
+    public bool IsAuto => string.Equals(Mode?.Trim(), "auto", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Phase 144 D3: an <c>auto</c> group is placed only once the nodes it could use, and who may reach whom, have not
+    /// changed for this long — so a fleet still connecting is not placed on its first two nodes and kept there.</summary>
+    public int SettleSeconds { get; set; } = 30;
 }
 
 /// <summary>The <c>ShardGroups</c> section, by group name. Empty: no group, and nothing is ever sent (the invariant).</summary>
@@ -87,6 +96,12 @@ public sealed record ShardGroupStatus(
 
     /// <summary>Phase 143 D1: where each member's layers come from on a load — its own disk, or the head over the network, and why.</summary>
     public IReadOnlyList<string> Loads { get; init; } = [];
+
+    /// <summary>Phase 144: for an <c>auto</c> group, how the coordinator placed it — the head, each member's round trip, what was left out.</summary>
+    public IReadOnlyList<string> Placement { get; init; } = [];
+
+    /// <summary>Phase 144: <c>private</c>, <c>community</c> or <c>auto</c> — whether a person or the coordinator chose the members.</summary>
+    public string Mode { get; init; } = "private";
 }
 
 /// <summary>
@@ -112,6 +127,15 @@ public sealed class ShardPeerPublisher(
     private readonly Dictionary<string, string> sent = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> sentGroups = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> sentSeeds = new(StringComparer.Ordinal);
+
+    private readonly object placing = new();
+    private readonly Dictionary<string, Held> held = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, (string Shape, DateTimeOffset Since)> settling = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> brokeWhy = new(StringComparer.OrdinalIgnoreCase);
+    private int settleTimer;
+
+    /// <summary>Phase 144 D3: an <c>auto</c> group's placement, kept (in memory, rule 4) for as long as it can run.</summary>
+    private sealed record Held(string Model, int Context, string HeadId, IReadOnlyList<string> MemberIds, IReadOnlyList<string> Notes);
 
     private IReadOnlyDictionary<string, ShardGroupDefinition> Definitions =>
         groupOptions?.Value.Groups ?? new Dictionary<string, ShardGroupDefinition>();
@@ -146,7 +170,10 @@ public sealed class ShardPeerPublisher(
 
         foreach (var (name, definition) in Definitions.OrderBy(d => d.Key, StringComparer.OrdinalIgnoreCase))
         {
-            var head = Find(definition.Head);
+            // Phase 144: an auto group's head and members come from the placement, not from the definition.
+            var auto = definition.IsAuto;
+            var placed = auto && !string.IsNullOrWhiteSpace(definition.Model) ? Place(name, definition, nodes, peerLists) : default;
+            var head = auto ? placed.Head : Find(definition.Head);
             var reported = head is null ? null : shards.Of(head.NodeId)?.Groups?.FirstOrDefault(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase));
             var listed = head is not null && peerLists.TryGetValue(head.ConnectionId, out var headList)
                 ? headList.Peers.Select(p => p.NodeId).ToHashSet(StringComparer.OrdinalIgnoreCase)
@@ -162,27 +189,12 @@ public sealed class ShardPeerPublisher(
                     return isHead ? $"the head '{key}' is not connected" : $"member '{key}' is not connected";
                 }
 
-                if (node.Cordoned)
+                if (Unavailable(node) is { } unavailable)
                 {
-                    return $"{node.Name} is cordoned";
+                    return unavailable;
                 }
 
-                if (node.Sharing is { Paused: true } paused)
-                {
-                    return $"{node.Name} is paused by its owner ({paused.Reason ?? "not sharing now"})";
-                }
-
-                var state = shards.Of(node.NodeId);
-
-                if (state is not { State: NodeShardState.Running })
-                {
-                    return $"{node.Name}'s worker is not running (Node:Shards)";
-                }
-
-                if (state.Tunnel is not { Off: null })
-                {
-                    return $"{node.Name}'s tunnel is not open: {state.Tunnel?.Off ?? "no tunnel"}";
-                }
+                var state = shards.Of(node.NodeId)!;
 
                 if (!isHead && !listed.Contains(node.NodeId))
                 {
@@ -194,7 +206,9 @@ public sealed class ShardPeerPublisher(
                     : null;
             }
 
-            string? why = string.IsNullOrWhiteSpace(definition.Model) ? "no Model: the file on the head to run" : NotReady(definition.Head ?? "", head, isHead: true);
+            string? why = string.IsNullOrWhiteSpace(definition.Model) ? "no Model: the file on the head to run"
+                : auto ? placed.Why ?? NotReady(head?.Name ?? "", head, isHead: true)
+                : NotReady(definition.Head ?? "", head, isHead: true);
             var members = new List<(string Slot, Services.NodeSnapshot Node)>();
             var substitutions = new List<string>();
 
@@ -225,7 +239,12 @@ public sealed class ShardPeerPublisher(
                 }
             }
 
-            if (why is null && !community)
+            if (why is null && auto)
+            {
+                members.AddRange(placed.Members.Select(n => (n.Name, n)));
+            }
+
+            if (why is null && !community && !auto)
             {
                 var slots = definition.Members.Where(m => !string.Equals(Find(m)?.NodeId, head!.NodeId, StringComparison.OrdinalIgnoreCase)).ToArray();
                 var spares = definition.Spares
@@ -329,8 +348,14 @@ public sealed class ShardPeerPublisher(
                     community));
             }
 
-            status.Add(new ShardGroupStatus(name, head?.Name ?? definition.Head, why is null ? members.Select(m => m.Node.Name).ToArray() : definition.Members,
-                definition.Model, why is null, why, reported, substitutions) { Loads = loads });
+            status.Add(new ShardGroupStatus(name, head?.Name ?? (auto ? null : definition.Head),
+                why is null || auto ? members.Select(m => m.Node.Name).ToArray() : definition.Members,
+                definition.Model, why is null, why, reported, substitutions)
+            {
+                Loads = loads,
+                Placement = placed.Notes ?? [],
+                Mode = auto ? "auto" : community ? "community" : "private"
+            });
         }
 
         var result = nodes.ToDictionary(n => n.ConnectionId, n => new ShardGroupList(lists.TryGetValue(n.ConnectionId, out var s) ? s : []), StringComparer.Ordinal);
@@ -362,6 +387,216 @@ public sealed class ShardPeerPublisher(
     }
 
     private static long Weight(NodeShardState state) => Math.Max(1, state.RamMiB + state.VramMiB);
+
+    private static bool Is(Services.NodeSnapshot node, string? key) =>
+        !string.IsNullOrWhiteSpace(key)
+        && (string.Equals(node.NodeId, key.Trim(), StringComparison.OrdinalIgnoreCase) || string.Equals(node.Name, key.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Why a connected node cannot be in any group right now (137 D1), or null: cordoned, paused, no worker, no tunnel.</summary>
+    private string? Unavailable(Services.NodeSnapshot node)
+    {
+        if (node.Cordoned)
+        {
+            return $"{node.Name} is cordoned";
+        }
+
+        if (node.Sharing is { Paused: true } paused)
+        {
+            return $"{node.Name} is paused by its owner ({paused.Reason ?? "not sharing now"})";
+        }
+
+        var state = shards.Of(node.NodeId);
+
+        if (state is not { State: NodeShardState.Running })
+        {
+            return $"{node.Name}'s worker is not running (Node:Shards)";
+        }
+
+        return state.Tunnel is not { Off: null } ? $"{node.Name}'s tunnel is not open: {state.Tunnel?.Off ?? "no tunnel"}" : null;
+    }
+
+    /// <summary>
+    /// Phase 144 D1/D3: an <c>auto</c> group's head and members. A placement once made is kept while every node in it can still
+    /// take part, the head still holds the file and the offers still hold the model; only then is it made again, on the matrix of
+    /// that moment, and the notes say what broke. A coordinator restart forgets it (rule 4) and places afresh.
+    /// </summary>
+    private (Services.NodeSnapshot? Head, IReadOnlyList<Services.NodeSnapshot> Members, string? Why, IReadOnlyList<string>? Notes) Place(
+        string name, ShardGroupDefinition definition, IReadOnlyCollection<Services.NodeSnapshot> nodes, IReadOnlyDictionary<string, ShardPeerList> peerLists)
+    {
+        var model = definition.Model!.Trim();
+        var pool = nodes.Where(n => definition.Members.Count == 0 || definition.Members.Any(m => Is(n, m)) || Is(n, definition.Head)).ToArray();
+
+        HashSet<string> Listed(Services.NodeSnapshot node) => peerLists.TryGetValue(node.ConnectionId, out var list)
+            ? list.Peers.Select(p => p.NodeId).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        lock (placing)
+        {
+            string? broke = null;
+
+            if (held.TryGetValue(name, out var keep))
+            {
+                broke = keep.Model != model || keep.Context != definition.Context
+                    ? "the group's model or context changed"
+                    : Broken(keep, pool, Listed);
+
+                if (broke is null)
+                {
+                    return (pool.First(n => n.NodeId == keep.HeadId), keep.MemberIds.Select(id => pool.First(n => n.NodeId == id)).ToArray(), null, keep.Notes);
+                }
+
+                held.Remove(name);
+                brokeWhy[name] = broke;
+            }
+
+            // Found in the lab: the reason must outlive the settling that follows a break, or the new placement forgets it.
+            broke ??= brokeWhy.GetValueOrDefault(name);
+
+            var candidates = pool
+                .Where(n => Unavailable(n) is null)
+                .Select(n =>
+                {
+                    var state = shards.Of(n.NodeId)!;
+                    var listed = Listed(n);
+                    return new PlacementCandidate(
+                        n.NodeId,
+                        n.Name,
+                        Weight(state),
+                        state.Models?.FirstOrDefault(f => string.Equals(f.Name, model, StringComparison.Ordinal)),
+                        state is { MayHead: true, Models: not null } && (string.IsNullOrWhiteSpace(definition.Head) || Is(n, definition.Head)),
+                        state.Protocol,
+                        (state.Peers ?? []).Where(p => listed.Contains(p.NodeId)).ToArray());
+                })
+                .ToArray();
+
+            // D3: a placement is kept, so it is made only once the fleet holds still — who could take part, who holds the file,
+            // who may reach whom — for SettleSeconds. Round trips are not part of it: a row still measuring waits in Place.
+            var shape = string.Join('|', candidates
+                .OrderBy(c => c.NodeId, StringComparer.Ordinal)
+                .Select(c => $"{c.NodeId}:{c.OfferMiB}:{c.File?.MiB}:{c.MayHead}:{c.Protocol}:{string.Join(',', c.Peers.Select(p => p.NodeId).Order(StringComparer.Ordinal))}"));
+            var now = DateTimeOffset.UtcNow;
+
+            if (!settling.TryGetValue(name, out var since) || since.Shape != shape)
+            {
+                settling[name] = since = (shape, now);
+            }
+
+            var wait = TimeSpan.FromSeconds(Math.Max(0, definition.SettleSeconds)) - (now - since.Since);
+
+            if (wait > TimeSpan.Zero)
+            {
+                Wake(wait);
+                var settle = $"settling: the nodes it could use changed {(int)(now - since.Since).TotalSeconds} s ago; it is placed after {definition.SettleSeconds} s without a change";
+                return (null, [], settle, broke is null ? [] : [$"placed again: {broke}"]);
+            }
+
+            var result = ShardPlacement.Place(model, definition.Context, candidates);
+            IReadOnlyList<string> notes = broke is null ? result.Notes : [$"placed again: {broke}", .. result.Notes];
+
+            if (!result.Placed)
+            {
+                return (null, [], result.Why, notes);
+            }
+
+            held[name] = new Held(model, definition.Context, result.HeadId!, result.MemberIds, notes);
+            brokeWhy.Remove(name);
+            logger.LogInformation("Placed group {Group}: {Notes}", name, string.Join("; ", notes));
+            return (pool.First(n => n.NodeId == result.HeadId), result.MemberIds.Select(id => pool.First(n => n.NodeId == id)).ToArray(), null, notes);
+        }
+    }
+
+    /// <summary>D3: look again once a settling group may be placed — nothing else would, if the fleet then stays quiet. One at a time.</summary>
+    private void Wake(TimeSpan after)
+    {
+        if (Interlocked.Exchange(ref settleTimer, 1) == 1)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(after + TimeSpan.FromSeconds(1));
+                Interlocked.Exchange(ref settleTimer, 0);
+                await PublishAsync();
+            }
+            catch (Exception ex)
+            {
+                Interlocked.Exchange(ref settleTimer, 0);
+                logger.LogDebug(ex, "Could not look at the settling shard groups again");
+            }
+        });
+    }
+
+    /// <summary>D3: what stops a kept placement from running now, or null when it still can.</summary>
+    private string? Broken(Held keep, IReadOnlyList<Services.NodeSnapshot> pool, Func<Services.NodeSnapshot, HashSet<string>> listed)
+    {
+        var head = pool.FirstOrDefault(n => n.NodeId == keep.HeadId);
+
+        if (head is null)
+        {
+            return "its head left";
+        }
+
+        if (Unavailable(head) is { } problem)
+        {
+            return problem;
+        }
+
+        var state = shards.Of(head.NodeId)!;
+        var file = state.Models?.FirstOrDefault(f => string.Equals(f.Name, keep.Model, StringComparison.Ordinal));
+
+        if (file is null || state.MayHead != true)
+        {
+            return $"{head.Name} no longer holds {keep.Model} or may no longer head";
+        }
+
+        var reach = listed(head);
+        var offers = new List<long> { Weight(state) };
+
+        foreach (var id in keep.MemberIds)
+        {
+            var member = pool.FirstOrDefault(n => n.NodeId == id);
+
+            if (member is null)
+            {
+                return "a member left";
+            }
+
+            if (Unavailable(member) is { } memberProblem)
+            {
+                return memberProblem;
+            }
+
+            var memberState = shards.Of(member.NodeId)!;
+
+            if (!reach.Contains(member.NodeId) || memberState.Protocol != state.Protocol)
+            {
+                return $"{member.Name} is no longer one of {head.Name}'s peers on its protocol";
+            }
+
+            offers.Add(Weight(memberState));
+        }
+
+        var (weights, kv, reserve) = ShardPlacement.Need(file, keep.Context);
+        return ShardPlacement.Holds(weights + kv, reserve, offers) ? null : "the offers no longer hold the model";
+    }
+
+    /// <summary>Phase 144 D3: forget an <c>auto</c> group's placement, so the next look places it on the matrix of now. False: none was held.</summary>
+    public bool Replace(string name)
+    {
+        lock (placing)
+        {
+            if (!held.Remove(name.Trim()))
+            {
+                return false;
+            }
+
+            brokeWhy[name.Trim()] = "an admin asked (POST /api/admin/shards/groups/{name}/replace)";
+            return true;
+        }
+    }
 
     /// <summary>
     /// Phase 137 D1: with groups configured, any change in the registry — an owner's pause (116), a cordon — is a reason to

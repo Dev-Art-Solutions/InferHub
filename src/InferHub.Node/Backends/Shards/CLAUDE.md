@@ -1,10 +1,10 @@
 # InferHub.Node/Backends/Shards — agent context
 
-**Scope: `src/InferHub.Node/Backends/Shards/`, the shard contracts in `src/InferHub.Shared/Fit/` (`GroupFit`, `ShardOffer`, `ShardSeed`), the hub's
+**Scope: `src/InferHub.Node/Backends/Shards/`, the shard contracts in `src/InferHub.Shared/Fit/` (`GroupFit`, `ShardOffer`, `ShardSeed`, `ShardPlacement`), the hub's
 `Services/NodeShardRegistry.cs` and `Services/ShardRelay.cs`, and the lab in `deploy/lab/shards/`.** One model split by layers across
 several nodes: the group estimate, a node's shard worker, the mTLS tunnel between nodes, the groups a coordinator assembles
 (private cloud and community), the relay for nodes with no direct path — and since 142 the track that takes it past the 8B lab:
-a 70B no node holds, and (143) a member that loads its layers from its own copy of the file.
+a 70B no node holds, (143) a member that loads its layers from its own copy of the file, and (144) a group the coordinator places itself.
 
 > **Read the root `CLAUDE.md` first, then `src/InferHub.Node/Backends/CLAUDE.md`** (118's estimate, 95's `EngineProcess`, 120's
 > management jobs — all used here). The invariants that bind hardest: **the RPC port is never reachable off the node**
@@ -391,3 +391,43 @@ Filling the caches (1 039 and 1 355 MiB) is read and written on the member's own
 unchanged, and their own tests stand; a 70B filled this way (the arithmetic is the 8B's, and 142's cached reload already sent ~270 MiB
 a member); a GPU worker (`-d Vulkan0`) — whether a card's buffer takes the same `SET_TENSOR_HASH` path was not run; a llama.cpp
 build other than b12182 (the threshold, the hash and the file name are its code, not a protocol promise).
+
+### Phase 144 (the coordinator places a group itself: the admin names the model, the files, the offers and the round trips do the rest)
+
+Files: Shared `Fit/ShardPlacement.cs` (`ShardModelFile`, `PlacementCandidate`, `ShardPlacement.Place/Need/Holds`), `NodeShardState.
+Models/MayHead`; node `Backends/Shards/ShardModelScanner.cs` (reported by `ShardWorker.State`); hub `ShardGroupDefinition.IsAuto/
+SettleSeconds`, `ShardPeerPublisher.Place/Broken/Replace/Wake` and `Unavailable` (137 D1's checks, now shared), `ShardGroupStatus.
+Placement/Mode`; `mode` + `placement` on `GET /api/admin/shards/groups`, `POST /api/admin/shards/groups/{name}/replace`; the console's
+*Group files* column and auto rows; `tunnel-lab.sh` `LAB_AUTO`, `LAB_SLOW`.
+
+**D1, load-bearing — the objective is the head's sum of round trips to its members, then fewest members, then members that hold
+the file.** Every token goes to each worker and back in turn (141), so those round trips add up and bandwidth hardly counts. A head
+is any node that reports the file and `MayHead`; for each, every subset of its reachable peers on its RPC protocol (exact, over the
+12 nearest) is checked against the memory rule and the smallest sum wins, compared to 0.1 ms so jitter is not a preference. **The
+memory rule is exact for a split by offers**: each worker uses `(W + K) · offer / Σ` + reserve (133's 512 MiB + context/100), so all
+fit when `(W + K) ≤ Σ · (1 − reserve / smallest)`. A head that holds the model alone is told so — a group is never formed for it.
+*Rejected:* 138's largest-offers-first — it ignores the matrix the console already draws; a greedy nearest-first — it takes a near
+small node and then needs a third.
+
+**D2 — a node reports its group files and its consent to head.** `Models` (name, MiB, layers, KV per token, from the header; a split
+GGUF once, by its first part, with every part's bytes) and `MayHead` (`Node:Shards:AllowHead`), found exactly as `ModelFile` finds
+them (the directory, then one down). Scanned in the background at most every 30 s, a header re-read only when size or time moved.
+Null before 3.109: such a node is never a head (it may still be a member).
+
+**D3 — a placement is kept while it can run, and made only on a fleet that holds still.** Kept in memory (rule 4) while the head
+and each member pass 137 D1, the head still holds the file and may head, and the offers still hold the model; when not, the reason
+is kept until the next placement says it (*placed again: shard-d is cordoned*). Made only when (a) the candidates, their files,
+offers and who may reach whom have not changed for `SettleSeconds` (30) — a timer looks again, nothing else would on a quiet fleet
+— and (b) the candidate head has measured a round trip to every peer. **Found in the lab:** without (a), shard-a and shard-b
+connected first, the group was placed on them 20 ms apart and kept, before shard-d (0.3 ms) had enrolled. A better number never
+moves a running group — a reload is minutes (142); `POST …/replace` does it on purpose.
+
+**The lab (2026-11-21, `LAB_AUTO=1 LAB_SLOW="b c" LAB_MEMBER_DISK=1`, b12182, CPU, the 8B, four nodes offering 3 GiB, only shard-a
+may head):** settled 30 s, then placed on **shard-d (0.30 ms)**, leaving out shard-b (20 ms) and shard-c (21 ms) — a + one member
+holds the 8B at 2 048 tokens (5.6 of 6 GiB). Containers up to an answer: **80 s**. 64 tokens: **9.9 s** through d. `docker stop
+shard-d`: settled 30 s, placed on **shard-c**, which filled its cache from its own copy, running **52 s** after the stop; the same
+64 tokens took **11.8–12.3 s**. The text was **identical** through b (the first, wrongly placed run), d and c.
+
+**Not established:** a real network — every round trip here is netem on one PC; that the sum of round trips predicts speed beyond
+this one comparison (it is 141's model, not re-measured per placement); more than four nodes or the 12-peer cut; GPUs; a fleet
+whose nodes come and go faster than `SettleSeconds` (it would wait as long as they do).

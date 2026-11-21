@@ -29,6 +29,7 @@ public sealed class ShardWorker : IHostedService, IAsyncDisposable
     private bool collecting;
     private string? complaint;
     private readonly ShardTunnel? tunnel;
+    private readonly ShardModelScanner? models;
 
     public ShardWorker(IOptions<NodeOptions> node, IOptions<BackendOptions> backend, ILogger<ShardWorker> logger, ShardTunnel? tunnel = null, TimeProvider? time = null)
         : this(node.Value.Shards, backend.Value, logger, time, File.Exists, Environment.GetEnvironmentVariable("PATH"), tunnel)
@@ -51,6 +52,10 @@ public sealed class ShardWorker : IHostedService, IAsyncDisposable
         {
             return;
         }
+
+        // Phase 144 D2: the files this node could head a group with, for the hub to place groups by itself.
+        models = new ShardModelScanner(ShardGroupHost.ModelsDirectory(options, backend), logger, this.time);
+        models.Changed += () => Changed?.Invoke();
 
         executable = Locate(options, backend, exists, path);
         problem = Refusal(options, executable, exists);
@@ -167,7 +172,9 @@ public sealed class ShardWorker : IHostedService, IAsyncDisposable
                 tunnel?.Peers(),
                 groups?.Invoke() is { Count: > 0 } heading ? heading : null,
                 options.JoinsCommunity,
-                seeds?.Invoke());
+                seeds?.Invoke(),
+                models?.Current(),
+                options.AllowHead);
         }
     }
 
@@ -178,6 +185,7 @@ public sealed class ShardWorker : IHostedService, IAsyncDisposable
             return Task.CompletedTask;
         }
 
+        _ = models?.RefreshAsync();
         process.Start();
         watching = new CancellationTokenSource();
         watch = Task.Run(() => WatchAsync(watching.Token));

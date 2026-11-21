@@ -1296,6 +1296,49 @@ moves the cache, which keeps that member's share of the model on its disk.
 **What this does not show:** the file delivered through the hub in the lab (the lab mounts it), a
 70B filled this way, a GPU worker, and a llama.cpp other than b12182, whose cache this relies on.
 
+### The coordinator places a group itself (v3.109+)
+
+Until 3.109 an admin wrote every group by hand: the head, the members, the spares. Now a group can
+name only the model:
+
+```json
+"ShardGroups": { "llama-8b-auto": { "Mode": "auto", "Model": "llama31-8b.gguf", "Context": 2048 } }
+```
+
+The coordinator picks the head and the members from what the nodes already report:
+
+- **The head** is a node that holds the file in its `Node:Shards:ModelsDir` and whose owner set
+  `Node:Shards:AllowHead`. Nodes now report the GGUF files they hold (name, size, layers).
+- **The members** are peers the head can reach whose offers, together with the head's, hold the
+  model at the context. Among those it takes the set with the **smallest sum of round trips from the
+  head** — the matrix the console draws under *Shard tunnels*. Every token visits each member and
+  comes back, so those round trips, not bandwidth, set a group's speed. Then fewer members, then
+  members that hold the file themselves (they load from their own disk, 3.108).
+- **A placement is kept while it can run.** A better round trip never reloads a running group. When
+  a node in it cannot take part — gone, cordoned, paused — the group is placed again and says why.
+  `POST /api/admin/shards/groups/{name}/replace` places it again on purpose.
+- **It waits for the fleet to hold still** (`SettleSeconds`, 30) before placing, so nodes that are
+  still connecting are not left out.
+
+`GET /api/admin/shards/groups` shows how it was chosen:
+
+```json
+"mode": "auto", "head": "shard-a", "members": ["shard-d"],
+"placement": ["head shard-a: holds llama31-8b.gguf (4.3 GiB), offers 3 GiB",
+              "members shard-d (0.30 ms, offers 3 GiB, holds the file): 0.30 ms of round trips per pass, about 5.6 GiB needed of 6 GiB offered",
+              "left out: shard-b: 20 ms from shard-a, not needed",
+              "left out: shard-c: 21 ms from shard-a, not needed"]
+```
+
+`Head` pins the head and `Members` limits the pool; without `Mode: auto` nothing changes.
+
+- **In the lab** (four nodes in Docker on one PC, the 8B, two of them 20 ms away), the coordinator
+  chose the near node, and 64 tokens took 9.9 s. With that node stopped, it placed the group on a
+  far one within 52 s; the same 64 tokens took 11.8–12.3 s, and the text was the same.
+
+**What this does not show:** a real network (every round trip here is made by netem), that the sum
+of round trips predicts speed beyond this one comparison, more than four nodes, and GPUs.
+
 ### A long answer as a job you can follow (v3.103+)
 
 A chat that takes minutes — a big model, a model split across several nodes, a fleet that is full —
