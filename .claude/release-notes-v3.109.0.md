@@ -66,3 +66,13 @@ and be refused (`notBefore` earlier than the issuer's). Seen as a rare test fail
 Suite green except two `ChatGptBackendTests` that fail on this machine only (a path that resolves under the repository; green on
 CI) and a `VoiceCatalogueTests` case that failed once under the full suite's load and passes alone. New: `ShardPlacementTests` (11),
 `ShardGroupsTests` auto cases (7), `ShardModelScannerTests` (3).
+
+## Published-image check (2026-11-22)
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.109.0` (revision label `22c5a21`) and `inferhub-node:3.109.0` with the lab's
+llama.cpp on top, the same lab (`HUB_IMAGE=… NODE_IMAGE=inferhub-lab-node:3.109.0 LAB_AUTO=1 LAB_SLOW="b c" LAB_MEMBER_DISK=1`):
+
+- Settled, placed on **shard-d (0.23 ms)**, b and c left out at 20 ms; shard-d loaded from its own disk; the same text. 79 s from
+  containers started to the answer.
+- `docker stop shard-d`: running on **shard-c 57 s later**, `placement[0]` = *placed again: a member left*.
+- `POST …/replace`: placed again at once, *placed again: an admin asked (…)*.
