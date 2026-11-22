@@ -11,6 +11,7 @@
 #   LAB_SHAPE="delay 15ms rate 50mbit" …                # every node's link shaped from its start (a first load over it)
 #   LAB_MEMBER_DISK=1 …                                 # 143: the members hold the file too and load their layers from it
 #   LAB_AUTO=1 LAB_SLOW="b c" …                         # 144: Mode=auto, the hub places the group; b and c 20 ms away
+#   LAB_RETRY=180 LAB_SETTLE=30 …                       # 145: RetrySeconds and SettleSeconds on the group (retry-lab.sh)
 #   docker exec -u root shard-c tc qdisc add dev eth0 root netem delay 15ms rate 50mbit   # shape one node's link
 #
 # Lessons from running it: set Node:Shards:Threads to the container's CPUs — llama.cpp's default is every core on the
@@ -29,6 +30,9 @@ else
   members=(-e "ShardGroups__${GROUP}__Head=shard-a" -e "ShardGroups__${GROUP}__Members__0=shard-b" -e "ShardGroups__${GROUP}__Members__1=shard-c"
     -e "ShardGroups__${GROUP}__Spares__0=shard-d")
 fi
+# Phase 145: a request waits at the hub for its group (RetrySeconds); a member that returns takes its place back after SettleSeconds.
+[ -n "${LAB_RETRY:-}" ] && members+=(-e "ShardGroups__${GROUP}__RetrySeconds=$LAB_RETRY")
+[ -n "${LAB_SETTLE:-}" ] && members+=(-e "ShardGroups__${GROUP}__SettleSeconds=$LAB_SETTLE")
 
 docker rm -f lab-hub shard-a shard-b shard-c shard-d >/dev/null 2>&1
 docker network rm lab135 >/dev/null 2>&1

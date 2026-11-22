@@ -71,6 +71,14 @@ public sealed class ShardGroupDefinition
     /// <summary>Phase 144 D3: an <c>auto</c> group is placed only once the nodes it could use, and who may reach whom, have not
     /// changed for this long — so a fleet still connecting is not placed on its first two nodes and kept there.</summary>
     public int SettleSeconds { get; set; } = 30;
+
+    /// <summary>Phase 145 D1/D2: how long a request for this group waits at the hub for it to run again — one that failed before its
+    /// first token, or one that arrives while it reassembles — before the error or the 503 it gets today. 0 (the default): no wait.</summary>
+    public int RetrySeconds { get; set; }
+
+    /// <summary>Phase 145 D4: an <c>auto</c> group is placed again when a node its placement lost is back and has held still for
+    /// <see cref="SettleSeconds"/>. Off: a kept placement moves only when it cannot run (144 D3).</summary>
+    public bool FailBack { get; set; }
 }
 
 /// <summary>The <c>ShardGroups</c> section, by group name. Empty: no group, and nothing is ever sent (the invariant).</summary>
@@ -133,6 +141,18 @@ public sealed class ShardPeerPublisher(
     private readonly Dictionary<string, (string Shape, DateTimeOffset Since)> settling = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> brokeWhy = new(StringComparer.OrdinalIgnoreCase);
     private int settleTimer;
+
+    // Phase 145 D3: per "group|slot", the spare standing in while the group is sent, and since when its member can take part again.
+    private readonly ConcurrentDictionary<string, string> standIns = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> backSince = new(StringComparer.OrdinalIgnoreCase);
+
+    // Phase 145 D4: the nodes an auto group's placement lost, and since when each is back.
+    private readonly Dictionary<string, HashSet<string>> lost = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTimeOffset> lostBackSince = new(StringComparer.OrdinalIgnoreCase);
+
+    // Phase 145 D1: whether each group served at the last look, and how often it stopped serving — what a retry waits to see.
+    private readonly ConcurrentDictionary<string, bool> serving = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, long> interruptions = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Phase 144 D3: an <c>auto</c> group's placement, kept (in memory, rule 4) for as long as it can run.</summary>
     private sealed record Held(string Model, int Context, string HeadId, IReadOnlyList<string> MemberIds, IReadOnlyList<string> Notes);
@@ -244,6 +264,9 @@ public sealed class ShardPeerPublisher(
                 members.AddRange(placed.Members.Select(n => (n.Name, n)));
             }
 
+            // Phase 145 D3: which spare stands in for which slot on this look — kept only if the group is sent.
+            var standing = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
             if (why is null && !community && !auto)
             {
                 var slots = definition.Members.Where(m => !string.Equals(Find(m)?.NodeId, head!.NodeId, StringComparison.OrdinalIgnoreCase)).ToArray();
@@ -260,15 +283,41 @@ public sealed class ShardPeerPublisher(
                 foreach (var slot in slots)
                 {
                     var node = Find(slot);
+                    var slotKey = $"{name}|{slot}";
+                    standIns.TryGetValue(slotKey, out var standingIn);
+                    var keeping = standingIn is null ? default : spares.FirstOrDefault(s => s.Node!.NodeId == standingIn);
+                    var keepingReady = keeping.Node is not null && NotReady(keeping.Key, keeping.Node, isHead: false) is null;
 
                     if (NotReady(slot, node, isHead: false) is not { } problem)
                     {
+                        // D3 (145): back while its spare serves — the spare keeps the slot until the member has held still for
+                        // SettleSeconds, so a member that drops and returns costs one reload, not two.
+                        if (keepingReady)
+                        {
+                            var back = backSince.GetOrAdd(slotKey, now);
+                            var left = TimeSpan.FromSeconds(Math.Max(0, definition.SettleSeconds)) - (now - back);
+
+                            if (left > TimeSpan.Zero)
+                            {
+                                Wake(left);
+                                spares.Remove(keeping);
+                                members.Add((slot, keeping.Node!));
+                                standing[slotKey] = keeping.Node!.NodeId;
+                                substitutions.Add($"{keeping.Node!.Name} stands in for {node!.Name}, which is back: it takes its place back in {(int)Math.Ceiling(left.TotalSeconds)} s");
+                                continue;
+                            }
+                        }
+
+                        backSince.TryRemove(slotKey, out _);
                         members.Add((slot, node!));
                         continue;
                     }
 
-                    // D1: the first spare that can take part now stands in; each spare once.
-                    var stand = spares.FirstOrDefault(s => NotReady(s.Key, s.Node, isHead: false) is null);
+                    backSince.TryRemove(slotKey, out _);
+
+                    // D1 (137): the first spare that can take part now stands in; each spare once. The one already standing in keeps
+                    // the slot (145) — another would be a reload for nothing.
+                    var stand = keepingReady ? keeping : spares.FirstOrDefault(s => NotReady(s.Key, s.Node, isHead: false) is null);
 
                     if (stand.Node is null)
                     {
@@ -278,6 +327,7 @@ public sealed class ShardPeerPublisher(
 
                     spares.Remove(stand);
                     members.Add((slot, stand.Node));
+                    standing[slotKey] = stand.Node.NodeId;
                     substitutions.Add($"{stand.Node.Name} stands in for {node?.Name ?? slot} ({problem})");
                 }
             }
@@ -348,6 +398,31 @@ public sealed class ShardPeerPublisher(
                     community));
             }
 
+            // Phase 145 D3: a stand-in is remembered only while the group is sent with it; a group not sent has nothing to reload.
+            foreach (var key in standIns.Keys.Where(k => k.StartsWith(name + "|", StringComparison.OrdinalIgnoreCase) && (why is not null || !standing.ContainsKey(k))).ToArray())
+            {
+                standIns.TryRemove(key, out _);
+                backSince.TryRemove(key, out _);
+            }
+
+            if (why is null)
+            {
+                foreach (var (key, spare) in standing)
+                {
+                    standIns[key] = spare;
+                }
+            }
+
+            // Phase 145 D1: a group that served and now does not is an interruption — a request that failed on it waits for one.
+            var servesNow = why is null && reported?.State == ShardGroupState.Running;
+
+            if (serving.TryGetValue(name, out var served) && served && !servesNow)
+            {
+                interruptions.AddOrUpdate(name, 1, (_, n) => n + 1);
+            }
+
+            serving[name] = servesNow;
+
             status.Add(new ShardGroupStatus(name, head?.Name ?? (auto ? null : definition.Head),
                 why is null || auto ? members.Select(m => m.Node.Name).ToArray() : definition.Members,
                 definition.Model, why is null, why, reported, substitutions)
@@ -385,6 +460,16 @@ public sealed class ShardPeerPublisher(
             _ => $"group '{status.Name}' is starting on {status.Head}: {status.Reported?.State ?? "sent to the head"}"
         };
     }
+
+    /// <summary>Phase 145 D1/D2: how long a request for this group may wait for it at the hub, or null when the model is no group's or
+    /// the group does not wait.</summary>
+    public TimeSpan? RetryWindow(string model) =>
+        !string.IsNullOrWhiteSpace(model) && Definitions.TryGetValue(model.Trim(), out var definition) && definition.RetrySeconds > 0
+            ? TimeSpan.FromSeconds(definition.RetrySeconds)
+            : null;
+
+    /// <summary>Phase 145 D1: how many times this group has stopped serving since the coordinator started.</summary>
+    public long Interruptions(string model) => interruptions.GetValueOrDefault(model.Trim());
 
     private static long Weight(NodeShardState state) => Math.Max(1, state.RamMiB + state.VramMiB);
 
@@ -440,6 +525,9 @@ public sealed class ShardPeerPublisher(
                     ? "the group's model or context changed"
                     : Broken(keep, pool, Listed);
 
+                // D4 (145): a node this group lost, back and settled, is a reason to place it again — only with FailBack.
+                broke ??= definition.FailBack ? Returned(name, definition, pool) : null;
+
                 if (broke is null)
                 {
                     return (pool.First(n => n.NodeId == keep.HeadId), keep.MemberIds.Select(id => pool.First(n => n.NodeId == id)).ToArray(), null, keep.Notes);
@@ -447,6 +535,13 @@ public sealed class ShardPeerPublisher(
 
                 held.Remove(name);
                 brokeWhy[name] = broke;
+
+                if (!lost.TryGetValue(name, out var gone))
+                {
+                    lost[name] = gone = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                }
+
+                gone.UnionWith(new[] { keep.HeadId }.Concat(keep.MemberIds).Where(id => pool.FirstOrDefault(n => n.NodeId == id) is not { } member || Unavailable(member) is not null));
             }
 
             // Found in the lab: the reason must outlive the settling that follows a break, or the new placement forgets it.
@@ -500,6 +595,11 @@ public sealed class ShardPeerPublisher(
 
             held[name] = new Held(model, definition.Context, result.HeadId!, result.MemberIds, notes);
             brokeWhy.Remove(name);
+
+            if (lost.TryGetValue(name, out var stillLost))
+            {
+                stillLost.ExceptWith(new[] { result.HeadId! }.Concat(result.MemberIds));
+            }
             logger.LogInformation("Placed group {Group}: {Notes}", name, string.Join("; ", notes));
             return (pool.First(n => n.NodeId == result.HeadId), result.MemberIds.Select(id => pool.First(n => n.NodeId == id)).ToArray(), null, notes);
         }
@@ -527,6 +627,50 @@ public sealed class ShardPeerPublisher(
                 logger.LogDebug(ex, "Could not look at the settling shard groups again");
             }
         });
+    }
+
+    /// <summary>
+    /// Phase 145 D4: "shard-d is back" once a node the placement lost can take part again and has for <c>SettleSeconds</c> — the
+    /// reason to place the group again — or null. Each return is a reason once. Called under <c>placing</c>.
+    /// </summary>
+    private string? Returned(string name, ShardGroupDefinition definition, IReadOnlyList<Services.NodeSnapshot> pool)
+    {
+        if (!lost.TryGetValue(name, out var gone) || gone.Count == 0)
+        {
+            return null;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+
+        foreach (var id in gone.ToArray())
+        {
+            var key = $"{name}|{id}";
+
+            if (pool.FirstOrDefault(n => n.NodeId == id) is not { } node || Unavailable(node) is not null)
+            {
+                lostBackSince.Remove(key);
+                continue;
+            }
+
+            if (!lostBackSince.TryGetValue(key, out var since))
+            {
+                lostBackSince[key] = since = now;
+            }
+
+            var left = TimeSpan.FromSeconds(Math.Max(0, definition.SettleSeconds)) - (now - since);
+
+            if (left > TimeSpan.Zero)
+            {
+                Wake(left);
+                continue;
+            }
+
+            gone.Remove(id);
+            lostBackSince.Remove(key);
+            return $"{node.Name} is back";
+        }
+
+        return null;
     }
 
     /// <summary>D3: what stops a kept placement from running now, or null when it still can.</summary>

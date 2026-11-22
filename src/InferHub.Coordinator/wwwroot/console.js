@@ -380,6 +380,9 @@
         ` <button class="secondary" data-replace-group="${escapeHtml(g.name)}" title="Forget this placement and place the group again on the matrix of now — a reload">Place again</button>` +
         `${notes ? `<ul style="margin: 4px 0 0 16px; color: var(--muted)">${notes}</ul>` : ""}</td></tr>`;
     }).join("");
+    // Phase 145: in a group the admin defined, which spare stands in for whom — and when a member that came back takes its place back.
+    body.innerHTML += (latestShardGroups ?? []).filter(g => g.mode !== "auto" && (g.substitutions ?? []).length > 0).map(g =>
+      `<tr><td colspan="${span}">group <b>${escapeHtml(g.name)}</b> · ${g.substitutions.map(s => escapeHtml(s)).join(" · ")}</td></tr>`).join("");
     // Phase 136. The groups each head runs: the model answers under the group's name while it is "running".
     const groups = offering.flatMap(n => (n.shards.groups ?? []).map(g => ({ head: n.name, ...g })));
     // Phase 142: while a group loads, how much of each member's share the head has sent it (the head's own worker has none).

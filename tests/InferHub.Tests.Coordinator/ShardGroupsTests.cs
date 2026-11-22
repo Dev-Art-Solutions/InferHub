@@ -364,6 +364,120 @@ public sealed class ShardGroupsTests : IDisposable
     }
 
     [Fact]
+    public void AMemberThatReturnsTakesItsSlotBackFromItsSpareOnlyOnceItHasHeldStill()
+    {
+        // Phase 145 D3. Read from source for 145: 3.109 gave the slot back at the first look the member could take part — a member
+        // that drops and returns cost two reloads.
+        options.Groups["llama-8b-split"].Spares = ["shard-d"];
+        options.Groups["llama-8b-split"].SettleSeconds = 30;
+        Node("a");
+        Node("b");
+        Node("c");
+        Node("d");
+        registry.Cordon("c");
+        var publisher = Publisher();
+        Assert.Equal(["b", "d"], Assert.Single(publisher.ComputeGroups(publisher.Compute()).Lists["conn-a"].Groups).Members.Select(m => m.NodeId));
+
+        // c is back: d keeps the slot, and the status says when c takes it back.
+        registry.Uncordon("c");
+        var (lists, status) = publisher.ComputeGroups(publisher.Compute());
+        Assert.Equal(["b", "d"], Assert.Single(lists["conn-a"].Groups).Members.Select(m => m.NodeId));
+        Assert.Matches(@"^shard-d stands in for shard-c, which is back: it takes its place back in \d+ s$", Assert.Single(Assert.Single(status).Substitutions));
+
+        // With nothing to wait for, it takes it back at the next look.
+        options.Groups["llama-8b-split"].SettleSeconds = 0;
+        var back = Assert.Single(publisher.ComputeGroups(publisher.Compute()).Lists["conn-a"].Groups);
+        Assert.Equal(["b", "c"], back.Members.Select(m => m.NodeId));
+        Assert.Empty(Assert.Single(publisher.GroupStatus()).Substitutions);
+    }
+
+    [Fact]
+    public void AMemberReturningToAGroupThatWasNotSentTakesItsSlotAtOnce()
+    {
+        // The spare was never sent (the head had not come): there is no load to save, so no wait.
+        options.Groups["llama-8b-split"].Spares = ["shard-d"];
+        options.Groups["llama-8b-split"].SettleSeconds = 30;
+        Node("b");
+        Node("c");
+        Node("d");
+        registry.Cordon("c");
+        var publisher = Publisher();
+        Assert.False(Assert.Single(publisher.GroupStatus()).Ready);
+
+        registry.Uncordon("c");
+        Node("a");
+
+        Assert.Equal(["b", "c"], Assert.Single(publisher.ComputeGroups(publisher.Compute()).Lists["conn-a"].Groups).Members.Select(m => m.NodeId));
+    }
+
+    [Fact]
+    public void ASpareThatStandsInKeepsTheSlotWhenAnEarlierSpareComesBack()
+    {
+        // Two spares; the first was away when c left, so the second stood in. The first returning is no reason for a reload.
+        options.Groups["llama-8b-split"].Spares = ["shard-d", "shard-e"];
+        Node("a");
+        Node("b");
+        Node("c");
+        Node("d");
+        Node("e");
+        registry.Cordon("c");
+        registry.Cordon("d");
+        var publisher = Publisher();
+        Assert.Equal(["b", "e"], Assert.Single(publisher.ComputeGroups(publisher.Compute()).Lists["conn-a"].Groups).Members.Select(m => m.NodeId));
+
+        registry.Uncordon("d");
+
+        Assert.Equal(["b", "e"], Assert.Single(publisher.ComputeGroups(publisher.Compute()).Lists["conn-a"].Groups).Members.Select(m => m.NodeId));
+    }
+
+    [Fact]
+    public void AGroupThatStopsServingCountsAnInterruptionAndSaysItsWait()
+    {
+        options.Groups["llama-8b-split"].RetrySeconds = 120;
+        Node("a");
+        Node("b");
+        Node("c");
+        var publisher = Publisher();
+        shards.Report(shards.Of("a")! with { Groups = [new ShardGroupState("llama-8b-split", "llama31-8b.gguf", ShardGroupState.Running, ["shard-b", "shard-c"], "127.0.0.1:1", null)] }, IPAddress.Loopback);
+        Assert.Null(publisher.WhyGroupIsNotServing("llama-8b-split"));
+        Assert.Equal(0, publisher.Interruptions("llama-8b-split"));
+
+        registry.Cordon("c");
+        Assert.NotNull(publisher.WhyGroupIsNotServing("llama-8b-split"));
+        Assert.NotNull(publisher.WhyGroupIsNotServing("llama-8b-split"));
+
+        Assert.Equal(1, publisher.Interruptions("llama-8b-split"));
+        Assert.Equal(TimeSpan.FromSeconds(120), publisher.RetryWindow("llama-8b-split"));
+        Assert.Null(publisher.RetryWindow("qwen2.5:0.5b"));
+        options.Groups["llama-8b-split"].RetrySeconds = 0;
+        Assert.Null(publisher.RetryWindow("llama-8b-split"));
+    }
+
+    [Fact]
+    public void WithFailBackAnAutoGroupIsPlacedAgainWhenANodeItLostIsBackAndWithoutItStaysWhereItIs()
+    {
+        AutoLab();
+        var publisher = Publisher();
+        Assert.Equal(["shard-c", "shard-b"], Assert.Single(publisher.GroupStatus()).Members);
+        registry.Cordon("c");
+        Assert.Equal(["shard-d"], Assert.Single(publisher.GroupStatus()).Members);
+
+        // 144 D3: c back, no FailBack — the group stays on d.
+        registry.Uncordon("c");
+        Assert.Equal(["shard-d"], Assert.Single(publisher.GroupStatus()).Members);
+
+        // FailBack: c is back and settled (SettleSeconds 0 in this lab) — placed again, and the note says why.
+        options.Groups["llama-8b-auto"].FailBack = true;
+        var again = Assert.Single(publisher.GroupStatus());
+        Assert.Equal(["shard-c", "shard-b"], again.Members);
+        Assert.Equal("placed again: shard-c is back", again.Placement[0]);
+
+        // Each return is a reason once.
+        Assert.Equal("placed again: shard-c is back", Assert.Single(publisher.GroupStatus()).Placement[0]);
+        Assert.Equal(["shard-c", "shard-b"], Assert.Single(publisher.GroupStatus()).Members);
+    }
+
+    [Fact]
     public void AMemberPausedByItsOwnerOrCordonedIsNotReadyAndASpareTakesItsPlace()
     {
         options.Groups["llama-8b-split"].Spares = ["shard-d"];

@@ -27,6 +27,12 @@ public sealed class NodeRegistry : INodeRegistry
     /// <summary>Phase 138 D4: whether a model is a community shard group — a client must accept before it is sent there.</summary>
     public Func<string, bool>? IsCommunityGroup { get; set; }
 
+    /// <summary>Phase 145 D1/D2: how long a request for a shard group may wait at the hub for it to run again; null when it does not.</summary>
+    public Func<string, TimeSpan?>? GroupRetryWindow { get; set; }
+
+    /// <summary>Phase 145 D1: how many times a shard group has stopped serving — a retry waits to see it change.</summary>
+    public Func<string, long>? GroupInterruptions { get; set; }
+
     private void RaiseChanged() => Changed?.Invoke();
 
     public void Upsert(string connectionId, NodeRegistration registration, DateTimeOffset now)

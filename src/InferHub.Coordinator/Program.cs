@@ -403,6 +403,9 @@ if (app.Services.GetRequiredService<INodeRegistry>() is NodeRegistry nodeRegistr
     var groupPublisher = app.Services.GetRequiredService<ShardPeerPublisher>();
     nodeRegistry.WhyGroupIsNotServing = groupPublisher.WhyGroupIsNotServing;
     nodeRegistry.IsCommunityGroup = groupPublisher.IsCommunityGroup;
+    // Phase 145: a group request waits for its group, and one that died before its first token is sent again.
+    nodeRegistry.GroupRetryWindow = groupPublisher.RetryWindow;
+    nodeRegistry.GroupInterruptions = groupPublisher.Interruptions;
     groupPublisher.Watch();
 }
 

@@ -4,7 +4,8 @@
 `Services/NodeShardRegistry.cs` and `Services/ShardRelay.cs`, and the lab in `deploy/lab/shards/`.** One model split by layers across
 several nodes: the group estimate, a node's shard worker, the mTLS tunnel between nodes, the groups a coordinator assembles
 (private cloud and community), the relay for nodes with no direct path — and since 142 the track that takes it past the 8B lab:
-a 70B no node holds, (143) a member that loads its layers from its own copy of the file, and (144) a group the coordinator places itself.
+a 70B no node holds, (143) a member that loads its layers from its own copy of the file, (144) a group the coordinator places itself,
+and (145) a request that survives a member vanishing and a member that takes its place back.
 
 > **Read the root `CLAUDE.md` first, then `src/InferHub.Node/Backends/CLAUDE.md`** (118's estimate, 95's `EngineProcess`, 120's
 > management jobs — all used here). The invariants that bind hardest: **the RPC port is never reachable off the node**
@@ -228,8 +229,9 @@ answered with **the same text as before**, the layers moved to shard-d (22–31 
 API during a 200-token request: the head showed `draining`, that request completed (200 tokens), the next got a 503 naming why.
 
 **Not established:** a request in flight on a worker that *vanished* (llama.cpp aborts the head; the request fails with its error
-— the drain is for planned leaves); choosing a spare by fit; a member coming back while its spare serves (the group stays on the
-spare until the list changes again — no fail-back); GPUs; models above 8B.
+— the drain is for planned leaves; 145 D1 waits and sends it again); choosing a spare by fit; GPUs; models above 8B. *Corrected in
+145:* this note said a member coming back left the group on its spare — the computation is stateless, so it took the slot back at
+once (two reloads for a member that flaps); 145 D3 makes it wait.
 
 ### Phase 138 (community: a node opts in with the risk stated, the coordinator picks the members, a client accepts per request)
 
@@ -431,3 +433,46 @@ shard-d`: settled 30 s, placed on **shard-c**, which filled its cache from its o
 **Not established:** a real network — every round trip here is netem on one PC; that the sum of round trips predicts speed beyond
 this one comparison (it is 141's model, not re-measured per placement); more than four nodes or the 12-peer cut; GPUs; a fleet
 whose nodes come and go faster than `SettleSeconds` (it would wait as long as they do).
+
+### Phase 145 (a request that died before the caller received anything is sent again once the group runs again; a member that returns takes its place back once it holds still)
+
+Files: hub `ShardGroupDefinition.RetrySeconds/FailBack`, `ShardPeerPublisher` (`standIns`/`backSince` in `ComputeAll`, `Returned` and
+the lost nodes in `Place`, `RetryWindow`, `Interruptions`), `NodeRegistry.GroupRetryWindow/GroupInterruptions` (wired in `Program.cs`),
+`Endpoints/InferenceCore.cs` (`DispatchWithGroupRetryAsync`, `WaitForGroupAsync`, `PrependedReader`); `substitutions` on `GET
+/api/admin/shards/groups` and in the console; `deploy/lab/shards/retry-lab.sh`, `tunnel-lab.sh` `LAB_RETRY`/`LAB_SETTLE`. No node change.
+
+**D1, load-bearing — a group request that fails before the caller received anything waits at the hub for the group, then goes
+again.** `RetrySeconds` (0: as 3.109). Counts: a blocking failure that is not a 4xx, a stream whose *first* chunk is the node's
+error (a refusal's `status` 4xx excluded), a head that dropped. A vanished member takes llama.cpp's head down, so the request fails
+in seconds while the hub may not yet know why; the wait therefore needs the group serving again **and** either an interruption the
+hub saw since the failure (`Interruptions`: a group that served and then did not, counted at every look) or 5 s — so a retry never
+races the disconnect. Sent again as often as that happens before the deadline; after it, the first error as it was. A blocking
+request has given the caller nothing at any point before its end, so it is retried whole; a stream that sent a token never is (a
+second answer spliced on). *Rejected:* retrying on the node — the head cannot reassemble anything, the spare is the hub's.
+
+**D2 — with RetrySeconds, a request that arrives while the group reassembles waits too**, in the "nobody serves it" branch, then
+137 D2's 503 if it still serves nobody. It holds its admission lease meanwhile — it is in flight.
+
+**D3 — a member that returns takes its slot back from its spare only once it has been able to take part for `SettleSeconds`.**
+Found reading the source for this phase: a private group is computed afresh on every look, so a member was back in its slot the
+moment it could take part, and one that dropped and returned cost two reloads (minutes each at 70B, 142). Per `group|slot` the hub
+remembers the spare standing in while the group is sent; the member's return starts a clock and until it reaches `SettleSeconds`
+the spare keeps the slot (*shard-d stands in for shard-c, which is back: it takes its place back in 29 s*, a timer looks again).
+A group that was not sent has nothing to reload, so it takes the member at once; the spare already standing in keeps the slot
+when an earlier spare comes back. *Rejected:* a new knob — 144 named this number.
+
+**D4 — `FailBack: true` on an auto group places it again when a node its placement lost is back and settled.** Off by default (144
+D3 unchanged: a kept placement moves only when it cannot run). The lost nodes are remembered at each break, each return is a
+reason once (*placed again: shard-c is back*), and the new placement may or may not use it.
+
+**The lab (2026-11-22, `tunnel-lab.sh` with `LAB_RETRY=180 LAB_SETTLE=30 LAB_MEMBER_DISK=1` + `retry-lab.sh`, b12182, CPU, the 8B):**
+a 128-token blocking request (20.8 s alone) was running when `docker kill shard-c` hit, 6 s in: it answered **200 after 41.3 s with
+the same text** — the hub took the group back, shard-d stood in from its own cache, the head reloaded and the request went again. A
+request sent in the gap waited 9.5 s and answered 200 (3.109: a 503). `docker start shard-c`: re-registered, the status said *takes
+its place back in 29 s*, shard-c had its slot 30 s later; a request sent during that reload answered 200 after 11.6 s; the text was
+the same again. **Found in the lab:** `substitutions` was never on the admin endpoint (137 named it in the status only) — added.
+
+**Not established:** a real network and a real loss (a killed container closes its sockets at once; a cable pulled leaves the hub
+waiting for SignalR's timeout, which counts against `RetrySeconds`); a 70B reload inside `RetrySeconds`; community groups — their
+pick is still the largest offers on every look, so a larger node arriving moves one; a request that died *after* its first token
+(it fails, as before).

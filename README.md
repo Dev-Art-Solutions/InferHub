@@ -1339,6 +1339,41 @@ The coordinator picks the head and the members from what the nodes already repor
 **What this does not show:** a real network (every round trip here is made by netem), that the sum
 of round trips predicts speed beyond this one comparison, more than four nodes, and GPUs.
 
+### A request that survives a member leaving (v3.110+)
+
+When a member of a group vanishes, llama.cpp takes the head down with it, and until 3.110 the request
+that was running failed with the engine's error — while the group answered again a minute later from
+a spare. One setting now makes the coordinator hold such a request until the group runs again:
+
+```json
+"ShardGroups": { "llama-8b-split": { "Head": "shard-a", "Members": ["shard-b", "shard-c"],
+                                     "Spares": ["shard-d"], "Model": "llama31-8b.gguf",
+                                     "RetrySeconds": 180 } }
+```
+
+- **A request that failed before the caller received anything** waits at the coordinator and is sent
+  again once the group serves again, for up to `RetrySeconds`. A non-streaming request is retried
+  whole; a stream only if its first chunk was the error. A refusal (a 4xx) is never retried, and a
+  stream that has already sent text is not either: a second answer would be spliced onto the first.
+- **A request that arrives while the group reassembles** waits too, instead of the 503.
+- **A member that comes back takes its place back from its spare** once it has been able to take
+  part for `SettleSeconds` (30), so a member that drops and returns costs one reload, not two.
+  Meanwhile `GET /api/admin/shards/groups` says so in `substitutions`:
+  `"shard-d stands in for shard-c, which is back: it takes its place back in 29 s"`.
+- **An `auto` group with `"FailBack": true`** is placed again when a node it lost is back and has
+  settled (*placed again: shard-c is back*). Without it, an auto group stays where it is.
+
+`RetrySeconds` is 0 by default, and then nothing changes.
+
+- **In the lab** (four nodes in Docker on one PC, the 8B): a 128-token request was 6 s in when a
+  member was killed. It answered 200 after 41 s (20.8 s alone) with the same text, from the spare. A
+  request sent while the group reassembled waited 9.5 s and answered 200. The killed member came back
+  and had its place again 30 s later; a request sent during that reload answered 200 too.
+
+**What this does not show:** a real network and a real loss (a killed container closes its sockets at
+once; a pulled cable leaves the coordinator waiting for SignalR's timeout), a 70B reloading within
+`RetrySeconds`, and community groups, which still pick the largest offers each time.
+
 ### A long answer as a job you can follow (v3.103+)
 
 A chat that takes minutes — a big model, a model split across several nodes, a fleet that is full —

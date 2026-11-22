@@ -332,13 +332,27 @@ internal static class InferenceCore
 
                 // Phase 137 D2: a shard group the admin configured that answers nobody right now — a member left, a spare
                 // is taking over, the head is starting — is a fleet-state moment, not "no such model".
-                if ((registry as Services.NodeRegistry)?.WhyGroupIsNotServing?.Invoke(model) is { } groupWhy)
+                var groupWhy = (registry as Services.NodeRegistry)?.WhyGroupIsNotServing?.Invoke(model);
+
+                // Phase 145 D2: with RetrySeconds the request waits here for the group instead — it holds its admission lease
+                // meanwhile, because it is in flight — and gets the 503 only if the group still serves nobody after it.
+                if (groupWhy is not null && GroupRetryWindow(registry, model) is { } window)
                 {
-                    logger.LogInformation("Shard group {Model} answers nobody now: {Why}", model, groupWhy);
-                    return DispatchOutcome.Failure(StatusCodes.Status503ServiceUnavailable, groupWhy, ShardGroupRetryAfterSeconds);
+                    logger.LogInformation("Shard group {Model} answers nobody now ({Why}); the request waits up to {Seconds} s for it", model, groupWhy, window.TotalSeconds);
+                    node = await WaitForGroupAsync(model, conversationKey, capability, registry, router, DateTimeOffset.UtcNow + window, null, cancellationToken);
+                    groupWhy = node is null ? (registry as Services.NodeRegistry)?.WhyGroupIsNotServing?.Invoke(model) ?? groupWhy : null;
                 }
 
-                return DispatchOutcome.Failure(StatusCodes.Status404NotFound, $"model '{model}' not found");
+                if (node is null)
+                {
+                    if (groupWhy is not null)
+                    {
+                        logger.LogInformation("Shard group {Model} answers nobody now: {Why}", model, groupWhy);
+                        return DispatchOutcome.Failure(StatusCodes.Status503ServiceUnavailable, groupWhy, ShardGroupRetryAfterSeconds);
+                    }
+
+                    return DispatchOutcome.Failure(StatusCodes.Status404NotFound, $"model '{model}' not found");
+                }
             }
 
             // Phase 126 D3: background work does not take a model's last free places. It waits — paused, not refused —
@@ -412,7 +426,7 @@ internal static class InferenceCore
 
             try
             {
-                var dispatching = DispatchWithFailoverAsync(
+                var dispatching = DispatchWithGroupRetryAsync(
                     kind,
                     model,
                     capability,
@@ -421,6 +435,7 @@ internal static class InferenceCore
                     node,
                     job,
                     router,
+                    registry,
                     dispatcher,
                     metrics,
                     logger,
@@ -469,6 +484,200 @@ internal static class InferenceCore
                 lease?.Dispose();
             }
         }
+    }
+
+    /// <summary>Phase 145: the shard group's wait, or null — not a group, or one that does not wait (<c>RetrySeconds</c> 0).</summary>
+    private static TimeSpan? GroupRetryWindow(Services.INodeRegistry registry, string model) =>
+        (registry as Services.NodeRegistry)?.GroupRetryWindow?.Invoke(model);
+
+    /// <summary>
+    /// Phase 145 D1: a request on a shard group that fails before its first token — the engine's error (a member vanished and
+    /// llama.cpp took the head down), a head that dropped — waits for the group to run again and is sent again, as often as
+    /// that happens before its <c>RetrySeconds</c> run out. A refusal (4xx) is the request's and is returned as it is; a stream
+    /// that has sent a token is never retried. Anything that is not such a group goes straight to <see cref="DispatchWithFailoverAsync"/>.
+    /// </summary>
+    private static async Task<DispatchOutcome> DispatchWithGroupRetryAsync(
+        string kind,
+        string model,
+        string? capability,
+        bool? stream,
+        string? conversationKey,
+        RoutableNode node,
+        InferenceJob job,
+        Services.IRouter router,
+        Services.INodeRegistry registry,
+        IDispatcher dispatcher,
+        Metrics metrics,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        if (GroupRetryWindow(registry, model) is not { } window)
+        {
+            return await DispatchWithFailoverAsync(kind, model, capability, stream, conversationKey, node, job, router, dispatcher, metrics, logger, cancellationToken);
+        }
+
+        var deadline = DateTimeOffset.UtcNow + window;
+        var attempt = job;
+        var target = node;
+
+        while (true)
+        {
+            var interruptions = (registry as Services.NodeRegistry)?.GroupInterruptions?.Invoke(model) ?? 0;
+            DispatchOutcome failed;
+            string why;
+
+            try
+            {
+                var outcome = await DispatchWithFailoverAsync(kind, model, capability, stream, conversationKey, target, attempt, router, dispatcher, metrics, logger, cancellationToken);
+
+                if (outcome.Stream is { } chunks)
+                {
+                    // The dispatcher hands a stream over at its first chunk; that chunk being the node's error is a death before the
+                    // first token. Anything else goes to the caller with the chunk put back in front.
+                    if (!await chunks.WaitToReadAsync(cancellationToken) || !chunks.TryRead(out var first))
+                    {
+                        return outcome;
+                    }
+
+                    var reader = new PrependedReader(first, chunks);
+
+                    if (EarlyError(first) is not { } error)
+                    {
+                        return outcome with { Stream = reader };
+                    }
+
+                    failed = outcome with { Stream = reader };
+                    why = error;
+                }
+                else if (!outcome.IsError || outcome.ErrorStatus is >= 400 and < 500)
+                {
+                    return outcome;
+                }
+                else
+                {
+                    failed = outcome;
+                    why = outcome.ErrorMessage ?? "the node failed";
+                }
+            }
+            catch (NodeDisconnectedException ex)
+            {
+                failed = DispatchOutcome.Failure(StatusCodes.Status502BadGateway, "no node was able to handle the request");
+                why = ex.Message;
+            }
+
+            var failedAt = DateTimeOffset.UtcNow;
+
+            if (failedAt >= deadline)
+            {
+                return failed;
+            }
+
+            logger.LogInformation(
+                "Job {JobId} on shard group {Model} failed before the caller received anything ({Why}); it waits up to {Seconds:0} s for the group to run again",
+                attempt.JobId,
+                model,
+                why,
+                (deadline - failedAt).TotalSeconds);
+
+            var next = await WaitForGroupAsync(model, conversationKey, capability, registry, router, deadline, (interruptions, failedAt), cancellationToken);
+
+            if (next is null)
+            {
+                logger.LogInformation("Shard group {Model} did not run again in time; job {JobId} fails with its error", model, attempt.JobId);
+                return failed;
+            }
+
+            attempt = attempt with { JobId = Guid.NewGuid() };
+            target = next;
+            metrics.RecordModelServed(target.NodeId, model);
+            logger.LogInformation("Sending job {JobId} on shard group {Model} again, to {NodeName}", attempt.JobId, model, target.Name);
+        }
+    }
+
+    /// <summary>
+    /// Phase 145: wait, until <paramref name="deadline"/>, for a shard group to serve again and return the node to send to. After
+    /// a failure (<paramref name="after"/>) it also waits until the hub has seen the group stop serving since — or five seconds
+    /// have passed — so a retry does not race the hub hearing that a member left. Null: it did not run again in time.
+    /// </summary>
+    private static async Task<RoutableNode?> WaitForGroupAsync(
+        string model,
+        string? conversationKey,
+        string? capability,
+        Services.INodeRegistry registry,
+        Services.IRouter router,
+        DateTimeOffset deadline,
+        (long Interruptions, DateTimeOffset At)? after,
+        CancellationToken cancellationToken)
+    {
+        var nodes = registry as Services.NodeRegistry;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            var settled = after is not { } failure
+                || (nodes?.GroupInterruptions?.Invoke(model) ?? 0) > failure.Interruptions
+                || DateTimeOffset.UtcNow - failure.At >= TimeSpan.FromSeconds(5);
+
+            if (settled && nodes?.WhyGroupIsNotServing?.Invoke(model) is null && router.Route(model, conversationKey, capability: capability) is { } node)
+            {
+                return node;
+            }
+
+            var left = deadline - DateTimeOffset.UtcNow;
+
+            if (left > TimeSpan.Zero)
+            {
+                await Task.Delay(left < TimeSpan.FromMilliseconds(500) ? left : TimeSpan.FromMilliseconds(500), cancellationToken);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The node's error, when a chunk is one (<c>{"error": …}</c>) that is not a refusal (a 4xx) — or null.</summary>
+    private static string? EarlyError(InferenceChunk chunk)
+    {
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(chunk.ResponseJson);
+            var root = document.RootElement;
+
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object
+                || !root.TryGetProperty("error", out var error)
+                || error.ValueKind != System.Text.Json.JsonValueKind.String)
+            {
+                return null;
+            }
+
+            return root.TryGetProperty("status", out var status) && status.TryGetInt32(out var code) && code is >= 400 and < 500
+                ? null
+                : error.GetString() ?? "the node failed";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>A stream with one chunk already read put back in front of the rest.</summary>
+    private sealed class PrependedReader(InferenceChunk first, ChannelReader<InferenceChunk> rest) : ChannelReader<InferenceChunk>
+    {
+        private InferenceChunk? pending = first;
+
+        public override Task Completion => rest.Completion;
+
+        public override bool TryRead([System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out InferenceChunk item)
+        {
+            if (Interlocked.Exchange(ref pending, null) is { } head)
+            {
+                item = head;
+                return true;
+            }
+
+            return rest.TryRead(out item);
+        }
+
+        public override ValueTask<bool> WaitToReadAsync(CancellationToken cancellationToken = default) =>
+            Volatile.Read(ref pending) is not null ? ValueTask.FromResult(true) : rest.WaitToReadAsync(cancellationToken);
     }
 
     private static async Task<DispatchOutcome> DispatchWithFailoverAsync(
