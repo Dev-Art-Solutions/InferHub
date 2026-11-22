@@ -76,3 +76,14 @@ request.); it waits up to 172 s for the group to run again* … *Sending job …
 refusal / a started stream / `RetrySeconds` 0 returned as they came, the first error when the group does not come back, a request
 arriving during reassembly waits. `ShardGroupsTests` (+6): a member's return waits `SettleSeconds`; a group not sent takes it at
 once; the standing spare keeps the slot; interruptions counted and the retry window; an auto group with and without `FailBack`.
+
+## On the published images
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.110.0` (revision label `ef82d3a`) and a lab node built on
+`inferhub-node:3.110.0`, the same lab and `retry-lab.sh`: the long request killed 6 s in answered 200 in 39.9 s with the same text;
+a request in the gap waited 8.5 s and answered 200; shard-c, started again, was announced *takes its place back in 29 s* and had
+its slot 30 s later; a request during that reload answered 200 in 12.6 s; the same text with shard-c back.
+
+Locally, two `ChatGptBackendTests` failed in a full-suite run and were not this phase's: the incremental build had copied the
+coordinator's `appsettings.json` (just edited, so newer) over the node's in `tests/InferHub.Tests.Node/bin`; with the node's file
+back, Node passed 808/808. CI builds clean and was green. Suite: 3 006 passed, 70 skipped.
