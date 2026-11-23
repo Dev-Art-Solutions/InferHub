@@ -1,0 +1,469 @@
+{
+ "meta": {
+  "date": "2026-11-23T12:16:32Z",
+  "inferhub_commit": "a0d1fa2bf0f73afc6b736efba9854dbf19c58978",
+  "inferhub_tag": "3.111.0",
+  "hub_image": "ghcr.io/dev-art-solutions/inferhub-coordinator:3.111.0",
+  "hub_image_id": "sha256:59f022bdb4935f06670fe7a601e9fff539f967049ffa6fc15560bc3837dfbe5d",
+  "hub_revision": "a0d1fa2bf0f73afc6b736efba9854dbf19c58978",
+  "node_image": "ghcr.io/dev-art-solutions/inferhub-node:3.111.0",
+  "node_image_id": "sha256:dee6742753e8e6009331d9491130e78e87f9b07bc7cf32cb507e1c15cd93ad83",
+  "node_revision": "a0d1fa2bf0f73afc6b736efba9854dbf19c58978",
+  "llama_image": "inferhub-lab-llama:b12182",
+  "llama_image_id": "sha256:478509ff44ae92bd5b993283fa06ab8f7a49d03e0872cecd489dc06e85cce035",
+  "llama_commit": "fd27b2034905f8dadd8bd6d2cc44595f4929d391",
+  "prima_image": "inferhub-lab-prima:288df6a",
+  "prima_image_id": "sha256:9717ccdbd71297ad148fc71f6eb50c5417c1b8b6cda1d1851cedeb2cd61b4e73",
+  "prima_commit": "288df6a2cc2120387e12d6f40798f30cc525c9ea",
+  "prima_layers": "8,8,8,8",
+  "model": "llama31-8b.gguf",
+  "model_sha256": "87048bcd55216712ef14c11c2c303728463207b165bf18440b9b84b07ec00f87",
+  "model_bytes": 4661211808,
+  "rtts_ms": "0 120",
+  "reps": 3,
+  "tokens": 48,
+  "cpus_per_container": 4,
+  "worker_memory": "2560m",
+  "node_memory": "4g",
+  "host_cpus": 64,
+  "host_memory_bytes": 134977769472,
+  "docker": "27.3.1",
+  "expect_revision": "a0d1fa2",
+  "only": "whole inferhub-group inferhub-group-draft"
+ },
+ "rows": [
+  {
+   "config": "whole",
+   "rtt_ms": 0,
+   "ping_ms": null,
+   "ttft_short_ms": {
+    "median": 475,
+    "min": 470,
+    "max": 481,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 14361,
+    "min": 14313,
+    "max": 14377,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 6.6335,
+    "min": 6.399,
+    "max": 6.825,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 6.824,
+    "min": 6.762,
+    "max": 6.825,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 6.45,
+    "min": 6.399,
+    "max": 6.505,
+    "n": 3
+   },
+   "prefill_tps": {
+    "median": 30.289693701404758,
+    "min": 30.25348868383592,
+    "max": 30.386386002882368,
+    "n": 3
+   },
+   "bytes_per_token": {
+    "median": 245.04166666666666,
+    "min": 244.97916666666666,
+    "max": 245.27083333333334,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 3.9837668456246207,
+    "min": 3.9753836751324187,
+    "max": 3.9904365569432194,
+    "n": 6
+   },
+   "of_own_whole": null
+  },
+  {
+   "config": "whole-chat",
+   "rtt_ms": 0,
+   "ping_ms": null,
+   "ttft_short_ms": {
+    "median": 184,
+    "min": 175,
+    "max": 771,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 15042,
+    "min": 15001,
+    "max": 15097,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 6.636,
+    "min": 6.333,
+    "max": 6.873,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 6.869,
+    "min": 6.844,
+    "max": 6.873,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 6.378,
+    "min": 6.333,
+    "max": 6.428,
+    "n": 3
+   },
+   "prefill_tps": {
+    "median": 30.25412058784892,
+    "min": 30.155460385011338,
+    "max": 30.259571008792648,
+    "n": 3
+   },
+   "bytes_per_token": {
+    "median": 338.9791666666667,
+    "min": 338.9791666666667,
+    "max": 339.1875,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 3.981524345272491,
+    "min": 3.96258580966095,
+    "max": 3.992018060410505,
+    "n": 6
+   },
+   "of_own_whole": null
+  },
+  {
+   "config": "inferhub-group",
+   "rtt_ms": 0,
+   "ping_ms": null,
+   "ttft_short_ms": {
+    "median": 248,
+    "min": 202,
+    "max": 775,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 20802,
+    "min": 20655,
+    "max": 20839,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 6.2565,
+    "min": 6.028,
+    "max": 6.473,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 6.409,
+    "min": 6.399,
+    "max": 6.473,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 6.094,
+    "min": 6.028,
+    "max": 6.114,
+    "n": 3
+   },
+   "prefill_tps": null,
+   "bytes_per_token": {
+    "median": 601160.25,
+    "min": 575507.125,
+    "max": 696436.7291666666,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 4.167893045125988,
+    "min": 4.049725524536761,
+    "max": 4.40604673768309,
+    "n": 6
+   },
+   "of_own_whole": 0.9428119349005425
+  },
+  {
+   "config": "inferhub-group",
+   "rtt_ms": 120,
+   "ping_ms": null,
+   "ttft_short_ms": {
+    "median": 7050,
+    "min": 1458,
+    "max": 22134,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 32486,
+    "min": 26479,
+    "max": 32798,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 0.9915,
+    "min": 0.982,
+    "max": 1.031,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 1.001,
+    "min": 1,
+    "max": 1.031,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 0.983,
+    "min": 0.982,
+    "max": 0.983,
+    "n": 3
+   },
+   "prefill_tps": null,
+   "bytes_per_token": {
+    "median": 696632.1041666666,
+    "min": 577382.0208333334,
+    "max": 1604109.2291666667,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 1.0779580475513797,
+    "min": 0.5167667867477707,
+    "max": 1.5636002205902133,
+    "n": 6
+   },
+   "of_own_whole": 0.1494122965641953
+  },
+  {
+   "config": "inferhub-group-draft",
+   "rtt_ms": 0,
+   "ping_ms": null,
+   "ttft_short_ms": {
+    "median": 270,
+    "min": 225,
+    "max": 887,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 22640,
+    "min": 22602,
+    "max": 23052,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 6.92,
+    "min": 6.599,
+    "max": 7.313,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 6.67,
+    "min": 6.599,
+    "max": 6.717,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 7.22,
+    "min": 7.123,
+    "max": 7.313,
+    "n": 3
+   },
+   "prefill_tps": null,
+   "bytes_per_token": {
+    "median": 853458.1041666666,
+    "min": 825872.0833333334,
+    "max": 945137.3958333334,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 4.072278834083793,
+    "min": 4.0004147623245405,
+    "max": 4.183552352427306,
+    "n": 6
+   },
+   "of_own_whole": 1.0427968655816757
+  },
+  {
+   "config": "inferhub-group-draft",
+   "rtt_ms": 120,
+   "ping_ms": null,
+   "ttft_short_ms": {
+    "median": 7199,
+    "min": 1488,
+    "max": 13359,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 34226,
+    "min": 28059,
+    "max": 34648,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 1.5225,
+    "min": 1.26,
+    "max": 1.714,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 1.329,
+    "min": 1.26,
+    "max": 1.346,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 1.713,
+    "min": 1.699,
+    "max": 1.714,
+    "n": 3
+   },
+   "prefill_tps": null,
+   "bytes_per_token": {
+    "median": 947231.9791666666,
+    "min": 826269,
+    "max": 1856585.2708333333,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 1.37027776975614,
+    "min": 0.6141953925419981,
+    "max": 2.133911373015444,
+    "n": 6
+   },
+   "of_own_whole": 0.22943037974683544
+  }
+ ],
+ "loads": [
+  {
+   "config": "whole",
+   "load_s": 29.8468,
+   "load_tx_bytes": 0,
+   "note": "one container, the file from a read-only mount"
+  },
+  {
+   "config": "inferhub-group",
+   "load_s": 82.4452,
+   "load_tx_bytes": 3105124674,
+   "note": "includes the hub start, four enrollments and the lab's two warm-up chats"
+  },
+  {
+   "config": "inferhub-group-draft",
+   "load_s": 90.3404,
+   "load_tx_bytes": 3117066135,
+   "note": "includes the hub start, four enrollments and the lab's two warm-up chats"
+  }
+ ],
+ "memory": [
+  {
+   "config": "whole",
+   "container": "cmp-whole",
+   "peak_bytes": 9381531648,
+   "anon_bytes": 4646612992,
+   "file_bytes": 4694949888
+  },
+  {
+   "config": "whole-chat",
+   "container": "cmp-whole",
+   "peak_bytes": 9595748352,
+   "anon_bytes": 4861362176,
+   "file_bytes": 4694949888
+  },
+  {
+   "config": "inferhub-group",
+   "container": "shard-a",
+   "peak_bytes": 4295884800,
+   "anon_bytes": 2126102528,
+   "file_bytes": 2138357760
+  },
+  {
+   "config": "inferhub-group",
+   "container": "shard-b",
+   "peak_bytes": 2825945088,
+   "anon_bytes": 1662509056,
+   "file_bytes": 1116647424
+  },
+  {
+   "config": "inferhub-group",
+   "container": "shard-c",
+   "peak_bytes": 3461832704,
+   "anon_bytes": 1958719488,
+   "file_bytes": 1449308160
+  },
+  {
+   "config": "inferhub-group",
+   "container": "shard-d",
+   "peak_bytes": 85041152,
+   "anon_bytes": 48803840,
+   "file_bytes": 25001984
+  },
+  {
+   "config": "inferhub-group-draft",
+   "container": "shard-a",
+   "peak_bytes": 4296011776,
+   "anon_bytes": 2916069376,
+   "file_bytes": 1342394368
+  },
+  {
+   "config": "inferhub-group-draft",
+   "container": "shard-b",
+   "peak_bytes": 2865946624,
+   "anon_bytes": 1704808448,
+   "file_bytes": 1115643904
+  },
+  {
+   "config": "inferhub-group-draft",
+   "container": "shard-c",
+   "peak_bytes": 3499626496,
+   "anon_bytes": 1998413824,
+   "file_bytes": 1447436288
+  },
+  {
+   "config": "inferhub-group-draft",
+   "container": "shard-d",
+   "peak_bytes": 82698240,
+   "anon_bytes": 48107520,
+   "file_bytes": 24887296
+  }
+ ],
+ "faults": [],
+ "skips": [
+  {
+   "config": "exo",
+   "reason": "a60b956: the only engine is MLX and it loads MLX safetensors, not GGUF - no run on the same weights and quantization exists"
+  },
+  {
+   "config": "nakshatra",
+   "reason": "373a17d: a patched llama.cpp b9992 and per-worker sub-GGUFs cut from the model - GGUF-compatible, not built in this run (the mechanism it shares with Prima.cpp is the one measured)"
+  }
+ ],
+ "gates": [
+  "  PASS  baseline and candidate configurations recorded (whole, whole-chat, inferhub-group, inferhub-group-draft; skipped: exo, nakshatra)",
+  "  PASS  same test prompts, model 87048bcd5521…, quantization and output settings (36 runs of 48 tokens at temperature 0); images built from a0d1fa2",
+  "  PASS  correctness / compatibility thresholds held: every split answers its own whole model's text, every repetition the same · the draft runs too",
+  "  PASS  latency, throughput, memory and network results written to artifacts"
+ ],
+ "edge": [],
+ "decision": "defer — no candidate was measured beside the baseline in this run",
+ "draftEdges": [
+  {
+   "config": "inferhub-group-draft",
+   "rtt": 0,
+   "short": 1.0407239819004526,
+   "long": 1.1847719067935674
+  },
+  {
+   "config": "inferhub-group-draft",
+   "rtt": 120,
+   "short": 1.3276723276723277,
+   "long": 1.742624618514751
+  }
+ ],
+ "draftDecisions": [
+  "inferhub-group-draft: adopt — against inferhub-group (short / long): 1.04× / 1.18× at 0 ms, 1.33× / 1.74× at 120 ms"
+ ],
+ "failed": 0
+}

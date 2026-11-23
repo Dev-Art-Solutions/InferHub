@@ -72,6 +72,21 @@ the head's cores between passes.
 
 Method, sweep and run files: `docs/research/draft-model-on-the-head.md`, `docs/research/runs/2026-11-23*`.
 
+## The published images
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.111.0` and `inferhub-node:3.111.0` (both revision `a0d1fa2`, pulled from GHCR)
+were run through the same comparison: `compare-engines.sh`, `INFERHUB_TAG=3.111.0 COMPARE_REVISION=a0d1fa2
+COMPARE_ONLY="whole inferhub-group inferhub-group-draft" COMPARE_RTTS="0 120"`.
+
+- **All four gates PASS.** The report confirms the images were built from `a0d1fa2`.
+- **The draft against the same group, short / long prompt:** 1.04× / 1.18× at 0 ms, and **1.33× / 1.74× at 120 ms**. The long
+  prompt went from 0.98 to 1.71 tok/s, and the text was the whole model's on every repetition.
+- **The node reported the draft running:** *draft llama32-1b.gguf on this node's CPU, up to 6 tokens a pass*.
+- **A head without the file**, tested with `LAB_DRAFT=not-here.gguf` on the same images: the group reached `running` and answered,
+  and `draft` said *no draft: 'not-here.gguf' is not in /models; runs without one*.
+
+Run files: `docs/research/runs/2026-11-23-published/`.
+
 ## What is not established
 
 - **GPUs.** A card checks several tokens for nearly the price of one. The gain could be larger, or the draft on the head's CPU could
