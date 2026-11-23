@@ -1,0 +1,3 @@
+{"config":"whole","load_s":30.9978,"load_tx_bytes":0,"note":"one container, the file from a read-only mount"}
+{"config":"rpc-star","load_s":59.0519,"load_tx_bytes":4379208505,"note":"the head sends every worker its layers"}
+{"config":"rpc-draft","load_s":62.2066,"load_tx_bytes":4369384816,"note":"as rpc-star, plus the draft read from the head's own disk"}

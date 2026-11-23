@@ -12,6 +12,7 @@
 #   LAB_MEMBER_DISK=1 …                                 # 143: the members hold the file too and load their layers from it
 #   LAB_AUTO=1 LAB_SLOW="b c" …                         # 144: Mode=auto, the hub places the group; b and c 20 ms away
 #   LAB_RETRY=180 LAB_SETTLE=30 …                       # 145: RetrySeconds and SettleSeconds on the group (retry-lab.sh)
+#   LAB_DRAFT=llama32-1b.gguf …                         # 146: a draft model on the head (the file beside the model)
 #   docker exec -u root shard-c tc qdisc add dev eth0 root netem delay 15ms rate 50mbit   # shape one node's link
 #
 # Lessons from running it: set Node:Shards:Threads to the container's CPUs — llama.cpp's default is every core on the
@@ -33,6 +34,8 @@ fi
 # Phase 145: a request waits at the hub for its group (RetrySeconds); a member that returns takes its place back after SettleSeconds.
 [ -n "${LAB_RETRY:-}" ] && members+=(-e "ShardGroups__${GROUP}__RetrySeconds=$LAB_RETRY")
 [ -n "${LAB_SETTLE:-}" ] && members+=(-e "ShardGroups__${GROUP}__SettleSeconds=$LAB_SETTLE")
+# Phase 146: a draft model on the head — a second file in $LAB_MODEL_DIR (the head reads it from Node:Shards:ModelsDir too).
+[ -n "${LAB_DRAFT:-}" ] && members+=(-e "ShardGroups__${GROUP}__Draft=$LAB_DRAFT")
 
 docker rm -f lab-hub shard-a shard-b shard-c shard-d >/dev/null 2>&1
 docker network rm lab135 >/dev/null 2>&1

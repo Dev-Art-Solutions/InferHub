@@ -1,0 +1,10 @@
+{"config":"whole","container":"cmp-whole","peak_bytes":9346416640,"anon_bytes":4646723584,"file_bytes":4661219328}
+{"config":"whole-chat","container":"cmp-whole","peak_bytes":9562054656,"anon_bytes":4861333504,"file_bytes":4661219328}
+{"config":"inferhub-group","container":"shard-a","peak_bytes":4295905280,"anon_bytes":2121162752,"file_bytes":2136551424}
+{"config":"inferhub-group","container":"shard-b","peak_bytes":2829238272,"anon_bytes":1665679360,"file_bytes":1118294016}
+{"config":"inferhub-group","container":"shard-c","peak_bytes":3467526144,"anon_bytes":1966866432,"file_bytes":1447583744}
+{"config":"inferhub-group","container":"shard-d","peak_bytes":87494656,"anon_bytes":53338112,"file_bytes":25620480}
+{"config":"inferhub-group-draft","container":"shard-a","peak_bytes":4296110080,"anon_bytes":2911744000,"file_bytes":1345900544}
+{"config":"inferhub-group-draft","container":"shard-b","peak_bytes":2865238016,"anon_bytes":1702215680,"file_bytes":1115635712}
+{"config":"inferhub-group-draft","container":"shard-c","peak_bytes":3491250176,"anon_bytes":1989541888,"file_bytes":1447407616}
+{"config":"inferhub-group-draft","container":"shard-d","peak_bytes":84107264,"anon_bytes":50020352,"file_bytes":24915968}

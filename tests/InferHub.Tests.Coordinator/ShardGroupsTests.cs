@@ -278,6 +278,23 @@ public sealed class ShardGroupsTests : IDisposable
     }
 
     [Fact]
+    public void AGroupsDraftTravelsToItsHeadAndAGroupWithoutOneSendsNothingNew()
+    {
+        Node("a", 3072);
+        Node("b", 3072);
+        Node("c", 6144);
+
+        var plain = Assert.Single(Compute().Lists["conn-a"].Groups);
+        Assert.Null(plain.Draft);
+        Assert.DoesNotContain("draft", System.Text.Json.JsonSerializer.Serialize(plain), StringComparison.Ordinal);
+
+        options.Groups["llama-8b-split"].Draft = " llama32-1b.gguf ";
+        options.Groups["llama-8b-split"].DraftTokens = 4;
+        var drafted = Assert.Single(Compute().Lists["conn-a"].Groups);
+        Assert.Equal(("llama32-1b.gguf", 4), (drafted.Draft, drafted.DraftTokens));
+    }
+
+    [Fact]
     public void AMemberThatIsNotConnectedHoldsTheGroupBack()
     {
         Node("a");

@@ -1374,6 +1374,41 @@ a spare. One setting now makes the coordinator hold such a request until the gro
 once; a pulled cable leaves the coordinator waiting for SignalR's timeout), a 70B reloading within
 `RetrySeconds`, and community groups, which still pick the largest offers each time.
 
+### A draft model on the head, for a group far apart (v3.111+)
+
+A token of a split model visits every member in turn, so across the internet the round trip is the
+price. With `Draft`, the head also runs a small model of the same family on its own CPU. It guesses
+a few tokens, and one pass across the group checks them all, so the round trips are paid once per
+pass instead of once per token. At temperature 0 the text is the big model's own.
+
+```json
+"ShardGroups": { "llama-8b-split": { "Head": "shard-a", "Members": ["shard-b", "shard-c"],
+                                     "Model": "llama31-8b.gguf", "Draft": "llama32-1b.gguf" } }
+```
+
+- The draft is a file in the head's `Node:Shards:ModelsDir`, beside the model, and must share the
+  model's vocabulary (Llama 3.2 1B for Llama 3.1 8B). `DraftTokens` (default 6) is how many it
+  guesses per pass.
+- A head that does not hold the file runs the group without it, and
+  `GET /api/admin/shards/groups` says so in the group's `draft`.
+- It is off by default, and it is worth turning on only for a group whose members are far apart:
+
+| The 8B over three workers, CPU, one PC | Without a draft | With the 1B draft |
+|---|---:|---:|
+| 0 ms round trip | 6.64 / 6.26 tok/s | 7.24 / 6.49 tok/s (1.04–1.09×) |
+| 30 ms | 2.96 / 2.48 tok/s | 3.06 / 2.77 tok/s (1.03–1.12×) |
+| 120 ms | 0.62 / 0.62 tok/s | **0.89 / 0.86 tok/s (1.39–1.44×)** |
+
+Short / long prompt, median of three, llama.cpp's own RPC star, the whole model's text every time.
+Through an InferHub group (the head holds layers too) it was **1.07–1.19× at 0 ms and 1.33–1.74× at
+120 ms**, again with the whole model's text. **It costs** 0.75 GiB on
+the head, ~30 % more bytes per token, and 1.8–3.3 s more before the first token of a long prompt. The
+method and the run's files are in `docs/research/draft-model-on-the-head.md`.
+
+**What this does not show:** GPUs (a card checks several tokens for nearly the price of one, which
+may change the balance either way), a real network (delay only, no loss or bandwidth cap), models
+other than the 8B, and several requests at once.
+
 ### A long answer as a job you can follow (v3.103+)
 
 A chat that takes minutes — a big model, a model split across several nodes, a fleet that is full —

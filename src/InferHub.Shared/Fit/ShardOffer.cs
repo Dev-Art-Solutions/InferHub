@@ -205,14 +205,18 @@ public sealed record ShardGroupWorker(
     [property: JsonPropertyName("weight")] long Weight);
 
 /// <summary>Phase 136 D1: a group the head should run — the model file (a name in its <c>Node:Shards:ModelsDir</c>), the
-/// context, its own share and the members'. The model answers under <see cref="Name"/>.</summary>
+/// context, its own share and the members'. The model answers under <see cref="Name"/>. Phase 146: <see cref="Draft"/> is a second
+/// file in the same directory that the head runs as a draft model on its own CPU, checking up to <see cref="DraftTokens"/> a pass;
+/// absent on the wire when not set, and a head older than 3.111 ignores it and runs without.</summary>
 public sealed record ShardGroupSpec(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("model")] string Model,
     [property: JsonPropertyName("context")] int Context,
     [property: JsonPropertyName("headWeight")] long HeadWeight,
     [property: JsonPropertyName("members")] IReadOnlyList<ShardGroupWorker> Members,
-    [property: JsonPropertyName("community")] bool Community = false);
+    [property: JsonPropertyName("community")] bool Community = false,
+    [property: JsonPropertyName("draft"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Draft = null,
+    [property: JsonPropertyName("draftTokens"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int DraftTokens = 0);
 
 /// <summary>The hub's list for one head (D1). Replaces the previous one whole; a group not in it is stopped.</summary>
 public sealed record ShardGroupList(
@@ -228,7 +232,8 @@ public sealed record ShardGroupState(
     [property: JsonPropertyName("endpoint")] string? Endpoint,
     [property: JsonPropertyName("error")] string? Error,
     [property: JsonPropertyName("layers")] IReadOnlyList<ShardGroupLayers>? Layers = null,
-    [property: JsonPropertyName("community")] bool Community = false)
+    [property: JsonPropertyName("community")] bool Community = false,
+    [property: JsonPropertyName("draft"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Draft = null)
 {
     /// <summary>Phase 137 D3: the head finishes the requests it has, then stops — and takes no new one meanwhile.</summary>
     public const string Draining = "draining";

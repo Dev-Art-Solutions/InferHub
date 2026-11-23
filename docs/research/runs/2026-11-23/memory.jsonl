@@ -1,0 +1,10 @@
+{"config":"whole","container":"cmp-whole","peak_bytes":9346609152,"anon_bytes":4646682624,"file_bytes":4661497856}
+{"config":"whole-chat","container":"cmp-whole","peak_bytes":9562447872,"anon_bytes":4860829696,"file_bytes":4661497856}
+{"config":"rpc-star","container":"inferhub-shard-lab-head-1","peak_bytes":2684751872,"anon_bytes":67719168,"file_bytes":2526027776}
+{"config":"rpc-star","container":"inferhub-shard-lab-worker1-1","peak_bytes":2685673472,"anon_bytes":1718411264,"file_bytes":926433280}
+{"config":"rpc-star","container":"inferhub-shard-lab-worker2-1","peak_bytes":2684354560,"anon_bytes":1689821184,"file_bytes":953696256}
+{"config":"rpc-star","container":"inferhub-shard-lab-worker3-1","peak_bytes":2688016384,"anon_bytes":1981288448,"file_bytes":672681984}
+{"config":"rpc-draft","container":"inferhub-shard-lab-head-1","peak_bytes":2685267968,"anon_bytes":808001536,"file_bytes":1779740672}
+{"config":"rpc-draft","container":"inferhub-shard-lab-worker1-1","peak_bytes":2686779392,"anon_bytes":1827758080,"file_bytes":819462144}
+{"config":"rpc-draft","container":"inferhub-shard-lab-worker2-1","peak_bytes":2685071360,"anon_bytes":1770110976,"file_bytes":875036672}
+{"config":"rpc-draft","container":"inferhub-shard-lab-worker3-1","peak_bytes":2686189568,"anon_bytes":2056617984,"file_bytes":598212608}

@@ -1,0 +1,3 @@
+{"config":"whole","load_s":32.1861,"load_tx_bytes":0,"note":"one container, the file from a read-only mount"}
+{"config":"inferhub-group","load_s":89.7398,"load_tx_bytes":3106299293,"note":"includes the hub start, four enrollments and the lab's two warm-up chats"}
+{"config":"inferhub-group-draft","load_s":87.578,"load_tx_bytes":3115895844,"note":"includes the hub start, four enrollments and the lab's two warm-up chats"}

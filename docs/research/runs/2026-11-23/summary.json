@@ -1,0 +1,666 @@
+{
+ "meta": {
+  "date": "2026-11-23T10:52:28Z",
+  "inferhub_commit": "e68ed5866800e334f6462f9db23c5141094af702",
+  "inferhub_tag": "3.100.0",
+  "hub_image": "ghcr.io/dev-art-solutions/inferhub-coordinator:3.100.0",
+  "hub_image_id": "sha256:cdfc01772c98fc342d62358d7c6ec75c400cc83763bd6910050c400cdcd097cd",
+  "hub_revision": "fb07a723cccc06ae91339000aa816c27d522c944",
+  "node_image": "ghcr.io/dev-art-solutions/inferhub-node:3.100.0",
+  "node_image_id": "sha256:7c5fd34d6c7a9b7d541a288280430827f6a26902abaf13ca9abefeb17f1a3d4d",
+  "node_revision": "fb07a723cccc06ae91339000aa816c27d522c944",
+  "llama_image": "inferhub-lab-llama:b12182",
+  "llama_image_id": "sha256:478509ff44ae92bd5b993283fa06ab8f7a49d03e0872cecd489dc06e85cce035",
+  "llama_commit": "fd27b2034905f8dadd8bd6d2cc44595f4929d391",
+  "prima_image": "inferhub-lab-prima:288df6a",
+  "prima_image_id": "sha256:9717ccdbd71297ad148fc71f6eb50c5417c1b8b6cda1d1851cedeb2cd61b4e73",
+  "prima_commit": "288df6a2cc2120387e12d6f40798f30cc525c9ea",
+  "prima_layers": "8,8,8,8",
+  "model": "llama31-8b.gguf",
+  "model_sha256": "87048bcd55216712ef14c11c2c303728463207b165bf18440b9b84b07ec00f87",
+  "model_bytes": 4661211808,
+  "rtts_ms": "0 30 120",
+  "reps": 3,
+  "tokens": 48,
+  "cpus_per_container": 4,
+  "worker_memory": "2560m",
+  "node_memory": "4g",
+  "host_cpus": 64,
+  "host_memory_bytes": 134977769472,
+  "docker": "27.3.1",
+  "expect_revision": "",
+  "only": "whole rpc-star rpc-draft"
+ },
+ "rows": [
+  {
+   "config": "whole",
+   "rtt_ms": 0,
+   "ping_ms": null,
+   "ttft_short_ms": {
+    "median": 465,
+    "min": 465,
+    "max": 470,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 14338,
+    "min": 14337,
+    "max": 14442,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 6.7465,
+    "min": 6.552,
+    "max": 6.931,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 6.927,
+    "min": 6.871,
+    "max": 6.931,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 6.621,
+    "min": 6.552,
+    "max": 6.622,
+    "n": 3
+   },
+   "prefill_tps": {
+    "median": 30.336860074867733,
+    "min": 30.120040854989973,
+    "max": 30.338645695439006,
+    "n": 3
+   },
+   "bytes_per_token": {
+    "median": 245.02083333333334,
+    "min": 245,
+    "max": 245.25,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 3.988408931670625,
+    "min": 3.9824825589411277,
+    "max": 3.9936146382422915,
+    "n": 6
+   },
+   "of_own_whole": null
+  },
+  {
+   "config": "whole-chat",
+   "rtt_ms": 0,
+   "ping_ms": null,
+   "ttft_short_ms": {
+    "median": 177,
+    "min": 177,
+    "max": 762,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 15004,
+    "min": 14960,
+    "max": 15020,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 6.8629999999999995,
+    "min": 6.497,
+    "max": 7.08,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 7.067,
+    "min": 7.032,
+    "max": 7.08,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 6.669,
+    "min": 6.497,
+    "max": 6.694,
+    "n": 3
+   },
+   "prefill_tps": {
+    "median": 30.332697462679903,
+    "min": 30.30373777540194,
+    "max": 30.344974125383157,
+    "n": 3
+   },
+   "bytes_per_token": {
+    "median": 338.9583333333333,
+    "min": 338.9166666666667,
+    "max": 339.1875,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 3.985755867356434,
+    "min": 3.9689530554431403,
+    "max": 3.994429525627045,
+    "n": 6
+   },
+   "of_own_whole": null
+  },
+  {
+   "config": "rpc-star",
+   "rtt_ms": 0,
+   "ping_ms": {
+    "median": 0.075,
+    "min": 0.075,
+    "max": 0.075,
+    "n": 6
+   },
+   "ttft_short_ms": {
+    "median": 538,
+    "min": 535,
+    "max": 555,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 19386,
+    "min": 19381,
+    "max": 19728,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 6.4825,
+    "min": 6.163,
+    "max": 6.687,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 6.642,
+    "min": 6.625,
+    "max": 6.687,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 6.265,
+    "min": 6.163,
+    "max": 6.34,
+    "n": 3
+   },
+   "prefill_tps": {
+    "median": 22.42284989668956,
+    "min": 22.25498821972709,
+    "max": 22.42817905355875,
+    "n": 3
+   },
+   "bytes_per_token": {
+    "median": 693888,
+    "min": 692111.5,
+    "max": 848957.0416666666,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 4.105419777511702,
+    "min": 4.003967619678404,
+    "max": 4.2057142857142855,
+    "n": 6
+   },
+   "of_own_whole": 0.9608685985325724
+  },
+  {
+   "config": "rpc-star",
+   "rtt_ms": 30,
+   "ping_ms": {
+    "median": 30.169,
+    "min": 30.169,
+    "max": 30.169,
+    "n": 6
+   },
+   "ttft_short_ms": {
+    "median": 1397,
+    "min": 1372,
+    "max": 4474,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 21446,
+    "min": 21430,
+    "max": 22854,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 2.7125,
+    "min": 2.458,
+    "max": 3.208,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 2.96,
+    "min": 2.945,
+    "max": 3.208,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 2.478,
+    "min": 2.458,
+    "max": 2.48,
+    "n": 3
+   },
+   "prefill_tps": {
+    "median": 20.30799555264256,
+    "min": 20.298123307544582,
+    "max": 20.3670307891314,
+    "n": 3
+   },
+   "bytes_per_token": {
+    "median": 688788.375,
+    "min": 688690.5,
+    "max": 2005500.1041666667,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 2.25733608534511,
+    "min": 1.737658597793695,
+    "max": 2.700129361975944,
+    "n": 6
+   },
+   "of_own_whole": 0.4020603275772623
+  },
+  {
+   "config": "rpc-star",
+   "rtt_ms": 120,
+   "ping_ms": {
+    "median": 120.176,
+    "min": 120.176,
+    "max": 120.176,
+    "n": 6
+   },
+   "ttft_short_ms": {
+    "median": 3906,
+    "min": 3891,
+    "max": 14885,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 26350,
+    "min": 26332,
+    "max": 31775,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 0.6194999999999999,
+    "min": 0.618,
+    "max": 0.621,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 0.621,
+    "min": 0.62,
+    "max": 0.621,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 0.619,
+    "min": 0.618,
+    "max": 0.619,
+    "n": 3
+   },
+   "prefill_tps": {
+    "median": 16.571681150468727,
+    "min": 16.56764508408958,
+    "max": 16.579798455358738,
+    "n": 3
+   },
+   "bytes_per_token": {
+    "median": 697560.2083333334,
+    "min": 696702.1875,
+    "max": 1999982.7916666667,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 0.7101614280335893,
+    "min": 0.35623463390923954,
+    "max": 1.0641580993309567,
+    "n": 6
+   },
+   "of_own_whole": 0.09182539094345214
+  },
+  {
+   "config": "rpc-draft",
+   "rtt_ms": 0,
+   "ping_ms": {
+    "median": 0.081,
+    "min": 0.081,
+    "max": 0.081,
+    "n": 6
+   },
+   "ttft_short_ms": {
+    "median": 644,
+    "min": 617,
+    "max": 646,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 21156,
+    "min": 21134,
+    "max": 21503,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 6.7995,
+    "min": 6.397,
+    "max": 7.254,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 7.239,
+    "min": 7.077,
+    "max": 7.254,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 6.494,
+    "min": 6.397,
+    "max": 6.522,
+    "n": 3
+   },
+   "prefill_tps": {
+    "median": 20.545576906544326,
+    "min": 20.33920831834254,
+    "max": 20.56625632720402,
+    "n": 3
+   },
+   "bytes_per_token": {
+    "median": 895645.8333333334,
+    "min": 887411.125,
+    "max": 1044199.3958333334,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 4.042369019676814,
+    "min": 3.9907943672705857,
+    "max": 4.1074464913514275,
+    "n": 6
+   },
+   "of_own_whole": 1.007855925294597
+  },
+  {
+   "config": "rpc-draft",
+   "rtt_ms": 30,
+   "ping_ms": {
+    "median": 30.145,
+    "min": 30.145,
+    "max": 30.145,
+    "n": 6
+   },
+   "ttft_short_ms": {
+    "median": 1464,
+    "min": 1460,
+    "max": 4314,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 23556,
+    "min": 23370,
+    "max": 24981,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 2.9055,
+    "min": 2.735,
+    "max": 3.066,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 3.062,
+    "min": 3.034,
+    "max": 3.066,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 2.767,
+    "min": 2.735,
+    "max": 2.777,
+    "n": 3
+   },
+   "prefill_tps": {
+    "median": 18.619323932348017,
+    "min": 18.473498234418816,
+    "max": 18.64734480929889,
+    "n": 3
+   },
+   "bytes_per_token": {
+    "median": 885000.5208333334,
+    "min": 884422.5,
+    "max": 2200404.7916666665,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 2.2309002690530386,
+    "min": 1.4740409773479257,
+    "max": 2.8545082994203974,
+    "n": 6
+   },
+   "of_own_whole": 0.43066775365004073
+  },
+  {
+   "config": "rpc-draft",
+   "rtt_ms": 120,
+   "ping_ms": {
+    "median": 120.2,
+    "min": 120.2,
+    "max": 120.2,
+    "n": 6
+   },
+   "ttft_short_ms": {
+    "median": 3988,
+    "min": 3985,
+    "max": 14883,
+    "n": 3
+   },
+   "ttft_long_ms": {
+    "median": 29644,
+    "min": 28073,
+    "max": 33885,
+    "n": 3
+   },
+   "decode_tps": {
+    "median": 0.876,
+    "min": 0.856,
+    "max": 0.894,
+    "n": 6
+   },
+   "decode_short": {
+    "median": 0.893,
+    "min": 0.892,
+    "max": 0.894,
+    "n": 3
+   },
+   "decode_long": {
+    "median": 0.86,
+    "min": 0.856,
+    "max": 0.86,
+    "n": 3
+   },
+   "prefill_tps": {
+    "median": 15.270656016474856,
+    "min": 14.718699371616669,
+    "max": 15.54251878048384,
+    "n": 3
+   },
+   "bytes_per_token": {
+    "median": 896684.8541666666,
+    "min": 893133.1875,
+    "max": 2200413.9375,
+    "n": 3
+   },
+   "cpus_busy": {
+    "median": 0.903895768454714,
+    "min": 0.43802090210649414,
+    "max": 1.4280273574613416,
+    "n": 6
+   },
+   "of_own_whole": 0.12984510486919143
+  }
+ ],
+ "loads": [
+  {
+   "config": "whole",
+   "load_s": 30.9978,
+   "load_tx_bytes": 0,
+   "note": "one container, the file from a read-only mount"
+  },
+  {
+   "config": "rpc-star",
+   "load_s": 59.0519,
+   "load_tx_bytes": 4379208505,
+   "note": "the head sends every worker its layers"
+  },
+  {
+   "config": "rpc-draft",
+   "load_s": 62.2066,
+   "load_tx_bytes": 4369384816,
+   "note": "as rpc-star, plus the draft read from the head's own disk"
+  }
+ ],
+ "memory": [
+  {
+   "config": "whole",
+   "container": "cmp-whole",
+   "peak_bytes": 9346609152,
+   "anon_bytes": 4646682624,
+   "file_bytes": 4661497856
+  },
+  {
+   "config": "whole-chat",
+   "container": "cmp-whole",
+   "peak_bytes": 9562447872,
+   "anon_bytes": 4860829696,
+   "file_bytes": 4661497856
+  },
+  {
+   "config": "rpc-star",
+   "container": "inferhub-shard-lab-head-1",
+   "peak_bytes": 2684751872,
+   "anon_bytes": 67719168,
+   "file_bytes": 2526027776
+  },
+  {
+   "config": "rpc-star",
+   "container": "inferhub-shard-lab-worker1-1",
+   "peak_bytes": 2685673472,
+   "anon_bytes": 1718411264,
+   "file_bytes": 926433280
+  },
+  {
+   "config": "rpc-star",
+   "container": "inferhub-shard-lab-worker2-1",
+   "peak_bytes": 2684354560,
+   "anon_bytes": 1689821184,
+   "file_bytes": 953696256
+  },
+  {
+   "config": "rpc-star",
+   "container": "inferhub-shard-lab-worker3-1",
+   "peak_bytes": 2688016384,
+   "anon_bytes": 1981288448,
+   "file_bytes": 672681984
+  },
+  {
+   "config": "rpc-draft",
+   "container": "inferhub-shard-lab-head-1",
+   "peak_bytes": 2685267968,
+   "anon_bytes": 808001536,
+   "file_bytes": 1779740672
+  },
+  {
+   "config": "rpc-draft",
+   "container": "inferhub-shard-lab-worker1-1",
+   "peak_bytes": 2686779392,
+   "anon_bytes": 1827758080,
+   "file_bytes": 819462144
+  },
+  {
+   "config": "rpc-draft",
+   "container": "inferhub-shard-lab-worker2-1",
+   "peak_bytes": 2685071360,
+   "anon_bytes": 1770110976,
+   "file_bytes": 875036672
+  },
+  {
+   "config": "rpc-draft",
+   "container": "inferhub-shard-lab-worker3-1",
+   "peak_bytes": 2686189568,
+   "anon_bytes": 2056617984,
+   "file_bytes": 598212608
+  }
+ ],
+ "faults": [
+  {
+   "config": "rpc-star",
+   "cpus_busy_5s_after_cancel": 0,
+   "after_worker_loss": {
+    "head_running": true,
+    "answer": {
+     "ok": false,
+     "mode": "completion",
+     "chunks": 0,
+     "text": "",
+     "status": 200,
+     "error": "terminated",
+     "total_ms": 2667
+    }
+   }
+  },
+  {
+   "config": "rpc-draft",
+   "cpus_busy_5s_after_cancel": 0,
+   "after_worker_loss": {
+    "head_running": false,
+    "answer": {
+     "ok": false,
+     "mode": "completion",
+     "chunks": 0,
+     "text": "",
+     "status": 200,
+     "error": "terminated",
+     "total_ms": 4906
+    }
+   }
+  }
+ ],
+ "skips": [
+  {
+   "config": "exo",
+   "reason": "a60b956: the only engine is MLX and it loads MLX safetensors, not GGUF - no run on the same weights and quantization exists"
+  },
+  {
+   "config": "nakshatra",
+   "reason": "373a17d: a patched llama.cpp b9992 and per-worker sub-GGUFs cut from the model - GGUF-compatible, not built in this run (the mechanism it shares with Prima.cpp is the one measured)"
+  }
+ ],
+ "gates": [
+  "  PASS  baseline and candidate configurations recorded (whole, whole-chat, rpc-star, rpc-draft; skipped: exo, nakshatra)",
+  "  PASS  same test prompts, model 87048bcd5521…, quantization and output settings (48 runs of 48 tokens at temperature 0)",
+  "  PASS  correctness / compatibility thresholds held: every split answers its own whole model's text, every repetition the same · the draft runs too",
+  "  PASS  latency, throughput, memory and network results written to artifacts"
+ ],
+ "edge": [],
+ "decision": "defer — no candidate was measured beside the baseline in this run",
+ "draftEdges": [
+  {
+   "config": "rpc-draft",
+   "rtt": 0,
+   "short": 1.0898825654923214,
+   "long": 1.0365522745411013
+  },
+  {
+   "config": "rpc-draft",
+   "rtt": 30,
+   "short": 1.0344594594594594,
+   "long": 1.1166263115415656
+  },
+  {
+   "config": "rpc-draft",
+   "rtt": 120,
+   "short": 1.4380032206119162,
+   "long": 1.3893376413570275
+  }
+ ],
+ "draftDecisions": [
+  "rpc-draft: adopt — against rpc-star (short / long): 1.09× / 1.04× at 0 ms, 1.03× / 1.12× at 30 ms, 1.44× / 1.39× at 120 ms"
+ ],
+ "failed": 0
+}

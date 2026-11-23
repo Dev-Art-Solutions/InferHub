@@ -1,0 +1,45 @@
+# Phase 146: the same star as compose.yaml, with a draft model on the head (speculative decoding). Layered on top:
+#
+#   LAB_MODEL_DIR=… LAB_DRAFT_DIR=… LAB_DRAFT=llama32-1b.gguf docker compose -f compose.yaml -f compose.draft.yaml up -d
+#
+# The draft runs on the head's own CPU (-devd none): left to its default it follows --device, and with --rpc that is the
+# workers — every drafted token would then cross the network, which is the cost the draft is there to save.
+# One verification pass of the target checks up to LAB_DRAFT_MAX drafted tokens, so a star of three workers pays its nine to
+# thirteen round trips once per accepted run instead of once per token.
+services:
+  head:
+    command:
+      - llama-server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - -m
+      - /models/${LAB_MODEL:-llama31-8b.gguf}
+      - --rpc
+      - worker1:50052,worker2:50052,worker3:50052
+      - -ngl
+      - "999"
+      - --tensor-split
+      - "${LAB_SPLIT:-1,1,1}"
+      - -c
+      - "${LAB_CONTEXT:-4096}"
+      - -t
+      - "${LAB_THREADS:-4}"
+      - --no-warmup
+      - -md
+      - /drafts/${LAB_DRAFT:-llama32-1b.gguf}
+      - -devd
+      - none
+      - -ngld
+      - "0"
+      - --spec-type
+      - draft-simple
+      - --spec-draft-n-max
+      - "${LAB_DRAFT_MAX:-8}"
+      - --spec-draft-p-min
+      - "${LAB_DRAFT_P_MIN:-0}"
+      - -td
+      - "${LAB_THREADS:-4}"
+    volumes:
+      - ${LAB_DRAFT_DIR:?set LAB_DRAFT_DIR to the directory holding the draft GGUF}:/drafts:ro

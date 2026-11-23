@@ -253,7 +253,7 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
     /// The arguments for one group's <c>llama-server</c> (D3): the model, its own worker then one forward per member, every
     /// layer on those devices in that order, the shares by weight, the context, loopback, the group's name as the alias.
     /// </summary>
-    public static IReadOnlyList<string> Arguments(ShardGroupSpec spec, string modelPath, IReadOnlyList<string> endpoints, int port, int? threads)
+    public static IReadOnlyList<string> Arguments(ShardGroupSpec spec, string modelPath, IReadOnlyList<string> endpoints, int port, int? threads, string? draftPath = null)
     {
         var args = new List<string>
         {
@@ -273,7 +273,43 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
             args.AddRange(["-t", threads.Value.ToString(CultureInfo.InvariantCulture)]);
         }
 
+        if (draftPath is not null)
+        {
+            // Phase 146 D1: the draft on this node's CPU. Left to llama.cpp it follows --device, which here names only the RPC
+            // devices — every drafted token would then cross the network, the cost the draft is there to save.
+            args.AddRange(["-md", draftPath, "-devd", "none", "-ngld", "0", "--spec-type", "draft-simple",
+                "--spec-draft-n-max", DraftTokens(spec).ToString(CultureInfo.InvariantCulture),
+                "--spec-draft-p-min", DraftConfidence.ToString(CultureInfo.InvariantCulture)]);
+
+            if (threads is > 0)
+            {
+                args.AddRange(["-td", threads.Value.ToString(CultureInfo.InvariantCulture)]);
+            }
+        }
+
         return args;
+    }
+
+    /// <summary>Phase 146 D2: the variant the gate measured — up to six tokens a pass, drafting stops below 0.6.</summary>
+    public const int DefaultDraftTokens = 6;
+
+    public const double DraftConfidence = 0.6;
+
+    public static int DraftTokens(ShardGroupSpec spec) => spec.DraftTokens is > 0 and <= 32 ? spec.DraftTokens : DefaultDraftTokens;
+
+    /// <summary>Phase 146 D3: the draft this head will run, and the sentence the group's state carries. A draft that is not here costs
+    /// speed, never the answer, so the group runs without it and says so.</summary>
+    public static (string? Path, string? Note) DraftFile(string? directory, ShardGroupSpec spec, Func<string, bool>? exists = null)
+    {
+        if (string.IsNullOrWhiteSpace(spec.Draft))
+        {
+            return (null, null);
+        }
+
+        var (path, problem) = ModelFile(directory, spec.Draft.Trim(), exists);
+        return path is null
+            ? (null, $"no draft: {problem}; runs without one")
+            : (path, $"draft {spec.Draft.Trim()} on this node's CPU, up to {DraftTokens(spec)} tokens a pass");
     }
 
     /// <summary>D2: the file a name points at in the models directory, or why it cannot be used. A path is never accepted.</summary>
@@ -447,7 +483,8 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
         var (path, problem) = ModelFile(modelsDir, spec.Model);
         var exe = executable();
         problem ??= exe is null ? "no llama-server found: set Node:Shards:HeadExecutable, or put llama-server beside the worker" : null;
-        var args = path is null ? [] : Arguments(spec, path, endpoints, port, options.Threads);
+        var (draftPath, draftNote) = DraftFile(modelsDir, spec);
+        var args = path is null ? [] : Arguments(spec, path, endpoints, port, options.Threads, draftPath);
 
         var process = new EngineProcess(
             "group:" + spec.Name,
@@ -475,7 +512,7 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
 
         logger.LogInformation("Heading group {Group}: {Model} over {Endpoints}", spec.Name, spec.Model, string.Join(", ", endpoints));
         process.Start();
-        var group = new Running(spec, endpoints, port, process, backendFor(spec.Name, port), SentByNode);
+        var group = new Running(spec, endpoints, port, process, backendFor(spec.Name, port), SentByNode) { Draft = draftNote };
 
         if (path is not null)
         {
@@ -680,13 +717,16 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
         /// <summary>Phase 137 D4: which worker holds which layers, once the model's header has been read.</summary>
         public volatile IReadOnlyList<ShardGroupLayers>? Layers;
 
+        /// <summary>Phase 146 D3: the draft it runs, or why it runs without the one it was given.</summary>
+        public string? Draft { get; init; }
+
         public ShardGroupState State()
         {
             var state = Draining
                 ? ShardGroupState.Draining
                 : Healthy ? ShardGroupState.Running : Process.Failed ? ShardGroupState.Failed : ShardGroupState.Starting;
             var why = Draining ? $"finishing {InFlight} request(s), then stopping" : Healthy ? null : Process.LastError;
-            return new ShardGroupState(Spec.Name, Spec.Model, state, Spec.Members.Select(m => m.Name).ToArray(), $"127.0.0.1:{Port}", why, WithSent(Layers), Spec.Community);
+            return new ShardGroupState(Spec.Name, Spec.Model, state, Spec.Members.Select(m => m.Name).ToArray(), $"127.0.0.1:{Port}", why, WithSent(Layers), Spec.Community, Draft);
         }
 
         /// <summary>142 D2: each member's layers with what the head has sent it since this group started.</summary>

@@ -79,6 +79,15 @@ public sealed class ShardGroupDefinition
     /// <summary>Phase 145 D4: an <c>auto</c> group is placed again when a node its placement lost is back and has held still for
     /// <see cref="SettleSeconds"/>. Off: a kept placement moves only when it cannot run (144 D3).</summary>
     public bool FailBack { get; set; }
+
+    /// <summary>Phase 146: a second file in the head's models directory that the head runs as a draft model on its own CPU —
+    /// llama.cpp's speculative decoding, so one pass across the group checks several tokens. Unset (the default): no draft.
+    /// Measured 1.38–1.44× at a 120 ms round trip and level on a local network (plan/phase-146); a head that lacks the file runs
+    /// without it and says so.</summary>
+    public string? Draft { get; set; }
+
+    /// <summary>Phase 146: up to this many drafted tokens a pass (1–32). 0: the measured six.</summary>
+    public int DraftTokens { get; set; }
 }
 
 /// <summary>The <c>ShardGroups</c> section, by group name. Empty: no group, and nothing is ever sent (the invariant).</summary>
@@ -395,7 +404,9 @@ public sealed class ShardPeerPublisher(
                     definition.Context,
                     Weight(shards.Of(head.NodeId)!),
                     members.Select(m => new ShardGroupWorker(m.Node.NodeId, m.Node.Name, Weight(shards.Of(m.Node.NodeId)!))).ToArray(),
-                    community));
+                    community,
+                    string.IsNullOrWhiteSpace(definition.Draft) ? null : definition.Draft.Trim(),
+                    Math.Max(0, definition.DraftTokens)));
             }
 
             // Phase 145 D3: a stand-in is remembered only while the group is sent with it; a group not sent has nothing to reload.

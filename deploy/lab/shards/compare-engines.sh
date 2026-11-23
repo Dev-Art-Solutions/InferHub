@@ -5,6 +5,9 @@
 #   inferhub-group   a group on the PUBLISHED InferHub images, via the hub (the baseline: tunnels, mTLS, the hub's /v1)
 #   prima-whole      Prima.cpp at its pinned commit, one container       (the text a Prima.cpp ring must match)
 #   prima-ring       Prima.cpp, four ranks in a ring                     (the candidate: one hop per boundary per token)
+#   rpc-draft        rpc-star with a draft model on the head (146)       (LAB_DRAFT_DIR, LAB_DRAFT, LAB_DRAFT_MAX)
+#   inferhub-group-draft  inferhub-group with ShardGroups:<n>:Draft (146)  (LAB_DRAFT, a file beside the model)
+#   COMPARE_HUB_IMAGE / COMPARE_NODE_IMAGE   other images for the two group configurations (e.g. built from source)
 # at each round trip in $COMPARE_RTTS, $COMPARE_REPS times per prompt, timed by one client (compare/ask.mjs), and writes
 # results.jsonl, load.jsonl, memory.jsonl, faults.jsonl, skips.jsonl, meta.json and summary.{md,json} to a new directory.
 # A candidate that cannot run on these weights is a SKIP with its reason, never a missing row.
@@ -108,8 +111,11 @@ faults() {
 
 sha=$(sha256sum "$LAB_MODEL_DIR/$MODEL" 2>/dev/null | cut -d' ' -f1)
 [ -n "$sha" ] || { echo "no $LAB_MODEL_DIR/$MODEL"; exit 2; }
-image_id() { docker image inspect -f '{{.Id}}' "$1" 2>/dev/null || echo missing; }
-label() { docker image inspect -f "{{index .Config.Labels \"org.opencontainers.image.$2\"}}" "$1" 2>/dev/null; }
+# One line or "missing": an image that is not there must not put docker's error into meta.json.
+image_id() { local id; id=$(docker image inspect -f '{{.Id}}' "$1" 2>/dev/null | head -1 | tr -d '
+'); echo "${id:-missing}"; }
+label() { docker image inspect -f "{{index .Config.Labels \"org.opencontainers.image.$2\"}}" "$1" 2>/dev/null | head -1 | tr -d '
+'; }
 
 if wanted whole; then
   echo "== whole: llama.cpp b12182 in one container"
@@ -137,23 +143,47 @@ if wanted rpc-star; then
   docker compose logs > "$OUT/log-rpc-star.txt" 2>&1; docker compose down >/dev/null 2>&1
 fi
 
-HUB_IMAGE=$REGISTRY/inferhub-coordinator:$TAG; NODE_IMAGE=inferhub-lab-node:$TAG
-if wanted inferhub-group; then
-  echo "== inferhub-group: the published $TAG images, a group through the hub"
+# Phase 146: the same star with a draft model on the head ($LAB_DRAFT_DIR/$LAB_DRAFT, run on the head's CPU).
+if wanted rpc-draft; then
+  echo "== rpc-draft: the same star, a draft model (${LAB_DRAFT:-llama32-1b.gguf}) on the head, up to ${LAB_DRAFT_MAX:-8} tokens a pass"
+  if [ -z "${LAB_DRAFT_DIR:-}" ] || [ ! -f "${LAB_DRAFT_DIR:-}/${LAB_DRAFT:-llama32-1b.gguf}" ]; then
+    skip rpc-draft "no draft model at \$LAB_DRAFT_DIR/\$LAB_DRAFT"
+  else
+    docker compose down >/dev/null 2>&1; t0=$(now)
+    docker compose -f compose.yaml -f compose.draft.yaml up -d >/dev/null 2>&1
+    P=inferhub-shard-lab; set -- $P-head-1 $P-worker1-1 $P-worker2-1 $P-worker3-1
+    if healthy http://127.0.0.1:18080 600; then
+      tx=$(snap "$@"); loaded rpc-draft "$(awk "BEGIN{print $(now)-$t0}")" "${tx% *}" "as rpc-star, plus the draft read from the head's own disk"
+      matrix rpc-draft http://127.0.0.1:18080 completion "" "" "" "$RTTS" $P-head-1 worker1 "$@"
+      [ "$FAULTS" = 1 ] && faults rpc-draft http://127.0.0.1:18080 $P-head-1 $P-worker2-1 "$@"
+    else skip rpc-draft "the head did not answer /health in 600 s"; fi
+    docker compose -f compose.yaml -f compose.draft.yaml logs > "$OUT/log-rpc-draft.txt" 2>&1; docker compose -f compose.yaml -f compose.draft.yaml down >/dev/null 2>&1
+  fi
+fi
+
+HUB_IMAGE=${COMPARE_HUB_IMAGE:-$REGISTRY/inferhub-coordinator:$TAG}; NODE_IMAGE=${COMPARE_NODE_IMAGE:-inferhub-lab-node:$TAG}
+# group <config> <draft file or empty>: a group through the hub (135–137); 146's draft is the same group with ShardGroups:<n>:Draft.
+group() {
+  local config=$1 draft=$2
+  echo "== $config: the $TAG images, a group through the hub${draft:+, a draft ($draft) on the head}"
+  if [ -n "$draft" ] && [ ! -f "$LAB_MODEL_DIR/$draft" ]; then skip "$config" "no $draft beside the model in $LAB_MODEL_DIR"; return; fi
   docker image inspect "$HUB_IMAGE" >/dev/null 2>&1 || docker pull -q "$HUB_IMAGE" >/dev/null
   docker image inspect "$REGISTRY/inferhub-node:$TAG" >/dev/null 2>&1 || docker pull -q "$REGISTRY/inferhub-node:$TAG" >/dev/null
   docker image inspect "$NODE_IMAGE" >/dev/null 2>&1 || docker build -q -f node.Dockerfile --build-arg "NODE=$TAG" -t "$NODE_IMAGE" . >/dev/null
   t0=$(now)
-  HUB_IMAGE=$HUB_IMAGE NODE_IMAGE=$NODE_IMAGE bash ./tunnel-lab.sh > "$OUT/log-inferhub-group.txt" 2>&1
+  HUB_IMAGE=$HUB_IMAGE NODE_IMAGE=$NODE_IMAGE LAB_DRAFT=$draft bash ./tunnel-lab.sh > "$OUT/log-$config.txt" 2>&1
   set -- shard-a shard-b shard-c shard-d
-  if grep -q '"state":"running"' "$OUT/log-inferhub-group.txt"; then
-    tx=$(snap "$@"); loaded inferhub-group "$(awk "BEGIN{print $(now)-$t0}")" "${tx% *}" "includes the hub start, four enrollments and the lab's two warm-up chats"
-    matrix inferhub-group http://127.0.0.1:15080 chat llama-8b-split cli135 "" "$RTTS" "" "" "$@"
-    curl -s -H "Authorization: Bearer adm135" localhost:15080/api/admin/nodes > "$OUT/inferhub-nodes.json"
-  else skip inferhub-group "the group did not reach running (see log-inferhub-group.txt)"; fi
-  for c in lab-hub "$@"; do docker logs "$c" > "$OUT/log-$c.txt" 2>&1; done
+  if grep -q '"state":"running"' "$OUT/log-$config.txt"; then
+    tx=$(snap "$@"); loaded "$config" "$(awk "BEGIN{print $(now)-$t0}")" "${tx% *}" "includes the hub start, four enrollments and the lab's two warm-up chats"
+    matrix "$config" http://127.0.0.1:15080 chat llama-8b-split cli135 "" "$RTTS" "" "" "$@"
+    curl -s -H "Authorization: Bearer adm135" localhost:15080/api/admin/nodes > "$OUT/$config-nodes.json"
+    curl -s -H "Authorization: Bearer adm135" localhost:15080/api/admin/shards/groups > "$OUT/$config-groups.json"
+  else skip "$config" "the group did not reach running (see log-$config.txt)"; fi
+  for c in lab-hub "$@"; do docker logs "$c" > "$OUT/log-$config-$c.txt" 2>&1; done
   docker rm -f lab-hub "$@" >/dev/null 2>&1; docker network rm lab135 >/dev/null 2>&1
-fi
+}
+wanted inferhub-group && group inferhub-group ""
+wanted inferhub-group-draft && group inferhub-group-draft "${LAB_DRAFT:-llama32-1b.gguf}"
 
 if wanted prima-whole || wanted prima-ring; then
   if ! docker image inspect "$PRIMA_IMAGE" >/dev/null 2>&1; then

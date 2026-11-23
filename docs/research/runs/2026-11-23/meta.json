@@ -1,0 +1,9 @@
+{"date":"2026-11-23T10:52:28Z","inferhub_commit":"e68ed5866800e334f6462f9db23c5141094af702","inferhub_tag":"3.100.0",
+ "hub_image":"ghcr.io/dev-art-solutions/inferhub-coordinator:3.100.0","hub_image_id":"sha256:cdfc01772c98fc342d62358d7c6ec75c400cc83763bd6910050c400cdcd097cd","hub_revision":"fb07a723cccc06ae91339000aa816c27d522c944",
+ "node_image":"ghcr.io/dev-art-solutions/inferhub-node:3.100.0","node_image_id":"sha256:7c5fd34d6c7a9b7d541a288280430827f6a26902abaf13ca9abefeb17f1a3d4d","node_revision":"fb07a723cccc06ae91339000aa816c27d522c944",
+ "llama_image":"inferhub-lab-llama:b12182","llama_image_id":"sha256:478509ff44ae92bd5b993283fa06ab8f7a49d03e0872cecd489dc06e85cce035","llama_commit":"fd27b2034905f8dadd8bd6d2cc44595f4929d391",
+ "prima_image":"inferhub-lab-prima:288df6a","prima_image_id":"sha256:9717ccdbd71297ad148fc71f6eb50c5417c1b8b6cda1d1851cedeb2cd61b4e73","prima_commit":"288df6a2cc2120387e12d6f40798f30cc525c9ea","prima_layers":"8,8,8,8",
+ "model":"llama31-8b.gguf","model_sha256":"87048bcd55216712ef14c11c2c303728463207b165bf18440b9b84b07ec00f87","model_bytes":4661211808,
+ "rtts_ms":"0 30 120","reps":3,"tokens":48,"cpus_per_container":4,"worker_memory":"2560m","node_memory":"4g",
+ "host_cpus":64,"host_memory_bytes":134977769472,"docker":"27.3.1",
+ "expect_revision":"","only":"whole rpc-star rpc-draft"}

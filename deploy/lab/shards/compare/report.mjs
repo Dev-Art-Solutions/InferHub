@@ -13,7 +13,9 @@ const results = lines('results.jsonl'), loads = lines('load.jsonl'), memory = li
 const faults = lines('faults.jsonl'), skips = lines('skips.jsonl');
 
 // Which whole-model run a split must answer like, and what each configuration is.
-const WHOLE_OF = { 'rpc-star': 'whole', 'inferhub-group': 'whole-chat', 'prima-ring': 'prima-whole' };
+const WHOLE_OF = { 'rpc-star': 'whole', 'inferhub-group': 'whole-chat', 'prima-ring': 'prima-whole', 'rpc-draft': 'whole', 'inferhub-group-draft': 'whole-chat' };
+// Phase 146: a draft model on the head, each against the same split without one (the same engine, the same whole model).
+const DRAFT_OF = { 'rpc-draft': 'rpc-star', 'inferhub-group-draft': 'inferhub-group' };
 const BASELINE = ['whole', 'whole-chat', 'rpc-star', 'inferhub-group'];
 const CANDIDATE = 'prima-ring';
 // Read from the candidate's source at the pinned commit (docs/research/distributed-inference-engines.md), not measured here.
@@ -83,9 +85,11 @@ const correct = config => {
   return problems;
 };
 const baselineProblems = configs.filter(c => BASELINE.includes(c)).flatMap(c => correct(c).map(p => `${c} ${p}`));
+const draftProblems = Object.keys(DRAFT_OF).filter(ran).flatMap(c => correct(c).map(p => `${c} ${p}`));
 const candidateProblems = ran(CANDIDATE) ? [...correct('prima-whole').map(p => `prima-whole ${p}`), ...correct(CANDIDATE).map(p => `${CANDIDATE} ${p}`)] : null;
 gate(baselineProblems.length === 0, 'correctness / compatibility thresholds held: every split answers its own whole model\'s text, every repetition the same'
   + (baselineProblems.length ? ` — ${baselineProblems.join('; ')}` : '')
+  + (draftProblems.length ? ` · draft DISQUALIFIED: ${draftProblems.join('; ')}` : Object.keys(DRAFT_OF).some(ran) ? ' · the draft runs too' : '')
   + (candidateProblems === null ? '' : candidateProblems.length ? ` · candidate DISQUALIFIED: ${candidateProblems.join('; ')}` : ' · the candidate too'));
 
 const unmeasured = [];
@@ -121,6 +125,22 @@ else {
       : `reject — against ${base} the ring keeps ${said} of the share of whole-model speed, under the 1.25× that would pay for a second engine`;
 }
 
+// Phase 146's rule is 141's: the draft enters the product only if it keeps at least 1.25× the speed of the same split without
+// it on EVERY prompt at some shaped round trip. Same engine and same whole model on both sides, so the ratio is direct.
+const draftEdges = [];
+const draftDecisions = Object.entries(DRAFT_OF).filter(([d, b]) => ran(d) && ran(b)).map(([d, b]) => {
+  const at = [...new Set(rows.filter(r => r.config === d).map(r => r.rtt_ms))].filter(rtt => row(b, rtt));
+  const e = at.map(rtt => ({ config: d, rtt, short: row(d, rtt).decode_short.median / row(b, rtt).decode_short.median,
+    long: row(d, rtt).decode_long.median / row(b, rtt).decode_long.median }));
+  draftEdges.push(...e);
+  const said = e.map(x => `${x.short.toFixed(2)}× / ${x.long.toFixed(2)}× at ${x.rtt} ms`).join(', ');
+  const problems = draftProblems.filter(p => p.startsWith(d + ' '));
+  if (problems.length) return `${d}: reject — it does not answer its whole model's text (${problems[0]})`;
+  const shaped = e.filter(x => x.rtt > 0);
+  const always = shaped.some(x => Math.min(x.short, x.long) >= 1.25), sometimes = shaped.some(x => Math.max(x.short, x.long) >= 1.25);
+  return `${d}: ${always ? 'adopt' : sometimes ? 'defer' : 'reject'} — against ${b} (short / long): ${said}`;
+});
+
 // --- summary
 const md = [];
 md.push(`# compare-engines — ${meta.date}`, '',
@@ -144,12 +164,13 @@ if (faults.length) {
     md.push(`- **${f.config}**: ${f.cpus_busy_5s_after_cancel} CPUs busy in the five seconds after the client hung up; with one worker killed the head was ${f.after_worker_loss.head_running ? 'still running' : 'gone'} and the next request ${a.ok ? `answered (${a.chunks} tokens)` : `did not answer (${(a.error ?? `HTTP ${a.status}`).slice(0, 120)})`}.`);
   }
 }
-md.push('', '## Skipped', '', ...skips.map(s => `- **${s.config}** — ${s.reason}`), '', '## Gates', '', '```', ...out, `== decision: ${decision}`, '```', '');
+md.push('', '## Skipped', '', ...skips.map(s => `- **${s.config}** — ${s.reason}`), '', '## Gates', '', '```', ...out, `== decision: ${decision}`, ...draftDecisions.map(x => `== draft: ${x}`), '```', '');
 writeFileSync(join(dir, 'summary.md'), md.join('\n'));
-writeFileSync(join(dir, 'summary.json'), JSON.stringify({ meta, rows, loads, memory, faults, skips, gates: out, edge, decision, failed }, null, 1));
+writeFileSync(join(dir, 'summary.json'), JSON.stringify({ meta, rows, loads, memory, faults, skips, gates: out, edge, decision, draftEdges, draftDecisions, failed }, null, 1));
 
 console.log(out.join('\n'));
 for (const s of skips) console.log(`  SKIP  ${s.config}: ${s.reason}`);
 console.log(`== decision: ${decision}`);
+for (const x of draftDecisions) console.log(`== draft: ${x}`);
 console.log(`== ${dir}/summary.md`);
 process.exit(failed ? 1 : 0);

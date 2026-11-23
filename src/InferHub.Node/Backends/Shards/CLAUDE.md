@@ -5,7 +5,7 @@
 several nodes: the group estimate, a node's shard worker, the mTLS tunnel between nodes, the groups a coordinator assembles
 (private cloud and community), the relay for nodes with no direct path — and since 142 the track that takes it past the 8B lab:
 a 70B no node holds, (143) a member that loads its layers from its own copy of the file, (144) a group the coordinator places itself,
-and (145) a request that survives a member vanishing and a member that takes its place back.
+and (145) a request that survives a member vanishing and a member that takes its place back, and (146) a draft model on the head.
 
 > **Read the root `CLAUDE.md` first, then `src/InferHub.Node/Backends/CLAUDE.md`** (118's estimate, 95's `EngineProcess`, 120's
 > management jobs — all used here). The invariants that bind hardest: **the RPC port is never reachable off the node**
@@ -476,3 +476,42 @@ the same again. **Found in the lab:** `substitutions` was never on the admin end
 waiting for SignalR's timeout, which counts against `RetrySeconds`); a 70B reload inside `RetrySeconds`; community groups — their
 pick is still the largest offers on every look, so a larger node arriving moves one; a request that died *after* its first token
 (it fails, as before).
+
+### Phase 146 (a draft model on the head: one pass across the group checks several tokens — measured past 141's rule first)
+
+Files: `ShardGroupSpec.Draft/DraftTokens` and `ShardGroupState.Draft` (`Fit/ShardOffer.cs`, additive, absent when unset), hub
+`ShardGroupDefinition.Draft/DraftTokens`, the head's `ShardGroupHost.Arguments/DraftFile`; the lab's `compose.draft.yaml`,
+`compare-engines.sh` `rpc-draft` + `inferhub-group-draft`, `report.mjs`'s draft rule, `tunnel-lab.sh` `LAB_DRAFT`. Research note
+`docs/research/draft-model-on-the-head.md`, run files `docs/research/runs/2026-11-23/`.
+
+**D1, load-bearing — the draft runs on the head's own CPU, by flag.** `-devd none -ngld 0`. Left to llama.cpp the draft follows
+`--device`, and a head names only its RPC devices (136 D3), so every drafted token would be computed across the network — the cost the
+draft exists to save. Read from `llama-server --help` at b12182.
+
+**D2 — the gate was 141's rule, and it passed only far away.** Same engine and same whole model on both sides, so the ratio is the
+draft against the same star without it, per prompt: *adopt* at ≥ 1.25× on every prompt at some shaped round trip. The variant was
+chosen *before* the gate by a sweep at 30 ms (`sweep-30ms.jsonl`: 8 / 4 at p-min 0.75 / 3 / 6 at 0.6 tokens a pass, all 0.92–1.05×);
+6 at 0.6 accepted 83–87 % of its drafts. **The gate (2026-11-23, b12182, CPU, the 8B over three 2.5 GiB workers, Llama 3.2 1B Q4_K_M as
+the draft, three repetitions):** short / long **1.09× / 1.04× at 0 ms, 1.03× / 1.12× at 30 ms, 1.44× / 1.39× at 120 ms** (0.62 →
+0.89 tok/s), the whole model's text every time. **Why only far:** on these CPUs a pass that checks five tokens costs nearly two that
+check one, and the draft takes the head's cores between passes — a saving of round trips pays only once round trips dominate. **The
+price:** the long prompt's first token 1.8–3.3 s later (the draft reads the prompt too), ~30 % more bytes per token (0.90 against
+0.69 MB: a pass carries every drafted token's activations, accepted or not), 0.75 GiB more on the head.
+
+**Through the product (2026-11-23, `tunnel-lab.sh` `LAB_DRAFT`, images built from source, the 8B over shard-a/b/c):** the group's
+state said *draft llama32-1b.gguf on this node's CPU, up to 6 tokens a pass*; against the same group without it **1.07× / 1.19× at
+0 ms and 1.33× / 1.74× at 120 ms** (long prompt 0.98 → 1.71 tok/s; the draft's runs spread 1.18–1.72), the whole model's text every
+time. More than the bare star; a group's head holds layers itself (136), one fewer remote hop a pass — whether that is why is not
+established. `runs/2026-11-23-group/`. **Found running it:** `compare-engines.sh` wrote docker's
+error into `meta.json` for an image that is not there (a source-built run); one line or `missing` now.
+
+**D3 — `ShardGroups:<name>:Draft` names a second file in the head's models directory; a head without it runs without one and says so.**
+`DraftTokens` 1–32, 0 = the measured six; the 0.6 floor is fixed (one measured variant, not a knob nobody measured). A missing draft
+costs speed, never the answer, so the group starts and `ShardGroupState.draft` carries *no draft: 'x' is not in …; runs without one*
+— not a failed group. An auto group's head is still chosen by the model file alone (144 D1); the draft does not move a placement.
+*Rejected:* a draft on a member (its guesses would cross the network); ngram speculation (no file, but a chat rarely repeats itself);
+turning it on by default — 1.03–1.19× at 0–30 ms is little for the price above.
+
+**Not established:** GPUs (a card checks five tokens for nearly the price of one — the gain could be larger, or the draft too slow beside
+it); a real network (netem delay only); models beyond the 8B (a 70B's own draft is a family question: same vocabulary); several
+requests at once (147); the draft on a sealed or community head beyond what the head already holds.

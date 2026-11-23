@@ -46,6 +46,54 @@ public sealed class ShardGroupHostTests : IDisposable
         Assert.Equal("4096", After("-c"));
     }
 
+    [Fact]
+    public void AGroupWithoutADraftIsToldNothingAboutOne()
+    {
+        var args = ShardGroupHost.Arguments(Spec(), "/models/llama31-8b.gguf", ["127.0.0.1:50052"], 18090, 4);
+
+        Assert.DoesNotContain("-md", args);
+        Assert.DoesNotContain("--spec-type", args);
+        Assert.Equal((null, null), ShardGroupHost.DraftFile(models, Spec()));
+    }
+
+    [Fact]
+    public void ADraftRunsOnTheHeadsCpuNeverOnTheWorkersWithTheMeasuredDefaults()
+    {
+        var args = ShardGroupHost.Arguments(Spec() with { Draft = "llama32-1b.gguf" }, "/models/llama31-8b.gguf", ["127.0.0.1:50052"], 18090, 4, "/models/llama32-1b.gguf");
+
+        string After(string flag) => args[args.ToList().IndexOf(flag) + 1];
+
+        Assert.Equal("/models/llama32-1b.gguf", After("-md"));
+        // Left to llama.cpp the draft follows --device, which here is the RPC workers.
+        Assert.Equal("none", After("-devd"));
+        Assert.Equal("0", After("-ngld"));
+        Assert.Equal("draft-simple", After("--spec-type"));
+        Assert.Equal("6", After("--spec-draft-n-max"));
+        Assert.Equal("0.6", After("--spec-draft-p-min"));
+        Assert.Equal("4", After("-td"));
+        Assert.Equal("RPC0", After("--device"));
+
+        var four = ShardGroupHost.Arguments(Spec() with { Draft = "x", DraftTokens = 4 }, "/m", ["e"], 1, null, "/d");
+        Assert.Equal("4", four[four.ToList().IndexOf("--spec-draft-n-max") + 1]);
+        Assert.DoesNotContain("-td", four);
+    }
+
+    [Fact]
+    public void ADraftIsANameInTheModelsDirectoryAndOneThatIsNotThereLeavesTheGroupRunningWithoutIt()
+    {
+        File.WriteAllText(Path.Combine(models, "llama32-1b.gguf"), "not really a draft");
+
+        var (path, note) = ShardGroupHost.DraftFile(models, Spec() with { Draft = "llama32-1b.gguf" });
+        Assert.Equal(Path.Combine(models, "llama32-1b.gguf"), path);
+        Assert.Contains("up to 6 tokens a pass", note);
+
+        var (missing, why) = ShardGroupHost.DraftFile(models, Spec() with { Draft = "qwen-0.5b.gguf" });
+        Assert.Null(missing);
+        Assert.Contains("runs without one", why);
+
+        Assert.Null(ShardGroupHost.DraftFile(models, Spec() with { Draft = "../llama32-1b.gguf" }).Path);
+    }
+
     [Theory]
     [InlineData("../etc/passwd", "not a file name")]
     [InlineData("/models/x.gguf", "not a file name")]
