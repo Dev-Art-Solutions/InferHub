@@ -61,3 +61,10 @@ The group's state said `slots: 4` and the hub's `slotsByModel` the same. With `S
 ## Checks
 
 - `dotnet test InferHub.sln`: 3 014 passed, 70 skipped, 0 failed.
+
+## On the published images
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.112.0` and `inferhub-node:3.112.0` (revision label `7e451d5`), pulled and run with
+`group-concurrency.sh` (`LAB_SLOT_WAIT=20`, the node image with the lab's llama.cpp beside it): the group's state said `slots: 4`; four
+chats at once took 14.7–15.5 s, every first token within 3.0 s, nothing held at the hub, the same text in each burst. One request alone:
+5.7–6.1 tok/s. Files in `docs/research/runs/2026-11-24-group-v3.112.0/`.
