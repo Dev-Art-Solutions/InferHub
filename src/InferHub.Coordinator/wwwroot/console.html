@@ -504,6 +504,30 @@
   </section>
 
   <!--
+    Phase 148. Which node gave how much to groups since this coordinator started: the memory it set aside while a running group
+    used it, and the tokens of every answer that passed through its layers. Shown, never enforced; a restart starts it again.
+  -->
+  <section>
+    <h2>Contribution to groups</h2>
+    <p id="shard-contribution-meta" style="color: var(--muted)"></p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Node</th>
+          <th title="Node:Shards — what its owner set aside for groups now">Offer</th>
+          <th>In groups now</th>
+          <th title="How long a running group listed it among its workers">Time in groups</th>
+          <th title="Its offer over that time (134: the whole offer is reserved for groups)">Memory</th>
+          <th title="Answers the group's head returned while it was a worker">Requests</th>
+          <th title="Prompt + generated tokens of those answers — every one crossed every worker">Tokens through it</th>
+          <th title="Those tokens × the layers it held ÷ the group's layers">Its share</th>
+        </tr></thead>
+        <tbody id="shard-contribution"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!--
     Phase 97. A colibri catalogue: every converted model a node may load, which are loaded, and
     which the hub pinned. Load and Unload write the node's profile (colibri.loaded); on a node that
     may hold one model, Load is a switch. On-demand stops idle, unpinned models to free their RAM.

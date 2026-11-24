@@ -1190,8 +1190,36 @@
     latestShardGroups = (await res.json()).groups ?? [];
     renderShardTunnels(latestNodes ?? []);
   };
-  setInterval(() => loadShardGroups().catch(() => {}), 5000);
+  // Phase 148: who gave how much to groups — the memory set aside while a group ran on it, and the tokens through its layers.
+  const renderShardContribution = (data) => {
+    const body = document.getElementById("shard-contribution");
+    const meta = document.getElementById("shard-contribution-meta");
+    if (!body) return;
+    const nodes = data?.nodes ?? [];
+    if (meta) meta.textContent = data?.since ? `Since ${new Date(data.since).toLocaleString()} — ${data.note ?? ""}` : "";
+    if (nodes.length === 0) {
+      body.innerHTML = `<tr><td colspan="8" class="empty">No node offers memory to groups, and none has given any since this coordinator started.</td></tr>`;
+      return;
+    }
+    const span = s => s < 60 ? `${Math.round(s)} s` : s < 3600 ? `${(s / 60).toFixed(1)} min` : `${(s / 3600).toFixed(2)} h`;
+    const num = n => Math.round(n ?? 0).toLocaleString();
+    body.innerHTML = nodes.map(n => {
+      const per = (n.groups ?? []).map(g => `${escapeHtml(g.group)}${g.community ? " (community)" : ""}: ${num(g.shareTokens)} of ${num(g.promptTokens + g.generatedTokens)} tokens, ${g.mibHours.toFixed(2)} MiB·h`).join("\n");
+      const name = `${escapeHtml(n.name)}${n.organisation ? ` <span class="matrix-no">${escapeHtml(n.organisation)}</span>` : ""}${n.connected ? "" : ` <span class="pill" title="not connected now — what it gave is kept until this coordinator restarts">left</span>`}`;
+      const now = (n.groupsNow ?? []).map(g => `<span class="pill pill-ok">${escapeHtml(g)}</span>`).join(" ") || `<span class="matrix-no">—</span>`;
+      return `<tr title="${escapeHtml(per)}"><td>${name}</td><td>${n.offerMiB == null ? "—" : `${(n.offerMiB / 1024).toFixed(1)} GiB`}</td><td>${now}</td>` +
+        `<td>${span(n.seconds ?? 0)}</td><td>${((n.mibHours ?? 0) / 1024).toFixed(3)} GiB·h</td><td>${num(n.requests)}</td>` +
+        `<td>${num((n.promptTokens ?? 0) + (n.generatedTokens ?? 0))}</td><td><b>${num(n.shareTokens)}</b></td></tr>`;
+    }).join("");
+  };
+  const loadShardContribution = async () => {
+    const res = await fetch("/api/admin/shards/contribution", { headers: adminHeaders() });
+    if (!res.ok) return;
+    renderShardContribution(await res.json());
+  };
+  setInterval(() => { loadShardGroups().catch(() => {}); loadShardContribution().catch(() => {}); }, 5000);
   loadShardGroups().catch(() => {});
+  loadShardContribution().catch(() => {});
   document.addEventListener("click", async (e) => {
     const name = e.target?.dataset?.replaceGroup;
     if (!name) return;

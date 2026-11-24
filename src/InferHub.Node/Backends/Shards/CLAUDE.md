@@ -1,12 +1,12 @@
 # InferHub.Node/Backends/Shards — agent context
 
 **Scope: `src/InferHub.Node/Backends/Shards/`, the shard contracts in `src/InferHub.Shared/Fit/` (`GroupFit`, `ShardOffer`, `ShardSeed`, `ShardPlacement`), the hub's
-`Services/NodeShardRegistry.cs` and `Services/ShardRelay.cs`, and the lab in `deploy/lab/shards/`.** One model split by layers across
+`Services/NodeShardRegistry.cs`, `Services/ShardRelay.cs` and `Services/ShardContribution.cs`, and the lab in `deploy/lab/shards/`.** One model split by layers across
 several nodes: the group estimate, a node's shard worker, the mTLS tunnel between nodes, the groups a coordinator assembles
 (private cloud and community), the relay for nodes with no direct path — and since 142 the track that takes it past the 8B lab:
 a 70B no node holds, (143) a member that loads its layers from its own copy of the file, (144) a group the coordinator places itself,
-and (145) a request that survives a member vanishing and a member that takes its place back, (146) a draft model on the head, and (147)
-several requests at once, counted by the group's own engine.
+and (145) a request that survives a member vanishing and a member that takes its place back, (146) a draft model on the head, (147)
+several requests at once, counted by the group's own engine, and (148) which node gave how much to groups, shown and never enforced.
 
 > **Read the root `CLAUDE.md` first, then `src/InferHub.Node/Backends/CLAUDE.md`** (118's estimate, 95's `EngineProcess`, 120's
 > management jobs — all used here). The invariants that bind hardest: **the RPC port is never reachable off the node**
@@ -553,3 +553,32 @@ numbers across batch shapes. Every four-slot run kept the text.
 **Not established:** GPUs; a real network (netem delay only); a 70B with several slots (its KV pool is the head's memory); slots together
 with a draft (146) — llama.cpp runs both, unmeasured here; why a batch costs more round-trip time than one sequence.
 
+
+### Phase 148 (contribution is visible: which node gave how much memory and how many tokens to groups — shown, never enforced)
+
+Files: the hub's `Services/ShardContribution.cs` (a hosted sampler, `RecordTokens`, `Report`), fed by `Dispatcher.Complete` and the terminal
+chunk; `NodeShardRegistry.All()`; `GET /api/admin/shards/contribution`; the console's *Contribution to groups*; the lab's
+`contribution-lab.sh`. Run files `docs/research/runs/2026-11-25-contribution-*/`. Nothing on the node changed.
+
+**D1, load-bearing — tokens come from the answer the head returned, credited to every worker the head lists for that group.** A pass
+crosses every worker (133 D3), so each token was computed by all of them; crediting the head alone shows a member giving nothing. The tally
+reads `prompt_eval_count` + `eval_count` from the response the dispatcher already parses for 26, only when the node it came from reports a
+*running* group of that name with its layers — a response for that name from any other node is not a group's. *Rejected:* counting on the
+members (their worker sees tensors, not tokens); scraping the head's `llama-server` (numbers already in the response).
+
+**D2 — a worker's share is tokens × its layers ÷ the group's layers, beside the plain count.** "Tokens through it" is the same for a member
+with 6 layers and one with 16; the share says who did the work. Layers, not MiB: the split is by layers (137 D4) and the head's own worker
+has no `expectMiB`. The output layer is not counted. *Rejected:* weighting by offer — what was set aside, not what was used.
+
+**D3 — memory is the offer, integrated every 10 s while a running group lists the node; a gap is credited at most three samples.** 134 D4
+reserves the whole offer whether a group fills it or not, so the offer is what the owner gave up. A sampler that did not run for longer
+credits 30 s, never the gap. *Rejected:* `expectMiB` (absent for the head, weights only).
+
+**D4 — in memory, kept after a node leaves, never enforced.** A node that left keeps its row (`connected: false`), so a spare's stint or a
+member that went away is still visible; `since` says when the coordinator started counting. Rule 4: nothing written. Each coordinator of a
+cluster counts what passed through it (132). *Rejected:* a Prometheus series per node × group (cardinality grows with every group ever run);
+any credit or give-to-get gate (the track leaves it out: a number that gates access needs a ledger and a dispute path, this one resets).
+
+**Not established:** several owners' machines (one PC); a real network; numbers across a coordinator restart (they start again, by design);
+whether a response from a head older than this hub carries the counts (every head since 136 does — the lab used 3.112's); what a draft
+model (146) adds to a head's work — the draft runs on the head and is not counted as a share.

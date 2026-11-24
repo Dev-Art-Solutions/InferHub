@@ -30,6 +30,9 @@ public sealed class NodeShardRegistry
     public IPAddress? From(string nodeId) =>
         string.IsNullOrWhiteSpace(nodeId) ? null : states.TryGetValue(nodeId.Trim(), out var row) ? row.From : null;
 
+    /// <summary>Phase 148: every node's last word, for the contribution sampler — which groups each head runs, and with whom.</summary>
+    public IReadOnlyList<NodeShardState> All() => states.Values.Select(row => row.State).ToArray();
+
     public void Forget(string nodeId)
     {
         if (!string.IsNullOrWhiteSpace(nodeId))

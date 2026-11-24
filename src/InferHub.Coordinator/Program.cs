@@ -140,6 +140,9 @@ builder.Services.AddSingleton<NodeUpdateRegistry>();
 builder.Services.AddSingleton<NodeUpdateControl>();
 builder.Services.AddSingleton<NodeLimitsRegistry>();
 builder.Services.AddSingleton<NodeShardRegistry>();
+// Phase 148: which node gave how much memory and how many tokens to groups — in memory, shown, never enforced.
+builder.Services.AddSingleton<ShardContribution>();
+builder.Services.AddHostedService(services => services.GetRequiredService<ShardContribution>());
 // Phase 136: groups the admin defined (ShardGroups:<name>); none by default.
 builder.Services.Configure<ShardGroupsOptions>(options => builder.Configuration.GetSection(ShardGroupsOptions.SectionName).Bind(options.Groups));
 // Phase 139: the relay two nodes with no direct path meet at; off by default (ShardRelay:Enabled).

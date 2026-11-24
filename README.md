@@ -1447,6 +1447,37 @@ run gave two requests a different temperature-0 text: llama.cpp does not promise
 across batch shapes. Not shown at all: GPUs, a real network, a 70B, and a draft model with several
 slots.
 
+### Who gave how much to groups (v3.113+)
+
+A group runs on memory and compute that its members' owners set aside. Since v3.113 the coordinator
+shows what each node has given since it started: `GET /api/admin/shards/contribution`, and the console's
+*Contribution to groups* table. It is shown and never enforced: no credit, no give-to-get.
+
+- **Memory:** the node's offer (`Node:Shards`, reserved whole for groups) for as long as a running group
+  listed it among its workers, in MiB·hours, sampled every 10 seconds.
+- **Tokens through it:** the prompt and generated tokens of every answer the group's head returned. Every
+  token crossed every worker, so each one is credited.
+- **Its share:** those tokens × the layers it held ÷ the group's layers, so a member with 10 layers
+  shows less work than one with 20.
+- A node that left keeps its row (`connected: false`). The numbers live in the coordinator's memory and
+  start again when it restarts; `since` says from when. In a cluster each coordinator counts what passed
+  through it.
+
+```json
+{ "name": "shard-c", "connected": false, "seconds": 70, "mibHours": 59.7, "requests": 6,
+  "promptTokens": 108, "generatedTokens": 256, "shareTokens": 113.8, "groupsNow": [] }
+```
+
+In the lab (the 8B over a head, two members and a spare, each offering 3 GiB) the head and the members
+were credited every answer, shares 11 : 11 : 10 by their layers. Then one member stopped, and the spare
+stood in. The member kept the 6 answers it took part in, marked as gone. The spare started at zero and
+earned only from the answers after it joined. The script is `deploy/lab/shards/contribution-lab.sh`; the
+reads are in `docs/research/runs/2026-11-25-contribution-*`.
+
+**What this does not show:** machines of several owners (one PC), a real network, and numbers across a
+coordinator restart (they start again, by design). A draft model (v3.111) works on the head's own CPU
+and is not counted.
+
 ### A long answer as a job you can follow (v3.103+)
 
 A chat that takes minutes — a big model, a model split across several nodes, a fleet that is full —

@@ -117,6 +117,40 @@ public class DispatcherResilienceTests
         Assert.Equal(0, snapshot.RequestsInFlight);
     }
 
+    [Fact]
+    public async Task AGroupsAnswerBlockingOrStreamedIsCountedForEveryWorkerOfThatGroup()
+    {
+        var shards = new NodeShardRegistry();
+        var dispatcher = NewDispatcher(out var registry, out _, shards, out var contribution);
+        registry.Upsert("conn-b", new NodeRegistration("node-b", "beta", "http://localhost/", "1.0.0"), DateTimeOffset.UtcNow);
+        shards.Report(new InferHub.Shared.Fit.NodeShardState("node-a", "running", 2048, 0, null, null, [], null, DateTimeOffset.UtcNow,
+            Groups: [new InferHub.Shared.Fit.ShardGroupState("split", "m.gguf", "running", ["beta"], null, null,
+                [new InferHub.Shared.Fit.ShardGroupLayers("alpha", 0, 20, false), new InferHub.Shared.Fit.ShardGroupLayers("beta", 20, 12, true)])]));
+        var node = new RoutableNode("conn-a", "node-a", "alpha");
+
+        var blocking = new InferenceJob(Guid.NewGuid(), "chat", """{"model":"split"}""");
+        var task = dispatcher.DispatchAsync(node, blocking, CancellationToken.None);
+        dispatcher.Complete(new InferenceResult(blocking.JobId, true, """{"model":"split","prompt_eval_count":10,"eval_count":22}""", null));
+        await task;
+
+        var streamed = new InferenceJob(Guid.NewGuid(), "chat", """{"model":"split","stream":true}""");
+        var stream = dispatcher.DispatchStreamAsync(node, streamed, CancellationToken.None);
+        dispatcher.WriteChunk(new InferenceChunk(streamed.JobId, """{"model":"split","done":true,"prompt_eval_count":10,"eval_count":22}""", Done: true));
+        await stream;
+
+        var beta = contribution.Report().Nodes.Single(n => n.Name == "beta");
+        Assert.Equal((2L, 20L, 44L), (beta.Requests, beta.PromptTokens, beta.GeneratedTokens));
+        Assert.Equal(64 * 12 / 32.0, beta.ShareTokens);
+    }
+
+    private static Dispatcher NewDispatcher(out NodeRegistry registry, out Metrics metrics, NodeShardRegistry shards, out ShardContribution contribution)
+    {
+        var dispatcher = NewDispatcher(out registry, out metrics);
+        contribution = new ShardContribution(shards, registry, TimeProvider.System);
+        return new Dispatcher(new NoOpHubContext(), registry, metrics, new ThroughputTracker(),
+            Options.Create(new DispatcherOptions { TimeoutSeconds = 30 }), NullLogger<Dispatcher>.Instance, contribution);
+    }
+
     private static Dispatcher NewDispatcher(out NodeRegistry registry, out Metrics metrics)
     {
         registry = new NodeRegistry();

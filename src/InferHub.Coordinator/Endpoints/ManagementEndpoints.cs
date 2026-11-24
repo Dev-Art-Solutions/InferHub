@@ -29,6 +29,29 @@ public static class ManagementEndpoints
                     .ToArray() ?? []
             }));
 
+        // Phase 148: which node gave how much memory and how many tokens to groups, since this coordinator started — shown,
+        // never enforced, in memory only (a restart starts it again; `since` says when).
+        group.MapGet("/shards/contribution", (IServiceProvider services) =>
+            services.GetService(typeof(ShardContribution)) is ShardContribution contribution && contribution.Report() is var report
+                ? Results.Ok(new
+                {
+                    since = report.Since,
+                    sampleSeconds = report.SampleSeconds,
+                    note = "in memory on this coordinator since it started; shown, never enforced",
+                    nodes = report.Nodes.Select(n => new
+                    {
+                        nodeId = n.NodeId, name = n.Name, organisation = n.Organisation, connected = n.Connected, offerMiB = n.OfferMiB,
+                        groupsNow = n.GroupsNow, seconds = n.Seconds, mibHours = n.MiBHours, requests = n.Requests,
+                        promptTokens = n.PromptTokens, generatedTokens = n.GeneratedTokens, shareTokens = n.ShareTokens,
+                        groups = n.Groups.Select(g => new
+                        {
+                            group = g.Group, model = g.Model, community = g.Community, seconds = g.Seconds, mibHours = g.MiBHours,
+                            requests = g.Requests, promptTokens = g.PromptTokens, generatedTokens = g.GeneratedTokens, shareTokens = g.ShareTokens
+                        }).ToArray()
+                    }).ToArray()
+                })
+                : Results.Ok(new { nodes = Array.Empty<object>() }));
+
         // Phase 144 D3: an auto group keeps its placement while it can run; this drops it, so it is placed again on today's
         // matrix — at the price of a reload. 404 for a group that is not auto, 409 when none was held.
         group.MapPost("/shards/groups/{name}/replace", async (string name, HttpContext http, IServiceProvider services, ILoggerFactory loggers) =>

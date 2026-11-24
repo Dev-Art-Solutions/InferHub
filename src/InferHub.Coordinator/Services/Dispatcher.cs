@@ -14,7 +14,8 @@ public sealed class Dispatcher(
     Metrics metrics,
     ThroughputTracker throughput,
     IOptions<DispatcherOptions> options,
-    ILogger<Dispatcher> logger) : IDispatcher, IToolDispatcher
+    ILogger<Dispatcher> logger,
+    ShardContribution? contribution = null) : IDispatcher, IToolDispatcher
 {
     private readonly ConcurrentDictionary<Guid, PendingResult<InferenceResult>> pendingResults = new();
     private readonly ConcurrentDictionary<Guid, PendingStream<InferenceChunk>> pendingStreams = new();
@@ -325,6 +326,8 @@ public sealed class Dispatcher(
         {
             metrics.RecordRequestComplete(pending.NodeId);
             throughput.RecordFromResponse(pending.NodeId, result.ResponseJson);
+            // Phase 148 D1: a group's answer credits every worker its head lists.
+            contribution?.RecordTokens(pending.NodeId, pending.Model, result.ResponseJson);
         }
         else
         {
@@ -381,6 +384,7 @@ public sealed class Dispatcher(
             registry.DecrementInFlight(completed.ConnectionId, completed.Model);
             metrics.RecordRequestComplete(completed.NodeId);
             throughput.RecordFromResponse(completed.NodeId, chunk.ResponseJson);
+            contribution?.RecordTokens(completed.NodeId, completed.Model, chunk.ResponseJson);
             completed.CancellationRegistration.Dispose();
             completed.Channel.Writer.TryComplete();
             logger.LogInformation("Completed streaming job {JobId}", chunk.JobId);
