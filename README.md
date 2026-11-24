@@ -1409,6 +1409,44 @@ method and the run's files are in `docs/research/draft-model-on-the-head.md`.
 may change the balance either way), a real network (delay only, no loss or bandwidth cap), models
 other than the 8B, and several requests at once.
 
+### Several requests at once on a group (v3.112+)
+
+A group's head runs one `llama-server`, and llama.cpp puts every request it is running into the same
+pass. So four requests cost the group one trip across its members per token, not four. Since v3.112
+the head tells the coordinator how many requests the group's engine runs at once. That count comes
+from the engine's own `/props` (`total_slots`), not from the node's own engine. Before, a head whose
+own engine was a default Ollama was counted as one slot. With `Queue:SlotWaitSeconds` or `Priority`
+on, the coordinator then sent the group one request at a time.
+
+```json
+"ShardGroups": { "llama-8b-split": { "Head": "shard-a", "Members": ["shard-b", "shard-c"],
+                                     "Model": "llama31-8b.gguf", "Slots": 8 } }
+```
+
+- `Slots` is optional. Left out, llama.cpp chooses (four at b12182). Set, the head passes `-np N -kvu`:
+  every request may still use the group's whole `Context`, which a count given without `-kvu` would
+  have cut into equal parts (measured: 4096 became 1024 a slot).
+- `GET /api/admin/shards/groups` shows `slots` for a running group; `/api/status` shows it per model.
+
+| The 8B over three workers, CPU, one PC | One request | Two at once | Four at once |
+|---|---:|---:|---:|
+| 0 ms round trip | 6.11 tok/s | 9.88 (1.62×) | 13.56 (2.22×) |
+| 30 ms | 2.77 | 4.58 (1.66×) | 4.96 (1.79×) |
+| 120 ms | 0.60 | 0.98 (1.63×) | 1.42 (2.35×) |
+
+Tokens per second across all the requests, llama.cpp's own RPC star with four slots. With one slot the
+same bursts stay at one request's speed. Through the coordinator, with `Queue:SlotWaitSeconds=20`,
+four chats at once took 28.5 s on v3.111 (first tokens at 0.2, 7.9, 15.7 and 20.3 s). On v3.112 they
+took 14.8–15.8 s, every first token within 3.2 s, and the same text as a single request. The method and
+the files are in `deploy/lab/shards/concurrency.sh`, `group-concurrency.sh` and
+`docs/research/runs/2026-11-24-*`.
+
+**What this does not show:** each request is slower than it would be alone (in a burst of four at 0 ms,
+3.9 tok/s each against 6.1 alone), so slots trade one caller's speed for everyone's. With two slots and four requests, one
+run gave two requests a different temperature-0 text: llama.cpp does not promise the same numbers
+across batch shapes. Not shown at all: GPUs, a real network, a 70B, and a draft model with several
+slots.
+
 ### A long answer as a job you can follow (v3.103+)
 
 A chat that takes minutes — a big model, a model split across several nodes, a fleet that is full —

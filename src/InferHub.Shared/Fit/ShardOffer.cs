@@ -207,7 +207,9 @@ public sealed record ShardGroupWorker(
 /// <summary>Phase 136 D1: a group the head should run — the model file (a name in its <c>Node:Shards:ModelsDir</c>), the
 /// context, its own share and the members'. The model answers under <see cref="Name"/>. Phase 146: <see cref="Draft"/> is a second
 /// file in the same directory that the head runs as a draft model on its own CPU, checking up to <see cref="DraftTokens"/> a pass;
-/// absent on the wire when not set, and a head older than 3.111 ignores it and runs without.</summary>
+/// absent on the wire when not set, and a head older than 3.111 ignores it and runs without. Phase 147: <see cref="Slots"/> is how many
+/// requests the head's <c>llama-server</c> runs at once (<c>-np</c>, one shared context); 0 and absent: llama.cpp's own count (four at
+/// b12182). A head older than 3.112 ignores it.</summary>
 public sealed record ShardGroupSpec(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("model")] string Model,
@@ -216,14 +218,17 @@ public sealed record ShardGroupSpec(
     [property: JsonPropertyName("members")] IReadOnlyList<ShardGroupWorker> Members,
     [property: JsonPropertyName("community")] bool Community = false,
     [property: JsonPropertyName("draft"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Draft = null,
-    [property: JsonPropertyName("draftTokens"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int DraftTokens = 0);
+    [property: JsonPropertyName("draftTokens"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int DraftTokens = 0,
+    [property: JsonPropertyName("slots"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int Slots = 0);
 
 /// <summary>The hub's list for one head (D1). Replaces the previous one whole; a group not in it is stopped.</summary>
 public sealed record ShardGroupList(
     [property: JsonPropertyName("groups")] IReadOnlyList<ShardGroupSpec> Groups);
 
 /// <summary>A group as its head runs it: <see cref="State"/> is <c>waiting</c> (a member's forward not open yet),
-/// <c>starting</c>, <c>running</c> (its llama-server answers /health) or <c>failed</c>, with the sentence.</summary>
+/// <c>starting</c>, <c>running</c> (its llama-server answers /health) or <c>failed</c>, with the sentence. Phase 147: <see cref="Slots"/> is
+/// how many requests its llama-server said it runs at once (<c>total_slots</c>), once it has been asked; absent before, and from a head
+/// before 3.112.</summary>
 public sealed record ShardGroupState(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("model")] string Model,
@@ -233,7 +238,8 @@ public sealed record ShardGroupState(
     [property: JsonPropertyName("error")] string? Error,
     [property: JsonPropertyName("layers")] IReadOnlyList<ShardGroupLayers>? Layers = null,
     [property: JsonPropertyName("community")] bool Community = false,
-    [property: JsonPropertyName("draft"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Draft = null)
+    [property: JsonPropertyName("draft"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Draft = null,
+    [property: JsonPropertyName("slots"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Slots = null)
 {
     /// <summary>Phase 137 D3: the head finishes the requests it has, then stops — and takes no new one meanwhile.</summary>
     public const string Draining = "draining";

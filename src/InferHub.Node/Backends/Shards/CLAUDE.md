@@ -5,7 +5,8 @@
 several nodes: the group estimate, a node's shard worker, the mTLS tunnel between nodes, the groups a coordinator assembles
 (private cloud and community), the relay for nodes with no direct path — and since 142 the track that takes it past the 8B lab:
 a 70B no node holds, (143) a member that loads its layers from its own copy of the file, (144) a group the coordinator places itself,
-and (145) a request that survives a member vanishing and a member that takes its place back, and (146) a draft model on the head.
+and (145) a request that survives a member vanishing and a member that takes its place back, (146) a draft model on the head, and (147)
+several requests at once, counted by the group's own engine.
 
 > **Read the root `CLAUDE.md` first, then `src/InferHub.Node/Backends/CLAUDE.md`** (118's estimate, 95's `EngineProcess`, 120's
 > management jobs — all used here). The invariants that bind hardest: **the RPC port is never reachable off the node**
@@ -514,4 +515,41 @@ turning it on by default — 1.03–1.19× at 0–30 ms is little for the price 
 
 **Not established:** GPUs (a card checks five tokens for nearly the price of one — the gain could be larger, or the draft too slow beside
 it); a real network (netem delay only); models beyond the 8B (a 70B's own draft is a family question: same vocabulary); several
-requests at once (147); the draft on a sealed or community head beyond what the head already holds.
+requests at once with a draft (147 did not run them together); the draft on a sealed or community head beyond what the head already holds.
+
+### Phase 147 (several requests at once: the head reports the group's own slots, and `Slots` sets them — measured first)
+
+Files: `ShardGroupSpec.Slots` and `ShardGroupState.Slots` (`Fit/ShardOffer.cs`, additive, absent when 0/null), hub
+`ShardGroupDefinition.Slots`, the head's `ShardGroupHost.Arguments/SlotsOf/SlotsAsync` and `ShardGroupBackend.ListModelsAsync`; the lab's
+`concurrency.sh` + `compose.parallel.yaml` + `compare/burst.mjs` (the bare engine), `group-concurrency.sh` (through the hub, before/after),
+`tunnel-lab.sh` `LAB_SLOTS` / `LAB_SLOT_WAIT`. Run files `docs/research/runs/2026-11-24-concurrency/` and `…-group-{v3.111.0,source,source-slots2}/`.
+
+**D1 — measured first: a group's engine batches, and it pays.** llama.cpp's star (b12182, the 8B over three 2.5 GiB workers, CPU, two
+repetitions, 48 tokens, the same prompt, temperature 0), tokens per second across K requests sent together, ×one request: **with `-np 4`
+1.62× / 2.22× (K=2/4) at 0 ms, 1.66× / 1.79× at 30 ms, 1.63× / 2.35× at 120 ms; with `-np 1` 1.00–1.19×** (queued: four at 120 ms end at
+319 s, against 132 s with four slots). The text was a single request's in every one of those runs. **The round trip is not paid once for
+all of them**: at 30 ms a pass of four cost 0.75 s against 0.33 s for one, more than the 0 ms compute difference (0.26 vs 0.16 s) — what
+grows with the batch on the network is not established. **Already true before this phase:** with no `-np`, llama.cpp b12182 chooses four
+slots with one shared context (`/props`: `total_slots` 4, `n_ctx` 4096) — a group could always batch; the hub did not know.
+
+**D2, load-bearing — the head reports each group's slots as its own engine answered them.** `ShardGroupBackend` listed a group's name with
+no `slots`, so the hub fell back to the node's `ModelSlots` (109 D2) — the head's *own* engine's count, `1` for a default Ollama
+(`OLLAMA_NUM_PARALLEL` unset). With `Queue:SlotWaitSeconds` on, the hub then held a group's requests one at a time. Measured on the published
+3.111 images, `SlotWaitSeconds=20`, four chats at once: 28.5 s, first tokens at 0.2 / 7.9 / 15.7 / 20.3 s, `waited 6, sentAnyway 2`. On
+this release: `slots: 4` in the group's state and `slotsByModel`, 14.8–15.8 s, first tokens all within 3.2 s, nothing held, the same text.
+The watch asks `/props` once the group answers `/health` (109's `TotalSlots` reading); a head that cannot ask lists no count, as before.
+
+**D3 — `ShardGroups:<name>:Slots` gives the count, and `-kvu` with it.** llama.cpp shares one context among its slots only when it chose
+the count: `-np 4` alone gave `n_ctx` **1024** a slot out of `-c 4096`; `-np 4 -kvu` gave 4096 (both read from `/props`). A group's
+`Context` is what the admin set for one request, so a count given here never cuts it. 0 = llama.cpp's own choice (no flag, byte-identical
+arguments); at most `MaxSlots` 64. Through the hub, `Slots=2` put `-np 2 -kvu` on the head and `slots: 2` in the hub's view.
+
+**Found, not changed — 110's check is not atomic for a burst.** With `Slots=2` and four chats at once, the hub held none
+(`waited 0`): all four saw a free slot before the first was counted, and two queued in the engine instead (first tokens at 11.9 s).
+For a group (one head) the caller sees about the same; for a fleet it is 110's own behaviour on any burst. **Also found:** in that run
+two of the four answered with a different temperature-0 text — a batch of two with a reused prompt; llama.cpp promises no identical
+numbers across batch shapes. Every four-slot run kept the text.
+
+**Not established:** GPUs; a real network (netem delay only); a 70B with several slots (its KV pool is the head's memory); slots together
+with a draft (146) — llama.cpp runs both, unmeasured here; why a batch costs more round-trip time than one sequence.
+

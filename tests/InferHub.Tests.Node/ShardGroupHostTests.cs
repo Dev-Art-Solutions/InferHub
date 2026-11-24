@@ -193,6 +193,58 @@ public sealed class ShardGroupHostTests : IDisposable
     }
 
     [Fact]
+    public void AGroupWithoutSlotsLeavesTheCountToLlamaCppAndOneWithSlotsKeepsOneSharedContext()
+    {
+        var plain = ShardGroupHost.Arguments(Spec(), "/m", ["e"], 1, null);
+        Assert.DoesNotContain("-np", plain);
+        Assert.DoesNotContain("-kvu", plain);
+
+        // Phase 147 D3: a count given to llama.cpp splits -c into equal parts unless the pool is said to be one.
+        var eight = ShardGroupHost.Arguments(Spec() with { Slots = 8 }, "/m", ["e"], 1, null).ToList();
+        Assert.Equal("8", eight[eight.IndexOf("-np") + 1]);
+        Assert.Contains("-kvu", eight);
+        Assert.Equal("4096", eight[eight.IndexOf("-c") + 1]);
+
+        var typo = ShardGroupHost.Arguments(Spec() with { Slots = 6400 }, "/m", ["e"], 1, null).ToList();
+        Assert.Equal(ShardGroupHost.MaxSlots.ToString(System.Globalization.CultureInfo.InvariantCulture), typo[typo.IndexOf("-np") + 1]);
+    }
+
+    [Fact]
+    public async Task AGroupSaysTheSlotsItsOwnEngineRunsNotTheNodesOwnEngines()
+    {
+        // Phase 147 D2: the head's own Ollama runs one request at a time; the group's llama-server answered four.
+        var own = new NamedBackend("ollama", [new ModelInfo("qwen2.5:0.5b", null, null)]);
+        await using var host = new ShardGroupHost(new ShardOptions { Enabled = true, RamGiB = 3, AllowHead = true }, models, () => "dotnet",
+            () => [Door("b", "127.0.0.1:41001"), Door("c", "127.0.0.1:41002")], (_, _) => new NamedBackend("group"), _ => Task.FromResult(true),
+            NullLogger.Instance, null, _ => Task.FromResult<int?>(4));
+        await host.StartAsync(CancellationToken.None);
+        host.SetGroups(new ShardGroupList([Spec()]));
+
+        for (var i = 0; i < 50 && host.SlotsOf("llama-8b-split") is null; i++)
+        {
+            await Task.Delay(100);
+        }
+
+        Assert.Equal(4, host.SlotsOf("LLAMA-8B-SPLIT"));
+        Assert.Equal(4, host.State().Single().Slots);
+        Assert.Null(host.SlotsOf("qwen2.5:0.5b"));
+
+        var listed = (await new ShardGroupBackend(own, host).ListModelsAsync(CancellationToken.None))!;
+        Assert.Equal(4, listed.Single(m => m.Name == "llama-8b-split").Slots);
+        Assert.Null(listed.Single(m => m.Name == "qwen2.5:0.5b").Slots);
+        Assert.Contains("\"slots\":4", System.Text.Json.JsonSerializer.Serialize(host.State().Single()), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AGroupWhoseEngineCannotSayItsSlotsIsListedWithoutACount()
+    {
+        await using var host = await RunningHostAsync();
+
+        Assert.Null(host.SlotsOf("llama-8b-split"));
+        Assert.DoesNotContain("slots", System.Text.Json.JsonSerializer.Serialize(host.State().Single()), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task AHeadWhoseOwnEngineCannotListStillSaysWhichGroupsItRuns()
     {
         // Found in the lab: shard-a's own Ollama was down (it lists null, so the node leaves the hub's inventory alone),

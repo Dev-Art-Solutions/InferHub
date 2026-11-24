@@ -1,0 +1,9 @@
+# Phase 147: the same star as compose.yaml with the head's slot count set, layered on top:
+#
+#   LAB_MODEL_DIR=… LAB_PARALLEL=4 docker compose -f compose.yaml -f compose.parallel.yaml up -d
+#
+# Through llama-server's own environment variable, so the command list stays compose.yaml's. -1 is llama.cpp's "auto".
+services:
+  head:
+    environment:
+      LLAMA_ARG_N_PARALLEL: "${LAB_PARALLEL:--1}"

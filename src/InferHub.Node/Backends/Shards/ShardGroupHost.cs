@@ -23,6 +23,7 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
     private readonly Func<IReadOnlyList<ShardPeerState>> peers;
     private readonly Func<string, int, IInferenceBackend> backendFor;
     private readonly Func<string, Task<bool>> healthy;
+    private readonly Func<int, Task<int?>> slotsAt;
     private readonly ILogger logger;
     private readonly TimeProvider time;
     private readonly object sync = new();
@@ -51,7 +52,8 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
             (name, port) => Compose(services, name, port),
             port => HealthyAsync(services, port),
             logger,
-            time)
+            time,
+            port => SlotsAsync(services, port))
     {
         tunnel.Changed += Converge;
         HeadName = string.IsNullOrWhiteSpace(node.Value.Name) ? "head" : node.Value.Name.Trim();
@@ -66,9 +68,11 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
         Func<string, int, IInferenceBackend> backendFor,
         Func<string, Task<bool>> healthy,
         ILogger logger,
-        TimeProvider? time)
+        TimeProvider? time,
+        Func<int, Task<int?>>? slotsAt = null)
     {
         this.options = options;
+        this.slotsAt = slotsAt ?? (_ => Task.FromResult<int?>(null));
         this.modelsDir = modelsDir;
         this.executable = executable;
         this.peers = peers;
@@ -175,6 +179,23 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Phase 147 D2: how many requests a running group's <c>llama-server</c> said it runs at once — the count the hub's slot routing
+    /// and slot wait (108/110) must read for the group's name, not the node's own engine's. Null until it has been asked.
+    /// </summary>
+    public int? SlotsOf(string? model)
+    {
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            return null;
+        }
+
+        lock (sync)
+        {
+            return running.TryGetValue(model.Trim(), out var group) && group.Healthy ? group.Slots : null;
+        }
+    }
+
     /// <summary>The models the running groups answer as — chat models in this node's list (D4).</summary>
     public IReadOnlyList<string> Models()
     {
@@ -268,6 +289,13 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
             "--alias", spec.Name
         };
 
+        if (spec.Slots > 0)
+        {
+            // Phase 147 D3: llama.cpp shares one context among its slots only when it chose the count itself; a count given here would
+            // otherwise cut the group's context into equal parts, and one long request could no longer use what the admin set.
+            args.AddRange(["-np", Math.Min(spec.Slots, MaxSlots).ToString(CultureInfo.InvariantCulture), "-kvu"]);
+        }
+
         if (threads is > 0)
         {
             args.AddRange(["-t", threads.Value.ToString(CultureInfo.InvariantCulture)]);
@@ -289,6 +317,9 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
 
         return args;
     }
+
+    /// <summary>Phase 147 D3: more slots than this is a typo, not a plan — every slot's batch crosses the group in the same pass.</summary>
+    public const int MaxSlots = 64;
 
     /// <summary>Phase 146 D2: the variant the gate measured — up to six tokens a pass, drafting stops below 0.6.</summary>
     public const int DefaultDraftTokens = 6;
@@ -584,11 +615,19 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
             {
                 var ok = group.Process.IsRunning && await healthy($"http://127.0.0.1:{group.Port}/health");
 
+                if (ok && group.Slots is null && await slotsAt(group.Port) is { } slots)
+                {
+                    // Phase 147 D2: asked once it answers — the count the hub's slot routing reads for this group's name.
+                    group.Slots = slots;
+                    changed = true;
+                }
+
                 if (ok != group.Healthy)
                 {
                     group.Healthy = ok;
                     changed = true;
-                    logger.LogInformation("Group {Group} {State}", group.Spec.Name, ok ? "answers" : "stopped answering");
+                    logger.LogInformation("Group {Group} {State}{Slots}", group.Spec.Name, ok ? "answers" : "stopped answering",
+                        ok && group.Slots is { } n ? $", {n} request(s) at once" : "");
                 }
                 else if (!ok && group.SentMoved(time.GetUtcNow()))
                 {
@@ -679,6 +718,22 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
             services.GetRequiredService<ILogger<ShardGroupHost>>());
     }
 
+    /// <summary>Phase 147 D2: <c>total_slots</c> from the group's own <c>/props</c> (109's reading), or null when it cannot say.</summary>
+    private static async Task<int?> SlotsAsync(IServiceProvider services, int port)
+    {
+        try
+        {
+            using var http = services.GetRequiredService<IHttpClientFactory>().CreateClient();
+            http.Timeout = TimeSpan.FromSeconds(3);
+            using var response = await http.GetAsync($"http://127.0.0.1:{port}/props");
+            return response.IsSuccessStatusCode ? LlamaCppBackend.TotalSlots(await response.Content.ReadAsStringAsync()) : null;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            return null;
+        }
+    }
+
     private static async Task<bool> HealthyAsync(IServiceProvider services, string url)
     {
         try
@@ -720,13 +775,16 @@ public sealed class ShardGroupHost : IHostedService, IAsyncDisposable
         /// <summary>Phase 146 D3: the draft it runs, or why it runs without the one it was given.</summary>
         public string? Draft { get; init; }
 
+        /// <summary>Phase 147 D2: <c>total_slots</c> as its llama-server answered, once asked.</summary>
+        public int? Slots;
+
         public ShardGroupState State()
         {
             var state = Draining
                 ? ShardGroupState.Draining
                 : Healthy ? ShardGroupState.Running : Process.Failed ? ShardGroupState.Failed : ShardGroupState.Starting;
             var why = Draining ? $"finishing {InFlight} request(s), then stopping" : Healthy ? null : Process.LastError;
-            return new ShardGroupState(Spec.Name, Spec.Model, state, Spec.Members.Select(m => m.Name).ToArray(), $"127.0.0.1:{Port}", why, WithSent(Layers), Spec.Community, Draft);
+            return new ShardGroupState(Spec.Name, Spec.Model, state, Spec.Members.Select(m => m.Name).ToArray(), $"127.0.0.1:{Port}", why, WithSent(Layers), Spec.Community, Draft, Healthy ? Slots : null);
         }
 
         /// <summary>142 D2: each member's layers with what the head has sent it since this group started.</summary>
@@ -783,7 +841,8 @@ public sealed class ShardGroupBackend(IInferenceBackend inner, ShardGroupHost gr
     public async Task<IReadOnlyList<Shared.Contracts.ModelInfo>?> ListModelsAsync(CancellationToken cancellationToken)
     {
         var own = await inner.ListModelsAsync(cancellationToken);
-        var extra = groups.Models().Select(name => new Shared.Contracts.ModelInfo(name, ShardGroupState.Digest, null)).ToArray();
+        // Phase 147 D2: each group with the slots its own engine runs, so the hub never reads the node's engine's count for it.
+        var extra = groups.Models().Select(name => new Shared.Contracts.ModelInfo(name, ShardGroupState.Digest, null, groups.SlotsOf(name))).ToArray();
 
         if (extra.Length > 0)
         {

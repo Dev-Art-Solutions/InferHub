@@ -88,6 +88,11 @@ public sealed class ShardGroupDefinition
 
     /// <summary>Phase 146: up to this many drafted tokens a pass (1–32). 0: the measured six.</summary>
     public int DraftTokens { get; set; }
+
+    /// <summary>Phase 147: how many requests the head's <c>llama-server</c> runs at once, all in one pass across the group (<c>-np</c>,
+    /// one context shared by all of them). 0 (the default): llama.cpp's own count, four at b12182. Whatever runs, the head reports the
+    /// count its engine answered, and the hub's slot routing and slot wait (108/110) read that.</summary>
+    public int Slots { get; set; }
 }
 
 /// <summary>The <c>ShardGroups</c> section, by group name. Empty: no group, and nothing is ever sent (the invariant).</summary>
@@ -406,7 +411,8 @@ public sealed class ShardPeerPublisher(
                     members.Select(m => new ShardGroupWorker(m.Node.NodeId, m.Node.Name, Weight(shards.Of(m.Node.NodeId)!))).ToArray(),
                     community,
                     string.IsNullOrWhiteSpace(definition.Draft) ? null : definition.Draft.Trim(),
-                    Math.Max(0, definition.DraftTokens)));
+                    Math.Max(0, definition.DraftTokens),
+                    Math.Max(0, definition.Slots)));
             }
 
             // Phase 145 D3: a stand-in is remembered only while the group is sent with it; a group not sent has nothing to reload.
