@@ -34,4 +34,5 @@ echo "== after start"; sleep 12; read_contribution 1-started
 echo "== ${LAB_CHATS:-4} chats"; chats; sleep 12; read_contribution 2-chats
 echo "== shard-c stops; the spare stands in"; docker stop shard-c >/dev/null
 sleep 5; running && echo "group running again" || echo "group not running"
+curl -s -H "$H" localhost:15080/api/admin/shards/groups > "$OUT/groups-after-stop.json"
 chats; sleep 12; read_contribution 3-spare

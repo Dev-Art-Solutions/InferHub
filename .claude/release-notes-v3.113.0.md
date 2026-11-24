@@ -54,3 +54,16 @@ stopped), 30 s for the spare. Every chat answered 200 in 4.9–5.9 s. Files in `
 
 - `dotnet test InferHub.sln`: 3 020 passed, 70 skipped, 2 failed. The two are `ChatGptBackendTests`, which fail only on this machine:
   the node test folder picks up the coordinator's `appsettings.json`. Nothing in this release touches them.
+
+## On the published images
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.113.0` (revision label `0f3fbf0`) and `inferhub-node:3.113.0` with the lab's llama.cpp beside
+it, run with `contribution-lab.sh`. The three reads matched the source run number for number: 6 answers, 364 tokens, shares
+125.1 / 125.1 / 113.8; then shard-c `connected: false` with what it gave, shard-d 4 answers, 196 tokens, share 61.2. The spare had the group
+running again about 30 s after shard-c stopped. Files in `docs/research/runs/2026-11-25-contribution-v3.113.0/`.
+
+**Said out loud:** the first attempt on the published images did not get the group running again within the script's 300 s after shard-c
+stopped (the four chats answered 503 with the reason). The second attempt, the same images and script, came back in about 30 s. Why
+the first did not is not established: its containers were removed before anyone looked. That is the spare's reload (137, 145), not
+anything this release changed. The contribution reads in that attempt were right for what had happened: shard-c kept its row, and
+shard-d stayed at zero because no group ran with it.
