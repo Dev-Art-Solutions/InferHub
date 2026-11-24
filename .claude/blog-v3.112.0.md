@@ -1,3 +1,4 @@
+id: 6b055e28ef1fcb7d2e409430
 slug: inferhub-3-112-several-requests-at-once-on-a-group
 title: InferHub 3.112: a model split across machines now answers several people at once
 
@@ -28,7 +29,7 @@ title: InferHub 3.112: a model split across machines now answers several people 
 </tbody>
 </table>
 <p>Each request got the same text it gets alone. With the engine limited to one request at a time, the same bursts stayed at one request&rsquo;s speed: four requests at 120&nbsp;ms finished after 319 seconds instead of 132.</p>
-<p>Then through InferHub itself, with the coordinator&rsquo;s slot wait at 20 seconds and four chats sent together. On 3.111 the four took 28.5 seconds, and their first words arrived at 0.2, 7.9, 15.7 and 20.3 seconds. On 3.112 they took 14.8 to 15.8 seconds, and every first word arrived within 3.2 seconds. The text was the same.</p>
+<p>Then through InferHub itself, with the coordinator&rsquo;s slot wait at 20 seconds and four chats sent together. On 3.111 the four took 28.5 seconds, and their first words arrived at 0.2, 7.9, 15.7 and 20.3 seconds. On 3.112 they took about 15 seconds, and every first word arrived within 3.2 seconds. The text was the same. The published 3.112 images gave the same result.</p>
 
 <h2>What it costs</h2>
 <ul>
