@@ -1,0 +1,13 @@
+== the group the coordinator picked
+"community":true
+"members":["shard-b","shard-c"]
+"ready":true
+== the sealed node that asked to join
+Exited (139) 25 seconds ago
+Node:Shards:Community joins groups with other owners' machines, which see what passes through.
+== /v1/models
+{"id":"llama-8b-community","created":1795610741,"owned_by":"inferhub-community","capabilities":["chat"],"object":"model"}
+== without acceptance
+HTTP 403 "message":"model \u0027llama-8b-community\u0027 is a community group: it runs on machines of other owners, and they can see this prompt and the answer as they pass through. To send it anyway, add the header X-InferHub-Community: accept"
+== with X-InferHub-Community: accept
+"content":"Here are three of the most important ideas in distributed computing:\n\n1. **Scalability**: Distributed computing allows

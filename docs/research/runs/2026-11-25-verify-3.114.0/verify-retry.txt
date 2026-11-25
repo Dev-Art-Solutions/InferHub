@@ -1,0 +1,21 @@
+== the group: "members":["shard-b","shard-c"]
+t+0s baseline: 200 21.022111s
+== 1. shard-c is killed while a long request runs
+t+28s killed shard-c
+== 2. a request sent while the group reassembles
+t+33s "substitutions":["shard-d stands in for shard-c (member 'shard-c' is not connected)"]
+t+33s a short request sent in the gap: HTTP 200 8.481902s 
+t+21s the long request: HTTP 200 40.434664s
+SAME TEXT as before the kill
+t+62s the group: "members":["shard-b","shard-d"]
+      Job 4ca276e5-3867-4e61-aae3-66728d5b0286 on shard group llama-8b-split failed before the caller received anything (An error occurred while sending the request.); it waits up to 171 s for the group to run again
+      Shard group llama-8b-split answers nobody now (group 'llama-8b-split' is reassembling: shard-d stands in for shard-c (member 'shard-c' is not connected)); the request waits up to 180 s for it
+      Sending job ffe57be8-efe8-4f26-897c-44f670879987 on shard group llama-8b-split again, to shard-a
+== 3. shard-c comes back
+t+63s started shard-c
+t+69s "substitutions":["shard-d stands in for shard-c, which is back: it takes its place back in 29 s"]
+t+99s shard-c has its place back: "members":["shard-b","shard-c"]
+t+99s a short request during the reload: HTTP 200 9.620581s 
+t+109s after it: 200 20.845531s
+SAME TEXT with shard-c back
+"layers":[{"name":"shard-a","first":0,"count":11,"output":false},{"name":"shard-b","first":11,"count":11,"output":false,"expectMiB":1528,"sentMiB":251},{"name":"shard-c","first":22,"count":10,"output":true,"expectMiB":1389,"sentMiB":228}]

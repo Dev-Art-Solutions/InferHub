@@ -171,6 +171,7 @@ containers. Sections 1, 5, 6 and 7 must give the same temperature-0 text.
 | Images | Checks | Held | What did not |
 |---|---:|---:|---|
 | 3.113.0 (2026-11-25, `0f3fbf0`) | 57 | 56 | a stopped member exited 139: an unhandled `ObjectDisposedException` on shutdown (fixed in 3.114.0) |
+| 3.114.0 (2026-11-25, `dbd9d49`) | 57 | 57 | — |
 
 Transcripts: `docs/research/runs/2026-11-25-verify-*`.
 

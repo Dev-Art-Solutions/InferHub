@@ -49,9 +49,9 @@ Models: Llama 3.1 8B Q4_K_M, Llama 3.2 1B as the draft, WizardLM 70B for section
 The one that failed is the shutdown crash above: exit code 139. In section 9 the spare stood in and the group ran again after
 16 s. 148's one-off case, where the spare's group did not run again within 300 s, did not recur.
 
-The run on the published 3.114.0 images is recorded below once it has been done.
+**On the published 3.114.0 images** (revision `dbd9d49`, required by the verifier): **57 held, 0 did not**. The stopped member exited 0, and the spare stood in after 16 s.
 
-Transcripts: `docs/research/runs/2026-11-25-verify-3.113.0/`.
+Transcripts: `docs/research/runs/2026-11-25-verify-3.113.0/` and `…-verify-3.114.0/`.
 
 ## What was not established
 

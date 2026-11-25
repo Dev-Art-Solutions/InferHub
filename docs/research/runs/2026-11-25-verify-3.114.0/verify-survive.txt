@@ -1,0 +1,18 @@
+== the group, and who holds which layers
+"layers":[{"name":"shard-a","first":0,"count":11,"output":false},{"name":"shard-b","first":11,"count":11,"output":false,"expectMiB":1528,"sentMiB":1288},{"name":"shard-c","first":22,"count":10,"output":true,"expectMiB":1389,"sentMiB":1582}]
+== 1. revoke shard-c
+t+1s 503 Retry-After: 30 "message":"every node holding model \u0027llama-8b-split\u0027 reports an unhealthy inference backend"
+t+4s 503 Retry-After: 15 "message":"group \u0027llama-8b-split\u0027 is reassembling: shard-d stands in for shard-c (member \u0027shard-c\u0027 is not connected)"
+t+7s 503 Retry-After: 15 "message":"group \u0027llama-8b-split\u0027 is reassembling: shard-d stands in for shard-c (member \u0027shard-c\u0027 is not connected)"
+t+10s 503 Retry-After: 15 "message":"group \u0027llama-8b-split\u0027 is reassembling: shard-d stands in for shard-c (member \u0027shard-c\u0027 is not connected)"
+t+13s 503 Retry-After: 15 "message":"group \u0027llama-8b-split\u0027 is reassembling: shard-d stands in for shard-c (member \u0027shard-c\u0027 is not connected)"
+t+17s 503 Retry-After: 15 "message":"group \u0027llama-8b-split\u0027 is reassembling: shard-d stands in for shard-c (member \u0027shard-c\u0027 is not connected)"
+t+21s 200  
+SAME TEXT after reassembly
+"substitutions":["shard-d stands in for shard-c (member 'shard-c' is not connected)"]
+"layers":[{"name":"shard-a","first":0,"count":11,"output":false},{"name":"shard-b","first":11,"count":11,"output":false,"expectMiB":1528,"sentMiB":250},{"name":"shard-d","first":22,"count":10,"output":true,"expectMiB":1389,"sentMiB":1583}]
+== 2. shard-b's owner pauses it during a long request
+pause: HTTP 200
+"name":"llama-8b-split","model":"llama31-8b.gguf","state":"draining"
+long request in flight: HTTP 200, "completion_tokens":200
+next request: 503 "message":"group \u0027llama-8b-split\u0027 is not running: member \u0027shard-c\u0027 is not connected, and no spare can stand in"

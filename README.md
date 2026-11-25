@@ -1223,7 +1223,7 @@ draft model on the head, four requests at once, and the contribution count. With
 also runs a 70B split over three nodes. The group must give the same temperature-0 text however it
 was assembled. On the published 3.113.0 images, 56 of 57 checks held. The one that failed was a
 member stopped with `docker stop`: it ended in an unhandled exception (exit 139) instead of exiting
-cleanly. v3.114.0 fixes that.
+cleanly. v3.114.0 fixes that, and on its published images all 57 held.
 
 **What it cannot show:** GPUs in a group, machines of several owners, a real network or router
 (every round trip is `tc netem` on one PC), a draft or several slots on a group the coordinator

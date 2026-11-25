@@ -1,0 +1,27 @@
+== no direct path: shard-a cannot open shard-c's tunnel port, shard-c cannot resolve shard-a
+a -> c (172.22.0.3:50053): no path
+c -> a (shard-a:50053): no path
+== the group
+"members":["shard-b","shard-c"]
+"ready":true
+"state":"running"
+== who reaches whom, and how (node: peer via path, round trip)
+shard-a -> shard-b: direct 0.37 ms
+shard-a -> shard-c: relay 0.6 ms
+shard-b -> shard-a: direct 0.27 ms
+shard-b -> shard-c: relay 0.63 ms
+shard-c -> shard-a: relay 0.49 ms
+shard-c -> shard-b: relay 0.58 ms
+shard-a: relay waiting
+shard-b: relay waiting
+shard-c: relay waiting
+== the answer, through the relay
+HTTP 200 in 11.159720s
+HTTP 200 in 10.255914s
+"content":"Here are three of the most important ideas in distributed computing:\n\n1. **Scalability**: Distributed computing allows a system to scale horizontally by addin
+"completion_tokens":64
+== the relay
+{"enabled":true,"port":50054,"host":null,"pairs":1,"pairsTotal":23,"bytesRelayed":1734188055,"refused":0,"waiting":{"ea327941-5126-4a56-b071-0965c4879b2a":3,"6b96f1ba-0872-4594-a903-d1155f879c69":3,"779a4190-a599-42a3-a054-e368c7534294":3}}
+== revoke shard-c: its pairs are cut and its place at the relay is gone
+{"enabled":true,"port":50054,"host":null,"pairs":0,"pairsTotal":23,"bytesRelayed":1734188055,"refused":3,"waiting":{"6b96f1ba-0872-4594-a903-d1155f879c69":3,"779a4190-a599-42a3-a054-e368c7534294":3}}
+next request: HTTP 503 "message":"group \u0027llama-8b-community\u0027 is not running: only 1 community node(s) can take part now; the group wants 2"
