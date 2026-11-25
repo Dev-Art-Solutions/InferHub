@@ -195,7 +195,8 @@ public sealed class ShardRelay : IHostedService, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await StopAsync(CancellationToken.None);
-        life?.Dispose();
+        // Phase 149: the container disposes this twice (itself, and forwarded as a hosted service); the second finds nothing.
+        Interlocked.Exchange(ref life, null)?.Dispose();
     }
 
     private async Task AcceptAsync(CancellationToken token)

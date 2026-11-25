@@ -152,7 +152,8 @@ public sealed class ShardSeeder : IHostedService, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await StopAsync(CancellationToken.None);
-        life?.Dispose();
+        // Phase 149: the container disposes this twice (itself, and forwarded as a hosted service); the second finds nothing.
+        Interlocked.Exchange(ref life, null)?.Dispose();
     }
 
     /// <summary>Runs every queued assignment, one at a time — two at once would only share one disk.</summary>

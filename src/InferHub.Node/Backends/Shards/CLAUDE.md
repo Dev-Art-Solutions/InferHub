@@ -582,3 +582,35 @@ any credit or give-to-get gate (the track leaves it out: a number that gates acc
 **Not established:** several owners' machines (one PC); a real network; numbers across a coordinator restart (they start again, by design);
 whether a response from a head older than this hub carries the counts (every head since 136 does — the lab used 3.112's); what a draft
 model (146) adds to a head's work — the draft runs on the head and is not counted as a share.
+
+### Phase 149 (verification day: the shared-compute track on published images, and a member that stops cleanly)
+
+Files: `deploy/lab/shards/verify-lab.sh` sections 5–10 (140's verifier, grown), `contribution-lab.sh` (prints the stopped member's exit
+code; keeps the containers' logs when the group does not run again); `ShardSeeder`, `ShardWorker`, `ShardTunnel`, `ShardGroupHost` and
+the hub's `ShardRelay` dispose idempotently; `tests/InferHub.Tests.Node/ShardShutdownTests.cs`.
+
+**D1, load-bearing — the verifier grows, it does not fork.** 140 D1 holds: each new section runs the lab script a person runs
+(`tunnel-lab.sh` with the track's knobs, `retry-lab.sh`, `contribution-lab.sh`, `compare/burst.mjs`) and greps its transcript. 143 and
+145 share one lab (the retry needs members that hold the file); every other part starts from `docker rm -f`.
+
+**D2 — "the same text" is checked across parts.** At temperature 0 the first answer of the group loaded over the network (section 1),
+from the members' disks, placed by the hub and with a draft on the head must be one text. How a group was assembled must not change
+what it says.
+
+**D3 — the 70B gate (142) is opt-in, `VERIFY_BIG=1`.** Three 18 GiB containers and a 39 GB file; a box without them would fail it for
+a reason that is not the product's.
+
+**D4 — what it found: every shard service was disposed twice, and the second dispose threw.** Each is registered as itself and
+forwarded as a hosted service (`AddSingleton<T>()` + `AddHostedService(sp => sp.GetRequiredService<T>())`); the container tracks the
+instance under both and disposes it twice. `DisposeAsync` = `StopAsync` + dispose the token source, so the second call cancelled a
+disposed one: on 3.113.0 `docker stop` on any shard node ended in an unhandled `ObjectDisposedException`, exit 139, and the rest of
+the container's disposal skipped. Fix: `Interlocked.Exchange(ref life, null)?.Dispose()` — the second dispose finds nothing to
+cancel. **Any new service registered this way that cancels in its dispose must do the same;** `ShardShutdownTests` runs the shipped
+wiring (start, stop, dispose the container). The other forwarded services (`EngineLimiter`, `ResourceMonitor`, `NodeSharing`, the
+vector services) only dispose in `Dispose`, which is safe twice.
+
+**Not established, the whole track in one list:** GPUs in a group; several owners' machines and a real network (every round trip is
+netem on one PC); a real router's NAT, loss and idle timeouts; a 70B on anything but CPU containers of one box; a draft or several
+slots on a group placed by the hub (each was checked on its own); a head that vanishes mid-answer (retry covers members); numbers of
+148 across a coordinator restart (they start again, by design). 148's one-off "the spare's group did not run again within 300 s" did
+not recur (16 s here); the script now keeps the logs if it does.

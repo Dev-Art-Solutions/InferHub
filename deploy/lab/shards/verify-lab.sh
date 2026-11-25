@@ -3,10 +3,15 @@
 # of one release — the private cloud (a group, a member leaving, a drain), the community (the pick, the sealed door, the
 # client's yes) and the community across NAT (the relay) — and says, check by check, what held. It runs the same lab
 # scripts a person runs by hand and reads their output; nothing here is a second implementation of a check.
+# Phase 149 added the shared-compute track (142–148): a member's own disk, a request that survives a member, the hub's own
+# placement, a draft on the head, several requests at once, the contribution — and the 70B gate behind VERIFY_BIG=1.
 #
-#   LAB_MODEL_DIR=D:/models ./verify-lab.sh 3.99.0          # the release to verify (GHCR tags carry no "v")
+#   LAB_MODEL_DIR=lab-models ./verify-lab.sh 3.113.0        # the release to verify (GHCR tags carry no "v")
 #   VERIFY_REVISION=<commit> to also require that both images were built from that commit
 #   HUB_IMAGE=… NODE_IMAGE=… to verify other images (e.g. :dev built from source) — the revision check is then skipped
+#   VERIFY_BIG=1 …                                           # also 142's 70B (VERIFY_BIG_MODEL, default wizardlm-70b.gguf)
+#   LAB_MODEL_DIR must hold llama31-8b.gguf and the draft (VERIFY_DRAFT, default llama32-1b.gguf); a Docker volume reads far
+#   faster than a Windows bind mount (~20 MB/s, which stalls a 70B head)
 #
 # Needs: docker, curl, node; the lab's llama.cpp image (docker build -t inferhub-lab-llama:b12182 .). Exit 0 = every
 # check held. The transcript of each lab is kept in $LAB_OUT (default C:/tmp) as verify-<lab>.txt.
@@ -82,7 +87,67 @@ check "the relay carried bytes" "$OUT/verify-relay.txt" '"bytesRelayed":[1-9][0-
 check "after a revoke no pair is left at the relay" "$OUT/verify-relay.txt" '"pairs":0,'
 check "and the group stops answering with the reason" "$OUT/verify-relay.txt" 'next request: HTTP 503 '
 
+# Phase 149: the shared-compute track (142–148) on the same images. Each part starts its own lab, as a person would.
+same() { # same "<what>" <file a> <file b>: the first answer in each is the same text
+  local a b; a=$(grep -o '"content":"[^"]*"' "$2" | head -1); b=$(grep -o '"content":"[^"]*"' "$3" | head -1)
+  if [ -n "$a" ] && [ "$a" = "$b" ]; then pass=$((pass+1)); echo "  PASS  $1"; else fail=$((fail+1)); echo "  FAIL  $1"; fi
+}
+
+echo "== 5. a member loads its layers from its own disk (143), a request survives a member vanishing (145)"
+LAB_MEMBER_DISK=1 LAB_RETRY=180 LAB_SETTLE=30 bash ./tunnel-lab.sh > "$OUT/verify-disk.txt" 2>&1
+check "shard-b loaded from its own disk" "$OUT/verify-disk.txt" '"loads":\[[^]]*shard-b: from its own disk'
+check "shard-c loaded from its own disk" "$OUT/verify-disk.txt" '"loads":\[[^]]*shard-c: from its own disk'
+same "the same text as the group that loaded over the network" "$OUT/verify-private.txt" "$OUT/verify-disk.txt"
+bash ./retry-lab.sh > "$OUT/verify-retry.txt" 2>&1
+check "the request in flight when shard-c died answered" "$OUT/verify-retry.txt" 'the long request: HTTP 200 '
+check "with the same text as before the kill" "$OUT/verify-retry.txt" '^SAME TEXT as before the kill'
+check "a request sent while the group reassembled waited and answered" "$OUT/verify-retry.txt" 'sent in the gap: HTTP 200 '
+check "the status says shard-c is back and when it takes its place" "$OUT/verify-retry.txt" 'which is back: it takes its place back in'
+check "shard-c has its place back" "$OUT/verify-retry.txt" 'shard-c has its place back: "members":\["shard-b","shard-c"\]'
+check "a request during that reload answered" "$OUT/verify-retry.txt" 'during the reload: HTTP 200 '
+check "the same text with shard-c back" "$OUT/verify-retry.txt" '^SAME TEXT with shard-c back'
+
+echo "== 6. the coordinator places the group itself (144)"
+LAB_AUTO=1 LAB_SLOW="b c" bash ./tunnel-lab.sh > "$OUT/verify-auto.txt" 2>&1
+check "the group is auto and runs" "$OUT/verify-auto.txt" '"mode":"auto".*"state":"running"'
+check "the head is the node holding the file" "$OUT/verify-auto.txt" '"mode":"auto","head":"shard-a"'
+check "the member is the near one, not the two 20 ms away" "$OUT/verify-auto.txt" '"members":\["shard-d"\]'
+check "the placement says why shard-b was left out" "$OUT/verify-auto.txt" '"placement":\[[^]]*left out: [^]]*shard-b'
+same "the same text as the group an admin wrote" "$OUT/verify-private.txt" "$OUT/verify-auto.txt"
+
+echo "== 7. a draft model on the head (146)"
+LAB_DRAFT=${VERIFY_DRAFT:-llama32-1b.gguf} bash ./tunnel-lab.sh > "$OUT/verify-draft.txt" 2>&1
+check "the head runs the draft on its own CPU" "$OUT/verify-draft.txt" '"draft":"draft [^"]+ on this node.s CPU'
+same "the same text as without a draft" "$OUT/verify-private.txt" "$OUT/verify-draft.txt"
+
+echo "== 8. several requests at once on a group (147)"
+LAB_SLOTS=4 LAB_SLOT_WAIT=20 bash ./tunnel-lab.sh > "$OUT/verify-slots.txt" 2>&1
+check "the head reports the group's own four slots" "$OUT/verify-slots.txt" '"slots":4'
+node compare/burst.mjs --url http://127.0.0.1:15080 --chat --model llama-8b-split --bearer cli135 --k 4 --n 32 \
+  --prompt-file compare/prompts/short.txt >> "$OUT/verify-slots.txt" 2>&1
+check "four chats sent together all answered" "$OUT/verify-slots.txt" '^\{"k":4,"n":32,"ok":true'
+
+echo "== 9. who gave how much (148), and a member that stops exits cleanly (149)"
+LAB_OUT="$OUT/contribution" bash ./contribution-lab.sh > "$OUT/verify-contribution.txt" 2>&1
+check "every chat answered" "$OUT/verify-contribution.txt" '^chat 4: 200 '
+check "no chat failed" "$OUT/verify-contribution.txt" ! '^chat [0-9]+: [^2]'
+check "shard-b's tokens are counted" "$OUT/contribution/2-chats.json" '"name":"shard-b"[^{]*"generatedTokens":[1-9]'
+check "the spare has given no tokens before it stands in" "$OUT/contribution/2-chats.json" ! '"name":"shard-d"[^{]*"generatedTokens":[1-9]'
+check "a stopped member exits 0" "$OUT/verify-contribution.txt" '^shard-c stopped: exit code 0$'
+check "the group runs again with the spare" "$OUT/verify-contribution.txt" '^group running again after'
+check "shard-c keeps what it gave, marked gone" "$OUT/contribution/3-spare.json" '"name":"shard-c","organisation":null,"connected":false'
+check "the spare's tokens are counted once it stands in" "$OUT/contribution/3-spare.json" '"name":"shard-d"[^{]*"generatedTokens":[1-9]'
+
+# 142: the gate of the track — a model no node holds. Opt-in: 39 GB of file, three 18 GiB containers, up to ten minutes.
+if [ "${VERIFY_BIG:-0}" = 1 ]; then
+  echo "== 10. a 70B no node can hold answers from three (142)"
+  LAB_MODEL=${VERIFY_BIG_MODEL:-wizardlm-70b.gguf} LAB_GROUP=big-split LAB_NODE_MEMORY=18g LAB_OFFER_GIB=14 LAB_CPUS=16 LAB_WAIT=3000 \
+    LAB_MAX_TOKENS=16 bash ./tunnel-lab.sh > "$OUT/verify-big.txt" 2>&1
+  check "the 70B group runs" "$OUT/verify-big.txt" '"name":"big-split".*"state":"running"'
+  check "and answers through the hub" "$OUT/verify-big.txt" '"content":"[^"]+'
+fi
+
 docker rm -f lab-hub shard-a shard-b shard-c shard-d shard-s >/dev/null 2>&1
 docker network rm lab135 lab139-home >/dev/null 2>&1
-echo "== $pass held, $fail did not. Transcripts: $OUT/verify-{private,survive,community,relay}.txt"
+echo "== $pass held, $fail did not. Transcripts: $OUT/verify-{private,survive,community,relay,disk,retry,auto,draft,slots,contribution,big}.txt"
 [ "$fail" = 0 ]

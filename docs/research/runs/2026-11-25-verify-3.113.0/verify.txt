@@ -1,0 +1,73 @@
+== the published images of 3.113.0
+coordinator version=3.113.0 revision=0f3fbf0db31912dab40ca60be8e5b881837e82ac
+node version=3.113.0 revision=0f3fbf0db31912dab40ca60be8e5b881837e82ac
+  PASS  both images carry version 3.113.0
+  PASS  the node image carries version 3.113.0
+  PASS  the coordinator was built from 0f3fbf0db31912dab40ca60be8e5b881837e82ac
+  PASS  the node was built from 0f3fbf0db31912dab40ca60be8e5b881837e82ac
+hub: ghcr.io/dev-art-solutions/inferhub-coordinator:3.113.0   node: inferhub-lab-node:3.113.0
+== 1. private cloud: a group the admin defined answers (136)
+  PASS  the group runs on its head
+  PASS  the split model answers through the hub
+== 2. private cloud: a member leaves, a spare stands in, a planned stop drains (137)
+  PASS  the gap is a 503 with Retry-After and the reason
+  PASS  the head reports which worker holds which layers
+  PASS  the spare stands in
+  PASS  the same text after reassembly
+  PASS  the request in flight completes during the drain
+  PASS  the next request is a 503 saying why the group is not running
+== 3. community: the pick, the sealed door, the client's yes (138)
+  PASS  the coordinator picked shard-b and shard-c
+  PASS  never the node that did not opt in
+  PASS  the sealed node refused to start, naming the door
+  PASS  /v1/models says inferhub-community
+  PASS  without the header: 403 with the sentence
+  PASS  with the header: the answer
+== 4. community across NAT: the relay (139)
+  PASS  shard-a has no path to shard-c
+  PASS  shard-c has no path to shard-a
+  PASS  the group runs with shard-c in it
+  PASS  shard-a reaches shard-c through the relay
+  PASS  shard-c reaches shard-a through the relay
+  PASS  shard-a reaches shard-b directly
+  PASS  the group answers
+  PASS  the relay carried bytes
+  PASS  after a revoke no pair is left at the relay
+  PASS  and the group stops answering with the reason
+== 5. a member loads its layers from its own disk (143), a request survives a member vanishing (145)
+  PASS  shard-b loaded from its own disk
+  PASS  shard-c loaded from its own disk
+  PASS  the same text as the group that loaded over the network
+  PASS  the request in flight when shard-c died answered
+  PASS  with the same text as before the kill
+  PASS  a request sent while the group reassembled waited and answered
+  PASS  the status says shard-c is back and when it takes its place
+  PASS  shard-c has its place back
+  PASS  a request during that reload answered
+  PASS  the same text with shard-c back
+== 6. the coordinator places the group itself (144)
+  PASS  the group is auto and runs
+  PASS  the head is the node holding the file
+  PASS  the member is the near one, not the two 20 ms away
+  PASS  the placement says why shard-b was left out
+  PASS  the same text as the group an admin wrote
+== 7. a draft model on the head (146)
+  PASS  the head runs the draft on its own CPU
+  PASS  the same text as without a draft
+== 8. several requests at once on a group (147)
+  PASS  the head reports the group's own four slots
+  PASS  four chats sent together all answered
+== 9. who gave how much (148), and a member that stops exits cleanly (149)
+  PASS  every chat answered
+  PASS  no chat failed
+  PASS  shard-b's tokens are counted
+  PASS  the spare has given no tokens before it stands in
+  FAIL  a stopped member exits 0
+  PASS  the group runs again with the spare
+  PASS  shard-c keeps what it gave, marked gone
+  PASS  the spare's tokens are counted once it stands in
+== 10. a 70B no node can hold answers from three (142)
+  PASS  the 70B group runs
+  PASS  and answers through the hub
+== 56 held, 1 did not. Transcripts: C:/tmp/p149/v3113/verify-{private,survive,community,relay,disk,retry,auto,draft,slots,contribution,big}.txt
+exit 1

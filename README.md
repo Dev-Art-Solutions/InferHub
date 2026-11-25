@@ -1217,6 +1217,18 @@ tunnel to each other. With the relay on, they meet at the coordinator instead.
 in Docker on one PC: a private group, a member leaving, a community group, and a node behind NAT. It
 prints PASS or FAIL for each claim and keeps the transcripts.
 
+Since v3.114 it also covers the whole shared-compute track: members that load their layers from
+their own disk, a request that survives a member vanishing, a group the coordinator places itself, a
+draft model on the head, four requests at once, and the contribution count. With `VERIFY_BIG=1` it
+also runs a 70B split over three nodes. The group must give the same temperature-0 text however it
+was assembled. On the published 3.113.0 images, 56 of 57 checks held. The one that failed was a
+member stopped with `docker stop`: it ended in an unhandled exception (exit 139) instead of exiting
+cleanly. v3.114.0 fixes that.
+
+**What it cannot show:** GPUs in a group, machines of several owners, a real network or router
+(every round trip is `tc netem` on one PC), a draft or several slots on a group the coordinator
+placed itself (each was checked on its own), and a head that vanishes mid-answer.
+
 ### Why the engine under a split model stays (v3.101+)
 
 A group runs on llama.cpp's RPC backend. Before changing that, we measured it against other

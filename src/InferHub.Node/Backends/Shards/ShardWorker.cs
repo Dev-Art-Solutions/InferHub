@@ -217,7 +217,8 @@ public sealed class ShardWorker : IHostedService, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await StopAsync(CancellationToken.None);
-        watching?.Dispose();
+        // Phase 149: the container disposes this twice (itself, and forwarded as a hosted service); the second finds nothing.
+        Interlocked.Exchange(ref watching, null)?.Dispose();
     }
 
     /// <summary>

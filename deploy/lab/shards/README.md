@@ -156,6 +156,24 @@ only when all held). Transcripts stay in `$LAB_OUT` (default `C:/tmp`) as `verif
 Run on the published 3.99.0 images (2026-11-13, revision `024da81`): **28 checks, all held** — the private group, a member
 leaving and a drain, the community pick and the client's yes, and the relay.
 
+**Phase 149 grew it to the shared-compute track (142–148):**
+
+```sh
+LAB_MODEL_DIR=lab-models VERIFY_BIG=1 VERIFY_REVISION=<commit> ./verify-lab.sh 3.114.0
+```
+
+`LAB_MODEL_DIR` must hold `llama31-8b.gguf` and the draft `llama32-1b.gguf` (a Docker volume; a Windows bind mount reads at
+~20 MB/s). Sections 5–9: members that load from their own disk (143) and a request that survives one vanishing (145) in one
+lab; the hub's own placement (144); a draft on the head (146); four requests at once (147); the contribution, a member stopped
+and the spare in (148) — and that a stopped member exits 0. Section 10, behind `VERIFY_BIG=1`, is 142's 70B over three 18 GiB
+containers. Sections 1, 5, 6 and 7 must give the same temperature-0 text.
+
+| Images | Checks | Held | What did not |
+|---|---:|---:|---|
+| 3.113.0 (2026-11-25, `0f3fbf0`) | 57 | 56 | a stopped member exited 139: an unhandled `ObjectDisposedException` on shutdown (fixed in 3.114.0) |
+
+Transcripts: `docs/research/runs/2026-11-25-verify-*`.
+
 ## The engine beside other engines (phase 141)
 
 ```sh

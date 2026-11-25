@@ -33,6 +33,14 @@ running() {
 echo "== after start"; sleep 12; read_contribution 1-started
 echo "== ${LAB_CHATS:-4} chats"; chats; sleep 12; read_contribution 2-chats
 echo "== shard-c stops; the spare stands in"; docker stop shard-c >/dev/null
-sleep 5; running && echo "group running again" || echo "group not running"
+# Phase 149: a planned stop is a clean exit (3.113.0 ended it in an unhandled ObjectDisposedException, exit 139).
+echo "shard-c stopped: exit code $(docker inspect -f '{{.State.ExitCode}}' shard-c)"
+docker logs shard-c 2>&1 | grep -m1 "Unhandled exception" || true
+t0=$(date +%s)
+if sleep 5 && running; then echo "group running again after $(( $(date +%s) - t0 )) s"; else
+  # 148's first published run saw this once and the lab was gone before anyone looked: keep what the containers said.
+  echo "group not running after $(( $(date +%s) - t0 )) s"
+  for c in lab-hub shard-a shard-b shard-d; do docker logs "$c" > "$OUT/log-$c.txt" 2>&1; done
+fi
 curl -s -H "$H" localhost:15080/api/admin/shards/groups > "$OUT/groups-after-stop.json"
 chats; sleep 12; read_contribution 3-spare
