@@ -336,3 +336,29 @@ tokens per node in the history; the history is lost on restart; the console's SS
 Tests: `FleetTests` (Coordinator — membership, the file surviving a restart, the validator, the baseline sample, the window, the
 report by label with attention, absent members, buckets and coverage, the HTTP cordon with its audit line, and that every field
 `fleet.js` reads is on the payload).
+
+### Phase 155 (a burst waits its turn: looking for a free slot and counting it are one step)
+
+`RequestQueue.WaitForFreeSlotAsync` and `FleetSaturation.AnyHolderCountsSlots`. Found in 147 (`src/InferHub.Node/Backends/Shards/CLAUDE.md`,
+*Found, not changed*): with `Slots=2` and four chats at once the hub held none, because each looked for a free slot before any was counted.
+
+**D1, load-bearing — an arrival takes 110 D3's turnstile too, wherever somebody holding the model counts slots.** Before 155 a request
+that *saw* a free slot left with `SlotTicket.None`; only one that saw none queued at the turnstile. So 110 D3 made the waiters leave one at a
+time and nothing made the arrivals do so: four requests that read the counts together all found the slot free and all went. Now every
+request for such a model takes the turnstile, looks, and keeps it as its ticket until `InferenceCore` has called the dispatch (the
+synchronous increment of 110 D3), so the next arrival sees the slot counted. `InferenceCore` routes again under the ticket, as it already did
+for a waiter. A model whose every holder declared nothing never waits (110 D1) and never passes the turnstile either; `SlotWaitSeconds` 0
+returns before any of this. **Cost, stated:** requests for a slot-counting model start their dispatches one at a time — the synchronous part
+only, microseconds. **Considered and rejected: a lock around the check alone** — the count happens in `Dispatcher`, after routing, so the
+lock must last until the dispatch is called, which is what the ticket already is; **and per-node reservations**, 110 D3's reason.
+
+**D2 — `waited` still means "found no free slot".** A request standing behind another's dispatch for microseconds did not wait; one standing
+behind the line's head while the fleet is full did. A request behind the head looks every 50 ms while it stands there (it never sends — only
+the head does) and counts itself once, so a burst's `waited` is the number of requests the hub held.
+
+Measured (a hub and a node from source, `Node:ModelSlots=2`, an OpenAI-shaped stub upstream answering in 3 s and counting what it runs):
+four chats at once — HEAD ran **4** in the engine, `waited 0`; 155 ran **2**, `waited 2`, `admitted 2`, `sentAnyway 0`. Eight — **2** at a time,
+`waited 6`. Not measured: a real engine (the stub only counts), several nodes, a cluster.
+
+Tests: `SlotWaitTests.FourChatsAtOnceOverTwoSlotsSendTwoAndHoldTwo` (a registry whose first four reads wait for each other — red on 3.115:
+four sent), `WhereNobodyCountsSlotsNoRequestEvenPassesTheTurnstile`, `ANodeThatDeclaredNothingIsAlwaysFreeSoNobodyWaits`.

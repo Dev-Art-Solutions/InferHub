@@ -37,8 +37,9 @@ public class SlotWaitTests
         Assert.Equal(2, dispatcher.Started.Count);
         Assert.Equal(1, context.Queue.Snapshot().SlotWait!.Depth);
 
+        // Which of the first two went to node-b is the router's tie-break; the one that did finishes now.
         dispatcher.Release("node-b");
-        Assert.False((await second.WaitAsync(TimeSpan.FromSeconds(5))).IsError);
+        Assert.False((await (await Task.WhenAny(first, second).WaitAsync(TimeSpan.FromSeconds(5)))).IsError);
         await WaitForAsync(() => dispatcher.Started.Count == 3);
 
         Assert.Equal("node-b", dispatcher.Started.Last());
@@ -124,8 +125,53 @@ public class SlotWaitTests
         var queue = Queue(registry, new QueueOptions { SlotWaitSeconds = 10 });
 
         Assert.False(FleetSaturation.HasNoFreeSlot(registry, "llama3", "chat"));
-        Assert.Same(SlotTicket.None, await queue.WaitForFreeSlotAsync("llama3", "chat", CancellationToken.None));
+
+        // 155 D1: node A counts slots, so the request passes the turnstile — but it never waits.
+        var ticket = await queue.WaitForFreeSlotAsync("llama3", "chat", CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(1));
+        ticket.Dispose();
         Assert.Equal(0, queue.Snapshot().SlotWait!.Waited);
+        Assert.Equal(0, queue.Snapshot().SlotWait!.Admitted);
+    }
+
+    [Fact]
+    public async Task WhereNobodyCountsSlotsNoRequestEvenPassesTheTurnstile()
+    {
+        var registry = Seed(slotsA: null, slotsB: null);
+        var queue = Queue(registry, new QueueOptions { SlotWaitSeconds = 10 });
+
+        Assert.False(FleetSaturation.AnyHolderCountsSlots(registry, "llama3", "chat"));
+        Assert.Same(SlotTicket.None, await queue.WaitForFreeSlotAsync("llama3", "chat", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task FourChatsAtOnceOverTwoSlotsSendTwoAndHoldTwo()
+    {
+        // Phase 155: the burst 147 measured — four chats, one node with two slots, every one of them looking
+        // before any was counted. The queue's first four reads wait for each other, so all four look at once every run.
+        var registry = Seed(slotsA: 2, slotsB: null);
+        registry.Remove("connection-b");
+        var dispatcher = new HeldDispatcher(registry);
+        var options = new QueueOptions { SlotWaitSeconds = 10 };
+        var context = TestUsage.Context(registry, queueOptions: options) with { Queue = Queue(SlowReads.Over(registry), options) };
+
+        var chats = Enumerable.Range(0, 4).Select(_ => Task.Run(() => Dispatch(registry, context, dispatcher))).ToArray();
+        await WaitForAsync(() => dispatcher.Started.Count >= 2);
+        await Task.Delay(600);
+
+        // Before 155 all four were in the engine by now, two of them queued behind the others.
+        Assert.Equal(2, dispatcher.Started.Count);
+        Assert.Equal(2, context.Queue.Snapshot().SlotWait!.Waited);
+
+        dispatcher.Release("node-a");
+
+        foreach (var chat in chats)
+        {
+            Assert.False((await chat.WaitAsync(TimeSpan.FromSeconds(10))).IsError);
+        }
+
+        Assert.Equal(4, dispatcher.Started.Count);
+        Assert.Equal(2, context.Queue.Snapshot().SlotWait!.Admitted);
+        Assert.Equal(0, context.Queue.Snapshot().SlotWait!.SentAnyway);
     }
 
     [Fact]
@@ -286,6 +332,42 @@ public class SlotWaitTests
         public bool WriteChunk(InferenceChunk chunk) => throw new NotImplementedException();
 
         public void FailForConnection(string connectionId, Exception? exception) => throw new NotImplementedException();
+    }
+
+    /// <summary>
+    /// The registry, with its first four in-flight reads made to happen together: each waits until all four are looking —
+    /// the window between looking and counting, held open. Later reads go straight through.
+    /// </summary>
+    public class SlowReads : System.Reflection.DispatchProxy
+    {
+        private INodeRegistry inner = null!;
+        private readonly Barrier together = new(4);
+        private int reads;
+
+        public static INodeRegistry Over(INodeRegistry inner)
+        {
+            var proxy = Create<INodeRegistry, SlowReads>();
+            ((SlowReads)(object)proxy).inner = inner;
+            return proxy;
+        }
+
+        protected override object? Invoke(System.Reflection.MethodInfo? method, object?[]? args)
+        {
+            if (method!.Name == nameof(INodeRegistry.GetModelInFlight) && Interlocked.Increment(ref reads) <= 4)
+            {
+                together.SignalAndWait(TimeSpan.FromSeconds(5));
+            }
+
+            try
+            {
+                return method.Invoke(inner, args);
+            }
+            catch (System.Reflection.TargetInvocationException e) when (e.InnerException is { } cause)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(cause);
+                throw;
+            }
+        }
     }
 
     private sealed class NoProvider : IProviderDispatcher

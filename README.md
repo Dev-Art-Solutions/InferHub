@@ -239,6 +239,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 152 | [The fleet page: groups, traffic and what needs a hand](#the-fleet-page-groups-traffic-and-what-needs-a-hand-v3105) — `/fleet.html`: nodes grouped, the last hour of traffic, what needs a hand, a cordon for a whole group (done) | `v3.105.0` |
 | 153 | [A long context kept on the card, in RAM and on disk](#a-long-context-kept-on-the-card-in-ram-and-on-disk-v3106) — `Serve:Context`: a llama.cpp model's context on the card, in RAM and in slot files on disk; 620k tokens restored in 5.5 s (done) | `v3.106.0` |
 | 154 | [Users, roles and MCP](#users-roles-and-mcp-v3107) — `Users:Enabled` for people and roles made at runtime, `Mcp:Enabled` for the coordinator as an MCP server with its own OAuth sign-in (done) | `v3.107.0` |
+| 155 | [A burst waits its turn](#a-burst-waits-its-turn-v3116) — with `Queue:SlotWaitSeconds` set, requests that arrive together take the slot wait's line too, so a node with two slots gets two of four and the hub holds the rest (done) | `v3.116.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -4717,6 +4718,32 @@ Since v3.74 the hub can hold it instead and send it to whichever node frees a sl
 - `GET /api/status` shows `queue.slotWait` (`depth`, `waited`, `admitted`, `sentAnyway`) once the key is set, and
   `/metrics` the `inferhub_queue_slot_*` series.
 
+
+## A burst waits its turn (v3.116)
+
+**Until v3.116 the slot wait held a request only if it found every slot taken when it arrived.** Requests that arrived
+together all looked before the first one was counted, so all of them saw a free slot and all of them went. Four chats at
+once to a node with two slots: the hub held none, and two waited inside the engine behind the other two. v3.112 measured
+exactly that through a split model.
+
+Since v3.116 a request that finds a free slot takes the same line as one that finds none. It looks, it is sent, and the
+next one looks only after this one is counted against its node. Nothing to configure: it applies wherever
+`Queue:SlotWaitSeconds` is set and a node holding the model declared a slot count.
+
+Measured with a coordinator and a node from source, `Node:ModelSlots=2`, and a stand-in engine that answers in 3 s and
+counts how many requests it is running:
+
+| Chats sent together | v3.115: running at once | v3.116: running at once | v3.116 `queue.slotWait` |
+|---|---|---|---|
+| 4 | 4 | 2 | `waited 2`, `admitted 2`, `sentAnyway 0` |
+| 8 | — | 2 | `waited 6`, `admitted 6`, `sentAnyway 0` |
+
+- **A deployment that never set `Queue:SlotWaitSeconds` is unchanged.** So is a model whose nodes declared no slots: it
+  never waits and never takes the line.
+- **`waited` counts the requests the hub held**, not the ones that passed the line behind another's dispatch, which takes
+  microseconds.
+- **Essential work still skips the wait** ([priority classes](#priority-classes-v386)).
+- **Not shown:** a real engine (the stand-in only counts), several nodes, a cluster.
 
 ## colibri and Strata told their limits; colibri 2.0 and Strata 0.2.2 (v3.75)
 

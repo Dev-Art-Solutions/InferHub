@@ -546,7 +546,7 @@ arguments); at most `MaxSlots` 64. Through the hub, `Slots=2` put `-np 2 -kvu` o
 
 **Found, not changed — 110's check is not atomic for a burst.** With `Slots=2` and four chats at once, the hub held none
 (`waited 0`): all four saw a free slot before the first was counted, and two queued in the engine instead (first tokens at 11.9 s).
-For a group (one head) the caller sees about the same; for a fleet it is 110's own behaviour on any burst. **Also found:** in that run
+For a group (one head) the caller sees about the same; for a fleet it is 110's own behaviour on any burst. *Fixed in 155* (`src/InferHub.Coordinator/Services/CLAUDE.md`). **Also found:** in that run
 two of the four answered with a different temperature-0 text — a batch of two with a reused prompt; llama.cpp promises no identical
 numbers across batch shapes. Every four-slot run kept the text.
 

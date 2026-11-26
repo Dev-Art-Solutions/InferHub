@@ -92,6 +92,10 @@ public static class FleetSaturation
     /// model unless it declared a slot count for it and runs that many of the hub's jobs for it; a node
     /// that declared nothing is always free. True only when somebody holds the model and nobody is free.
     /// </summary>
+    /// <summary>Phase 155: somebody holding the model declared a slot count for it, so "free" can run out.</summary>
+    public static bool AnyHolderCountsSlots(INodeRegistry registry, string model, string? capability = null)
+        => registry.FindNodesWithModel(model, capability).Any(node => registry.GetModelSlots(node.ConnectionId, model) is not null);
+
     public static bool HasNoFreeSlot(INodeRegistry registry, string model, string? capability = null)
     {
         var capable = registry.FindNodesWithModel(model, capability);
@@ -244,7 +248,9 @@ public sealed class RequestQueue(
     {
         var settings = options.Value;
 
-        if (settings.SlotWaitSeconds <= 0 || !FleetSaturation.HasNoFreeSlot(registry, model, capability))
+        // Phase 155 D1: a free slot is taken through the turnstile too, so the check and the count are one step —
+        // a burst that all looked before any was counted is what 147 measured. Only where somebody counts slots.
+        if (settings.SlotWaitSeconds <= 0 || !FleetSaturation.AnyHolderCountsSlots(registry, model, capability))
         {
             return SlotTicket.None;
         }
@@ -257,28 +263,59 @@ public sealed class RequestQueue(
             return SlotTicket.None;
         }
 
-        Interlocked.Increment(ref slotWaited);
         var turnstile = turnstiles.GetOrAdd(NodeRegistry.ModelKey(model) ?? model, _ => new SemaphoreSlim(1, 1));
         using var bound = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         bound.CancelAfter(TimeSpan.FromSeconds(settings.SlotWaitSeconds));
         var holding = false;
 
+        // 155 D2: "waited" still means "found no free slot", not "passed the turnstile behind another's dispatch".
+        var waited = false;
+
+        void Waited()
+        {
+            if (!waited)
+            {
+                waited = true;
+                Interlocked.Increment(ref slotWaited);
+            }
+        }
+
         try
         {
-            await turnstile.WaitAsync(bound.Token);
+            if (FleetSaturation.HasNoFreeSlot(registry, model, capability))
+            {
+                Waited();
+            }
+
+            // Behind the line's head, a request only looks — the head alone sends (D3) — so one held there while the fleet
+            // is full is counted as waiting, not as having passed behind another's dispatch.
+            while (!await turnstile.WaitAsync(SlotPollInterval, bound.Token))
+            {
+                if (!waited && FleetSaturation.HasNoFreeSlot(registry, model, capability))
+                {
+                    Waited();
+                }
+            }
+
             holding = true;
 
             while (FleetSaturation.HasNoFreeSlot(registry, model, capability))
             {
+                Waited();
                 await Task.Delay(SlotPollInterval, bound.Token);
             }
 
-            Interlocked.Increment(ref slotAdmitted);
+            if (waited)
+            {
+                Interlocked.Increment(ref slotAdmitted);
+            }
+
             holding = false;
             return new SlotTicket(turnstile);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            Waited();
             Interlocked.Increment(ref slotSentAnyway);
             logger.LogInformation(
                 "No node freed a slot for model {Model} within {Seconds}s; sending the request on to queue in an engine",
