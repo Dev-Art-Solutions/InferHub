@@ -27,12 +27,16 @@ public sealed record ModelFacts(
     int? ExpertsUsed,
     double? ExpertShare,
     IReadOnlyList<ModelVariant> Variants,
-    IReadOnlyList<string> Notes)
+    IReadOnlyList<string> Notes,
+    PipelineFacts? Pipeline = null)
 {
     public const string SourceGguf = "gguf";
     public const string SourceCheckpoint = "checkpoint";
     public const string SourceStrata = "strata";
     public const string SourceOllama = "ollama";
+
+    /// <summary>Phase 121: a diffusers repository (<c>model_index.json</c>) — a picture or video model, run by a recipe.</summary>
+    public const string SourceDiffusers = "diffusers";
 
     /// <summary>Bytes of KV cache per token of context, at f16 — null when the model did not say enough to know.</summary>
     public long? KvBytesPerToken => AttentionLayers is { } layers && KvWidth is { } width ? (long)layers * width * 2 : null;
@@ -254,6 +258,29 @@ public sealed record ModelFacts(
             notes);
     }
 }
+
+/// <summary>
+/// Phase 121: what a diffusers repository is, as far as a recipe goes — read from its <c>model_index.json</c>, its tree
+/// and the Hub's card, never from the weights.
+/// </summary>
+/// <param name="ClassName">The pipeline class <c>model_index.json</c> names (<c>_class_name</c>) — what a recipe's
+/// <c>pipeline</c> is compared with.</param>
+/// <param name="Commit">The commit read now; a recipe written from it pins it.</param>
+/// <param name="License">The card's licence id (<c>license</c>, or <c>license_name</c> for "other"); null when it names none.</param>
+/// <param name="Gated">Whether Hugging Face asks for accepted terms and a token before it hands the weights over.</param>
+/// <param name="BaseModel">The card's <c>base_model</c>, when it names one repository.</param>
+/// <param name="Bytes">The component weights a recipe loads, in their full files (<c>*.safetensors</c>).</param>
+/// <param name="Fp16Bytes">The same in <c>*.fp16.safetensors</c>; null unless every weighted component has them.</param>
+/// <param name="Refusal">Why no recipe may run it (code in the repository, pickled weights), in a sentence; null when one may.</param>
+public sealed record PipelineFacts(
+    string? ClassName,
+    string Commit,
+    string? License,
+    bool Gated,
+    string? BaseModel,
+    long Bytes,
+    long? Fp16Bytes,
+    string? Refusal);
 
 /// <summary>One downloadable form of a model: a GGUF quant, a checkpoint's own precision, a Strata size, an Ollama tag.</summary>
 /// <param name="Bytes">What is downloaded and, for a GGUF, what the weights take in memory.</param>

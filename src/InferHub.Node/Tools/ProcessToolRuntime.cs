@@ -438,8 +438,19 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
     /// </remarks>
     private void LoadRecipeCatalogue()
     {
-        var directory = options.Image.RecipeDirectory;
-        recipes = ImageRecipeCatalogue.LoadDirectory(directory, logger);
+        // Phase 121: the shipped directory, then the one the node writes derived recipes to.
+        var directory = string.Join(", ", options.Image.RecipeDirectories());
+        var loaded = new Dictionary<string, ImageRecipeInfo>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var source in options.Image.RecipeDirectories())
+        {
+            foreach (var (id, recipe) in ImageRecipeCatalogue.LoadDirectory(source, logger))
+            {
+                loaded.TryAdd(id, recipe);
+            }
+        }
+
+        recipes = loaded;
 
         if (recipes.Count == 0)
         {
@@ -620,6 +631,12 @@ internal sealed class ProcessToolRuntime : IToolRuntime, IHostedService, IAsyncD
     }
 
     public IReadOnlyList<ImageRecipeInfo> ImageRecipes => recipes.Values.ToArray();
+
+    /// <summary>
+    /// Phase 121: read the recipe directories again after the node wrote one, so its licence and VRAM gate (and a
+    /// profile's clamp) know the new id before the worker declares it. The worker reads its directories on every pull.
+    /// </summary>
+    public void ReloadRecipes() => LoadRecipeCatalogue();
 
     public void SetDisabledModels(IReadOnlyCollection<string> models)
     {

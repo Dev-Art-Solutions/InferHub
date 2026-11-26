@@ -147,6 +147,9 @@ _device: str = "cpu"
 # licence and CPU gates. `pull` and `delete` re-declare against it so the fleet learns about a model
 # that has just landed (or just left) without waiting for a restart.
 _offerable: list[str] = []
+
+# Phase 121: whether main() chose the device and weighed the catalogue (a worker that started with no recipes did not).
+_weighed = False
 _worker: Worker | None = None
 
 
@@ -155,8 +158,18 @@ def log(message: str) -> None:
     print(f"[{TOOL_ID}] {message}", file=sys.stderr, flush=True)
 
 
+def recipes_directories() -> list[str]:
+    """
+    The shipped directory, then the one the node writes derived recipes to (phase 121), joined with the platform's
+    path separator. An empty entry is the image's own default, which is what an unset variable always meant.
+    """
+    value = os.environ.get("INFERHUB_IMAGE_RECIPES") or ""
+    return [entry or DEFAULT_RECIPES for entry in value.split(os.pathsep)] or [DEFAULT_RECIPES]
+
+
 def recipes_directory() -> str:
-    return os.environ.get("INFERHUB_IMAGE_RECIPES") or DEFAULT_RECIPES
+    """For log lines: every directory read, in order."""
+    return os.pathsep.join(recipes_directories())
 
 
 def flag(name: str, default: bool = False) -> bool:
@@ -266,7 +279,13 @@ def load_recipes() -> dict[str, dict[str, Any]]:
     """Every ``*.json`` in the recipe directory. A broken one is skipped and logged, never fatal."""
     found: dict[str, dict[str, Any]] = {}
 
-    for path in sorted(glob.glob(os.path.join(recipes_directory(), "*.json"))):
+    paths = [
+        path
+        for directory in recipes_directories()
+        for path in sorted(glob.glob(os.path.join(directory, "*.json")))
+    ]
+
+    for path in paths:
         try:
             with open(path, encoding="utf-8") as handle:
                 recipe = json.load(handle)
@@ -289,7 +308,8 @@ def load_recipes() -> dict[str, dict[str, Any]]:
             log(f"skipping {identifier}: {reason}")
             continue
 
-        found[identifier] = recipe
+        # The shipped catalogue wins a clash: the node never writes an id that is taken, so a clash is a hand edit.
+        found.setdefault(identifier, recipe)
 
     return found
 
@@ -379,7 +399,11 @@ def dtype_of(recipe: dict[str, Any]):
     }.get(str(recipe.get("dtype") or "float16").lower(), torch.float16)
 
 
-def offered(recipes: dict[str, dict[str, Any]], device: str) -> list[str]:
+def _quiet(_message: str) -> None:
+    """A refusal already logged at startup, not repeated on every re-declaration."""
+
+
+def offered(recipes: dict[str, dict[str, Any]], device: str, quiet: bool = False) -> list[str]:
     """
     Which recipes this box will actually accept work for, before readiness is considered.
 
@@ -397,7 +421,7 @@ def offered(recipes: dict[str, dict[str, Any]], device: str) -> list[str]:
         recipe = recipes[identifier]
 
         if not is_licensed(recipe, accepted):
-            log(
+            (_quiet if quiet else log)(
                 f"not offering '{identifier}': its licence is '{licence_id(recipe)}', which is not "
                 f"permissive and is not in Tools:Image:AcceptedLicenses. Read it at "
                 f"{licence_of(recipe).get('url') or 'the model repository'} and, if you accept it, "
@@ -406,7 +430,7 @@ def offered(recipes: dict[str, dict[str, Any]], device: str) -> list[str]:
             continue
 
         if device != "cuda" and not recipe.get("cpuViable") and not flag("INFERHUB_IMAGE_ALLOW_SLOW_CPU"):
-            log(
+            (_quiet if quiet else log)(
                 f"not offering '{identifier}' on a CPU-only node: it is not marked cpuViable. "
                 "Set Tools:Image:AllowSlowCpu=true to offer it anyway (minutes per image)."
             )
@@ -421,7 +445,7 @@ def offered(recipes: dict[str, dict[str, Any]], device: str) -> list[str]:
         # The same shape as the licence gate above it (48 D5): the node decides what it DECLARES,
         # and the worker is the lock on the process that would actually spend the resource.
         if budget_mib > 0 and int(recipe.get("vramMiB") or 0) > budget_mib:
-            log(
+            (_quiet if quiet else log)(
                 f"not offering '{identifier}': it needs {recipe.get('vramMiB')} MiB and this node "
                 f"budgets {budget_mib} MiB for models (Node:Vram:BudgetMiB minus "
                 "Node:Vram:ReserveMiB). Its weights are not fetched either."
@@ -824,6 +848,11 @@ def _from_pretrained(recipe: dict[str, Any], local_files_only: bool):
     if recipe.get("variant"):
         kwargs["variant"] = recipe["variant"]
 
+    # Phase 121: a recipe the node wrote for a repository it did not choose loads safetensors only — a pickled .bin
+    # can run code when it is unpickled, and diffusers would otherwise fall back to one.
+    if recipe.get("useSafetensors"):
+        kwargs["use_safetensors"] = True
+
     # THE VAE IS LOADED SEPARATELY AND AT ITS OWN DTYPE (phase-57 D4). Wan's example does exactly
     # this — AutoencoderKLWan at float32 under a bfloat16 transformer — and a uniform bf16 load is
     # NOT an error: it is the difference between a video and noise, discovered four minutes into a
@@ -843,6 +872,7 @@ def _from_pretrained(recipe: dict[str, Any], local_files_only: bool):
             revision=recipe["revision"],
             torch_dtype=named_dtype(recipe["vaeDtype"]),
             local_files_only=local_files_only,
+            **({"use_safetensors": True} if recipe.get("useSafetensors") else {}),
         )
 
     quantization = quantization_config(recipe)
@@ -2578,7 +2608,15 @@ def redeclare() -> None:
     if _worker is None:
         return
 
+    global _offerable
+
     recipes = load_recipes()
+
+    # Phase 121: a recipe the node wrote after this process started is weighed by the same gates now, rather than
+    # waiting for a restart; a refusal was logged when it was weighed first.
+    if _weighed:
+        _offerable = offered(recipes, _device, quiet=True)
+
     ready = [i for i in _offerable if i in recipes and is_ready(recipes[i])]
     log(describe_offering(recipes, ready))
     _worker.redeclare(capability_frames(recipes, ready))
@@ -2701,7 +2739,7 @@ def prefetch_missing(worker: Worker, recipes: dict[str, dict[str, Any]], offerab
 
 
 def main() -> None:
-    global _device, _offerable, _worker
+    global _device, _offerable, _weighed, _worker
 
     recipes = load_recipes()
 
@@ -2724,6 +2762,7 @@ def main() -> None:
         )
 
     _offerable = offered(recipes, _device)
+    _weighed = True
     offerable = _offerable
     ready = [identifier for identifier in offerable if is_ready(recipes[identifier])]
 

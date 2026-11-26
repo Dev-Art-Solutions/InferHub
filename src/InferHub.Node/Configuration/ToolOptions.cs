@@ -159,7 +159,7 @@ public sealed class ToolOptions
         // operator's key would otherwise never reach the process that has to honour it.
         ["INFERHUB_IMAGE_REQUIRE_GPU"] = Image.RequireGpu ? "1" : "0",
         ["INFERHUB_IMAGE_ALLOW_SLOW_CPU"] = Image.AllowSlowCpu ? "1" : "0",
-        ["INFERHUB_IMAGE_RECIPES"] = Image.RecipeDirectory ?? string.Empty,
+        ["INFERHUB_IMAGE_RECIPES"] = Image.WorkerRecipePath(),
 
         // Phase 48. The licence grant reaches the worker the same way, and for the same reason: it
         // is DEFENCE IN DEPTH rather than a duplicate. The node refuses to declare an unaccepted
@@ -403,6 +403,26 @@ public sealed class ImageToolOptions
     /// for.
     /// </remarks>
     public string? RecipeDirectory { get; set; }
+
+    /// <summary>
+    /// Phase 121: where the node writes a recipe it derived for a model the owner installed from a link — beside, never
+    /// over, <see cref="RecipeDirectory"/>, which the image ships. Unset: <c>&lt;Node:DataDirectory&gt;/recipes</c> (the
+    /// composition fills it in), so on the container it is on the <c>/data</c> volume and survives an update.
+    /// </summary>
+    public string? AddedRecipeDirectory { get; set; }
+
+    /// <summary>The directories recipes are read from, shipped first: what the node's catalogue and the worker both read.</summary>
+    public IReadOnlyList<string> RecipeDirectories() =>
+        new[] { RecipeDirectory, AddedRecipeDirectory }.Where(d => !string.IsNullOrWhiteSpace(d)).Select(d => d!).ToArray();
+
+    /// <summary>
+    /// <c>INFERHUB_IMAGE_RECIPES</c>: the shipped directory, then the added one, joined with the platform's path separator.
+    /// An empty first entry keeps the worker's own default (<c>/opt/inferhub/recipes</c>), as an unset key always did.
+    /// </summary>
+    public string WorkerRecipePath() =>
+        string.IsNullOrWhiteSpace(AddedRecipeDirectory)
+            ? RecipeDirectory ?? string.Empty
+            : (RecipeDirectory ?? string.Empty) + Path.PathSeparator + AddedRecipeDirectory;
 }
 
 /// <summary>

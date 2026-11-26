@@ -58,11 +58,23 @@ public sealed partial class ModelFactsReader(Func<HuggingFaceClient>? huggingFac
         string? task = null;
         long? parameters = null;
         int? apiContext = null;
+        string? library = null, license = null, baseModel = null;
+        var gated = false;
 
         using (var info = await hf.ModelInfoAsync(reference, cancellationToken))
         {
             var root = info.RootElement;
             task = root.TryGetProperty("pipeline_tag", out var tag) ? tag.GetString() : null;
+            library = root.TryGetProperty("library_name", out var lib) && lib.ValueKind == JsonValueKind.String ? lib.GetString() : null;
+
+            // 121: "gated" is false, or "auto" / "manual" — either way Hugging Face wants accepted terms and a token.
+            gated = root.TryGetProperty("gated", out var gate) && (gate.ValueKind == JsonValueKind.String || gate.ValueKind == JsonValueKind.True);
+
+            if (root.TryGetProperty("cardData", out var card) && card.ValueKind == JsonValueKind.Object)
+            {
+                license = DiffusersRepo.License(card);
+                baseModel = DiffusersRepo.BaseModel(card);
+            }
 
             if (root.TryGetProperty("safetensors", out var st) && st.TryGetProperty("total", out var stTotal) && stTotal.TryGetInt64(out var n))
             {
@@ -91,6 +103,19 @@ public sealed partial class ModelFactsReader(Func<HuggingFaceClient>? huggingFac
         var commit = await hf.CommitAsync(reference, cancellationToken);
         var tree = await hf.TreeAsync(reference, commit, cancellationToken);
         var ggufs = tree.Where(f => f.Path.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)).ToArray();
+
+        // Phase 121: a diffusers pipeline — a picture or video model a recipe may run.
+        if (tree.Any(f => f.Path == DiffusersRepo.ModelIndex))
+        {
+            using var response = await hf.RangeAsync(reference, commit, DiffusersRepo.ModelIndex, 1 << 20, cancellationToken);
+            await using var body = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var index = await JsonDocument.ParseAsync(body, cancellationToken: cancellationToken);
+            var pipeline = DiffusersRepo.Read(index.RootElement, tree.Select(f => (f.Path, f.Size)).ToArray(), commit, license, gated, baseModel);
+
+            return new ModelFacts(ModelFacts.SourceDiffusers, reference.RepoId, pipeline.ClassName, task, parameters, null, null, null, null, null, null, null, [],
+                [$"a diffusers pipeline ({pipeline.ClassName ?? "no class named"}{(task is null ? "" : $", {task}")}); the node's recipes run it, not a language-model engine"],
+                pipeline);
+        }
 
         if (ggufs.Length > 0)
         {
@@ -122,7 +147,7 @@ public sealed partial class ModelFactsReader(Func<HuggingFaceClient>? huggingFac
         return new ModelFacts(ModelFacts.SourceCheckpoint, reference.RepoId, null, task, parameters, null, null, null, null, null, null, null, [],
             [task is null or "text-generation"
                 ? $"'{reference.RepoId}' has no .gguf and is not a safetensors checkpoint (config.json beside *.safetensors); no engine here can load it"
-                : $"'{reference.RepoId}' is a {task} model; this node places text models from a link (pictures, voices and video go through the node's recipes)"]);
+                : $"'{reference.RepoId}' is a {task} model{(library is null ? "" : $" for {library}")}; from a link this node places text models (GGUF or a checkpoint) and diffusers pictures and video (a model_index.json) — a voice or a transcription model is one its whisper and piper tools name in their own lists, not one a link adds"]);
     }
 
     internal sealed record GgufGroup(ModelVariant Variant, HfFile First);

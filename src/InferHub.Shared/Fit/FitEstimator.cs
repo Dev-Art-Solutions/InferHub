@@ -91,6 +91,7 @@ public static class FitEstimator
     /// <summary>Why an engine cannot load this model at all (D3), or null when it can.</summary>
     public static string? CanLoad(ModelFacts model, string kind) => (model.Source, kind) switch
     {
+        (ModelFacts.SourceDiffusers, _) => "a picture or video pipeline is not a language model; the node's recipes run it (phase 121)",
         (ModelFacts.SourceStrata, FitEngines.Strata) => null,
         (ModelFacts.SourceStrata, _) => "a Strata repo is installed by Strata's setup; its quants need Strata's engine",
         (_, FitEngines.Strata) => "Strata runs only its own families (Qwen3.8-Flash-Next and Qwen3.6-35B-A3B)",

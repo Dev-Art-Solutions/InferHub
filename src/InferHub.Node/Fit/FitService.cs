@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json.Nodes;
 using InferHub.Shared.Contracts;
 using InferHub.Shared.Fit;
 
@@ -9,7 +10,7 @@ namespace InferHub.Node.Fit;
 /// pull the node already runs (D5). The model's facts are kept for a few minutes so a dialog that tries contexts
 /// does not ask Hugging Face again each time.
 /// </summary>
-public sealed class FitService(ModelFactsReader reader, Func<MachineFacts> machine, TimeProvider? time = null, IReadOnlyList<IEnginePlanner>? planners = null)
+public sealed class FitService(ModelFactsReader reader, Func<MachineFacts> machine, TimeProvider? time = null, IReadOnlyList<IEnginePlanner>? planners = null, RecipeFit? recipes = null)
 {
     private static readonly TimeSpan Keep = TimeSpan.FromMinutes(10);
 
@@ -27,13 +28,33 @@ public sealed class FitService(ModelFactsReader reader, Func<MachineFacts> machi
     public sealed record Refusal(string Engine, string Reason);
 
     /// <summary>This machine as the estimate sees it — the catalogue (119) classes its list against the same facts.</summary>
-    public MachineFacts Machine() => machine();
+    public MachineFacts Machine() => Here();
+
+    /// <summary>The machine with the recipes as one more engine (121), so the hub's disk terms (120) read its free space too.</summary>
+    private MachineFacts Here()
+    {
+        var here = machine();
+        return recipes is null ? here : here with { Engines = [.. here.Engines, recipes.Facts()] };
+    }
 
     public async Task<Answer> EstimateAsync(string? link, int? context, CancellationToken cancellationToken)
     {
         var (model, canonical) = await FactsAsync(link, cancellationToken);
         var asked = context is > 0 ? context.Value : FitEstimator.DefaultContext;
-        var here = machine();
+        var here = Here();
+
+        // Phase 121: a picture or video pipeline is answered by the node's recipes, never by the estimate.
+        if (model.Source == ModelFacts.SourceDiffusers)
+        {
+            if (recipes is null)
+            {
+                return new Answer(canonical, asked, model, here, [], [new Refusal(FitEngines.Diffusion, "this node has no image or video recipes (no tool runtime)")]);
+            }
+
+            var pictures = await recipes.OptionsAsync(model, here, cancellationToken);
+            return new Answer(canonical, asked, model, here, pictures.Options.OrderByDescending(o => o.Score).ToArray(), pictures.Refused);
+        }
+
         var options = FitEstimator.Estimate(model, here, asked).ToList();
 
         // 118 D6: an engine that plans its own placement answers for itself.
@@ -67,11 +88,28 @@ public sealed class FitService(ModelFactsReader reader, Func<MachineFacts> machi
     }
 
     /// <summary>One option chosen for an install: the estimate it came from, the option, and the pull that installs it.</summary>
-    public sealed record Plan(Answer Answer, FitOption Option, ModelCommand Command);
+    /// <param name="Recipe">Phase 121: a recipe the node writes before the pull (one derived for this repository); null otherwise.</param>
+    public sealed record Plan(Answer Answer, FitOption Option, ModelCommand Command, JsonObject? Recipe = null);
+
+    /// <summary>
+    /// What has to be on disk before the plan's command runs — a derived recipe (121). Called after every check the caller
+    /// makes (the hub's disk terms), so a refused install leaves nothing behind.
+    /// </summary>
+    public void Prepare(Plan plan)
+    {
+        if (plan.Recipe is { } recipe)
+        {
+            (recipes ?? throw new FitRefusedException(409, "this node has no image or video recipes")).Write(recipe);
+        }
+    }
 
     /// <summary>The pull that installs one option: the engine's own command, with the chosen context (D4).</summary>
     public async Task<ModelCommand> CommandAsync(string? link, string? engine, string? variant, int? context, bool force, CancellationToken cancellationToken)
-        => (await PlanAsync(link, engine, variant, context, force, cancellationToken)).Command;
+    {
+        var plan = await PlanAsync(link, engine, variant, context, force, cancellationToken);
+        Prepare(plan);
+        return plan.Command;
+    }
 
     /// <summary>
     /// <see cref="CommandAsync"/> with what it was decided from — the hub's install (120) checks the owner's disk terms
@@ -95,6 +133,13 @@ public sealed class FitService(ModelFactsReader reader, Func<MachineFacts> machi
         if (!option.Fits && !force)
         {
             throw new FitRefusedException(409, $"the estimate says {option.Engine} / {option.Variant} does not fit at {answer.Context} tokens ({option.Why.FirstOrDefault()}); send force=true to install it anyway");
+        }
+
+        if (option.Engine == FitEngines.Diffusion)
+        {
+            // 121: phase 48's pull of a recipe — the one here, or the one written for this repository first.
+            var install = await recipes!.InstallAsync(answer.Model, answer.Machine, option.Variant, cancellationToken);
+            return new Plan(answer, option, new ModelCommand(Guid.NewGuid(), ModelCommand.KindPull, install.RecipeId, Tool: RecipeFit.Tool), install.Recipe);
         }
 
         var chosen = answer.Model.Variants.First(v => v.Name == option.Variant);

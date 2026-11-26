@@ -3,6 +3,7 @@ using InferHub.Node;
 using InferHub.Node.Backends;
 using InferHub.Node.Backends.Colibri;
 using InferHub.Node.Backends.HuggingFace;
+using InferHub.Node.Configuration;
 using InferHub.Shared.Contracts;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -295,6 +296,19 @@ public class HuggingFaceStoreTests : IAsyncLifetime
             new BackendOptions { Type = "colibri" },
             new ColibriOptions { Serve = new ColibriServeOptions { ModelsDir = "/models" } },
             on));
+    }
+
+    /// <summary>Phase 121, found live: a :diffusion node (no language-model engine) could not turn Hugging Face on.</summary>
+    [Fact]
+    public void ANodeThatRunsTheDiffusionToolHasAPlaceForAPictureModel()
+    {
+        static string? Fail(ToolOptions tools) => new HuggingFaceOptionsValidator(
+            Options.Create(new BackendOptions()), Options.Create(new ColibriOptions()), tools: Options.Create(tools))
+            .Validate(null, new HuggingFaceOptions { Enabled = true }).FailureMessage;
+
+        Assert.Null(Fail(new ToolOptions { Enabled = true, Allowed = ["diffusion"] }));
+        Assert.Contains("nowhere to put a model", Fail(new ToolOptions { Enabled = true, Allowed = ["whisper"] }));
+        Assert.Contains("nowhere to put a model", Fail(new ToolOptions { Enabled = false, Allowed = ["diffusion"] }));
     }
 
     // ---- helpers -----------------------------------------------------------------------------

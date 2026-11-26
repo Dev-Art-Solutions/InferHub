@@ -99,7 +99,7 @@ public sealed record HuggingFaceTargets(string? GgufEngine, string? GgufDirector
     }
 }
 
-public sealed class HuggingFaceOptionsValidator(IOptions<BackendOptions> backend, IOptions<ColibriOptions> colibri, IOptions<Strata.StrataOptions>? strata = null)
+public sealed class HuggingFaceOptionsValidator(IOptions<BackendOptions> backend, IOptions<ColibriOptions> colibri, IOptions<Strata.StrataOptions>? strata = null, IOptions<Configuration.ToolOptions>? tools = null)
     : IValidateOptions<HuggingFaceOptions>
 {
     public ValidateOptionsResult Validate(string? name, HuggingFaceOptions options)
@@ -126,7 +126,12 @@ public sealed class HuggingFaceOptionsValidator(IOptions<BackendOptions> backend
 
             HuggingFaceTargets.Resolve(options, backend.Value, colibri.Value, strata is not null && Strata.StrataComposition.HasCatalog(strata.Value, backend.Value), out var problem);
 
-            if (problem is not null)
+            // Phase 121: a node that runs the diffusion tool has a place for a picture model from a link — its recipes —
+            // even with no language-model engine to download for (found live: a :diffusion node could not turn the switch on).
+            var pictures = tools?.Value is { Enabled: true } t
+                           && t.Allowed.Any(id => string.Equals(id?.Trim(), Fit.RecipeFit.Tool, StringComparison.OrdinalIgnoreCase));
+
+            if (problem is not null && !(pictures && problem.Contains("nowhere to put a model", StringComparison.Ordinal)))
             {
                 failures.Add(problem);
             }

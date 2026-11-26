@@ -166,7 +166,7 @@ public sealed class HuggingFaceClient(HttpClient http, Uri endpoint, string? tok
     public Task<JsonDocument> ModelInfoAsync(HfReference reference, CancellationToken cancellationToken)
     {
         var revision = reference.Revision == HfReference.DefaultRevision ? string.Empty : $"/revision/{Uri.EscapeDataString(reference.Revision)}";
-        return GetJsonAsync($"api/models/{reference.RepoId}{revision}?expand[]=pipeline_tag&expand[]=safetensors&expand[]=gguf", reference, cancellationToken);
+        return GetJsonAsync($"api/models/{reference.RepoId}{revision}?expand[]=pipeline_tag&expand[]=safetensors&expand[]=gguf&expand[]=library_name&expand[]=cardData&expand[]=gated", reference, cancellationToken);
     }
 
     /// <summary>Phase 119: the Hub's model listing for a query (<see cref="InferHub.Shared.Fit.HuggingFaceListing.Query"/>).</summary>

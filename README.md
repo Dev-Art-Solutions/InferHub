@@ -205,6 +205,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 118 | [Will it fit?](#will-it-fit-choose-a-context-get-the-engine-v379) — a link and a context in, the engines that can run it with the arithmetic, and the install with that context (done) | `v3.79.0` |
 | 119 | [Browse models that fit](#browse-models-that-fit-v380) — what is trending and popular on Hugging Face and in Ollama's library, ordered by what fits this machine (done) | `v3.80.0` |
 | 120 | [Models from the coordinator](#models-from-the-coordinator-v381) — the hub browses, checks fit and installs on a node, only where its owner said yes at install, within a per-model cap and a free-disk floor (done) | `v3.81.0` |
+| 121 | [Picture and video models from a link](#picture-and-video-models-from-a-link-v3115) — a diffusers link is answered by the recipes: one that pins the repository, or one written from the recipe that runs its pipeline, installed with phase 48's pull; code, pickles and pipelines no recipe runs are said (done) | `v3.115.0` |
 | 122 | [A sealed node](#a-sealed-node-v382) — `Node:Sealed`: a node reaches nothing outside its network but its coordinator, refuses to start with a door open, and downloads through the hub's `Relay` (done) | `v3.82.0` |
 | 123 | [The hub keeps what it relayed](#the-hub-keeps-what-it-relayed-v383) — `Relay:Cache`: a model a sealed fleet pulls crosses the hub's uplink once; the upstream is still asked every time (done) | `v3.83.0` |
 | 124 | [Models supplied through the coordinator](#models-supplied-through-the-coordinator-v384) — `Relay:Supply`: the hub fetches and checks a model once, or imports it from a disk for an air-gapped site, and its sealed nodes pull only from there (done) | `v3.84.0` |
@@ -1039,6 +1040,41 @@ POST /api/admin/nodes/{id}/fit/install  {"link": "…", "context": 32768, "engin
 - **Not covered by these keys:** the older hub commands (pull by name, a Hugging Face link, a
   Strata install), which behave as before. Hugging Face is still reached only under
   `HuggingFace:Enabled`.
+
+### Picture and video models from a link (v3.115+)
+
+*Check fit* now takes a link to a picture or video model too. These models are diffusers
+repositories, the ones with a `model_index.json`. The node answers from its image and video recipes,
+not from the text-model estimate.
+
+```http
+POST /api/control/fit          {"link": "Lykon/dreamshaper-8"}
+POST /api/control/fit/install  {"link": "Lykon/dreamshaper-8", "engine": "diffusion"}
+```
+
+- **A recipe that already names the repository** is the answer as it is: the SDXL base repository is
+  `sdxl`. The install is the recipe's own pull.
+- **A fine-tune of a pipeline a recipe runs** gets a recipe written from that one. Dreamshaper 8 is a
+  `StableDiffusionPipeline`, so it gets `sd15`'s sizes, steps and dtype. It also gets its own commit,
+  licence and weights (fp16 files when every part has them). Its VRAM is `sd15`'s, scaled by the
+  weights' bytes. When the model card names a base model a recipe pins (Juggernaut XL names SDXL), that
+  recipe is the template.
+- **Said, not offered:** a pipeline no recipe here runs (Kolors, Stable Cascade). Also refused: a
+  repository that carries Python code, or one whose weights are only pickles (`.bin`). A recipe the
+  node writes loads safetensors only.
+- **The owner's switches, each named in the answer:** the `diffusion` tool must be running. Also
+  needed: `Tools:AllowModelDownload`; the licence in `Tools:Image:AcceptedLicenses` unless it is
+  permissive; and `Tools:Image:HuggingFaceToken` for a gated repository.
+- **Nothing is written by looking.** The recipe is written at install, to
+  `Tools:Image:AddedRecipeDirectory`. By default that is `<Node:DataDirectory>/recipes`, which is
+  `/data/recipes` on the container, so an update keeps it. Then the model downloads, and it appears
+  under `image` when it loads. From the coordinator (v3.81), the recipe is written only after the
+  owner's disk terms allow it.
+- A `:diffusion` node can now turn `HuggingFace:Enabled` on. Before, it had "nowhere to put a model".
+
+Measured on the published 3.114.0 `-diffusion` image with this release's node on top (RTX 3090 Ti):
+Dreamshaper 8 looked up in 3 s, installed, and made a 512×512 picture in 5 s. The card held 3.4 GB;
+the recipe says 4 GB. Dreamshaper 7 was installed through a coordinator and generated through it.
 
 ### Across nodes: a model no node holds (v3.93+)
 

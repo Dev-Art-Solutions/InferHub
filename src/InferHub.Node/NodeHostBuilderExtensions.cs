@@ -81,6 +81,16 @@ public static class NodeHostBuilderExtensions
         builder.Services
             .AddOptions<ToolOptions>()
             .Bind(builder.Configuration.GetSection(ToolOptions.SectionName))
+            .PostConfigure<IOptions<NodeOptions>, IHostEnvironment>((tools, node, environment) =>
+            {
+                // Phase 121: derived recipes go beside the node's other state unless the owner names a place
+                // (blank too: appsettings.json's null may bind as an empty string).
+                if (string.IsNullOrWhiteSpace(tools.Image.AddedRecipeDirectory))
+                {
+                    tools.Image.AddedRecipeDirectory = Path.Combine(
+                        node.Value.DataDirectory is { Length: > 0 } data ? data : environment.ContentRootPath, "recipes");
+                }
+            })
             .ValidateOnStart();
         builder.Services.AddSingleton<IValidateOptions<ToolOptions>, ToolOptionsValidator>();
 
@@ -1024,7 +1034,16 @@ public static class NodeHostBuilderExtensions
                 planners.Add(new Fit.ColibriPlanner(colibri));
             }
 
-            return new Fit.FitService(reader, probe.Read, services.GetService<TimeProvider>(), planners);
+            // Phase 121: a picture or video model from a link is answered by the recipes.
+            var recipes = new Fit.RecipeFit(
+                services.GetService<IToolRuntime>() ?? new NoToolRuntime(),
+                services.GetRequiredService<IOptionsMonitor<ToolOptions>>(),
+                services.GetRequiredService<IOptionsMonitor<NodeOptions>>(),
+                client,
+                services.GetRequiredService<ILoggerFactory>().CreateLogger<Fit.RecipeFit>(),
+                services.GetService<TimeProvider>());
+
+            return new Fit.FitService(reader, probe.Read, services.GetService<TimeProvider>(), planners, recipes);
         });
 
         // Phase 119: the catalogue — Hugging Face under the same consent, Ollama's library where an Ollama pulls (D4).

@@ -73,6 +73,11 @@ public interface IToolRuntime
     /// </summary>
     IReadOnlyList<ImageRecipeInfo> ImageRecipes { get; }
 
+    /// <summary>Phase 121: read the image recipe directories again (a recipe was written). Nothing to read without a runtime.</summary>
+    void ReloadRecipes()
+    {
+    }
+
     /// <summary>
     /// Narrows which models this node declares, on top of everything else (phase 48). The set has
     /// been through <c>NodeProfileClamp</c>, so it can only ever remove.

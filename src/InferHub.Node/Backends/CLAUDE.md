@@ -797,6 +797,65 @@ change them without a reinstall.
 **Not established:** the console in a browser against a real far-away node; a hub-side refresh of the terms after a live
 change (the snapshot shows what the node connected with until it reconnects — the node's answers are always current).
 
+### Phase 121 (a picture or video model from a link: the recipes answer, and write one when a recipe here runs its pipeline)
+
+Files: `src/InferHub.Shared/Fit/DiffusersRepo.cs` (+ `PipelineFacts`, `ModelFacts.SourceDiffusers`, `FitEngines.Diffusion`),
+`Fit/RecipeFit.cs`, `FitService` (`Plan.Recipe`, `Prepare`), `HubManagement`, `ToolOptions.Image.AddedRecipeDirectory`,
+`ProcessToolRuntime.ReloadRecipes`, `python/tools/diffusion_worker.py`; hub `ManagementEndpoints` (the pull carries its tool).
+
+**D1, load-bearing — a diffusers repository is answered by recipes, never by the estimate.** `model_index.json` at the
+root makes it `diffusers`; the option's engine is `diffusion` (the tool, not in `FitEngines.All`), its variant a recipe id,
+its VRAM the recipe's own figure (measured, 48/60) against `Node:Vram` or else the largest card, its disk the weights it
+loads. A recipe here whose `repo` is the link is the option as it stands (qwen-image and qwen-360 share one: two options),
+installed by phase 48's pull (`ModelCommand.Tool = diffusion`). *Rejected:* arithmetic over a UNet's parameters — the
+recipes already carry a measured number, and the activations at a size are what a parameter count does not say.
+
+**D2 — a repository whose pipeline class a recipe here runs gets a recipe written from that one.** The template: the
+recipe (no adapters) whose `repo` the card's `base_model` names, else the one whose weights are closest in bytes, then the
+one with more default steps (a distilled model's 1–4 would spoil a full one). Copied: pipeline, sizes, defaults, steps,
+dtype, quantization, media/fps/durations, VAE fields, `cpuViable`. Written: id (the repo's name, or `owner-name` when
+taken), `derivedFrom`, `repo`, `revision` = the commit read now, the card's licence (the Hub's id mapped to the
+recipes' spelling; permissive only if a recipe here already says that id is, or Apache-2.0/MIT), `gated`, `variant: fp16`
+only when every weighted component has fp16 files, `useSafetensors`, and `vramMiB` = the template's × these weights /
+its weights (fp16 files when loaded, else the full files at their stored size — over, never under). *Rejected:* a
+recipe per base model in the image — the fine-tunes are the point, and they number in the thousands.
+
+**D3 — nothing in the repository runs.** Refused, with the sentence: a `.py` anywhere in the tree; a component whose
+library is not `diffusers` or `transformers` (the safety checker excepted — the worker passes None, 46 D8); a weighted
+component with only pickles (`.bin`, `.ckpt`, `.pt`). A derived recipe sets `useSafetensors`, which the worker passes to
+`from_pretrained` (and the VAE's), so diffusers cannot fall back to a pickle. `trust_remote_code` stays never.
+
+**D4 — the owner's switches are the option's `available`, each with the key.** No `diffusion` tool running
+(`Tools:Enabled` + `Allowed`), `Tools:AllowModelDownload` off, a licence not in `Tools:Image:AcceptedLicenses`, a gated
+repo without `Tools:Image:HuggingFaceToken` — each puts its sentence first and makes the install a 409. A CPU-only box
+fits only a `cpuViable` template with `RequireGpu` off.
+
+**D5 — the recipe is written at install, after every check.** `/fit` writes nothing. `FitService.PlanAsync` returns the
+document; `Prepare` writes it (`<id>.json` via a temporary file) and has the runtime read its directories again. The local
+install prepares and starts the pull; the hub's (120) prepares only after `ManagementQuota` allowed it, so a refused install
+leaves nothing on disk. A second look at the same link finds the written recipe pinning it (D1).
+
+**D6 — two directories, the shipped one first.** `Tools:Image:AddedRecipeDirectory` (unset → `<Node:DataDirectory>/recipes`,
+on the container's `/data` volume, so an update keeps it). `INFERHUB_IMAGE_RECIPES` = shipped + path separator + added;
+an empty first entry is still the worker's default. The worker reads both on every pull and, on re-declaration, weighs
+its catalogue again (licence, CPU, budget — quietly) so a recipe written after it started is declared after its pull; a
+worker that started with no recipes never weighed one and waits for a restart. The shipped id wins a clash.
+
+**Measured live** (the published 3.114.0 `-diffusion` image with this node and worker on top, the 3090 Ti, `Node:Vram:BudgetMiB`
+6000): `Lykon/dreamshaper-8` → a recipe from sd15 in 3 s (2034 MiB of fp16 weights, the same as sd15's, so 4000 MiB);
+installed from `/fit/install`, declared beside lcm-dreamshaper, a 512² picture in 5 s, the card +3437 MiB (the recipe says
+4000). Survived the container's re-creation (`/data/recipes`). Through a coordinator from source: `Lykon/dreamshaper-7`
+estimated, installed by the hub (`tool: diffusion` on its pull), generated through the hub in 11 s.
+`RunDiffusion/Juggernaut-XL-v9` took sdxl by its card's `base_model`; the SDXL base repo was sdxl as it stands.
+**Found live, fixed:** (1) a `:diffusion` node could not turn `HuggingFace:Enabled` on ("nowhere to put a model") — the
+validator now counts the `diffusion` tool as a place; (2) refusing every library but diffusers/transformers refused Kolors
+(`kolors`) and Stable Cascade (`wuerstchen`), which are diffusers' own pipeline modules — a library is now any module name,
+and code is a `.py`; both now say "no recipe on this node runs KolorsPipeline / StableCascadeDecoderPipeline".
+**Found, not changed:** a networked node whose language backend lists nothing (a `:diffusion` image with no Ollama) returns
+before its model report, so its tools' capabilities never reach the hub either (36 D7's "leave the inventory alone") — the
+lab pointed it at the host's Ollama. **Not established:** a video fine-tune written and run; a quantized template (flux,
+qwen) scaled; a gated repo end to end (FLUX.1-dev answers 401 to the model lookup without `HuggingFace:Token`, said).
+
 > **Phases 133–140 and 142 (one model split across nodes: the group estimate, the shard worker, the tunnel, groups, community, the relay,
 > verification, and the track that follows) live in `src/InferHub.Node/Backends/Shards/CLAUDE.md`** since phase 142 — this file was at 1082 of 1100.
 

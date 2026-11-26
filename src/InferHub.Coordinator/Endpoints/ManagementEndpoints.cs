@@ -144,7 +144,8 @@ public static class ManagementEndpoints
             }
 
             var pull = install.Command;
-            var started = await commands.SendAsync(nodeId, pull.Kind, pull.ModelName, cancellationToken, engine: pull.Engine, context: pull.Context);
+            // 121: a recipe's pull names its tool (48 D4); every other install names its engine.
+            var started = await commands.SendAsync(nodeId, pull.Kind, pull.ModelName, cancellationToken, tool: pull.Tool, engine: pull.Engine, context: pull.Context);
 
             if (started is null)
             {

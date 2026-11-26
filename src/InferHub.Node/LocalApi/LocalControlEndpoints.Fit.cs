@@ -37,7 +37,7 @@ internal static partial class LocalControlEndpoints
 
         if (string.IsNullOrWhiteSpace(body.Engine))
         {
-            return Error(400, "name the engine to install for (engine: ollama, llamacpp, colibri or strata) — the estimate's options say which can");
+            return Error(400, "name the engine to install for (engine: ollama, llamacpp, colibri, strata or diffusion) — the estimate's options say which can");
         }
 
         try

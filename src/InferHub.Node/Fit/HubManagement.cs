@@ -110,7 +110,7 @@ public sealed class HubManagement(FitService fit, CatalogService catalog, IOptio
     {
         if (string.IsNullOrWhiteSpace(request.Engine))
         {
-            throw new FitRefusedException(400, "name the engine to install for (engine: ollama, llamacpp, colibri or strata) — the estimate's options say which can");
+            throw new FitRefusedException(400, "name the engine to install for (engine: ollama, llamacpp, colibri, strata or diffusion) — the estimate's options say which can");
         }
 
         var plan = await fit.PlanAsync(request.Link, request.Engine.Trim().ToLowerInvariant(), request.Variant, request.Context, request.Force, cancellationToken);
@@ -119,6 +119,9 @@ public sealed class HubManagement(FitService fit, CatalogService catalog, IOptio
         {
             throw new QuotaRefusedException(refusal);
         }
+
+        // 121: a derived recipe is written only once the owner's terms allowed the install.
+        fit.Prepare(plan);
 
         logger.LogInformation(
             "The coordinator may install {Variant} of {Link} for {Engine} ({DiskMiB} MiB on disk)",

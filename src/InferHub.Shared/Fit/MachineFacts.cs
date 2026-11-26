@@ -49,5 +49,11 @@ public static class FitEngines
     public const string Colibri = "colibri";
     public const string Strata = "strata";
 
+    /// <summary>
+    /// Phase 121: the node's image and video recipes (the <c>diffusion</c> tool) — not a language-model engine, so not in
+    /// <see cref="All"/>: the estimate never places a text model there, and a picture model goes nowhere else.
+    /// </summary>
+    public const string Diffusion = "diffusion";
+
     public static readonly IReadOnlyList<string> All = [Ollama, LlamaCpp, Colibri, Strata];
 }
