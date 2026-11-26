@@ -851,7 +851,9 @@ estimated, installed by the hub (`tool: diffusion` on its pull), generated throu
 validator now counts the `diffusion` tool as a place; (2) refusing every library but diffusers/transformers refused Kolors
 (`kolors`) and Stable Cascade (`wuerstchen`), which are diffusers' own pipeline modules — a library is now any module name,
 and code is a `.py`; both now say "no recipe on this node runs KolorsPipeline / StableCascadeDecoderPipeline".
-**Found, not changed:** a networked node whose language backend lists nothing (a `:diffusion` image with no Ollama) returns
+**Found on the published 3.115.0 image, fixed in 3.115.1:** a recipe written again over weights already on disk (its file
+removed, then installed again) was pulled as `already-present` and never declared — only a fetch re-declared; the pull now
+re-declares on that branch too (`RecipeWorkerTests`). **Found, not changed:** a networked node whose language backend lists nothing (a `:diffusion` image with no Ollama) returns
 before its model report, so its tools' capabilities never reach the hub either (36 D7's "leave the inventory alone") — the
 lab pointed it at the host's Ollama. **Not established:** a video fine-tune written and run; a quantized template (flux,
 qwen) scaled; a gated repo end to end (FLUX.1-dev answers 401 to the model lookup without `HuggingFace:Token`, said).

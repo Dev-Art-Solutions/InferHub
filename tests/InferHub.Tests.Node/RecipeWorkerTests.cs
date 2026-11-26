@@ -73,6 +73,35 @@ public class RecipeWorkerTests
         assert "dream-8" not in next(f for f in Fake.frames if f["kind"] == "image")["models"]
         """);
 
+    /// <summary>v3.115.1, found on the published image: a pull of a recipe whose weights are already here re-declares too.</summary>
+    [PythonNumpyFact]
+    public void APullOfARecipeWhoseWeightsAreAlreadyHereDeclaresIt() => Run("""
+        class Fake:
+            frames = None
+            def redeclare(self, frames, fetching=None):
+                Fake.frames = frames
+
+        class Pull:
+            model = "dream-8"
+            chunks = []
+            def chunk(self, value):
+                Pull.chunks.append(value)
+
+        dw._worker = Fake()
+        dw._device = "cuda"
+        dw._weighed = True
+        dw._offerable = dw.offered(dw.load_recipes(), "cuda")
+        dw.is_ready = lambda recipe: True
+        dw.can_encode_video = lambda: True
+        os.environ["INFERHUB_ALLOW_MODEL_DOWNLOAD"] = "1"
+
+        write(derived)
+        result = dw.pull(Pull())
+        assert result["status"] == "already-present", result
+        assert Fake.frames is not None, "a ready recipe was not declared"
+        assert "dream-8" in next(f for f in Fake.frames if f["kind"] == "image")["models"], Fake.frames
+        """);
+
     [PythonNumpyFact]
     public void ARecipeTheNodeWroteLoadsSafetensorsOnlyAndAShippedOneIsUnchanged() => Run("""
         calls = []

@@ -2486,6 +2486,9 @@ def pull(request: Request):
 
     if is_ready(recipe):
         request.chunk({"status": "already-present", "model": recipe["id"]})
+        # v3.115.1, found on the published image: a recipe written over weights already on disk (the node wrote it
+        # again after its file was removed) was ready and never declared — only a fetch re-declared.
+        redeclare()
         return {"model": recipe["id"], "status": "already-present", "ready": True}
 
     request.chunk({"status": "downloading", "model": recipe["id"], "repo": recipe["repo"]})
