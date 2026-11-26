@@ -38,12 +38,18 @@ answer had the same text.
   lands on: the router now routes again under the ticket.
 - The whole solution: 3067 passed, 56 skipped (Postgres, Qdrant and other gated suites), 0 failed.
 
+## Checked on the published image
+
+`ghcr.io/dev-art-solutions/inferhub-coordinator:3.116.0` carries revision `e13fa8b`, the tag's commit. Its `/app`, pulled
+through the registry API and run natively against the same node and stand-in engine: four chats at once, **2** running,
+`waited 2`, `admitted 2`, `sentAnyway 0`, the same text for all four. That is the published binaries, not the container's
+OS layer: the image was not run under Docker.
+
 ## Not established
 
 - **A real engine.** The stand-in only counts; it says nothing about how fast llama.cpp or Ollama serves two instead of
   four. v3.112's figures for a split model stand as they were.
 - **Several nodes, and a cluster.** The line is per model on one coordinator. Two coordinators of a cluster (v3.92)
   each keep their own.
-- **The published image** is checked by its revision label and by the coordinator's DLL, not by a run of this lab on it.
 
 Zero new `PackageReference`; `InferHub.Shared.csproj` is still empty; nothing is persisted.
