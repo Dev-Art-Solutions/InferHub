@@ -47,12 +47,12 @@ Piper voice is set.
 | 3.116.0 | `capabilities: []` across two refreshes | `404` |
 | 3.117.0-rc.1 | `rerank, transcribe`, then `speak` when the voice landed | `503 no node currently provides 'speak'` (backend `unreachable`) |
 | rc.1 node + rc.2's hub from source | the same | `200`, a 112 KB WAV in 0.2 s with the backend `unreachable` |
+| 3.117.0-rc.2 | `rerank, transcribe`, then `speak` | `200`, a 137 KB WAV in 1.3 s with the backend `unreachable`. Chat for a model nobody has is still `404` |
 
-`:latest`, `:diffusion` and the other floating tags kept their 3.116.0 digests after rc.1 was published, and no `:3.117`
+`:latest`, `:tools`, `:diffusion` and the other floating tags kept their 3.116.0 digests after both candidates were published, and no `:3.117`
 tag exists.
 
 ## What was not established
 
-- rc.2's own published images, at the time these notes were written. They are checked before the final tag.
 - A `:diffusion` node on a GPU drawing a picture through the hub with no Ollama. The test uses the echo tool. The path
   that changed is the same, but the diffusion worker itself was not run.
