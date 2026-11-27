@@ -17,6 +17,9 @@ permissions:
 
 jobs:
   installer:
+    # Not for a release candidate (`v3.117.0-rc.1`): Inno Setup's version is X.Y.Z only, and a setup attached to a
+    # candidate is one the node's updater must never be offered. The final tag builds it.
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: windows-latest
 
     steps:

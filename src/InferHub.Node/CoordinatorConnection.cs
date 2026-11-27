@@ -72,6 +72,9 @@ public sealed class CoordinatorConnection(
     private HubConnection? connection;
     private Task? heartbeatTask;
     private Task? modelRefreshTask;
+    // Phase 156: the backend's last listing and the connection it was reported on — repeated when the backend cannot
+    // list, so the report (and the tools in it) still goes out. A new connection starts with none.
+    private (HubConnection Connection, IReadOnlyList<ModelInfo> Models, DateTimeOffset At)? lastListing;
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> activeJobs = new();
     private int inFlight;
     private int subscribedToEgress;
@@ -2065,7 +2068,7 @@ public sealed class CoordinatorConnection(
             return;
         }
 
-        var models = await backend.ListModelsAsync(cancellationToken);
+        var listed = await backend.ListModelsAsync(cancellationToken);
 
         // Phase 69, v3.36.2, and the reason the release before it only half worked. **"Could not
         // ask" is not "has none."** Reporting an empty list here sends the coordinator a *failure*
@@ -2077,17 +2080,29 @@ public sealed class CoordinatorConnection(
         //
         // So the inventory is left exactly as the hub already has it, and the heartbeat — which
         // carries the health verdict within a probe or two — is what unroutes this node.
-        if (models is null)
+        //
+        // Phase 156, found in 121's lab: until v3.117 "left alone" meant *no report at all*, and the report is also what
+        // carries the tools' capabilities. A `:diffusion` node with no Ollama never listed once, so it never told the hub
+        // it draws pictures. Now the report still goes out, with the list this connection last sent (what the hub already
+        // has, at the time it was true) — or none, which is also what the hub already has — and the tools as they are now.
+        IReadOnlyList<ModelInfo> models;
+        DateTimeOffset refreshedAt;
+
+        if (listed is null)
         {
-            // The engines block still goes out: "every engine is down" is exactly when it is read.
-            await ReportBackendStateAsync(cancellationToken);
-            await ReportCatalogStateAsync(cancellationToken);
+            var last = lastListing is { } held && ReferenceEquals(held.Connection, activeConnection) ? held : default;
+            models = last.Models ?? [];
+            refreshedAt = last.Models is null ? DateTimeOffset.UtcNow : last.At;
 
             logger.LogWarning(
-                "Could not list models from the {Backend} backend; leaving the coordinator's inventory alone rather than reporting zero. The heartbeat carries this backend's health.",
-                backend.Name);
-
-            return;
+                "Could not list models from the {Backend} backend; repeating the last list this node reported ({ModelCount} models) rather than reporting zero, with the tools as they are now. The heartbeat carries this backend's health.",
+                backend.Name,
+                models.Count);
+        }
+        else
+        {
+            models = listed;
+            refreshedAt = DateTimeOffset.UtcNow;
         }
 
         var served = ModelFilter.Apply(models, node.Models);
@@ -2131,11 +2146,17 @@ public sealed class CoordinatorConnection(
         var report = new NodeModels(
             nodeId,
             filtered,
-            DateTimeOffset.UtcNow,
+            refreshedAt,
             capabilities,
             toolOptions.SupportsStreamedAttachments,
             SupportsStreamedSpeech: true);
         await activeConnection.InvokeAsync("ReportModels", report, cancellationToken);
+
+        if (listed is not null)
+        {
+            // The raw listing, so a profile or sharing change while the backend is down is still applied to it.
+            lastListing = (activeConnection, listed, refreshedAt);
+        }
 
         // The empty report is the point, not an accident: the coordinator replaces this node's
         // list wholesale, so reporting nothing is what stops it routing inference at a backend

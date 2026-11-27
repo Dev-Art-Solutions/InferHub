@@ -61,6 +61,26 @@ public class ToolMeshTests
         Assert.Equal("node", response.Headers.GetValues("X-InferHub-Served-By").Single());
     }
 
+    /// <summary>
+    /// Phase 156, found in 121's lab: a `:diffusion` node with no Ollama never told the hub it draws pictures. The model
+    /// report is what carries the tools, and a backend that cannot list (null, 69's "could not ask") sent no report at all.
+    /// </summary>
+    [Fact]
+    public async Task ANodeWhoseBackendCannotListStillDeclaresItsTools()
+    {
+        await using var mesh = await ToolMesh.StartAsync(backendCannotList: true);
+
+        var declared = mesh.Registry.Snapshot(DateTimeOffset.UtcNow).Single(n => n.NodeId == "tool-node");
+        Assert.Contains(declared.Capabilities ?? [], c => c.Kind == "echo" && c.Models.Contains("echo"));
+        Assert.Equal(0, declared.ModelCount);
+
+        var response = await mesh.Client.PostAsync(
+            "/api/tools/echo",
+            JsonContent.Create(new { model = "echo", hello = "no-ollama" }));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
     [Fact]
     public async Task AToolJobPastItsCapabilitysDeadlineIsA504NamingTheDeadline()
     {
@@ -371,7 +391,8 @@ public class ToolMeshTests
             long? maxStreamedBytes = null,
             bool nodeTakesStreamedUploads = true,
             long? nodeMaxStreamedBytes = null,
-            IReadOnlyDictionary<string, int>? deadlines = null)
+            IReadOnlyDictionary<string, int>? deadlines = null,
+            bool backendCannotList = false)
         {
             var mesh = new ToolMesh
             {
@@ -390,7 +411,8 @@ public class ToolMeshTests
 
             await mesh.StartCoordinatorAsync(maxAttachmentBytes, maxStreamedBytes, deadlines);
             await mesh.StartNodeAsync(
-                nodeTakesStreamedUploads ? nodeMaxStreamedBytes ?? maxStreamedBytes : null);
+                nodeTakesStreamedUploads ? nodeMaxStreamedBytes ?? maxStreamedBytes : null,
+                backendCannotList);
 
             return mesh;
         }
@@ -455,7 +477,7 @@ public class ToolMeshTests
             Client = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
         }
 
-        private async Task StartNodeAsync(long? maxStreamedBytes)
+        private async Task StartNodeAsync(long? maxStreamedBytes, bool backendCannotList)
         {
             var toolOptions = ToolWorkerFixture.Options(scratch.Path, "echo");
             toolOptions.ManifestDirectory = manifests.Path;
@@ -473,7 +495,7 @@ public class ToolMeshTests
 
             await runtime.StartAsync(CancellationToken.None);
 
-            var backend = new ToolOnlyBackend();
+            var backend = new ToolOnlyBackend(backendCannotList);
             var replicas = new ReplicaStore(
                 Options.Create(new VectorReplicaOptions
                 {
@@ -586,7 +608,8 @@ public class ToolMeshTests
         /// A node whose backend holds nothing: it exists to prove that a box with no Ollama models
         /// still declares — and is routed for — its tool capabilities (phase-41's tools-only node).
         /// </summary>
-        private sealed class ToolOnlyBackend : IInferenceBackend
+        // Phase 156: cannotList is a backend that is not there at all (a `:diffusion` image with no Ollama), which lists null.
+        private sealed class ToolOnlyBackend(bool cannotList = false) : IInferenceBackend
         {
             public string Name => "none";
 
@@ -596,8 +619,8 @@ public class ToolMeshTests
 
             public bool SupportsModelManagement => false;
 
-            public Task<IReadOnlyList<ModelInfo>> ListModelsAsync(CancellationToken cancellationToken)
-                => Task.FromResult<IReadOnlyList<ModelInfo>>([]);
+            public Task<IReadOnlyList<ModelInfo>?> ListModelsAsync(CancellationToken cancellationToken)
+                => Task.FromResult<IReadOnlyList<ModelInfo>?>(cannotList ? null : []);
 
             public Task<string> GenerateAsync(string requestJson, CancellationToken cancellationToken)
                 => throw new NotSupportedException();

@@ -209,7 +209,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # A release candidate (`v3.117.0-rc.1`) publishes its own version tag and nothing else. The raw tags in the matrix
+      # (`latest`, `ollama`, `tools`, `diffusion`, …) float with every release and are what people pull, so a candidate
+      # must never move them; `{{major}}.{{minor}}` is already skipped by metadata-action for a pre-release.
+      - name: Floating tags
+        id: floating
+        shell: bash
+        env:
+          EXTRA: ${{ matrix.image.extra-tags }}
+        run: |
+          {
+            echo 'tags<<EOF'
+            if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+              printf '%s\n' "$EXTRA" | sed '/^\s*$/d; s/$/,enable=false/'
+            else
+              printf '%s\n' "$EXTRA"
+            fi
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
       # v2.3.0 -> :2.3.0, :2.3, :latest   (bundled: :3.7.0-ollama, :3.7-ollama, :ollama, :gpu)
+      # v3.117.0-rc.1 -> :3.117.0-rc.1 alone (bundled: :3.117.0-rc.1-ollama)
       - name: Derive tags
         id: meta
         uses: docker/metadata-action@v5
@@ -219,7 +239,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            ${{ matrix.image.extra-tags }}
+            ${{ steps.floating.outputs.tags }}
 
       - name: Build and push
         uses: docker/build-push-action@v6

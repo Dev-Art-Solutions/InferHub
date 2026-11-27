@@ -771,10 +771,10 @@ heartbeat — including `null`, which is what it says before the threshold has b
 > normally lands before the probe threshold is crossed, which is the race v3.36.1's hub-side hold
 > could not close.
 >
-> `IInferenceBackend.ListModelsAsync` now returns **`null` when the backend could not be asked**,
-> and `ReportModelsAsync` **sends nothing** in that case, leaving the hub's inventory alone while
-> the heartbeat carries the verdict. This is **phase-23 D1's rule**, one project over: *"not
-> fetched" must not be confusable with "not there"* — the same reason `VectorEntry` exists. The
+> `ListModelsAsync` returns **`null` when the backend could not be asked**, and `ReportModelsAsync` **repeats the list
+> this connection last sent** (or none): the hub's inventory unchanged, the heartbeat carries the verdict. **Phase 156
+> (v3.117):** until then it sent *nothing*, and the report carries the tools — a `:diffusion` node with no Ollama never
+> declared one. **Phase-23 D1's rule**, one project over: *"not fetched" ≠ "not there"*, as `VectorEntry`. The
 > five solo callers that only render a list say `?? []`; the compiler found every one of them,
 > which is the argument for a nullable return over a sentinel.
 >
