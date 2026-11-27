@@ -491,6 +491,35 @@ public class NodeRegistryTests
     }
 
     /// <summary>
+    /// Phase 156, found on the published 3.117.0-rc.1. The health is the language engine's, so a tool on the same node —
+    /// its own worker — is still served while that engine is down. The engine's own models are not, whatever kind is asked.
+    /// </summary>
+    [Fact]
+    public void AnUnhealthyLanguageEngineDoesNotUnrouteTheNodesTools()
+    {
+        var registry = new NodeRegistry();
+        var now = DateTimeOffset.UtcNow;
+
+        registry.Upsert("connection-1", Registration("node-1"), now);
+        registry.ReportModels(
+            "connection-1",
+            new NodeModels(
+                "node-1",
+                [new ModelInfo("llama3", "digest-1", 123)],
+                now,
+                [
+                    new NodeCapability(CapabilityKinds.Chat, ["llama3"]),
+                    new NodeCapability(CapabilityKinds.Speak, ["en_US-amy-medium"])
+                ]),
+            now);
+        registry.Touch("connection-1", new Heartbeat("node-1", now, InFlight: 0, Backend: BackendHealth.Unreachable), now);
+
+        Assert.Single(registry.FindNodesWithModel("en_US-amy-medium", CapabilityKinds.Speak));
+        Assert.Empty(registry.FindNodesWithModel("llama3", CapabilityKinds.Chat));
+        Assert.Empty(registry.FindNodesWithModel("llama3"));
+    }
+
+    /// <summary>
     /// 69 D2. Possession is a different question from serviceability, and placement, discovery and
     /// the refusal that has to tell a dead server from a missing model all ask the first one.
     /// </summary>

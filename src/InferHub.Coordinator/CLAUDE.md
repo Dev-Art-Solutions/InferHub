@@ -925,6 +925,8 @@ must not let a model vanish from `/api/tags` and reappear as a provider's, becau
 `size` are facts about a file on a box (65 D5) and stay true while it is down; **`KnownToTheFleet`**
 is what separates "no such model" from "cannot serve it right now". `RequestQueue` keeps the default
 — waiting for a slot on a node that cannot answer is a queue that has stopped meaning anything.
+**Phase 156 (v3.117):** the health is the *language engine's*, so it gates that engine's models only — a tool's model (not
+in `Models`) is served while Ollama is down. Found on the published RC: a `:tools` node with no Ollama declared `speak`, got none.
 
 **D3 — Every holder unhealthy is a `503` naming the backend, and never the `404` that means "no such
 model".** 40 D5's line, extended, in the order the fixes go in: nobody holds it → `404`; holders

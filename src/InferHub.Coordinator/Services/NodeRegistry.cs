@@ -387,7 +387,13 @@ public sealed class NodeRegistry : INodeRegistry
                 // its own resource cap still HAS the model, exactly like an unhealthy-backend node
                 // (69 D2's own distinction), so it is unserviceable for NEW placement the same way.
                 && (includeUnserviceable
-                    || ((pair.Value.Backend is null or BackendHealth.Healthy || ServesOnItsOwn?.Invoke(pair.Value.Registration.NodeId, model) == true) && pair.Value.ResourceThrottled is not true
+                    // Phase 156, found on the published 3.117.0-rc.1: the backend's health is the *language engine's*, so it
+                    // gates that engine's models only. A tool (speak, transcribe, image) runs its own worker and was refused
+                    // with every chat model — a `:tools` node with no Ollama declared `speak` and was never sent one.
+                    || ((pair.Value.Backend is null or BackendHealth.Healthy
+                            || ServesOnItsOwn?.Invoke(pair.Value.Registration.NodeId, model) == true
+                            || (capability is not null && !pair.Value.Models.Any(candidate => ModelNamesMatch(candidate.Name, model))))
+                        && pair.Value.ResourceThrottled is not true
                         // Phase 113: a node its owner paused still has the model, and takes nothing new.
                         && pair.Value.Sharing is not { Paused: true }))
                 && (!requireStreamedAttachments || pair.Value.StreamedAttachments is true)
