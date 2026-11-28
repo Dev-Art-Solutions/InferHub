@@ -1,8 +1,7 @@
 # InferHub v3.117.0: a node with no language engine still says what its tools do
 
-**Release candidate: `v3.117.0-rc.2`.** Its images carry the version tag only (`:3.117.0-rc.2`, `:3.117.0-rc.2-diffusion`,
-…). `:latest`, `:diffusion` and the other floating tags stay on v3.116.0 until the final tag. There is no Windows setup
-for a candidate. The node's updater offers stable releases only, so no node is moved onto it.
+Tested first as two release candidates (`v3.117.0-rc.1`, `v3.117.0-rc.2`), which are this project's first. rc.1's
+published images found the hub's half of the bug, described below.
 
 Phase 156. v3.115 found this and did not change it. A networked node whose language backend could not be asked for its
 models sent no model report at all. The report is also what carries the tools' capabilities, so those never reached the
@@ -20,8 +19,8 @@ visible, and the hub never routed a picture to it. Solo mode was unaffected.
 - **The hub sends a tool its work while the language engine is down.** An unhealthy backend gated *everything* on the
   node, so even once the tools were declared, a `:tools` node with no Ollama answered `speak` with
   `503 no node currently provides 'speak'`. The health belongs to the language engine, so it now gates that engine's
-  models only. A chat model on a node with a dead Ollama is still the `503` that names the backend. rc.1 shipped
-  without this. It was found by running rc.1's published images.
+  models only. A chat model on a node with a dead Ollama is still the `503` that names the backend. rc.1 did not
+  have this fix. Running rc.1's published images found it.
 - **A new connection starts from nothing.** A node that reconnects to a hub while its backend is down reports no models
   until the backend lists again. It never sends a list it did not send on that connection.
 - **Release candidates are safe to tag.** A tag with a `-` publishes only its own image tags. Before this, a candidate

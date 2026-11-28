@@ -240,6 +240,7 @@ deployment that changes no config behaves exactly as it did on 3.14.**
 | 153 | [A long context kept on the card, in RAM and on disk](#a-long-context-kept-on-the-card-in-ram-and-on-disk-v3106) — `Serve:Context`: a llama.cpp model's context on the card, in RAM and in slot files on disk; 620k tokens restored in 5.5 s (done) | `v3.106.0` |
 | 154 | [Users, roles and MCP](#users-roles-and-mcp-v3107) — `Users:Enabled` for people and roles made at runtime, `Mcp:Enabled` for the coordinator as an MCP server with its own OAuth sign-in (done) | `v3.107.0` |
 | 155 | [A burst waits its turn](#a-burst-waits-its-turn-v3116) — with `Queue:SlotWaitSeconds` set, requests that arrive together take the slot wait's line too, so a node with two slots gets two of four and the hub holds the rest (done) | `v3.116.0` |
+| 156 | [A node with no language engine still offers its tools](#a-node-with-no-language-engine-still-offers-its-tools-v3117) — a `:tools` or `:diffusion` node with no Ollama tells the hub what its tools do, and the hub sends them work while the language engine is down (done) | `v3.117.0` |
 
 **What's next.** The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2),
 and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. v3.4 through
@@ -4718,6 +4719,35 @@ Since v3.74 the hub can hold it instead and send it to whichever node frees a sl
 - `GET /api/status` shows `queue.slotWait` (`depth`, `waited`, `admitted`, `sentAnyway`) once the key is set, and
   `/metrics` the `inferhub_queue_slot_*` series.
 
+
+## A node with no language engine still offers its tools (v3.117)
+
+**Until v3.117 a networked node whose language engine could not be asked for its models offered nothing.** A `:tools` or
+`:diffusion` node with no Ollama beside it registered and showed in `/api/status` with `capabilities: []`. Its speech,
+transcription and pictures never reached the fleet. Solo mode was not affected.
+
+There were two reasons. The node skipped its model report when the engine did not answer, and the report is also what
+carries the tools. The hub, in turn, refused every request to a node whose language engine was unhealthy, tools
+included.
+
+Since v3.117:
+
+- **The node reports anyway.** It repeats the list it last sent on this connection, or none, with its tools as they are
+  now. "Could not ask" is still not "has none" (v3.36): a node whose Ollama goes down keeps its models in the hub's
+  inventory, and chat for them is the `503` that names the backend.
+- **The engine's health gates the engine's models only.** A tool runs its own worker, so `speak`, `transcribe` or
+  `image` on that node is served while Ollama is down.
+
+Measured on the published images: a coordinator and a `-tools` node, with `Ollama__Endpoint` pointing at a closed port.
+
+| | the hub sees | `POST /v1/audio/speech` |
+|---|---|---|
+| v3.116 | `capabilities: []` | `404` |
+| v3.117 | `rerank, speak, transcribe` | `200`, a WAV, with the backend `unreachable` |
+
+- **Nothing to configure.** A node whose engine answers behaves exactly as before.
+- **Not shown:** a `:diffusion` node on a GPU drawing through the hub with no Ollama. The path is the same one, and the
+  check used the speech worker.
 
 ## A burst waits its turn (v3.116)
 
