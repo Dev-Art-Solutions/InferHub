@@ -1,4 +1,4 @@
-id: (not yet posted)
+id: 6b0a2b45f4f31eed41657ef9
 slug: inferhub-3-117-tools-without-a-language-engine
 title: InferHub 3.117: a node with no language engine still offers its tools
 
